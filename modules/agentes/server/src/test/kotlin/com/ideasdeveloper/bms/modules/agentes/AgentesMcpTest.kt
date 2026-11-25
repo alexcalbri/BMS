@@ -155,6 +155,41 @@ class AgentesMcpTest {
     }
 
     @Test
+    fun actingCompanyThatIsNotTextIsMalformed() {
+        fun args(json: String) = Json.parseToJsonElement(json).jsonObject
+        assertTrue(AgentesMcp.malformedActingCompany(args("""{"acting_company":{"code":"b"}}""")))
+        assertTrue(AgentesMcp.malformedActingCompany(args("""{"acting_company":["b"]}""")))
+        assertTrue(AgentesMcp.malformedActingCompany(args("""{"acting_company":5}""")))
+        assertTrue(AgentesMcp.malformedActingCompany(args("""{"acting_company":true}""")))
+        assertTrue(!AgentesMcp.malformedActingCompany(args("""{"acting_company":"b"}""")))
+        assertTrue(!AgentesMcp.malformedActingCompany(args("""{"acting_company":""}""")))
+        assertTrue(!AgentesMcp.malformedActingCompany(args("""{"acting_company":null}""")))
+        assertTrue(!AgentesMcp.malformedActingCompany(args("""{"id":"x"}""")))
+    }
+
+    @Test
+    fun oversizedBatchesAreRefusedWhole() {
+        var calls = 0
+        val visible = AgentesMcp.visibleTools(catalog, token(), access(setOf("clientes.view")))
+        val mcp = AgentesMcp("test", { visible }, { _, _ -> calls++; ToolOutcome.Success(JsonPrimitive("ok")) })
+        val call = """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"clientes_search_customers"}}"""
+        val tooMany = Json.parseToJsonElement("[" + List(AgentesMcp.MaxBatch + 1) { call }.joinToString(",") + "]")
+        val refused = mcp.handle(tooMany)!!.jsonObject
+        assertEquals(AgentesMcp.InvalidRequest, refused["error"]!!.jsonObject["code"]!!.jsonPrimitive.int)
+        assertEquals(0, calls)
+        val allowed = Json.parseToJsonElement("[" + List(AgentesMcp.MaxBatch) { call }.joinToString(",") + "]")
+        assertEquals(AgentesMcp.MaxBatch, mcp.handle(allowed)!!.jsonArray.size)
+        assertEquals(AgentesMcp.MaxBatch, calls)
+    }
+
+    @Test
+    fun unknownToolNamesAreLoggedOnlyWhenTheyLookLikeOne() {
+        assertEquals("crm_search_leads", AgentesMcp.logTool("crm_search_leads"))
+        assertEquals("(nombre no valido)", AgentesMcp.logTool("crm_x @ empresa_b"))
+        assertEquals("(nombre no valido)", AgentesMcp.logTool("x".repeat(300)))
+    }
+
+    @Test
     fun requestedCompaniesAreLoggedByCodeOnly() {
         assertEquals("otra_empresa", AgentesMcp.logTarget("otra_empresa"))
         assertEquals("(empresa no valida)", AgentesMcp.logTarget("otra'; DROP TABLE x; --"))

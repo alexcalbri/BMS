@@ -36,7 +36,7 @@ class OwnerGroupScopePostgresTest {
                     )
                     """.trimIndent()
                 )
-                st.execute("CREATE TABLE application_users (id UUID PRIMARY KEY, is_active BOOLEAN NOT NULL DEFAULT TRUE)")
+                st.execute("CREATE TABLE application_users (id UUID PRIMARY KEY, email TEXT, is_active BOOLEAN NOT NULL DEFAULT TRUE)")
                 st.execute("CREATE TABLE business_owner (singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton), user_id UUID NOT NULL UNIQUE REFERENCES application_users(id))")
             }
             block(db)
@@ -95,10 +95,10 @@ class OwnerGroupScopePostgresTest {
     fun businessOwnerMustBeActive() = withDb { db ->
         assertNull(OwnerGroupScope.activeBusinessOwner(db))
         val owner = UUID.randomUUID()
-        db.prepareStatement("INSERT INTO application_users (id) VALUES (?)").use { it.setObject(1, owner); it.executeUpdate() }
-        db.prepareStatement("INSERT INTO application_users (id) VALUES (?)").use { it.setObject(1, UUID.randomUUID()); it.executeUpdate() }
+        db.prepareStatement("INSERT INTO application_users (id, email) VALUES (?, 'Ana@Empresa.com')").use { it.setObject(1, owner); it.executeUpdate() }
+        db.prepareStatement("INSERT INTO application_users (id, email) VALUES (?, 'otro@empresa.com')").use { it.setObject(1, UUID.randomUUID()); it.executeUpdate() }
         db.prepareStatement("INSERT INTO business_owner (user_id) VALUES (?)").use { it.setObject(1, owner); it.executeUpdate() }
-        assertEquals(owner, OwnerGroupScope.activeBusinessOwner(db))
+        assertEquals(OwnerGroupScope.Owner(owner, "Ana@Empresa.com"), OwnerGroupScope.activeBusinessOwner(db))
         db.createStatement().use { it.execute("UPDATE application_users SET is_active = FALSE") }
         assertNull(OwnerGroupScope.activeBusinessOwner(db))
     }

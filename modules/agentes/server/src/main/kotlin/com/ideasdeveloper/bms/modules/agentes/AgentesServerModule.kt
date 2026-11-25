@@ -59,6 +59,8 @@ object AgentesServerModule : ServerModule {
     private val log = LoggerFactory.getLogger(AgentesServerModule::class.java)
     // One answer for every company a business owner's agent may not act in, so it never tells whether the company exists.
     private const val OutOfReach = "No puedes actuar en esa empresa: no pertenece a tu grupo o no esta disponible."
+    // What this company's log keeps when a call in another company of the group fails; the agent gets the real message.
+    private const val ElsewhereDetail = "No se completo en la empresa de destino."
     private val rateLimiter = AgentRateLimiter(perMinute = 120)
     private const val ActivityDays = 180
     private const val MaxBodyBytes = 1_000_000
@@ -227,7 +229,7 @@ object AgentesServerModule : ServerModule {
             instructions = AgentesMcp.instructions(instructions(token, this.access.companyCode, ownerGroup), modules, visible),
             tools = { visible },
             invoke = { tool, arguments -> runTool(tenant, access, tool, arguments) },
-            denied = { name -> AgentTokens.log(tenant, token.id, name.ifBlank { "(sin nombre)" }, "denied", "Herramienta desconocida o sin permiso.") },
+            denied = { name -> AgentTokens.log(tenant, token.id, if (name.isBlank()) "(sin nombre)" else AgentesMcp.logTool(name), "denied", "Herramienta desconocida o sin permiso.") },
         )
     }
 
@@ -239,40 +241,58 @@ object AgentesServerModule : ServerModule {
      * stays in the agent's own company, refusals included.
      */
     private fun AgentSession.runTool(tenant: Connection, access: ModuleAccessService, tool: VisibleTool, arguments: JsonObject): ToolOutcome {
-        val target = AgentesMcp.actingCompany(arguments)?.takeIf { tool.anyCompany && it != this.access.companyCode }
+        val own = this.access.companyCode
+        val requested = AgentesMcp.actingCompany(arguments)?.takeIf { it != own }
         val toolArguments = JsonObject(arguments - AgentesMcp.ActingCompany)
-        val logName = if (target == null) tool.name else "${tool.name} @ ${AgentesMcp.logTarget(target)}"
-        fun refuse(message: String, status: String = "error"): ToolOutcome {
-            AgentTokens.log(tenant, token.id, logName, status, message)
+        val logName = if (requested == null) tool.name else "${tool.name} @ ${AgentesMcp.logTarget(requested)}"
+        // What the agent reads and what is kept in the log may differ: the log of this company never
+        // carries details of another one.
+        fun refuse(message: String, status: String = "error", logged: String = message): ToolOutcome {
+            AgentTokens.log(tenant, token.id, logName, status, logged)
             return ToolOutcome.Failure(message)
         }
+        // Asked for another company but not honoured: refuse, never run it here instead.
+        if (AgentesMcp.malformedActingCompany(arguments)) return refuse(OutOfReach, "denied")
+        if (requested != null && !tool.anyCompany) return refuse("Esta herramienta no admite ${AgentesMcp.ActingCompany}.", "denied")
+        val target = requested
         if (target == null) {
             val permissions = tool.permissions
                 ?: return refuse(
                     if (tool.ownerGroup) "${tool.registered.moduleName} no esta activo en tu empresa. Indica otra empresa de tu grupo en ${AgentesMcp.ActingCompany}."
                     else "${tool.registered.moduleName} no esta activo en el espacio del servidor. Indica la empresa en ${AgentesMcp.ActingCompany}."
                 )
-            return execute(tenant, tenant, access, tool, permissions, toolArguments, logName)
+            return execute(tenant, tenant, access, tool, permissions, toolArguments, logName, elsewhere = false)
         }
         // The server's own tools never run in another company, whatever the caller sends.
         if (tool.registered.moduleId == ServerMcpModuleId) return refuse(OutOfReach, "denied")
+        val asServerOwner = token.serverOwner && this.access.serverOwner
         val opened = try {
             when {
-                token.serverOwner && this.access.serverOwner -> access.serverOwnerAccess(target, token.userId)
-                tool.ownerGroup && this.access.businessOwner -> access.groupOwnerAccess(tenant, this.access.companyCode, token.userId, target)
+                asServerOwner -> access.serverOwnerAccess(target, token.userId)
+                tool.ownerGroup && this.access.businessOwner -> access.groupOwnerAccess(tenant, own, token.userId, target)
                 else -> null
             }
-        } catch (failure: SQLException) {
-            log.warn("Agent could not open company {}: {}", AgentesMcp.logTarget(target), failure.message)
+        } catch (failure: Exception) {
+            log.warn("Agent of company {} could not open company {}: {}", own, AgentesMcp.logTarget(target), failure.message)
             null
         }
         val (company, companyAccess) = opened
-            ?: return if (token.serverOwner) refuse("La empresa $target no existe, esta desactivada o no se pudo abrir.") else refuse(OutOfReach, "denied")
+            ?: return if (asServerOwner) refuse("La empresa ${AgentesMcp.logTarget(target)} no existe, esta desactivada o no se pudo abrir.") else refuse(OutOfReach, "denied")
         return company.use { connection ->
+            if (!asServerOwner) {
+                // Agents must be allowed in the company where it acts too: the module enabled there and its owner allowed to connect them.
+                val agents = companyAccess.permissions(AgentesModule.id)
+                if (agents?.has(AgentesScreens.Connect) != true) {
+                    return@use refuse("Agentes IA no esta activo en la empresa $target; activalo alli para que tu agente pueda actuar.", "denied", ElsewhereDetail)
+                }
+            }
             val permissions = companyAccess.permissions(tool.registered.moduleId)
-                ?: return@use refuse("${tool.registered.moduleName} no esta activo en la empresa $target.")
-            if (!permissions.has(tool.registered.tool.permission)) return@use refuse("No tienes permiso para esta herramienta en la empresa $target.", "denied")
-            execute(tenant, connection, access, tool, permissions, toolArguments, logName)
+                ?: return@use refuse(
+                    "${tool.registered.moduleName} no esta activo en la empresa $target.",
+                    logged = if (asServerOwner) "${tool.registered.moduleName} no esta activo en la empresa $target." else ElsewhereDetail,
+                )
+            if (!permissions.has(tool.registered.tool.permission)) return@use refuse("No tienes permiso para esta herramienta en la empresa $target.", "denied", ElsewhereDetail)
+            execute(tenant, connection, access, tool, permissions, toolArguments, logName, elsewhere = !asServerOwner)
         }
     }
 
@@ -284,6 +304,8 @@ object AgentesServerModule : ServerModule {
         permissions: ModulePermissions,
         arguments: JsonObject,
         logName: String,
+        // A business owner's agent acting in another company of its group: the error text stays out of this company's log.
+        elsewhere: Boolean,
     ): ToolOutcome {
         val call = McpToolCall(arguments, permissions, tenant, access, token.name, tool.registered.moduleId)
         return try {
@@ -291,7 +313,7 @@ object AgentesServerModule : ServerModule {
             AgentTokens.log(logTenant, token.id, logName, "ok")
             ToolOutcome.Success(result)
         } catch (failure: McpToolException) {
-            AgentTokens.log(logTenant, token.id, logName, "error", failure.message.orEmpty())
+            AgentTokens.log(logTenant, token.id, logName, "error", if (elsewhere) ElsewhereDetail else failure.message.orEmpty())
             ToolOutcome.Failure(failure.message.orEmpty())
         } catch (failure: Exception) {
             log.error("Agent tool {} failed for company {}", tool.name, permissions.companyCode, failure)

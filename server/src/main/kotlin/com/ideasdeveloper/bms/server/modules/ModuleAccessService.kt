@@ -202,24 +202,29 @@ class ModuleAccessService(
 
     /**
      * The business owner of [fromCode] acting in [toCode], another company of the same owner group,
-     * as the business owner of [toCode]: the group says both owners are the same person even when each
-     * company has its own user (see LoginDatabases.switchCompany). [fromTenant] and [fromUserId] are
+     * as the business owner of [toCode]: each company may have its own user, so being the same person
+     * means the same owner group and the same business owner email in both, read now. [fromTenant] and [fromUserId] are
      * the caller's own company and user; that user must be its active business owner now. Null when
      * any rule fails, without saying which, so the answer never tells whether a company exists.
      * The caller closes the connection.
      */
     fun groupOwnerAccess(fromTenant: Connection, fromCode: String, fromUserId: UUID, toCode: String): Pair<Connection, UserModuleAccess>? {
         if (fromCode == toCode || !CompanyCodePattern.matches(toCode) || !CompanyCodePattern.matches(fromCode)) return null
-        if (OwnerGroupScope.activeBusinessOwner(fromTenant) != fromUserId) return null
+        val fromOwner = OwnerGroupScope.activeBusinessOwner(fromTenant)?.takeIf { it.id == fromUserId } ?: return null
         if (ownerGroupCompanies(fromCode).none { it.code == toCode }) return null
         val tenant = tenantConnectionForCompany(toCode) ?: return null
         val granted = try {
-            OwnerGroupScope.activeBusinessOwner(tenant)?.let { owner -> userAccess(tenant, toCode, owner, serverOwner = false) }
-        } catch (failure: SQLException) {
+            // The group alone is not enough: both companies must have the same business owner email now,
+            // so a company linked by mistake or whose owner changed is out without waiting for anyone to suspend it.
+            OwnerGroupScope.activeBusinessOwner(tenant)
+                ?.takeIf { OwnerGroupScope.sameOwner(fromOwner, it) }
+                ?.let { owner -> userAccess(tenant, toCode, owner.id, serverOwner = false) }
+                ?.takeIf { it.businessOwner }
+        } catch (failure: Exception) {
             tenant.close()
             throw failure
         }
-        if (granted == null || !granted.businessOwner) {
+        if (granted == null) {
             tenant.close()
             return null
         }
@@ -741,11 +746,14 @@ object OwnerGroupScope {
             }
         }
 
+    /** The active business owner of a company: its user and its email as stored. */
+    data class Owner(val id: UUID, val email: String?)
+
     /** The active business owner of the company behind [tenant], or null when it has none. */
-    fun activeBusinessOwner(tenant: Connection): UUID? =
+    fun activeBusinessOwner(tenant: Connection): Owner? =
         tenant.prepareStatement(
             """
-            SELECT users.id
+            SELECT users.id, users.email
             FROM business_owner owner
             JOIN application_users users ON users.id = owner.user_id
             WHERE users.is_active = TRUE
@@ -753,8 +761,14 @@ object OwnerGroupScope {
             LIMIT 1
             """.trimIndent()
         ).use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+            query.executeQuery().use { rows -> if (rows.next()) Owner(rows.getObject(1, UUID::class.java), rows.getString(2)) else null }
         }
+
+    /** Whether two business owners are the same person: the same email, and neither without one. */
+    fun sameOwner(one: Owner, other: Owner): Boolean {
+        val email = one.email?.trim().orEmpty()
+        return email.isNotEmpty() && email.equals(other.email?.trim().orEmpty(), ignoreCase = true)
+    }
 }
 
 /** A company link rule was broken (different owner, inactive, server workspace...); the message is for people. */

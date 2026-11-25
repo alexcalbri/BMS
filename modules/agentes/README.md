@@ -174,6 +174,11 @@ them in the app without a password. Since 0.4.0 that business owner's agent can 
   belongs to must not be suspended either. This is read from the central database **on every call**
   (`ModuleAccessService.groupOwnerAccess`, `OwnerGroupScope`), so taking a company out of the group
   applies to the next call.
+- The group alone is not enough: both companies must have **the same business owner email** at the time
+  of the call, and neither may lack one. A company linked by mistake, or whose owner changed, is out
+  without waiting for anyone to suspend it.
+- **Agentes IA must be enabled in the target company too**, and its business owner allowed to connect
+  agents there: a company without the module is never reached by an agent of another one.
 - In the target the tool runs as **the business owner of that company** (each company may have its own
   user; the group is what says they are the same person, like the company switcher), with its live
   access: the module must be enabled there. The token still narrows modules and read-only mode.
@@ -183,7 +188,15 @@ them in the app without a password. Since 0.4.0 that business owner's agent can 
 - Every call is recorded in the activity log of the token's company as `<tool> @ <company>`. A target
   outside the group is refused and recorded as `denied`, always with the same message, which does not
   tell whether that company exists. Whatever the agent sent as company is logged only when it looks
-  like a company code.
+  like a company code. When a call in another company fails, the agent gets the real message but
+  the log of the token's company keeps a fixed text, so details of one company do not end in another's log.
+- `acting_company` that cannot be honoured (a tool that does not take it, a value that is not text) is
+  **refused**; the tool never runs in the token's own company instead.
+- Known limit: the target company keeps no activity row of its own (its `agent_activity` only holds its
+  own tokens); the changes a tool makes there are attributed to that company's business owner and the
+  agent's name, as with any agent.
+
+A JSON-RPC batch holds at most 20 messages (it is answered by one request of the rate limit).
 - Requires Core 0.9.1 (`ModuleAccessService.ownerGroupCompanies` and `groupOwnerAccess`).
 
 How a module writes its MCP, and the rules the registry enforces (names, permissions, no

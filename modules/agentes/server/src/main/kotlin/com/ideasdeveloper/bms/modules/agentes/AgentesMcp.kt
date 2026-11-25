@@ -52,7 +52,10 @@ class AgentesMcp(
 ) {
     /** Answers a JSON-RPC message or batch; null when nothing must be returned (only notifications). */
     fun handle(message: JsonElement): JsonElement? = when (message) {
-        is JsonArray -> message.mapNotNull { handleOne(it) }.takeIf { it.isNotEmpty() }?.let(::JsonArray)
+        // A batch is answered by one request of the rate limit, so it stays small.
+        is JsonArray ->
+            if (message.size > MaxBatch) error(JsonNull, InvalidRequest, "Lote demasiado grande: maximo $MaxBatch mensajes.")
+            else message.mapNotNull { handleOne(it) }.takeIf { it.isNotEmpty() }?.let(::JsonArray)
         else -> handleOne(message)
     }
 
@@ -154,6 +157,8 @@ class AgentesMcp(
         // This module's tool that lists the companies a business owner's agent may act in.
         const val GroupCompaniesTool = "agentes_list_group_companies"
         private val CompanyCode = Regex("[a-z][a-z0-9_]{0,62}")
+        private val ToolName = Regex("[A-Za-z0-9_.-]{1,96}")
+        const val MaxBatch = 20
         val SupportedVersions = listOf("2025-06-18", "2025-03-26", "2024-11-05")
         const val ParseError = -32700
         const val InvalidRequest = -32600
@@ -199,6 +204,16 @@ class AgentesMcp(
          * does not look like one, so whatever the agent sent never reaches the log as is.
          */
         fun logTarget(target: String): String = if (CompanyCode.matches(target)) target else "(empresa no valida)"
+
+        /** A requested tool name as written in the activity log: itself, or a fixed text when it does not look like one. */
+        fun logTool(name: String): String = if (ToolName.matches(name)) name else "(nombre no valido)"
+
+        /**
+         * Whether [ActingCompany] was sent with something that is not text. Such a call is refused
+         * instead of running in the agent's own company, where the agent did not mean to act.
+         */
+        fun malformedActingCompany(arguments: JsonObject): Boolean =
+            arguments[ActingCompany]?.let { it !is JsonNull && (it !is JsonPrimitive || !it.isString) } ?: false
 
         fun result(id: JsonElement, result: JsonObject) = buildJsonObject {
             put("jsonrpc", "2.0")
