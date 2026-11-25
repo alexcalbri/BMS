@@ -97,13 +97,13 @@ Lee los detalles y advertencias operativas en
 
 ## Documentacion
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md): arquitectura, Core, modulos, tenant
-  databases, control plane, permisos y decisiones implementadas o planeadas.
 - [`SELF_HOSTING.md`](SELF_HOSTING.md): instalacion, variables de entorno,
   PostgreSQL, proxy, backups, upgrades y troubleshooting.
-- [`COMPANY_PROVISIONING_FLOW.md`](COMPANY_PROVISIONING_FLOW.md): flujo de
-  provisioning de empresas.
-- [`PROGRAM_FLOW.md`](PROGRAM_FLOW.md): flujo general del programa.
+- [`modules/README.md`](modules/README.md) y el `README.md` de cada modulo y
+  extension: que hace cada uno y como se usa.
+
+La documentacion tecnica (arquitectura, flujos, como escribir extensiones) y
+las pruebas viven en la rama `develop`.
 
 ## Principios de desarrollo
 
