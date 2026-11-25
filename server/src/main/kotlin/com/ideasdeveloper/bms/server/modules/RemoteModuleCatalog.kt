@@ -1,0 +1,242 @@
+package com.ideasdeveloper.bms.server.modules
+
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.http.HttpHeaders
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonPrimitive
+import java.util.Base64
+
+/**
+ * Lee modulos remotos disponibles para instalar.
+ *
+ * La URL puede apuntar a:
+ *
+ * - un JSON legado con `{ "modules": [...] }`;
+ * - una URL normal de GitHub como
+ *   `https://github.com/alexcalbri/BMS/tree/master/modules`;
+ * - un directorio de GitHub Contents API, por ejemplo
+ *   `https://api.github.com/repos/owner/repo/contents/modules?ref=main`.
+ *
+ * En modo GitHub, cada carpeta es instalable solo si contiene `module.json`
+ * valido. Si se elimina una carpeta del repositorio remoto, deja de aparecer
+ * para nuevas instalaciones; los servidores que ya la instalaron conservan su
+ * registro local en `server_modules` y su paquete descargado.
+ */
+class RemoteModuleCatalog(
+    // Optional GitHub token (see GitHubAuth); sent only to GitHub.
+    private val githubToken: String? = null,
+    private val clock: () -> Long = System::currentTimeMillis,
+) : AutoCloseable {
+    private companion object {
+        const val CacheMillis = 5 * 60_000L
+    }
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+    private val client = HttpClient {
+        expectSuccess = false
+        followRedirects = false
+        install(ContentNegotiation) {
+            json(json)
+        }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 15_000
+            connectTimeoutMillis = 5_000
+        }
+    }
+    private val moduleIdPattern = Regex("[a-z][a-z0-9_]{0,62}")
+    private val checksumPattern = Regex("[A-Fa-f0-9]{64}")
+
+    private class Cached(val readAt: Long, val modules: List<RemoteModulePackage>)
+
+    // Last good reading per catalog URL. GitHub allows 60 unauthenticated API requests per hour and a
+    // reading costs one per module folder plus one; the modules screen asks every few seconds while
+    // a module installs, so without this the limit runs out and the catalog looks empty for an hour.
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
+
+    fun modules(catalogUrl: String): List<RemoteModulePackage> {
+        val key = catalogUrl.trim()
+        val url = key.takeIf { it.isNotBlank() }?.toGitHubContentsApiUrl() ?: return emptyList()
+        val now = clock()
+        cache[key]?.takeIf { now - it.readAt < CacheMillis }?.let { return it.modules }
+        // Modules are built from this repository folder when the server owner installs them.
+        val source = GitHubLocation.parse(catalogUrl)
+        return runBlocking {
+            try {
+                modulesFrom(url, source)
+                    .filter(::isValid)
+                    .map { it.copy(source = source) }
+                    .distinctBy { it.definition.id }
+                    .sortedBy { it.definition.id }
+                    .also { cache[key] = Cached(now, it) }
+            } catch (_: Exception) {
+                // GitHub unreachable or rate limited: keep offering the last good reading.
+                cache[key]?.modules ?: emptyList()
+            }
+        }
+    }
+
+    // Reads the catalog again on the next call (after changing the catalog URL or to check updates now).
+    fun forget(catalogUrl: String) {
+        cache.remove(catalogUrl.trim())
+    }
+
+    private suspend fun modulesFrom(url: String, source: GitHubLocation?): List<RemoteModulePackage> {
+        val text = get(url)
+        return when (val element = json.parseToJsonElement(text)) {
+            is JsonObject -> modulesFromObject(element)
+            is JsonArray -> modulesFromGitHubDirectory(element, source)
+            else -> emptyList()
+        }
+    }
+
+    private suspend fun modulesFromObject(element: JsonObject): List<RemoteModulePackage> {
+        element["modules"]?.let {
+            return json.decodeFromJsonElement(RemoteModuleCatalogDocument.serializer(), element)
+                .modules
+                .map { definition -> definition.toPackage() }
+        }
+
+        return decodeModuleManifest(element, expectedFolder = null)?.let(::listOf).orEmpty()
+    }
+
+    // Sin token la API de GitHub admite 60 llamadas por hora: solo el listado la usa. Cada module.json se lee de
+    // raw.githubusercontent.com, que no cuenta para ese limite.
+    private suspend fun modulesFromGitHubDirectory(entries: JsonArray, source: GitHubLocation?): List<RemoteModulePackage> =
+        entries
+            .mapNotNull { it as? JsonObject }
+            .filter { it.string("type") == "dir" }
+            .mapNotNull { directory ->
+                val directoryName = directory.string("name") ?: return@mapNotNull null
+                val directoryUrl = directory.string("url") ?: return@mapNotNull null
+                val manifestUrl = source?.let { "https://raw.githubusercontent.com/${it.owner}/${it.repo}/${it.ref}/${it.path.trim('/')}/$directoryName/module.json" }
+                    ?: githubChildUrl(directoryUrl, "module.json")
+                loadModuleManifest(manifestUrl, expectedFolder = directoryName)
+            }
+
+    private suspend fun loadModuleManifest(url: String, expectedFolder: String): RemoteModulePackage? {
+        // Una carpeta sin module.json (404 con texto plano) no es un modulo: se salta sin tumbar el catalogo.
+        val text = get(url)
+        return when (val element = runCatching { json.parseToJsonElement(text) }.getOrNull()) {
+            is JsonObject -> decodeModuleManifest(element, expectedFolder)
+            else -> null
+        }
+    }
+
+    private suspend fun get(url: String): String = client.get(url) {
+        GitHubAuth.header(githubToken, url)?.let { header(HttpHeaders.Authorization, it) }
+    }.body()
+
+    private fun decodeModuleManifest(element: JsonObject, expectedFolder: String?): RemoteModulePackage? {
+        val manifest = element["content"]?.jsonPrimitive?.contentOrNull
+            ?.let { encoded -> String(Base64.getMimeDecoder().decode(encoded)) }
+            ?.let { json.parseToJsonElement(it) as? JsonObject }
+            ?: element
+
+        val definition = json.decodeFromJsonElement(RemoteModuleDefinition.serializer(), manifest)
+        if (expectedFolder != null && definition.id != expectedFolder) return null
+        // Base modules ship inside the server; the catalog only offers optional ones.
+        if (definition.bundled) return null
+        return definition.toPackage()
+    }
+
+    private fun RemoteModuleDefinition.toPackage(): RemoteModulePackage =
+        RemoteModulePackage(
+            definition = toDefinition(),
+            packageUrl = packageUrl?.takeIf { value -> value.isNotBlank() },
+            packageSha256 = packageSha256?.lowercase()?.takeIf { value -> value.isNotBlank() },
+        )
+
+    private fun isValid(remotePackage: RemoteModulePackage): Boolean {
+        val definition = remotePackage.definition
+        return moduleIdPattern.matches(definition.id) &&
+            definition.displayName.isNotBlank() &&
+            definition.description.isNotBlank() &&
+            definition.version.isNotBlank() &&
+            (remotePackage.packageUrl.isNullOrBlank() ||
+                remotePackage.packageUrl.startsWith("https://") ||
+                remotePackage.packageUrl.startsWith("http://")) &&
+            (remotePackage.packageSha256.isNullOrBlank() || checksumPattern.matches(remotePackage.packageSha256))
+    }
+
+    private fun JsonObject.string(key: String): String? =
+        this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+    private fun String.toGitHubContentsApiUrl(): String {
+        val regex = Regex("""^https://github\.com/([^/]+)/([^/]+)/tree/([^/]+)/(.+)$""")
+        val match = regex.matchEntire(this) ?: return this
+        val owner = match.groupValues[1]
+        val repo = match.groupValues[2].removeSuffix(".git")
+        val ref = match.groupValues[3]
+        val path = match.groupValues[4].trim('/')
+        return "https://api.github.com/repos/$owner/$repo/contents/$path?ref=$ref"
+    }
+
+    private fun githubChildUrl(directoryUrl: String, child: String): String {
+        val queryIndex = directoryUrl.indexOf('?')
+        return if (queryIndex >= 0) {
+            directoryUrl.substring(0, queryIndex).trimEnd('/') + "/$child" + directoryUrl.substring(queryIndex)
+        } else {
+            directoryUrl.trimEnd('/') + "/$child"
+        }
+    }
+
+    override fun close() {
+        client.close()
+    }
+}
+
+data class RemoteModulePackage(
+    val definition: ModuleDefinition,
+    val packageUrl: String?,
+    val packageSha256: String?,
+    // Repository folder of the catalog; null when the catalog is not a GitHub folder.
+    val source: GitHubLocation? = null,
+)
+
+@Serializable
+data class RemoteModuleCatalogDocument(
+    val modules: List<RemoteModuleDefinition> = emptyList(),
+)
+
+@Serializable
+data class RemoteModuleDefinition(
+    val id: String,
+    val displayName: String,
+    val description: String,
+    val version: String = "0.1.0",
+    val locked: Boolean = false,
+    val views: List<ModuleViewDefinition> = emptyList(),
+    val permissions: List<ModulePermissionDefinition> = emptyList(),
+    val packageUrl: String? = null,
+    val packageSha256: String? = null,
+    val bundled: Boolean = false,
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
+) {
+    fun toDefinition(): ModuleDefinition = ModuleDefinition(
+        id = id,
+        displayName = displayName,
+        description = description,
+        version = version,
+        locked = false,
+        views = views,
+        permissions = permissions,
+        minCoreVersion = minCoreVersion?.trim()?.takeIf { it.isNotEmpty() },
+        minAppVersion = minAppVersion?.trim()?.takeIf { it.isNotEmpty() },
+    )
+}

@@ -1,0 +1,603 @@
+package com.ideasdeveloper.bms.ui
+
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonContentPolymorphicSerializer
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
+/*
+ * Server-driven UI contract shared by the server and every client.
+ *
+ * A module chooses how its interface is delivered (ModuleUiEntry):
+ * - "native": the server answers GET {entry}/{screen} with a UiScreen built from the
+ *   generic pieces below and the app draws it with native components;
+ * - "web": the module serves its own HTML under {entry} and the app opens it in a WebView.
+ *
+ * Compatibility rule: clients ignore piece and action types they do not know, so a
+ * newer server never breaks an older app. Add new types; never change existing ones.
+ */
+
+val UiJson: Json = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+    explicitNulls = false
+}
+
+@Serializable
+data class ModuleUiEntry(
+    // "native" or "web".
+    val type: String,
+    // Native: base route of the screens, e.g. /modules/hotspot/ui. Web: first page, e.g. /modules/crm/web/.
+    val entry: String,
+    // Native: screen opened first.
+    val home: String = "home",
+)
+
+@Serializable
+data class UiScreen(
+    val title: String,
+    // Ignored by the app: modules are drawn with the app theme the user chose. Kept so packages
+    // built against older versions still load; to add colors, declare a UiAppTheme instead.
+    val theme: UiTheme? = null,
+    val navigation: UiNavigation? = null,
+    val notice: UiNotice? = null,
+    val body: List<UiNode> = emptyList(),
+)
+
+// Colors as #RRGGBB. Missing values fall back to the client's defaults.
+// In a UiAppTheme, accent and onAccent are ignored: the company brand colors are the accent.
+@Serializable
+data class UiTheme(
+    val background: String? = null,
+    val surface: String? = null,
+    val surfaceAlt: String? = null,
+    val border: String? = null,
+    val text: String? = null,
+    val muted: String? = null,
+    val accent: String? = null,
+    val onAccent: String? = null,
+    val success: String? = null,
+    val warning: String? = null,
+    val danger: String? = null,
+)
+
+/**
+ * A theme a module adds to the app. Users pick it in Ajustes next to Claro and Oscuro, and the
+ * whole app (core screens and every module) is drawn with it. [id] is unique within the module;
+ * the server publishes it as "<moduleId>.<id>". [brandBackground] paints the screen background
+ * with the company brand gradient, as the Claro theme does, instead of [UiTheme.background].
+ */
+@Serializable
+data class UiAppTheme(
+    val id: String,
+    val name: String,
+    val dark: Boolean,
+    val colors: UiTheme,
+    val brandBackground: Boolean = false,
+)
+
+@Serializable
+data class UiAppThemes(val themes: List<UiAppTheme>)
+
+private val UiColorPattern = Regex("^#[0-9A-Fa-f]{6}$")
+
+// Whether every color set in the theme is #RRGGBB.
+fun UiTheme.isValid(): Boolean = listOfNotNull(background, surface, surfaceAlt, border, text, muted, accent, onAccent, success, warning, danger)
+    .all { UiColorPattern.matches(it) }
+
+// Module sections. Wide screens show a sidebar; narrow screens a horizontal bar.
+@Serializable
+data class UiNavigation(
+    val title: String = "",
+    val items: List<UiNavItem>,
+    val selected: String = "",
+)
+
+@Serializable
+data class UiNavItem(val id: String, val label: String, val action: UiAction)
+
+@Serializable
+data class UiNotice(val text: String, val tone: String = UiTone.Info)
+
+object UiTone {
+    const val Info = "info"
+    const val Success = "success"
+    const val Warning = "warning"
+    const val Danger = "danger"
+    const val Neutral = "neutral"
+}
+
+object UiTextStyle {
+    const val Title = "title"
+    const val Subtitle = "subtitle"
+    const val Body = "body"
+    const val Caption = "caption"
+}
+
+@Serializable
+data class UiField(
+    val key: String,
+    val label: String,
+    // text, email, phone, url, number, password, select (radio buttons), dropdown (a menu, for longer
+    // lists; see multiple), textarea, color, date, boolean, files (attachments; see files).
+    val type: String = "text",
+    val required: Boolean = false,
+    val readOnly: Boolean = false,
+    val options: List<String> = emptyList(),
+    val help: String = "",
+    val placeholder: String = "",
+    // Consecutive fields with the same section are grouped under one heading.
+    val section: String = "",
+    // Shown only while another field of the form has one of the given values; hidden fields are not required.
+    val visibleWhen: UiFieldCondition? = null,
+    // Suggestions while typing (any text-like field, including textarea; see UiSuggest.trigger); older clients ignore it.
+    val suggest: UiSuggest? = null,
+    // dropdown: several options can be chosen; the value is a JSON array of them (see UiFieldValues).
+    val multiple: Boolean = false,
+    // Type "files": where files are uploaded and downloaded. The value is a JSON array of UiFileRef.
+    val files: UiFiles? = null,
+)
+
+/**
+ * Attachments of a "files" field. Picked files are sent one by one with POST [upload] (raw bytes as
+ * the body, headers X-File-Name and X-File-Path URL-encoded, the path being the folder inside a
+ * picked folder) and the server answers the UiFileRef to keep in the value. GET "[download]/{id}"
+ * returns the file. The module links the refs of the value to its record when the form is saved.
+ */
+@Serializable
+data class UiFiles(
+    val upload: String,
+    val download: String,
+    // Whether whole folders (with their subfolders) can be picked besides files.
+    val folders: Boolean = true,
+    val maxFileBytes: Long = 25L * 1024 * 1024,
+)
+
+@Serializable
+data class UiFileRef(
+    val id: String,
+    val name: String,
+    // Folder of the file inside the picked folder, e.g. "Contrato/Anexos"; "" for loose files.
+    val path: String = "",
+    val size: Long = 0,
+)
+
+// Encoding of the form values that hold several items.
+object UiFieldValues {
+    private val strings = ListSerializer(String.serializer())
+    private val refs = ListSerializer(UiFileRef.serializer())
+
+    // Options chosen in a multiple dropdown; a plain (non JSON) value counts as one option.
+    fun options(value: String): List<String> {
+        val text = value.trim()
+        if (text.isEmpty()) return emptyList()
+        if (!text.startsWith("[")) return listOf(text)
+        return runCatching { UiJson.decodeFromString(strings, text) }.getOrDefault(emptyList())
+    }
+
+    fun options(options: List<String>): String = if (options.isEmpty()) "" else UiJson.encodeToString(strings, options)
+
+    fun files(value: String): List<UiFileRef> =
+        value.trim().takeIf { it.startsWith("[") }?.let { runCatching { UiJson.decodeFromString(refs, it) }.getOrNull() }.orEmpty()
+
+    fun files(files: List<UiFileRef>): String = if (files.isEmpty()) "" else UiJson.encodeToString(refs, files)
+}
+
+@Serializable
+data class UiFieldCondition(val key: String, val values: List<String>)
+
+/**
+ * While the user types in the field (at least [minLength] characters), the app calls GET [route]
+ * (a module route) with the form values plus "q" (the typed text) and "field" (the field key), and
+ * expects [UiSuggestions]. Choosing one writes its values into the form; values it set for keys
+ * that are not fields (e.g. a hidden id) are cleared again if the user edits the field afterwards.
+ */
+@Serializable
+data class UiSuggest(
+    val route: String,
+    val minLength: Int = 2,
+    // With a trigger (e.g. "@"), suggestions are asked only for the word typed after the last trigger
+    // before the cursor (even if shorter than minLength); choosing one replaces "@word" with the
+    // trigger + values["insert"] (or title) + a space. Without it, the whole field is the query.
+    val trigger: String? = null,
+)
+
+@Serializable
+data class UiSuggestion(
+    val title: String,
+    val subtitle: String = "",
+    val values: Map<String, String> = emptyMap(),
+)
+
+@Serializable
+data class UiSuggestions(
+    val items: List<UiSuggestion> = emptyList(),
+    // Shown above the items, e.g. "Ya existe un cliente con este correo".
+    val heading: String = "",
+)
+
+@Serializable
+data class UiTableColumn(val key: String, val label: String)
+
+@Serializable
+data class UiChartPoint(val label: String, val value: Double)
+
+// ---- Pieces ----
+
+@Serializable(with = UiNodeSerializer::class)
+sealed interface UiNode {
+    val type: String
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+@SerialName("text")
+data class UiText(
+    val text: String,
+    val style: String = UiTextStyle.Body,
+    val tone: String? = null,
+    @EncodeDefault override val type: String = "text",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiColumn(
+    val children: List<UiNode>,
+    val spacing: Int = 12,
+    @EncodeDefault override val type: String = "column",
+) : UiNode
+
+// Horizontal group. With fill = true the children share the width equally.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiRow(
+    val children: List<UiNode>,
+    val spacing: Int = 12,
+    val fill: Boolean = false,
+    @EncodeDefault override val type: String = "row",
+) : UiNode
+
+// Responsive grid: as many columns as fit with at least minItemWidth dp each.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiGrid(
+    val children: List<UiNode>,
+    val minItemWidth: Int = 220,
+    val spacing: Int = 16,
+    @EncodeDefault override val type: String = "grid",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiCard(
+    val children: List<UiNode>,
+    val title: String? = null,
+    // Pieces shown at the right of the title, typically buttons.
+    val actions: List<UiNode> = emptyList(),
+    // Accordion: the title opens and closes the card; [expanded] is how it starts. Needs a title.
+    // Older clients ignore it and show the card open.
+    val collapsible: Boolean = false,
+    val expanded: Boolean = true,
+    @EncodeDefault override val type: String = "card",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiMetric(
+    val label: String,
+    val value: String,
+    val caption: String = "",
+    val captionTone: String = UiTone.Neutral,
+    @EncodeDefault override val type: String = "metric",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiStatus(
+    val label: String,
+    val tone: String = UiTone.Success,
+    @EncodeDefault override val type: String = "status",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiBarChart(
+    val points: List<UiChartPoint>,
+    val height: Int = 180,
+    @EncodeDefault override val type: String = "barChart",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiTable(
+    val columns: List<UiTableColumn>,
+    val rows: List<Map<String, String>>,
+    val emptyText: String = "Sin datos.",
+    @EncodeDefault override val type: String = "table",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiButton(
+    val label: String,
+    val action: UiAction,
+    // primary, secondary or danger.
+    val style: String = "primary",
+    val enabled: Boolean = true,
+    @EncodeDefault override val type: String = "button",
+) : UiNode
+
+/**
+ * Editable fields. [submit] runs with the form values: a "request" sends them as a JSON body,
+ * "navigate" and "download" as query parameters. Other pieces can use the values through formId.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiForm(
+    val id: String,
+    val fields: List<UiField>,
+    val values: Map<String, String> = emptyMap(),
+    val submit: UiButton? = null,
+    val minFieldWidth: Int = 280,
+    // Each named section is an accordion that starts closed (fields without section stay visible);
+    // older clients ignore it and show every section open.
+    val collapsibleSections: Boolean = false,
+    // Short text shown under a section heading, e.g. the state of what the section configures.
+    val sectionNotes: Map<String, String> = emptyMap(),
+    // With collapsibleSections: sections that start open (the ones used every time). Clients that
+    // know collapsibleSections but not this start them closed.
+    val openSections: List<String> = emptyList(),
+    @EncodeDefault override val type: String = "form",
+) : UiNode
+
+/**
+ * Image from an absolute http(s) URL or a module route ("/modules/..."). Module routes are
+ * requested with the user's session; web clients need CORS on external hosts.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiImage(
+    val url: String,
+    val height: Int = 64,
+    val description: String = "",
+    @EncodeDefault override val type: String = "image",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiDivider(
+    @EncodeDefault override val type: String = "divider",
+) : UiNode
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiSpacer(
+    val size: Int = 16,
+    @EncodeDefault override val type: String = "spacer",
+) : UiNode
+
+// Small colored label, e.g. an interest or a due date on a board card or a list item.
+@Serializable
+data class UiBadge(val label: String, val tone: String = UiTone.Neutral)
+
+@Serializable
+data class UiBoardCard(
+    val id: String,
+    val title: String,
+    val subtitle: String = "",
+    // Short lines under the subtitle (owner, dates, value...).
+    val details: List<String> = emptyList(),
+    val badges: List<UiBadge> = emptyList(),
+    // Runs when the card is opened, typically a UiNavigate to its detail.
+    val action: UiAction? = null,
+)
+
+// Value/label pair of a choice, e.g. the options of a board action.
+@Serializable
+data class UiFieldOption(val value: String, val label: String)
+
+/**
+ * Action of a board applied to the selected cards (or to one card from its menu). The app runs
+ * [request] adding "cards" (ids separated by comma) and, when [options] is set, "value" (the chosen option).
+ */
+@Serializable
+data class UiBoardAction(
+    val id: String,
+    val label: String,
+    val request: UiRequest,
+    val options: List<UiFieldOption>? = null,
+    val tone: String = UiTone.Neutral,
+)
+
+@Serializable
+data class UiBoardColumn(
+    val id: String,
+    val title: String,
+    val tone: String = UiTone.Neutral,
+    // Shown under the title, e.g. "12 leads" when the column shows only part of them.
+    val caption: String = "",
+    val cards: List<UiBoardCard> = emptyList(),
+    // Optional button at the bottom of the column, e.g. to see all its cards.
+    val footer: UiButton? = null,
+)
+
+/**
+ * Kanban board: columns side by side (scrolling horizontally) with cards. With [move] set, users
+ * drag a card to another column (with a mouse at once; on touch screens after a long press) or pick the column from the card menu, and
+ * the app runs [move] adding the params "card" (card id) and "column" (target column id).
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiBoard(
+    val columns: List<UiBoardColumn>,
+    val move: UiRequest? = null,
+    val columnWidth: Int = 280,
+    val emptyText: String = "Sin elementos.",
+    // Bulk actions: with any, users can select cards and apply them (see UiBoardAction).
+    val actions: List<UiBoardAction> = emptyList(),
+    @EncodeDefault override val type: String = "board",
+) : UiNode
+
+@Serializable
+data class UiListItem(
+    val title: String,
+    val subtitle: String = "",
+    // Short text at the right, e.g. a date.
+    val trailing: String = "",
+    val badges: List<UiBadge> = emptyList(),
+    // Runs when the item is tapped.
+    val action: UiAction? = null,
+)
+
+// Vertical list of tappable rows, for records that open a detail screen.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiList(
+    val items: List<UiListItem>,
+    val emptyText: String = "Sin datos.",
+    @EncodeDefault override val type: String = "list",
+) : UiNode
+
+@Serializable
+data class UiTimelineEntry(
+    val title: String,
+    val body: String = "",
+    // Who and when, e.g. "ana - 2026-10-28 14:05".
+    val caption: String = "",
+    val tone: String = UiTone.Neutral,
+)
+
+// Chronological entries (newest first as sent), e.g. the activity of a record.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiTimeline(
+    val entries: List<UiTimelineEntry>,
+    val emptyText: String = "Sin actividad.",
+    @EncodeDefault override val type: String = "timeline",
+) : UiNode
+
+// Piece sent by a newer server; clients skip it.
+@Serializable
+data class UiUnknownNode(override val type: String = "unknown") : UiNode
+
+object UiNodeSerializer : JsonContentPolymorphicSerializer<UiNode>(UiNode::class) {
+    override fun selectDeserializer(element: JsonElement): KSerializer<out UiNode> =
+        when ((element as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull) {
+            "text" -> UiText.serializer()
+            "column" -> UiColumn.serializer()
+            "row" -> UiRow.serializer()
+            "grid" -> UiGrid.serializer()
+            "card" -> UiCard.serializer()
+            "metric" -> UiMetric.serializer()
+            "status" -> UiStatus.serializer()
+            "barChart" -> UiBarChart.serializer()
+            "table" -> UiTable.serializer()
+            "button" -> UiButton.serializer()
+            "form" -> UiForm.serializer()
+            "image" -> UiImage.serializer()
+            "divider" -> UiDivider.serializer()
+            "spacer" -> UiSpacer.serializer()
+            "board" -> UiBoard.serializer()
+            "list" -> UiList.serializer()
+            "timeline" -> UiTimeline.serializer()
+            else -> UiUnknownNode.serializer()
+        }
+}
+
+// ---- Actions ----
+
+@Serializable(with = UiActionSerializer::class)
+sealed interface UiAction {
+    val type: String
+    // Form whose values are attached to the action.
+    val formId: String?
+}
+
+// Loads another screen of the same module: GET {entry}/{screen}?params.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiNavigate(
+    val screen: String,
+    val params: Map<String, String> = emptyMap(),
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "navigate",
+) : UiAction
+
+// Calls a module route; the response is the UiScreen to show next.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiRequest(
+    val route: String,
+    val method: String = "POST",
+    val params: Map<String, String> = emptyMap(),
+    // Question shown before running the action, e.g. before deleting.
+    val confirm: String? = null,
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "request",
+) : UiAction
+
+// Downloads a text file (e.g. CSV) from a module route.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiDownload(
+    val route: String,
+    val fileName: String,
+    val params: Map<String, String> = emptyMap(),
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "download",
+) : UiAction
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiOpenUrl(
+    val url: String,
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "openUrl",
+) : UiAction
+
+// Opens a screen of another module of the company, e.g. the CRM lead of a customer's history entry.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiOpenModule(
+    val moduleId: String,
+    val screen: String,
+    val params: Map<String, String> = emptyMap(),
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "openModule",
+) : UiAction
+
+// Opens the native Extensiones screen of the app, filtered to a module (entry in its Configuracion).
+// Older apps decode it as UiUnknownAction and disable the control.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiOpenExtensions(
+    val moduleId: String,
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "open_extensions",
+) : UiAction
+
+// Action sent by a newer server; clients disable the control that uses it.
+@Serializable
+data class UiUnknownAction(override val type: String = "unknown", override val formId: String? = null) : UiAction
+
+object UiActionSerializer : JsonContentPolymorphicSerializer<UiAction>(UiAction::class) {
+    override fun selectDeserializer(element: JsonElement): KSerializer<out UiAction> =
+        when ((element as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull) {
+            "navigate" -> UiNavigate.serializer()
+            "request" -> UiRequest.serializer()
+            "download" -> UiDownload.serializer()
+            "openUrl" -> UiOpenUrl.serializer()
+            "openModule" -> UiOpenModule.serializer()
+            "open_extensions" -> UiOpenExtensions.serializer()
+            else -> UiUnknownAction.serializer()
+        }
+}

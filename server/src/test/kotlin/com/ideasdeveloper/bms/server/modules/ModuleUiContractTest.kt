@@ -1,0 +1,136 @@
+package com.ideasdeveloper.bms.server.modules
+
+import com.ideasdeveloper.bms.ui.UiBadge
+import com.ideasdeveloper.bms.ui.UiBoard
+import com.ideasdeveloper.bms.ui.UiBoardAction
+import com.ideasdeveloper.bms.ui.UiBoardCard
+import com.ideasdeveloper.bms.ui.UiField
+import com.ideasdeveloper.bms.ui.UiFieldOption
+import com.ideasdeveloper.bms.ui.UiSuggest
+import com.ideasdeveloper.bms.ui.UiBoardColumn
+import com.ideasdeveloper.bms.ui.UiButton
+import com.ideasdeveloper.bms.ui.UiCard
+import com.ideasdeveloper.bms.ui.UiJson
+import com.ideasdeveloper.bms.ui.UiList
+import com.ideasdeveloper.bms.ui.UiListItem
+import com.ideasdeveloper.bms.ui.UiMetric
+import com.ideasdeveloper.bms.ui.UiNavigate
+import com.ideasdeveloper.bms.ui.UiAction
+import com.ideasdeveloper.bms.ui.UiOpenModule
+import com.ideasdeveloper.bms.ui.UiRequest
+import com.ideasdeveloper.bms.ui.UiScreen
+import com.ideasdeveloper.bms.ui.UiTimeline
+import com.ideasdeveloper.bms.ui.UiTimelineEntry
+import com.ideasdeveloper.bms.ui.UiTone
+import com.ideasdeveloper.bms.ui.UiUnknownAction
+import com.ideasdeveloper.bms.ui.UiUnknownNode
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class ModuleUiContractTest {
+    @Test
+    fun screensRoundTripWithTypeDiscriminators() {
+        val screen = UiScreen(
+            title = "Panel",
+            body = listOf(UiCard(listOf(UiMetric("Hoy", "3")), actions = listOf(UiButton("Ver", UiNavigate("visitors"))))),
+        )
+        val json = UiJson.encodeToString(UiScreen.serializer(), screen)
+        assertTrue(json.contains("\"type\":\"card\""))
+        assertTrue(json.contains("\"type\":\"metric\""))
+        assertTrue(json.contains("\"type\":\"navigate\""))
+        assertEquals(screen, UiJson.decodeFromString(UiScreen.serializer(), json))
+    }
+
+    @Test
+    fun boardListAndTimelineRoundTrip() {
+        val open = UiNavigate("lead", mapOf("id" to "1"))
+        val screen = UiScreen(
+            title = "Pipeline",
+            body = listOf(
+                UiBoard(
+                    columns = listOf(
+                        UiBoardColumn("new", "Nuevo", UiTone.Info, cards = listOf(UiBoardCard("1", "Ana", badges = listOf(UiBadge("Surf")), action = open))),
+                        UiBoardColumn("won", "Ganado", UiTone.Success, footer = UiButton("Ver todos", UiNavigate("leads"))),
+                    ),
+                    move = UiRequest("/modules/crm/ui/pipeline", params = mapOf("op" to "move")),
+                ),
+                UiList(listOf(UiListItem("Ana", "Surf", "2026-10-28", action = open))),
+                UiTimeline(listOf(UiTimelineEntry("Etapa cambiada", "Nuevo -> Ganado", "ana", UiTone.Success))),
+            ),
+        )
+        val json = UiJson.encodeToString(UiScreen.serializer(), screen)
+        assertTrue(json.contains("\"type\":\"board\""))
+        assertTrue(json.contains("\"type\":\"list\""))
+        assertTrue(json.contains("\"type\":\"timeline\""))
+        assertEquals(screen, UiJson.decodeFromString(UiScreen.serializer(), json))
+    }
+
+    @Test
+    fun boardActionsAndSuggestTriggerRoundTrip() {
+        val board = UiBoard(
+            columns = listOf(UiBoardColumn("new", "Nuevo", cards = listOf(UiBoardCard("1", "Ana")))),
+            actions = listOf(
+                UiBoardAction("assignMe", "Asignarme", UiRequest("/modules/crm/ui/pipeline", params = mapOf("op" to "action", "action" to "assignMe"))),
+                UiBoardAction(
+                    "stage", "Mover a etapa",
+                    UiRequest("/modules/crm/ui/pipeline", params = mapOf("op" to "action")),
+                    options = listOf(UiFieldOption("won", "Ganado")),
+                ),
+                UiBoardAction("delete", "Eliminar", UiRequest("/modules/crm/ui/pipeline", confirm = "Seguro?"), tone = UiTone.Danger),
+            ),
+        )
+        val json = UiJson.encodeToString(UiBoard.serializer(), board)
+        assertTrue(json.contains("\"actions\""))
+        assertEquals(board, UiJson.decodeFromString(UiBoard.serializer(), json))
+        // Un servidor viejo no manda actions: el tablero decodifica con la lista vacia.
+        val old = UiJson.decodeFromString(UiBoard.serializer(), """{"type":"board","columns":[]}""")
+        assertTrue(old.actions.isEmpty())
+
+        val field = UiField("note", "Nota", "textarea", suggest = UiSuggest("/modules/crm/ui/suggest/mentions", minLength = 0, trigger = "@"))
+        assertEquals(field, UiJson.decodeFromString(UiField.serializer(), UiJson.encodeToString(UiField.serializer(), field)))
+        val plain = UiJson.decodeFromString(UiSuggest.serializer(), """{"route":"/x"}""")
+        assertNull(plain.trigger)
+        assertEquals(2, plain.minLength)
+    }
+
+    @Test
+    fun unknownPiecesAndActionsDoNotBreakOlderClients() {
+        val json = """
+            {"title":"Nuevo","futureField":1,"body":[
+              {"type":"kanban","columns":[]},
+              {"type":"button","label":"X","action":{"type":"share","target":"a"}},
+              {"type":"text","text":"ok"}
+            ]}
+        """.trimIndent()
+        val screen = UiJson.decodeFromString(UiScreen.serializer(), json)
+        assertIs<UiUnknownNode>(screen.body[0])
+        assertIs<UiUnknownAction>((screen.body[1] as UiButton).action)
+        assertEquals(3, screen.body.size)
+    }
+
+    @Test
+    fun openModuleLinksRoundTripAlone() {
+        // Customer history stores the link of each entry as JSON on its own (customer_history.link).
+        val link: UiAction = UiOpenModule("crm", "lead", mapOf("id" to "42"))
+        val json = UiJson.encodeToString(UiAction.serializer(), link)
+        assertTrue(json.contains("\"type\":\"openModule\""))
+        assertEquals(link, UiJson.decodeFromString(UiAction.serializer(), json))
+        val item = UiListItem("Venta convertida en Hotel", action = link)
+        assertEquals(item, UiJson.decodeFromString(UiListItem.serializer(), UiJson.encodeToString(UiListItem.serializer(), item)))
+    }
+
+    @Test
+    fun webTicketsAreSingleUseAndModuleScoped() {
+        val ticket = ModuleWebTickets.issue("crm", "acme", "token")
+        assertNull(ModuleWebTickets.consume(ticket, "hotspot"))
+        assertNull(ModuleWebTickets.consume(ticket, "crm"))
+
+        val second = ModuleWebTickets.issue("crm", "acme", "token")
+        assertNotNull(ModuleWebTickets.consume(second, "crm"))
+        assertNull(ModuleWebTickets.consume(second, "crm"))
+    }
+}

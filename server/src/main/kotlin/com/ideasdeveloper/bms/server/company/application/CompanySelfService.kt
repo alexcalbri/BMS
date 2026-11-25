@@ -1,0 +1,798 @@
+package com.ideasdeveloper.bms.server.company.application
+
+import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
+import com.ideasdeveloper.bms.server.auth.application.UserProfileRules
+import com.ideasdeveloper.bms.server.auth.application.ApplicationUserCodes
+import com.ideasdeveloper.bms.server.auth.infrastructure.security.ApplicationPasswordHasher
+import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.bms.server.company.api.CompanyBackupResponse
+import com.ideasdeveloper.bms.server.company.api.CompanyProfileResponse
+import com.ideasdeveloper.bms.server.company.api.CompanyPermissionResponse
+import com.ideasdeveloper.bms.server.company.api.CompanyUserResponse
+import com.ideasdeveloper.bms.server.company.api.CompanyUsersResponse
+import com.ideasdeveloper.bms.server.company.api.CreateCompanyUserRequest
+import com.ideasdeveloper.bms.server.company.api.UpdateCompanyUserPermissionsRequest
+import com.ideasdeveloper.bms.server.auth.application.PasswordAttemptLimiter
+import com.ideasdeveloper.bms.server.auth.application.PasswordConfirmation
+import com.ideasdeveloper.bms.server.company.api.UpdateCompanyUserRequest
+import com.ideasdeveloper.bms.server.company.api.UpdateBusinessOwnerRequest
+import com.ideasdeveloper.bms.server.company.api.BusinessOwnerResponse
+import com.ideasdeveloper.bms.server.company.api.UpdateCompanyProfileRequest
+import com.ideasdeveloper.bms.server.modules.CompanyMail
+import com.ideasdeveloper.bms.server.modules.CompanyMailForm
+import com.ideasdeveloper.bms.server.modules.CompanyMailInput
+import com.ideasdeveloper.bms.server.modules.MailException
+import com.ideasdeveloper.bms.server.modules.ModuleRegistry
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import com.ideasdeveloper.bms.server.security.MasterKeySecretBox
+import com.ideasdeveloper.bms.server.security.SecretBox
+import com.ideasdeveloper.bms.server.security.SecretsUnavailableException
+import org.postgresql.ds.PGSimpleDataSource
+import org.slf4j.LoggerFactory
+import java.nio.file.Files
+import java.nio.file.Path
+import java.sql.SQLException
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
+import java.util.UUID
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+import javax.sql.DataSource
+import kotlin.io.path.createDirectories
+import kotlin.io.path.exists
+import kotlin.io.path.extension
+import kotlin.io.path.fileSize
+import kotlin.io.path.inputStream
+import kotlin.io.path.name
+import kotlin.io.path.outputStream
+
+// Error de dominio para operaciones de autoservicio de empresa.
+class CompanySelfException(message: String) : Exception(message)
+
+// Datos del correo de la empresa que no se aceptan (400).
+class CompanyMailRejectedException(message: String) : Exception(message)
+
+// Fallo interno al guardar el correo de la empresa (500, mensaje generico).
+class CompanyMailStorageException(message: String) : Exception(message)
+
+// Servicio de autoservicio para que el business_owner administre solo su propia empresa
+// y, en futuras rutas, usuarios/permisos dentro de su propia base tenant.
+// Este servicio no cambia disponibilidad de modulos; esa decision pertenece a server_owner.
+class CompanySelfService(
+    private val central: DataSource,
+    private val loginDatabases: LoginDatabases,
+    private val moduleRegistry: ModuleRegistry,
+    private val backupsRoot: Path,
+    // Edits the business owner (a PostgreSQL role shared by the companies it owns); see
+    // CompanyProvisioningService.updateBusinessOwnerBySelf. Null where owners cannot be edited.
+    private val ownerEditor: ((companyCode: String, request: UpdateBusinessOwnerRequest) -> BusinessOwnerResponse)? = null,
+    // Contrasena actual del business owner, como en el login (LoginDatabases.verifyPassword). Sin ella, el
+    // business owner no puede cambiar su propio correo.
+    private val verifyOwnerPassword: ((companyCode: String, username: String, password: String) -> Boolean)? = null,
+    // Tope de fallos de contrasena actual por usuario; se comparte con AccountService (misma clave "empresa/usuario").
+    private val passwordAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(),
+    // Sella la contrasena del SMTP de la empresa; sin llave maestra no se puede guardar una contrasena.
+    private val secrets: SecretBox? = null,
+) {
+    // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
+    private val tokenGenerator = SessionTokenGenerator()
+    // Valida colores aceptados por la tabla central companies.
+    private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
+    // Restringe nombres de ZIP para evitar rutas arbitrarias o archivos ajenos al tenant.
+    private val backupNamePattern = Regex("[a-z][a-z0-9_]{0,62}-backup-[0-9]{8}T[0-9]{6}Z\\.zip")
+    private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
+    // Serializador usado para manifest y metadata del ZIP.
+    private val json = Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
+    // Carga el perfil editable de la empresa de la sesion business_owner. El server_owner tambien
+    // administra asi la empresa del servidor, sin crear una empresa.
+    fun profile(companyCode: String, accessToken: String): CompanyProfileResponse {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        return context.profile
+    }
+
+    // Actualiza nombre, logo y colores sin tocar datos tenant.
+    fun updateProfile(companyCode: String, accessToken: String, request: UpdateCompanyProfileRequest): CompanyProfileResponse {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        val name = request.name.trim()
+        val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
+        if (name.isBlank()) {
+            throw CompanySelfException("El nombre de la empresa es obligatorio.")
+        }
+        if (!colorPattern.matches(request.primaryColor) ||
+            !colorPattern.matches(request.secondaryColor) ||
+            !colorPattern.matches(request.accentColor)
+        ) {
+            throw CompanySelfException("Los colores deben usar formato hexadecimal #RRGGBB.")
+        }
+
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                UPDATE companies
+                SET name = ?, logo_url = ?, primary_color = ?, secondary_color = ?, accent_color = ?
+                WHERE code = ? AND is_active = TRUE
+                """.trimIndent()
+            ).use { update ->
+                update.setString(1, name)
+                update.setString(2, logoUrl)
+                update.setString(3, request.primaryColor)
+                update.setString(4, request.secondaryColor)
+                update.setString(5, request.accentColor)
+                update.setString(6, context.companyCode)
+                update.executeUpdate()
+            }
+        }
+
+        return profile(companyCode, accessToken)
+    }
+
+    // Lista ZIPs ya creados para la empresa.
+    fun listBackups(companyCode: String, accessToken: String): List<CompanyBackupResponse> {
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val directory = backupDirectory(context.companyCode)
+        if (!directory.exists()) return emptyList()
+        return Files.list(directory).use { stream ->
+            stream
+                .filter { it.extension == "zip" && backupNamePattern.matches(it.name) }
+                .map { path ->
+                    CompanyBackupResponse(
+                        fileName = path.name,
+                        sizeBytes = path.fileSize(),
+                        createdAt = Files.getLastModifiedTime(path).toInstant().toString(),
+                        downloadUrl = "/companies/me/backups/${path.name}/download",
+                    )
+                }
+                .sorted { left, right -> right.createdAt.compareTo(left.createdAt) }
+                .toList()
+        }
+    }
+
+    // Genera un ZIP no destructivo con manifest y perfil; la restauracion completa de PostgreSQL es operativa y externa a la app.
+    fun createProfileBackup(companyCode: String, accessToken: String): CompanyBackupResponse {
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val createdAt = OffsetDateTime.now(java.time.ZoneOffset.UTC)
+        val fileName = "${context.companyCode}-backup-${DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(createdAt)}.zip"
+        val output = backupDirectory(context.companyCode).also { it.createDirectories() }.resolve(fileName)
+
+        output.outputStream().use { file ->
+            ZipOutputStream(file).use { zip ->
+                zip.putNextEntry(ZipEntry("manifest.json"))
+                zip.write(json.encodeToString(BackupManifest(context.companyCode, createdAt.toString(), destructiveRestore = false)).toByteArray())
+                zip.closeEntry()
+
+                zip.putNextEntry(ZipEntry("company.json"))
+                zip.write(json.encodeToString(context.profile).toByteArray())
+                zip.closeEntry()
+            }
+        }
+
+        return CompanyBackupResponse(
+            fileName = output.name,
+            sizeBytes = output.fileSize(),
+            createdAt = Files.getLastModifiedTime(output).toInstant().toString(),
+            downloadUrl = "/companies/me/backups/${output.name}/download",
+        )
+    }
+
+    // Resuelve el archivo ZIP solicitado dentro del directorio seguro de la empresa.
+    fun backupPath(companyCode: String, accessToken: String, fileName: String): Path {
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        validateBackupName(fileName)
+        val directory = backupDirectory(context.companyCode)
+        val path = directory.resolve(fileName).normalize()
+        if (!path.startsWith(directory) || !path.exists()) {
+            throw CompanySelfException("Backup no encontrado.")
+        }
+        return path
+    }
+
+    // Elimina un ZIP existente despues de validar que pertenece a la empresa.
+    fun deleteBackup(companyCode: String, accessToken: String, fileName: String) {
+        Files.deleteIfExists(backupPath(companyCode, accessToken, fileName))
+    }
+
+    // Guarda un ZIP subido por el usuario sin ejecutar restauracion destructiva.
+    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, bytes: ByteArray): CompanyBackupResponse {
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        validateBackupName(fileName)
+        validateZip(bytes)
+        val output = backupDirectory(context.companyCode).also { it.createDirectories() }.resolve(fileName)
+        output.outputStream().use { it.write(bytes) }
+        return CompanyBackupResponse(
+            fileName = output.name,
+            sizeBytes = output.fileSize(),
+            createdAt = Files.getLastModifiedTime(output).toInstant().toString(),
+            downloadUrl = "/companies/me/backups/${output.name}/download",
+        )
+    }
+
+    // SMTP de la empresa para el dueno (o el dueno del servidor en su espacio). Nunca devuelve la contrasena.
+    fun mailSettings(companyCode: String, accessToken: String): CompanyMailForm {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        tenantConnection(context.tenant).use { connection -> return CompanyMail.load(connection) }
+    }
+
+    // Guarda el SMTP de la empresa. Falla de autorizacion: CompanySelfException; datos no validos: CompanyMailRejectedException;
+    // fallo al guardar: CompanyMailStorageException (mensaje generico, el detalle va al log).
+    fun updateMailSettings(companyCode: String, accessToken: String, input: CompanyMailInput): CompanyMailForm {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        try {
+            CompanyMail.validate(input)
+        } catch (failure: MailException) {
+            throw CompanyMailRejectedException(failure.message ?: "Servidor de correo no valido.")
+        }
+        val box = secrets
+        if (!input.password.isNullOrEmpty() && (box == null || !box.available)) {
+            throw CompanyMailRejectedException("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
+        }
+        try {
+            tenantConnection(context.tenant).use { connection ->
+                CompanyMail.save(connection, box ?: MasterKeySecretBox(null), input)
+                return CompanyMail.load(connection)
+            }
+        } catch (failure: SecretsUnavailableException) {
+            throw CompanyMailRejectedException("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
+        } catch (failure: IllegalArgumentException) {
+            throw CompanyMailRejectedException("La contrasena no es valida.")
+        } catch (failure: SQLException) {
+            LoggerFactory.getLogger(CompanySelfService::class.java).error("No se pudo guardar el correo de la empresa {}", companyCode, failure)
+            throw CompanyMailStorageException("No se pudo guardar el correo de la empresa.")
+        }
+    }
+
+    fun users(companyCode: String, accessToken: String): CompanyUsersResponse {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            return CompanyUsersResponse(
+                users = loadUsers(connection),
+                permissions = loadPermissions(connection),
+            )
+        }
+    }
+
+    fun createUser(companyCode: String, accessToken: String, request: CreateCompanyUserRequest): CompanyUserResponse {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        val username = request.username.trim()
+        if (!postgresRolePattern.matches(username)) {
+            throw CompanySelfException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+        }
+        if (request.password.length < 12) {
+            throw CompanySelfException("La contrasena del usuario debe tener al menos 12 caracteres.")
+        }
+        UserProfileRules.problem(request.displayName, request.email)?.let { throw CompanySelfException("Usuario: $it") }
+
+        val userId = UUID.randomUUID()
+        val passwordHash = ApplicationPasswordHasher.hash(request.password)
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            validatePermissions(connection, request.permissions)
+            connection.autoCommit = false
+            try {
+                if (connection.existsUser(username)) {
+                    throw CompanySelfException("Ya existe un usuario con ese nombre.")
+                }
+                // Sign-in also accepts a PostgreSQL role's password for the same name.
+                if (connection.existsRole(username)) {
+                    throw CompanySelfException("Ese nombre de usuario esta reservado; elige otro.")
+                }
+                connection.prepareStatement(
+                    "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
+                ).use { insert ->
+                    insert.setObject(1, userId)
+                    insert.setString(2, username)
+                    insert.setString(3, request.displayName.trim())
+                    insert.setString(4, request.email.trim())
+                    insert.executeUpdate()
+                }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
+                    VALUES (?, ?, ?, ?)
+                    """.trimIndent()
+                ).use { insert ->
+                    insert.setObject(1, userId)
+                    insert.setString(2, passwordHash.salt)
+                    insert.setString(3, passwordHash.hash)
+                    insert.setInt(4, passwordHash.iterations)
+                    insert.executeUpdate()
+                }
+                replaceUserPermissions(connection, userId, request.permissions)
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+            return loadUser(connection, userId) ?: throw CompanySelfException("No se pudo cargar el usuario creado.")
+        }
+    }
+
+    fun updateUserPermissions(
+        companyCode: String,
+        accessToken: String,
+        userId: String,
+        request: UpdateCompanyUserPermissionsRequest,
+    ): CompanyUserResponse {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        val targetUserId = try {
+            UUID.fromString(userId)
+        } catch (_: IllegalArgumentException) {
+            throw CompanySelfException("Usuario invalido.")
+        }
+        if (targetUserId == context.businessOwnerUserId) {
+            throw CompanySelfException("No puedes quitar permisos del business_owner desde este flujo.")
+        }
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            validatePermissions(connection, request.permissions)
+            connection.autoCommit = false
+            try {
+                if (!connection.userExists(targetUserId)) {
+                    throw CompanySelfException("Usuario no encontrado.")
+                }
+                replaceUserPermissions(connection, targetUserId, request.permissions)
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+            return loadUser(connection, targetUserId) ?: throw CompanySelfException("Usuario no encontrado.")
+        }
+    }
+
+    /**
+     * Every field of a user: user, name, email, active, permissions and, when given, a new password.
+     * The business owner edits themself here too (their user and password are a PostgreSQL role, so
+     * that goes through [ownerEditor]); their permissions and active state do not change.
+     */
+    fun updateUser(companyCode: String, accessToken: String, userId: String, request: UpdateCompanyUserRequest): CompanyUserResponse {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        val targetUserId = try {
+            UUID.fromString(userId)
+        } catch (_: IllegalArgumentException) {
+            throw CompanySelfException("Usuario invalido.")
+        }
+        val username = request.username.trim()
+        val displayName = request.displayName.trim()
+        val email = request.email.trim()
+        val password = request.password
+        if (!postgresRolePattern.matches(username)) {
+            throw CompanySelfException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+        }
+        UserProfileRules.problem(displayName, email)?.let { throw CompanySelfException("Usuario: $it") }
+        if (password.isNotEmpty() && password.length < 12) {
+            throw CompanySelfException("La contrasena del usuario debe tener al menos 12 caracteres.")
+        }
+        if (targetUserId == context.businessOwnerUserId) {
+            val editor = ownerEditor ?: throw CompanySelfException("El business owner no se puede editar en este servidor.")
+            // El business owner cambia SU PROPIO correo: exige la contrasena actual (misma regla que /auth/profile).
+            val storedEmail = tenantConnection(context.tenant).use { connection ->
+                connection.prepareStatement("SELECT email FROM application_users WHERE id = ?").use { query ->
+                    query.setObject(1, targetUserId)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            }
+            // Tambien al poner una contrasena nueva: con una sesion robada no se debe poder tomar la cuenta.
+            // Solo aqui (quien firma es el propio business owner); un administrador que edita a otro usuario no pasa por esta rama.
+            val sensitiveChange = PasswordConfirmation.ownerChangeNeedsPassword(storedEmail, email, password)
+            if (sensitiveChange) {
+                val role = context.businessOwnerRole.orEmpty()
+                PasswordConfirmation.require(
+                    request.currentPassword, passwordAttempts, "${context.companyCode}/$role",
+                    "Escribe tu contrasena actual para cambiar el correo o la contrasena.",
+                ) { current -> verifyOwnerPassword?.invoke(context.companyCode, role, current) ?: false }
+            }
+            if (sensitiveChange) {
+                // Se cierran las demas sesiones del business owner (la actual se conserva) ANTES de editar: el editor
+                // usa su propia transaccion, y revocar de mas si la edicion falla es seguro; no revocar, no.
+                tenantConnection(context.tenant).use { connection ->
+                    connection.prepareStatement(
+                        "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL AND token_hash <> ?"
+                    ).use { revoke ->
+                        revoke.setObject(1, targetUserId)
+                        revoke.setString(2, tokenGenerator.hash(accessToken))
+                        revoke.executeUpdate()
+                    }
+                }
+            }
+            editor(context.companyCode, UpdateBusinessOwnerRequest(username, displayName, email, password))
+            return tenantConnection(context.tenant).use { connection -> loadUser(connection, targetUserId) }
+                ?: throw CompanySelfException("Usuario no encontrado.")
+        }
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            validatePermissions(connection, request.permissions)
+            connection.autoCommit = false
+            try {
+                val current = connection.prepareStatement("SELECT postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
+                    query.setObject(1, targetUserId)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
+                } ?: throw CompanySelfException("Usuario no encontrado.")
+                if (connection.isBusinessOwner(targetUserId)) {
+                    throw CompanySelfException("Solo el business owner o el dueno del servidor pueden editar al business owner.")
+                }
+                if (username != current.first) {
+                    if (connection.existsUser(username)) throw CompanySelfException("Ya existe un usuario con ese nombre.")
+                    // Sign-in also accepts a PostgreSQL role's password for the same name.
+                    if (connection.existsRole(username)) throw CompanySelfException("Ese nombre de usuario esta reservado; elige otro.")
+                }
+                connection.prepareStatement(
+                    "UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?, is_active = ? WHERE id = ?"
+                ).use { update ->
+                    update.setString(1, username)
+                    update.setString(2, displayName)
+                    update.setString(3, email)
+                    update.setBoolean(4, request.isActive)
+                    update.setObject(5, targetUserId)
+                    update.executeUpdate()
+                }
+                replaceUserPermissions(connection, targetUserId, request.permissions)
+                if (password.isNotEmpty()) {
+                    val hash = ApplicationPasswordHasher.hash(password)
+                    connection.prepareStatement(
+                        """
+                        INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT (user_id) DO UPDATE SET password_salt = EXCLUDED.password_salt,
+                            password_hash = EXCLUDED.password_hash, iterations = EXCLUDED.iterations
+                        """.trimIndent()
+                    ).use { upsert ->
+                        upsert.setObject(1, targetUserId)
+                        upsert.setString(2, hash.salt)
+                        upsert.setString(3, hash.hash)
+                        upsert.setInt(4, hash.iterations)
+                        upsert.executeUpdate()
+                    }
+                }
+                // A new password or a deactivated user closes the user's open sessions.
+                if (password.isNotEmpty() || (current.second && !request.isActive)) {
+                    connection.prepareStatement(
+                        "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+                    ).use { revoke ->
+                        revoke.setObject(1, targetUserId)
+                        revoke.executeUpdate()
+                    }
+                }
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+            return loadUser(connection, targetUserId) ?: throw CompanySelfException("Usuario no encontrado.")
+        }
+    }
+
+    /**
+     * Users and permissions are managed by the company's business_owner, or, in the server
+     * workspace (which has no business owner), by any server_owner with a central session.
+     */
+    private fun authorizeUserAdministrator(companyCode: String, accessToken: String): BusinessOwnerContext {
+        val code = companyCode.trim()
+        if (code == ServerWorkspace.Code && isServerOwnerSession(accessToken)) {
+            val workspace = central.connection.use { connection ->
+                connection.prepareStatement(
+                    """
+                    SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name
+                    FROM companies
+                    WHERE code = ? AND is_server_workspace AND is_active = TRUE
+                    """.trimIndent()
+                ).use { query ->
+                    query.setString(1, code)
+                    query.executeQuery().use { rows ->
+                        if (!rows.next()) {
+                            throw CompanySelfException("El espacio del servidor aun no existe; activa un modulo para el servidor.")
+                        }
+                        rows.getString("database_name") to CompanyProfileResponse(
+                            code = rows.getString("code"),
+                            name = rows.getString("name"),
+                            logoUrl = rows.getString("logo_url"),
+                            primaryColor = rows.getString("primary_color"),
+                            secondaryColor = rows.getString("secondary_color"),
+                            accentColor = rows.getString("accent_color"),
+                        )
+                    }
+                }
+            }
+            val tenant = loginDatabases.tenantConfig(workspace.first)
+                ?: throw CompanySelfException("El espacio del servidor no tiene conexion configurada.")
+            return BusinessOwnerContext(
+                companyCode = code,
+                databaseName = workspace.first,
+                tenant = tenant,
+                profile = workspace.second,
+                businessOwnerUserId = null,
+                businessOwnerRole = null,
+            )
+        }
+        return authorizeBusinessOwner(code, accessToken)
+    }
+
+    // Central session of an active server_owner (server owners do not sign in to tenant databases).
+    private fun isServerOwnerSession(accessToken: String): Boolean = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT 1
+            FROM application_sessions sessions
+            JOIN server_owners owners ON owners.user_id = sessions.user_id
+            JOIN application_users users ON users.id = sessions.user_id
+            WHERE sessions.token_hash = ?
+              AND sessions.revoked_at IS NULL
+              AND sessions.expires_at > CURRENT_TIMESTAMP
+              AND users.is_active = TRUE
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, tokenGenerator.hash(accessToken))
+            query.executeQuery().use { rows -> rows.next() }
+        }
+    }
+
+    // Valida que el token pertenezca al business_owner de la empresa indicada.
+    private fun authorizeBusinessOwner(companyCode: String, accessToken: String): BusinessOwnerContext {
+        val code = companyCode.trim()
+        val company = central.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name
+                FROM companies
+                WHERE code = ? AND is_active = TRUE
+                """.trimIndent()
+            ).use { query ->
+                query.setString(1, code)
+                query.executeQuery().use { rows ->
+                    if (!rows.next()) throw CompanySelfException("Empresa no encontrada.")
+                    CompanyRow(
+                        code = rows.getString("code"),
+                        databaseName = rows.getString("database_name"),
+                        profile = CompanyProfileResponse(
+                            code = rows.getString("code"),
+                            name = rows.getString("name"),
+                            logoUrl = rows.getString("logo_url"),
+                            primaryColor = rows.getString("primary_color"),
+                            secondaryColor = rows.getString("secondary_color"),
+                            accentColor = rows.getString("accent_color"),
+                        ),
+                    )
+                }
+            }
+        }
+        // Comprueba la sesion dentro de la base tenant, no en la base central.
+        val tenant = loginDatabases.tenantConfig(company.databaseName)
+            ?: throw CompanySelfException("La empresa no tiene conexion tenant configurada.")
+        val tokenHash = tokenGenerator.hash(accessToken)
+        val ownerUserId = tenantConnection(tenant).use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT users.id, users.postgres_role
+                FROM application_sessions sessions
+                JOIN application_users users ON users.id = sessions.user_id
+                JOIN business_owner owner ON owner.user_id = users.id
+                WHERE sessions.token_hash = ?
+                  AND sessions.revoked_at IS NULL
+                  AND sessions.expires_at > CURRENT_TIMESTAMP
+                  AND users.is_active = TRUE
+                """.trimIndent()
+            ).use { query ->
+                query.setString(1, tokenHash)
+                query.executeQuery().use { rows ->
+                    if (!rows.next()) throw CompanySelfException("Debes iniciar sesion como business_owner.")
+                    rows.getObject("id", UUID::class.java) to rows.getString("postgres_role")
+                }
+            }
+        }
+        return BusinessOwnerContext(
+            companyCode = company.code,
+            databaseName = company.databaseName,
+            tenant = tenant,
+            profile = company.profile,
+            businessOwnerUserId = ownerUserId.first,
+            businessOwnerRole = ownerUserId.second,
+        )
+    }
+
+    private fun syncPermissionCatalog(connection: java.sql.Connection) {
+        val enabledModuleIds = connection.prepareStatement(
+            "SELECT module_id FROM tenant_modules WHERE status = 'enabled'"
+        ).use { query ->
+            query.executeQuery().use { rows ->
+                buildSet {
+                    add("empresa")
+                    while (rows.next()) add(rows.getString("module_id"))
+                }
+            }
+        }
+        moduleRegistry.definitions.flatMap { definition ->
+            definition.permissions.map { permission -> definition.id to permission }
+        }.filter { (moduleId, _) -> moduleId in enabledModuleIds }.forEach { (moduleId, permission) ->
+            connection.prepareStatement(
+                """
+                INSERT INTO application_permissions (permission_id, module_id, title, description)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (permission_id)
+                DO UPDATE SET module_id = EXCLUDED.module_id, title = EXCLUDED.title, description = EXCLUDED.description
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setString(1, permission.id)
+                upsert.setString(2, moduleId)
+                upsert.setString(3, permission.title)
+                upsert.setString(4, permission.description)
+                upsert.executeUpdate()
+            }
+        }
+    }
+
+    private fun loadPermissions(connection: java.sql.Connection): List<CompanyPermissionResponse> =
+        connection.prepareStatement(
+            "SELECT permission_id, module_id, title, description FROM application_permissions ORDER BY module_id, permission_id"
+        ).use { query ->
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        add(
+                            CompanyPermissionResponse(
+                                permissionId = rows.getString("permission_id"),
+                                moduleId = rows.getString("module_id"),
+                                title = rows.getString("title"),
+                                description = rows.getString("description"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    private fun loadUsers(connection: java.sql.Connection): List<CompanyUserResponse> =
+        connection.prepareStatement("SELECT id FROM application_users ORDER BY postgres_role").use { query ->
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        loadUser(connection, rows.getObject("id", UUID::class.java))?.let(::add)
+                    }
+                }
+            }
+        }
+
+    private fun loadUser(connection: java.sql.Connection, userId: UUID): CompanyUserResponse? {
+        val user = connection.prepareStatement(
+            "SELECT id, postgres_role, is_active, display_name, email FROM application_users WHERE id = ?"
+        ).use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows ->
+                if (!rows.next()) return null
+                Triple(rows.getString("postgres_role"), rows.getBoolean("is_active"), rows.getString("display_name") to rows.getString("email"))
+            }
+        }
+        return CompanyUserResponse(
+            userId = userId.toString(),
+            username = user.first,
+            isActive = user.second,
+            permissions = loadUserPermissions(connection, userId),
+            displayName = user.third.first,
+            email = user.third.second,
+            userCode = ApplicationUserCodes.ensure(connection, userId),
+            isBusinessOwner = connection.isBusinessOwner(userId),
+        )
+    }
+
+    private fun loadUserPermissions(connection: java.sql.Connection, userId: UUID): List<String> =
+        connection.prepareStatement("SELECT permission_id FROM application_user_permissions WHERE user_id = ? ORDER BY permission_id").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) add(rows.getString("permission_id"))
+                }
+            }
+        }
+
+    private fun validatePermissions(connection: java.sql.Connection, permissions: List<String>) {
+        val known = loadPermissions(connection).map { it.permissionId }.toSet()
+        val unknown = permissions.toSet() - known
+        if (unknown.isNotEmpty()) {
+            throw CompanySelfException("Permisos no reconocidos: ${unknown.joinToString()}.")
+        }
+    }
+
+    private fun replaceUserPermissions(connection: java.sql.Connection, userId: UUID, permissions: List<String>) {
+        connection.prepareStatement("DELETE FROM application_user_permissions WHERE user_id = ?").use { delete ->
+            delete.setObject(1, userId)
+            delete.executeUpdate()
+        }
+        permissions.distinct().forEach { permissionId ->
+            connection.prepareStatement("INSERT INTO application_user_permissions (user_id, permission_id) VALUES (?, ?)").use { insert ->
+                insert.setObject(1, userId)
+                insert.setString(2, permissionId)
+                insert.executeUpdate()
+            }
+        }
+    }
+
+    private fun java.sql.Connection.userExists(userId: UUID): Boolean =
+        prepareStatement("SELECT 1 FROM application_users WHERE id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    private fun java.sql.Connection.isBusinessOwner(userId: UUID): Boolean =
+        prepareStatement("SELECT 1 FROM business_owner WHERE user_id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    private fun java.sql.Connection.existsRole(name: String): Boolean =
+        prepareStatement("SELECT 1 FROM pg_roles WHERE rolname = ?").use { query ->
+            query.setString(1, name)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    private fun java.sql.Connection.existsUser(name: String): Boolean =
+        prepareStatement("SELECT 1 FROM application_users WHERE postgres_role = ?").use { query ->
+            query.setString(1, name)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    // Abre una conexion runtime al tenant ya resuelto por el servidor.
+    private fun tenantConnection(tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig) =
+        PGSimpleDataSource().apply {
+            setURL(tenant.jdbcUrl)
+            setUser(tenant.user)
+            setPassword(tenant.password)
+        }.connection
+
+    // Agrupa los ZIPs por codigo de empresa bajo el directorio configurado.
+    private fun backupDirectory(companyCode: String): Path = backupsRoot.resolve(companyCode).normalize()
+
+    // Rechaza nombres que no sigan el formato generado por el servidor.
+    private fun validateBackupName(fileName: String) {
+        if (!backupNamePattern.matches(fileName)) {
+            throw CompanySelfException("Nombre de backup invalido.")
+        }
+    }
+
+    // Verifica que el archivo subido sea un ZIP legible y no este vacio.
+    private fun validateZip(bytes: ByteArray) {
+        ZipInputStream(bytes.inputStream()).use { zip ->
+            if (zip.nextEntry == null) {
+                throw CompanySelfException("El archivo ZIP esta vacio.")
+            }
+        }
+    }
+
+    // Fila central de empresa necesaria para operaciones de autoservicio.
+    private data class CompanyRow(
+        val code: String,
+        val databaseName: String,
+        val profile: CompanyProfileResponse,
+    )
+
+    // Contexto autorizado para ejecutar acciones sobre una empresa tenant.
+    private data class BusinessOwnerContext(
+        val companyCode: String,
+        val databaseName: String,
+        val tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig,
+        val profile: CompanyProfileResponse,
+        // Null in the server workspace, which has no business owner.
+        val businessOwnerUserId: UUID?,
+        val businessOwnerRole: String?,
+    )
+
+}
+
+@Serializable
+// Manifest minimo incluido dentro de cada ZIP generado por Empresa.
+private data class BackupManifest(
+    val companyCode: String,
+    val createdAt: String,
+    val destructiveRestore: Boolean,
+)

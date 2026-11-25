@@ -1,0 +1,109 @@
+package com.ideasdeveloper.bms.server.company.api
+
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class CompanySummaryResponse(
+    val code: String,
+    val name: String,
+    val databaseName: String,
+    val isActive: Boolean,
+    val modules: List<CompanyModuleResponse>,
+    val logoUrl: String? = null,
+    val primaryColor: String = "#667EEA",
+    val secondaryColor: String = "#764BA2",
+    val accentColor: String = "#FFFFFF",
+    // Codes of the companies of the same business owner (owner group); the owner switches between them.
+    val linkedCompanies: List<String> = emptyList(),
+)
+
+@Serializable
+data class CompanyModuleResponse(
+    val moduleId: String,
+    val displayName: String,
+    val enabled: Boolean,
+    val locked: Boolean,
+)
+
+@Serializable
+data class ServerModuleResponse(
+    val moduleId: String,
+    val displayName: String,
+    val description: String,
+    val version: String,
+    val latestVersion: String? = null,
+    val locked: Boolean,
+    val installed: Boolean,
+    val activeCompanyCount: Int,
+    val packageUrl: String? = null,
+    val packageSha256: String? = null,
+    val installedPackagePath: String? = null,
+    // Background installation of an optional module: installing, restarting or failed.
+    val status: String? = null,
+    val statusMessage: String? = null,
+    // The catalog offers a newer version, or the installed one is newer than the catalog's.
+    val updateAvailable: Boolean = false,
+    val newerThanCatalog: Boolean = false,
+    // Enabled in the server workspace, where server owners and staff use modules without a company.
+    val usedByServer: Boolean = false,
+    // Versiones minimas de Core y app de la version instalada y de la disponible en el catalogo.
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
+    val latestMinCoreVersion: String? = null,
+    val latestMinAppVersion: String? = null,
+    // Por que no se puede instalar o actualizar (p. ej. el Core del servidor es menor que el minimo).
+    val installBlockedReason: String? = null,
+    // Aviso al instalar: p. ej. no se pudo comprobar la version de la app.
+    val warning: String? = null,
+)
+
+@Serializable
+data class ServerModuleCatalogResponse(
+    val catalogUrl: String,
+)
+
+@Serializable
+data class UpdateServerModuleCatalogRequest(
+    val catalogUrl: String,
+)
+
+@Serializable
+data class UpdateCompanyModuleRequest(
+    val enabled: Boolean,
+)
+
+@Serializable
+data class ResetBusinessOwnerPasswordRequest(
+    val password: String,
+)
+
+// The business owner of a company as the server owner sees and edits it.
+@Serializable
+data class BusinessOwnerResponse(
+    val username: String,
+    val displayName: String = "",
+    val email: String = "",
+)
+
+/** New data of a business owner. [password] blank keeps it; renaming the user requires one. */
+@Serializable
+data class UpdateBusinessOwnerRequest(
+    val username: String,
+    val displayName: String,
+    val email: String,
+    val password: String = "",
+)
+
+@Serializable
+data class UpdateCompanyStatusRequest(
+    val active: Boolean,
+)
+
+@Serializable
+data class UpdateCompanyRequest(
+    val name: String,
+    val logoUrl: String? = null,
+    val primaryColor: String,
+    val secondaryColor: String,
+    val accentColor: String,
+)

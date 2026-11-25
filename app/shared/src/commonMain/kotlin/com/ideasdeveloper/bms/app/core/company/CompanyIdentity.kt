@@ -1,0 +1,26 @@
+package com.ideasdeveloper.bms.app.core.company
+
+// Identidad visual que el cliente usa para pintar pantallas con marca de empresa.
+data class CompanyIdentity(
+    val id: String,
+    val code: String,
+    val name: String,
+    val logoUrl: String?,
+    val primaryColor: String,
+    val secondaryColor: String,
+    val accentColor: String,
+)
+
+// Identidad del servidor con el nombre que le puso su dueno.
+fun serverIdentity(name: String?) = ServerOwnerIdentity.copy(name = name?.takeIf { it.isNotBlank() } ?: ServerOwnerIdentity.name)
+
+// Identidad por defecto cuando la sesion pertenece al dueno del servidor.
+val ServerOwnerIdentity = CompanyIdentity(
+    id = "server",
+    code = "server",
+    name = "BMS",
+    logoUrl = null,
+    primaryColor = "#667EEA",
+    secondaryColor = "#764BA2",
+    accentColor = "#FFFFFF",
+)

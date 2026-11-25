@@ -1,0 +1,9 @@
+TEAM_ID=
+
+PRODUCT_NAME=BMS
+PRODUCT_BUNDLE_IDENTIFIER=com.ideasdeveloper.bms.BMS$(TEAM_ID)
+
+// The version is shared with the Android, desktop and web apps.
+#include "../../Version.xcconfig"
+CURRENT_PROJECT_VERSION=$(APP_BUILD)
+MARKETING_VERSION=$(APP_VERSION)

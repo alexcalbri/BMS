@@ -1,0 +1,25 @@
+{
+  "id": "monday",
+  "module": "crm",
+  "displayName": "Importacion desde monday",
+  "description": "Importa tableros de monday como leads y envia a monday los leads nuevos, sus cambios, notas (con menciones) y archivos.",
+  "version": "1.1.0",
+  "minModuleVersion": "0.29.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/monday" },
+  "permissions": [
+    "network.outbound:api.monday.com",
+    "secrets.write",
+    "crm.leads.create",
+    "crm.leads.update",
+    "crm.fields.create",
+    "crm.messages.write",
+    "crm.leads.export",
+    "connections.monday"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__settings.sql", "migrations/V002__outbound.sql"],
+  "uninstall": { "options": [
+    { "id": "created_fields", "label": "Campos del CRM creados por la importacion (con sus valores en los leads)", "default": "ask" },
+    { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
+  ] }
+}

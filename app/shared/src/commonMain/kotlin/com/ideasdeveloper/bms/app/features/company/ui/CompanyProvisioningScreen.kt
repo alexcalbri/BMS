@@ -1,0 +1,1042 @@
+package com.ideasdeveloper.bms.app.features.company.ui
+
+import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
+import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.bms.app.core.layout.ContentWidth
+import com.ideasdeveloper.bms.app.core.layout.contentWidth
+import com.ideasdeveloper.bms.app.features.shell.ui.CollapsibleSection
+import androidx.compose.ui.semantics.Role
+import androidx.compose.material3.RadioButton
+import androidx.compose.foundation.selection.selectable
+import com.ideasdeveloper.bms.app.core.theme.AppTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import com.ideasdeveloper.bms.app.core.layout.AdaptiveGrid
+import com.ideasdeveloper.bms.app.features.extensions.data.ExtensionTarget
+import com.ideasdeveloper.bms.app.features.extensions.ui.ExtensionsScreen
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import com.ideasdeveloper.bms.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
+import com.ideasdeveloper.bms.app.features.company.data.BusinessOwnerResponse
+import com.ideasdeveloper.bms.app.features.company.data.UpdateBusinessOwnerRequest
+import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import com.ideasdeveloper.bms.app.features.company.data.CompanySummaryResponse
+import com.ideasdeveloper.bms.app.features.company.data.CreateCompanyRequest
+import com.ideasdeveloper.bms.app.features.company.data.UpdateCompanyRequest
+import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
+import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.bms.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.bms.app.features.shell.ui.toComposeColor
+import kotlinx.coroutines.launch
+
+@Composable
+// Renderiza la administracion de empresas disponible para el dueno del servidor.
+fun CompanyProvisioningScreen(
+    serverUrl: String?,
+    session: LoginResponse?,
+    onSettings: () -> Unit,
+    onLogout: () -> Unit,
+    onReturnToDashboard: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // Usa la identidad visual activa para mantener la misma marca que dashboard y login.
+    val companyIdentity = remember { CompanyIdentityStore.current() }
+    val colors = AppTheme.colors
+    val primaryColor = colors.accent
+    val scope = rememberCoroutineScope()
+
+    var code by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var ownerUsername by remember { mutableStateOf("") }
+    var ownerName by remember { mutableStateOf("") }
+    var ownerEmail by remember { mutableStateOf("") }
+    var ownerPassword by remember { mutableStateOf("") }
+    var ownerPasswordConfirmation by remember { mutableStateOf("") }
+    var isLoading by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var companies by remember { mutableStateOf<List<CompanySummaryResponse>>(emptyList()) }
+    // Empresa que se esta duplicando (dialogo abierto).
+    var duplicatingCompany by remember { mutableStateOf<CompanySummaryResponse?>(null) }
+    var duplicateBusy by remember { mutableStateOf(false) }
+    var duplicateError by remember { mutableStateOf<String?>(null) }
+    // Empresa que se vincula al grupo de otra (mismo business owner).
+    var linkingCompany by remember { mutableStateOf<CompanySummaryResponse?>(null) }
+
+    fun link(company: CompanySummaryResponse, targetCode: String?) {
+        val activeServerUrl = serverUrl ?: return
+        val activeSession = session ?: return
+        isRefreshing = true
+        error = null
+        message = null
+        scope.launch {
+            try {
+                companies = CompanyApi(activeServerUrl).use { api -> api.linkCompany(activeSession.accessToken, company.code, targetCode) }
+                linkingCompany = null
+                message = if (targetCode == null) "${company.name} ya no esta vinculada a otras empresas."
+                else "${company.name} quedo vinculada con $targetCode: su business owner puede cambiar entre ellas sin volver a iniciar sesion."
+            } catch (exception: CompanyException) {
+                error = exception.message
+            } finally {
+                isRefreshing = false
+            }
+        }
+    }
+    var companyPendingDeletion by remember { mutableStateOf<String?>(null) }
+    var isCreateCompanyExpanded by remember { mutableStateOf(true) }
+    var editingCompanyCode by remember { mutableStateOf<String?>(null) }
+    var editingCompanyName by remember { mutableStateOf("") }
+    var editingCompanyLogoUrl by remember { mutableStateOf("") }
+    var editingCompanyPrimaryColor by remember { mutableStateOf("#667EEA") }
+    var editingCompanySecondaryColor by remember { mutableStateOf("#764BA2") }
+    var editingCompanyAccentColor by remember { mutableStateOf("#FFFFFF") }
+    var confirmReturnToDashboard by remember { mutableStateOf(false) }
+    // Empresa cuyas extensiones se estan administrando (pantalla completa).
+    var extensionsCompany by remember { mutableStateOf<CompanySummaryResponse?>(null) }
+    val createCompanyHasChanges =
+        isCreateCompanyExpanded &&
+                (code.isNotBlank() ||
+                        name.isNotBlank() ||
+                        ownerUsername.isNotBlank() ||
+                        ownerName.isNotBlank() ||
+                        ownerEmail.isNotBlank() ||
+                        ownerPassword.isNotBlank() ||
+                        ownerPasswordConfirmation.isNotBlank())
+    val editingCompany = companies.firstOrNull { it.code == editingCompanyCode }
+    val editingCompanyHasChanges = editingCompany?.let { company ->
+        editingCompanyName != company.name ||
+                editingCompanyLogoUrl != company.logoUrl.orEmpty() ||
+                editingCompanyPrimaryColor != company.primaryColor ||
+                editingCompanySecondaryColor != company.secondaryColor ||
+                editingCompanyAccentColor != company.accentColor
+    } ?: false
+    val hasUnsavedChanges = createCompanyHasChanges || editingCompanyHasChanges
+
+    fun requestReturnToDashboard() {
+        if (hasUnsavedChanges) {
+            confirmReturnToDashboard = true
+        } else {
+            onReturnToDashboard()
+        }
+    }
+
+    linkingCompany?.let { company ->
+        LinkCompanyDialog(
+            company = company,
+            candidates = companies.filter { it.code != company.code && it.code !in company.linkedCompanies },
+            busy = isRefreshing,
+            onConfirm = { target -> link(company, target) },
+            onDismiss = { linkingCompany = null },
+        )
+    }
+
+    duplicatingCompany?.let { source ->
+        DuplicateCompanyDialog(
+            sourceName = source.name,
+            busy = duplicateBusy,
+            error = duplicateError,
+            onConfirm = { newCode, newOwner ->
+                val activeServerUrl = serverUrl
+                val activeSession = session
+                if (activeServerUrl != null && activeSession != null) {
+                    duplicateBusy = true
+                    duplicateError = null
+                    scope.launch {
+                        try {
+                            val created = CompanyApi(activeServerUrl).use { api -> api.duplicateCompany(activeSession.accessToken, source.code, newCode, newOwner) }
+                            duplicatingCompany = null
+                            message = buildString {
+                                append("Empresa ${created.code} creada como copia de ${source.name}")
+                                append(if (newOwner == null) "; su business owner entra con el mismo usuario y puede cambiar entre ambas." else " con el business owner ${created.businessOwnerUsername}.")
+                                if (created.settingsNotCopied.isNotEmpty()) append(" No se copio la configuracion de: ${created.settingsNotCopied.joinToString()}.")
+                            }
+                            companies = CompanyApi(activeServerUrl).use { api -> api.listCompanies(activeSession.accessToken) }
+                        } catch (exception: CompanyException) {
+                            duplicateError = exception.message
+                        } finally {
+                            duplicateBusy = false
+                        }
+                    }
+                }
+            },
+            onDismiss = { duplicatingCompany = null },
+        )
+    }
+
+    // Recarga empresas y modulos habilitables desde el servidor actual.
+    fun refreshCompanies() {
+        val activeServerUrl = serverUrl ?: return
+        val activeSession = session ?: return
+        isRefreshing = true
+        scope.launch {
+            try {
+                val loadedCompanies = CompanyApi(activeServerUrl).use { api ->
+                    api.listCompanies(activeSession.accessToken)
+                }
+                companies = loadedCompanies
+                if (loadedCompanies.isNotEmpty()) {
+                    isCreateCompanyExpanded = false
+                }
+                error = null
+            } catch (exception: CompanyException) {
+                error = exception.message
+            } finally {
+                isRefreshing = false
+            }
+        }
+    }
+
+    // Actualiza la lista cuando cambia la URL del servidor o la sesion autenticada.
+    LaunchedEffect(serverUrl, session?.accessToken) {
+        refreshCompanies()
+    }
+
+    // Se crea antes del return temprano para conservar la posicion del scroll al volver de Extensiones.
+    val scrollState = rememberScrollState()
+
+    extensionsCompany?.let { company ->
+        ExtensionsScreen(
+            serverUrl = serverUrl,
+            session = session,
+            target = ExtensionTarget(company.code, asServerOwner = true),
+            companyName = company.name,
+            onSettings = onSettings,
+            onLogout = onLogout,
+            onClose = { extensionsCompany = null },
+            modifier = modifier,
+        )
+        return
+    }
+
+    AuthenticatedScreen(
+        modifier = modifier.background(colors.screenBrush),
+        topBar = {
+            AuthenticatedTopBar(
+                title = "Empresa",
+                subtitle = "Crear empresa",
+                primaryColor = primaryColor,
+                onReturnToDashboard = ::requestReturnToDashboard,
+                onSettings = onSettings,
+                onLogout = onLogout,
+            )
+        },
+    ) {
+        if (confirmReturnToDashboard) {
+            AlertDialog(
+                onDismissRequest = { confirmReturnToDashboard = false },
+                title = { Text("Salir sin guardar") },
+                text = { Text("Hay cambios sin guardar. Deseas volver al panel?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmReturnToDashboard = false
+                            onReturnToDashboard()
+                        },
+                    ) {
+                        Text("Salir y volver")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmReturnToDashboard = false }) {
+                        Text("Permanecer")
+                    }
+                },
+            )
+        }
+
+        // Contiene el formulario de nueva empresa y la lista de empresas existentes.
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = ::requestReturnToDashboard,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(bottom = 16.dp)
+                .contentWidth(ContentWidth.Max, 0.92f),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState),
+                shape = MaterialTheme.shapes.medium,
+                color = AppTheme.colors.surface,
+            ) {
+                Column(
+                    modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    // El alta de empresa conserva un ancho de formulario; la lista de empresas usa la cuadricula.
+                    Column(
+                        modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Nueva empresa", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
+                        if (companies.isNotEmpty()) {
+                            Button(
+                                enabled = !isLoading,
+                                onClick = { isCreateCompanyExpanded = !isCreateCompanyExpanded },
+                                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
+                            ) {
+                                Text(if (isCreateCompanyExpanded) "Ocultar" else "Crear nueva")
+                            }
+                        }
+                    }
+
+                    if (isCreateCompanyExpanded) {
+                        // Captura los datos requeridos para crear el tenant y su business owner inicial.
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { code = it.trim().lowercase() },
+                            label = { Text("Codigo") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            label = { Text("Nombre") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = ownerUsername,
+                            onValueChange = { ownerUsername = it.trim().lowercase() },
+                            label = { Text("Usuario business owner") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = ownerName,
+                            onValueChange = { ownerName = it },
+                            label = { Text("Nombre completo del business owner") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = ownerEmail,
+                            onValueChange = { ownerEmail = it.trim() },
+                            label = { Text("Correo del business owner") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = ownerPassword,
+                            onValueChange = { ownerPassword = it },
+                            label = { Text("Contrasena business owner") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = ownerPasswordConfirmation,
+                            onValueChange = { ownerPasswordConfirmation = it },
+                            label = { Text("Confirmar contrasena") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            visualTransformation = PasswordVisualTransformation(),
+                            isError = ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation,
+                            supportingText = {
+                                if (ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation) {
+                                    Text("Las contrasenas no coinciden.")
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    error?.let { Text(it, color = AppTheme.colors.danger) }
+                    message?.let { Text(it, color = AppTheme.colors.success) }
+
+                    if (isCreateCompanyExpanded) Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // Vuelve al dashboard sin perder la sesion.
+                        Button(
+                            onClick = ::requestReturnToDashboard,
+                            enabled = !isLoading,
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
+                        ) {
+                            Text("Cancelar")
+                        }
+                        Button(
+                            enabled = !isLoading &&
+                                    serverUrl != null &&
+                                    session?.accessToken?.isNotBlank() == true &&
+                                    code.isNotBlank() &&
+                                    name.isNotBlank() &&
+                                    ownerUsername.isNotBlank() &&
+                                    ownerName.isNotBlank() &&
+                                    ownerEmail.isNotBlank() &&
+                                    ownerPassword.length >= 12 &&
+                                    ownerPassword == ownerPasswordConfirmation,
+                            onClick = {
+                                // Crea la empresa y refresca la lista para mostrar sus modulos disponibles.
+                                val activeServerUrl = serverUrl ?: return@Button
+                                val activeSession = session ?: return@Button
+                                isLoading = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        val response = CompanyApi(activeServerUrl).use { api ->
+                                            api.createCompany(
+                                                activeSession.accessToken,
+                                                CreateCompanyRequest(
+                                                    code = code,
+                                                    name = name,
+                                                    businessOwnerUsername = ownerUsername,
+                                                    businessOwnerPassword = ownerPassword,
+                                                    businessOwnerName = ownerName,
+                                                    businessOwnerEmail = ownerEmail,
+                                                ),
+                                            )
+                                        }
+                                        message = "Empresa ${response.name} creada. Ya puedes iniciar sesion con codigo ${response.code}."
+                                        code = ""
+                                        name = ""
+                                        ownerUsername = ""
+                                        ownerName = ""
+                                        ownerEmail = ""
+                                        ownerPassword = ""
+                                        ownerPasswordConfirmation = ""
+                                        isCreateCompanyExpanded = false
+                                        refreshCompanies()
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isLoading = false
+                                    }
+                                }
+                            },
+                            colors = accentButtonColors(),
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(color = AppTheme.colors.onAccent, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
+                            } else {
+                                Text("Crear")
+                            }
+                        }
+                    }
+
+                    Text("Empresas", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
+
+                    if (isRefreshing) {
+                        Text("Cargando empresas...", color = AppTheme.colors.muted)
+                    }
+                    }
+
+                    AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 420.dp, gap = 12.dp, equalHeight = false) {
+                    companies.forEach { company ->
+                        // Renderiza cada tenant administrable con acciones de estado, borrado y modulos.
+                        CompanyModulesRow(
+                            company = company,
+                            primaryColor = primaryColor,
+                            enabled = !isLoading && !isRefreshing && serverUrl != null && session?.accessToken?.isNotBlank() == true,
+                            pendingDeletion = companyPendingDeletion == company.code,
+                            onChangeStatus = { active ->
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isRefreshing = true
+                                    error = null
+                                    message = null
+                                    companyPendingDeletion = null
+                                    scope.launch {
+                                        try {
+                                            val updated = CompanyApi(activeServerUrl).use { api ->
+                                                api.updateCompanyStatus(activeSession.accessToken, company.code, active)
+                                            }
+                                            companies = companies.map {
+                                                if (it.code == updated.code) updated else it
+                                            }
+                                            message = if (updated.isActive) {
+                                                "Empresa ${updated.name} reactivada."
+                                            } else {
+                                                "Empresa ${updated.name} desactivada. Ahora puedes eliminarla si corresponde."
+                                            }
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isRefreshing = false
+                                        }
+                                    }
+                                }
+                            },
+                            onRequestDelete = {
+                                companyPendingDeletion = company.code
+                            },
+                            onDuplicate = {
+                                duplicateError = null
+                                duplicatingCompany = company
+                            },
+                            linkedNames = company.linkedCompanies.map { code -> companies.firstOrNull { it.code == code }?.name ?: code },
+                            onLink = { linkingCompany = company },
+                            onExtensions = { extensionsCompany = company },
+                            onUnlink = { link(company, null) },
+                            onCancelDelete = {
+                                companyPendingDeletion = null
+                            },
+                            onConfirmDelete = {
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isRefreshing = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            CompanyApi(activeServerUrl).use { api ->
+                                                api.deleteCompany(activeSession.accessToken, company.code)
+                                            }
+                                            companies = companies.filterNot { it.code == company.code }
+                                            companyPendingDeletion = null
+                                            message = "Empresa ${company.name} eliminada junto con su base tenant."
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isRefreshing = false
+                                        }
+                                    }
+                                }
+                            },
+                            isEditing = editingCompanyCode == company.code,
+                            editingName = editingCompanyName,
+                            editingLogoUrl = editingCompanyLogoUrl,
+                            editingPrimaryColor = editingCompanyPrimaryColor,
+                            editingSecondaryColor = editingCompanySecondaryColor,
+                            editingAccentColor = editingCompanyAccentColor,
+                            onEditNameChange = { editingCompanyName = it },
+                            onEditLogoUrlChange = { editingCompanyLogoUrl = it },
+                            onEditPrimaryColorChange = { editingCompanyPrimaryColor = it },
+                            onEditSecondaryColorChange = { editingCompanySecondaryColor = it },
+                            onEditAccentColorChange = { editingCompanyAccentColor = it },
+                            onStartEdit = {
+                                editingCompanyCode = company.code
+                                editingCompanyName = company.name
+                                editingCompanyLogoUrl = company.logoUrl.orEmpty()
+                                editingCompanyPrimaryColor = company.primaryColor
+                                editingCompanySecondaryColor = company.secondaryColor
+                                editingCompanyAccentColor = company.accentColor
+                                companyPendingDeletion = null
+                            },
+                            onCancelEdit = {
+                                editingCompanyCode = null
+                                editingCompanyName = ""
+                                editingCompanyLogoUrl = ""
+                                editingCompanyPrimaryColor = "#667EEA"
+                                editingCompanySecondaryColor = "#764BA2"
+                                editingCompanyAccentColor = "#FFFFFF"
+                            },
+                            onSaveEdit = {
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isRefreshing = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            val updated = CompanyApi(activeServerUrl).use { api ->
+                                                api.updateCompany(
+                                                    activeSession.accessToken,
+                                                    company.code,
+                                                    UpdateCompanyRequest(
+                                                        name = editingCompanyName,
+                                                        logoUrl = editingCompanyLogoUrl.ifBlank { null },
+                                                        primaryColor = editingCompanyPrimaryColor,
+                                                        secondaryColor = editingCompanySecondaryColor,
+                                                        accentColor = editingCompanyAccentColor,
+                                                    ),
+                                                )
+                                            }
+                                            companies = companies.map {
+                                                if (it.code == updated.code) updated else it
+                                            }
+                                            editingCompanyCode = null
+                                            editingCompanyName = ""
+                                            editingCompanyLogoUrl = ""
+                                            editingCompanyPrimaryColor = "#667EEA"
+                                            editingCompanySecondaryColor = "#764BA2"
+                                            editingCompanyAccentColor = "#FFFFFF"
+                                            message = "Empresa ${updated.name} actualizada."
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isRefreshing = false
+                                        }
+                                    }
+                                }
+                            },
+                            loadOwner = {
+                                val activeServerUrl = serverUrl ?: throw CompanyException("Configura el servidor.")
+                                val activeSession = session ?: throw CompanyException("Inicia sesion de nuevo.")
+                                CompanyApi(activeServerUrl).use { api -> api.businessOwner(activeSession.accessToken, company.code) }
+                            },
+                            onSaveOwner = { request, onSaved ->
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isRefreshing = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            val saved = CompanyApi(activeServerUrl).use { api ->
+                                                api.updateBusinessOwner(activeSession.accessToken, company.code, request)
+                                            }
+                                            onSaved(saved)
+                                            message = "Business owner de ${company.name} actualizado" +
+                                                if (request.password.isNotEmpty()) ": se cerraron sus sesiones." else "."
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isRefreshing = false
+                                        }
+                                    }
+                                }
+                            },
+                            onChangeModule = { moduleId, enabled ->
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isRefreshing = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            val updated = CompanyApi(activeServerUrl).use { api ->
+                                                api.updateModule(activeSession.accessToken, company.code, moduleId, enabled)
+                                            }
+                                            companies = companies.map {
+                                                if (it.code == updated.code) updated else it
+                                            }
+                                            message = "Modulo actualizado para ${updated.name}."
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isRefreshing = false
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
+                    }
+
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+// Renderiza una empresa existente y sus modulos activables.
+private fun CompanyModulesRow(
+    company: CompanySummaryResponse,
+    primaryColor: Color,
+    enabled: Boolean,
+    pendingDeletion: Boolean,
+    onChangeStatus: (active: Boolean) -> Unit,
+    onRequestDelete: () -> Unit,
+    onCancelDelete: () -> Unit,
+    onConfirmDelete: () -> Unit,
+    onDuplicate: () -> Unit,
+    linkedNames: List<String>,
+    onLink: () -> Unit,
+    onExtensions: () -> Unit,
+    onUnlink: () -> Unit,
+    isEditing: Boolean,
+    editingName: String,
+    editingLogoUrl: String,
+    editingPrimaryColor: String,
+    editingSecondaryColor: String,
+    editingAccentColor: String,
+    onEditNameChange: (String) -> Unit,
+    onEditLogoUrlChange: (String) -> Unit,
+    onEditPrimaryColorChange: (String) -> Unit,
+    onEditSecondaryColorChange: (String) -> Unit,
+    onEditAccentColorChange: (String) -> Unit,
+    onStartEdit: () -> Unit,
+    onCancelEdit: () -> Unit,
+    onSaveEdit: () -> Unit,
+    loadOwner: suspend () -> BusinessOwnerResponse,
+    onSaveOwner: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
+    onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (isEditing) {
+            CompanyProfileFields(
+                name = editingName,
+                logoUrl = editingLogoUrl,
+                primaryColor = editingPrimaryColor,
+                secondaryColor = editingSecondaryColor,
+                accentColor = editingAccentColor,
+                enabled = enabled,
+                onNameChange = onEditNameChange,
+                onLogoUrlChange = onEditLogoUrlChange,
+                onPrimaryColorChange = onEditPrimaryColorChange,
+                onSecondaryColorChange = onEditSecondaryColorChange,
+                onAccentColorChange = onEditAccentColorChange,
+            )
+        } else {
+            Text(company.name, style = MaterialTheme.typography.titleSmall, color = AppTheme.colors.accentText)
+        }
+        Text("Codigo: ${company.code}", style = MaterialTheme.typography.bodySmall, color = AppTheme.colors.muted)
+        Text(
+            "Estado: ${if (company.isActive) "activa" else "desactivada"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (company.isActive) AppTheme.colors.success else AppTheme.colors.warning,
+        )
+        Text(
+            if (linkedNames.isEmpty()) "Sin empresas vinculadas" else "Mismo business owner que: ${linkedNames.joinToString()}",
+            style = MaterialTheme.typography.bodySmall,
+            color = AppTheme.colors.muted,
+        )
+        if (!isEditing) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(enabled = enabled, onClick = onLink) { Text("Vincular", color = AppTheme.colors.accentText) }
+                // Extensiones de los modulos de esa empresa y revision de su grupo.
+                if (company.isActive) {
+                    TextButton(enabled = enabled, onClick = onExtensions) { Text("Extensiones", color = AppTheme.colors.accentText) }
+                }
+                if (linkedNames.isNotEmpty()) {
+                    TextButton(enabled = enabled, onClick = onUnlink) { Text("Desvincular", color = AppTheme.colors.danger) }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isEditing) {
+                Button(
+                    enabled = enabled && editingName.isNotBlank(),
+                    onClick = onSaveEdit,
+                    colors = accentButtonColors(),
+                ) {
+                    Text("Guardar")
+                }
+                Button(
+                    enabled = enabled,
+                    onClick = onCancelEdit,
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
+                ) {
+                    Text("Cancelar")
+                }
+            } else {
+                Button(
+                    enabled = enabled,
+                    onClick = onStartEdit,
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
+                ) {
+                    Text("Editar")
+                }
+            }
+            if (company.isActive && !isEditing) {
+                // Copia modulos y configuracion en una empresa nueva del mismo business owner.
+                Button(
+                    enabled = enabled,
+                    onClick = onDuplicate,
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
+                ) {
+                    Text("Duplicar")
+                }
+            }
+            // Cambia entre activar y desactivar la empresa completa.
+            Button(
+                enabled = enabled && !isEditing,
+                onClick = { onChangeStatus(!company.isActive) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (company.isActive) AppTheme.colors.surfaceAlt else primaryColor,
+                    contentColor = if (company.isActive) AppTheme.colors.accentText else AppTheme.colors.onAccent,
+                ),
+            ) {
+                Text(if (company.isActive) "Desactivar empresa" else "Reactivar empresa")
+            }
+            if (!company.isActive) {
+                // Exige una segunda pulsacion antes de borrar la base tenant.
+                Button(
+                    enabled = enabled && !isEditing,
+                    onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (pendingDeletion) AppTheme.colors.danger else AppTheme.colors.surfaceAlt,
+                        contentColor = if (pendingDeletion) Color.White else AppTheme.colors.danger,
+                    ),
+                ) {
+                    Text(if (pendingDeletion) "Confirmar borrar DB" else "Eliminar")
+                }
+                if (pendingDeletion) {
+                    Button(
+                        enabled = enabled,
+                        onClick = onCancelDelete,
+                        colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
+                    ) {
+                        Text("Cancelar")
+                    }
+                }
+            }
+        }
+
+        if (isEditing) {
+            // Datos del business owner. Las empresas creadas por un agente IA quedan con una contrasena
+            // aleatoria porque las credenciales no pasan por el MCP: aqui se pone la primera.
+            CollapsibleSection("Business owner", primaryColor, subtitle = "Usuario, nombre, correo y contrasena") {
+                BusinessOwnerFields(
+                    companyCode = company.code,
+                    enabled = enabled,
+                    primaryColor = primaryColor,
+                    loadOwner = loadOwner,
+                    onSave = onSaveOwner,
+                )
+            }
+
+            CollapsibleSection(
+                "Modulos disponibles",
+                primaryColor,
+                subtitle = "${company.modules.count { it.enabled }} de ${company.modules.size} activos",
+            ) {
+                Text(
+                    "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",
+                    color = AppTheme.colors.muted,
+                )
+                company.modules.forEach { module ->
+                    // Permite activar o desactivar cada modulo no bloqueado de la empresa.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "${module.displayName}: ${if (module.enabled) "activo" else "inactivo"}",
+                            color = AppTheme.colors.text,
+                        )
+                        Button(
+                            enabled = enabled && company.isActive && !module.locked,
+                            onClick = { onChangeModule(module.moduleId, !module.enabled) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (module.enabled) AppTheme.colors.surfaceAlt else primaryColor,
+                                contentColor = if (module.enabled) AppTheme.colors.accentText else AppTheme.colors.onAccent,
+                            ),
+                        ) {
+                            Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Usuario, nombre, correo y contrasena del business owner. Su usuario es un rol de PostgreSQL que
+ * comparten todas sus empresas: el cambio se aplica en todas y cambiar el usuario pide contrasena.
+ */
+@Composable
+private fun BusinessOwnerFields(
+    companyCode: String,
+    enabled: Boolean,
+    primaryColor: Color,
+    loadOwner: suspend () -> BusinessOwnerResponse,
+    onSave: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
+) {
+    var owner by remember(companyCode) { mutableStateOf<BusinessOwnerResponse?>(null) }
+    var loadError by remember(companyCode) { mutableStateOf<String?>(null) }
+    var username by remember(companyCode) { mutableStateOf("") }
+    var displayName by remember(companyCode) { mutableStateOf("") }
+    var email by remember(companyCode) { mutableStateOf("") }
+    var password by remember(companyCode) { mutableStateOf("") }
+    var confirmation by remember(companyCode) { mutableStateOf("") }
+    fun show(loaded: BusinessOwnerResponse) {
+        owner = loaded
+        username = loaded.username
+        displayName = loaded.displayName
+        email = loaded.email
+        password = ""
+        confirmation = ""
+    }
+    LaunchedEffect(companyCode) {
+        try {
+            show(loadOwner())
+        } catch (exception: CompanyException) {
+            loadError = exception.message
+        }
+    }
+
+    loadError?.let { Text(it, color = AppTheme.colors.danger) }
+    val current = owner ?: return
+    val renamed = username.trim() != current.username
+    val passwordProblem = when {
+        password.isNotEmpty() && password.length < 12 -> "Minimo 12 caracteres."
+        confirmation.isNotEmpty() && password != confirmation -> "Las contrasenas no coinciden."
+        renamed && password.isEmpty() -> "Para cambiar el usuario escribe una contrasena nueva."
+        else -> null
+    }
+    OutlinedTextField(
+        value = username,
+        onValueChange = { username = it.trim() },
+        label = { Text("Usuario") },
+        singleLine = true,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = displayName,
+        onValueChange = { displayName = it },
+        label = { Text("Nombre completo") },
+        singleLine = true,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = email,
+        onValueChange = { email = it.trim() },
+        label = { Text("Correo") },
+        singleLine = true,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = password,
+        onValueChange = { password = it },
+        label = { Text("Contrasena nueva") },
+        singleLine = true,
+        enabled = enabled,
+        visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = confirmation,
+        onValueChange = { confirmation = it },
+        label = { Text("Confirmar contrasena") },
+        singleLine = true,
+        enabled = enabled,
+        visualTransformation = PasswordVisualTransformation(),
+        isError = passwordProblem != null,
+        supportingText = {
+            Text(passwordProblem ?: "Vacia mantiene la actual. Si la cambias se cierran sus sesiones. Se aplica en todas sus empresas.")
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Button(
+            enabled = enabled && username.isNotBlank() && displayName.isNotBlank() && email.isNotBlank() &&
+                passwordProblem == null && (password.isEmpty() || password == confirmation),
+            onClick = {
+                onSave(UpdateBusinessOwnerRequest(username.trim(), displayName.trim(), email.trim(), password)) { saved -> show(saved) }
+            },
+            colors = accentButtonColors(),
+        ) {
+            Text("Guardar business owner")
+        }
+    }
+}
+
+// Cierra el cliente HTTP de empresas despues de cada uso suspendido.
+private suspend inline fun <T> CompanyApi.use(block: suspend (CompanyApi) -> T): T {
+    return try {
+        block(this)
+    } finally {
+        close()
+    }
+}
+
+/**
+ * Elige la empresa con la que [company] comparte business owner. Vincularlas deja que su dueno
+ * cambie entre ellas desde el panel sin volver a iniciar sesion.
+ */
+@Composable
+private fun LinkCompanyDialog(
+    company: CompanySummaryResponse,
+    candidates: List<CompanySummaryResponse>,
+    busy: Boolean,
+    onConfirm: (targetCode: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selected by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Vincular ${company.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Vincula solo empresas del mismo dueno: el business owner de una podra entrar a la otra sin contrasena.",
+                    color = AppTheme.colors.muted,
+                )
+                if (candidates.isEmpty()) Text("No hay otras empresas para vincular.", color = AppTheme.colors.muted)
+                candidates.forEach { candidate ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().selectable(
+                            selected = selected == candidate.code, enabled = !busy, role = Role.RadioButton, onClick = { selected = candidate.code },
+                        ),
+                    ) {
+                        RadioButton(selected = selected == candidate.code, onClick = null, enabled = !busy)
+                        Text("${candidate.name} (${candidate.code})", color = AppTheme.colors.text, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { selected?.let(onConfirm) }, enabled = selected != null && !busy) { Text("Vincular") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") } },
+    )
+}

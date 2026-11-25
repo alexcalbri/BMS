@@ -1,0 +1,70 @@
+package com.ideasdeveloper.bms.app.core.session
+
+import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import java.util.prefs.Preferences
+
+actual object PersistentSessionStore {
+    private const val UserIdKey = "userId"
+    private const val UsernameKey = "username"
+    private const val AccessTokenKey = "accessToken"
+    private const val ExpiresAtEpochSecondsKey = "expiresAtEpochSeconds"
+    private const val ScopeKey = "scope"
+    private const val CompanyCodeKey = "companyCode"
+    private const val WorkspaceCompanyCodeKey = "workspaceCompanyCode"
+    private const val RoleKey = "role"
+    private const val EnabledModulesKey = "enabledModules"
+
+    private val preferences = Preferences.userRoot().node("com/ideasdeveloper/bms/session")
+
+    actual fun load(): LoginResponse? {
+        val expiresAt = preferences.getLong(ExpiresAtEpochSecondsKey, 0L)
+        if (expiresAt <= nowEpochSeconds()) {
+            clear()
+            return null
+        }
+
+        return LoginResponse(
+            userId = preferences.get(UserIdKey, "").takeIf { it.isNotBlank() } ?: return null,
+            username = preferences.get(UsernameKey, "").takeIf { it.isNotBlank() } ?: return null,
+            accessToken = preferences.get(AccessTokenKey, "").takeIf { it.isNotBlank() } ?: return null,
+            expiresInSeconds = expiresAt - nowEpochSeconds(),
+            scope = preferences.get(ScopeKey, "").takeIf { it.isNotBlank() } ?: return null,
+            companyCode = preferences.get(CompanyCodeKey, "").takeIf { it.isNotBlank() },
+            workspaceCompanyCode = preferences.get(WorkspaceCompanyCodeKey, "").takeIf { it.isNotBlank() },
+            role = preferences.get(RoleKey, "").takeIf { it.isNotBlank() } ?: return null,
+            enabledModules = preferences.get(EnabledModulesKey, "")
+                .split(",")
+                .filter { it.isNotBlank() },
+        )
+    }
+
+    actual fun save(response: LoginResponse) {
+        preferences.put(UserIdKey, response.userId)
+        preferences.put(UsernameKey, response.username)
+        preferences.put(AccessTokenKey, response.accessToken)
+        preferences.putLong(ExpiresAtEpochSecondsKey, nowEpochSeconds() + response.expiresInSeconds)
+        preferences.put(ScopeKey, response.scope)
+        response.companyCode?.let {
+            preferences.put(CompanyCodeKey, it)
+        } ?: preferences.remove(CompanyCodeKey)
+        response.workspaceCompanyCode?.let {
+            preferences.put(WorkspaceCompanyCodeKey, it)
+        } ?: preferences.remove(WorkspaceCompanyCodeKey)
+        preferences.put(RoleKey, response.role)
+        preferences.put(EnabledModulesKey, response.enabledModules.joinToString(","))
+    }
+
+    actual fun clear() {
+        preferences.remove(UserIdKey)
+        preferences.remove(UsernameKey)
+        preferences.remove(AccessTokenKey)
+        preferences.remove(ExpiresAtEpochSecondsKey)
+        preferences.remove(ScopeKey)
+        preferences.remove(CompanyCodeKey)
+        preferences.remove(WorkspaceCompanyCodeKey)
+        preferences.remove(RoleKey)
+        preferences.remove(EnabledModulesKey)
+    }
+
+    private fun nowEpochSeconds(): Long = System.currentTimeMillis() / 1000L
+}

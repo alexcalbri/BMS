@@ -1,0 +1,425 @@
+package com.ideasdeveloper.bms.app.features.auth.ui
+
+import com.ideasdeveloper.bms.app.core.session.SessionStore
+import com.ideasdeveloper.bms.app.core.theme.AppTheme
+import com.ideasdeveloper.bms.app.core.theme.appFieldColors
+import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.bms.app.core.layout.ContentWidth
+import com.ideasdeveloper.bms.app.core.layout.contentWidth
+import com.ideasdeveloper.bms.app.features.shell.ui.AppIcons
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Alignment.Companion.CenterHorizontally
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ideasdeveloper.bms.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.bms.app.core.config.ClientConfigurationStore
+import com.ideasdeveloper.bms.app.core.version.ClientVersion
+import com.ideasdeveloper.bms.app.core.version.VersionApi
+import com.ideasdeveloper.bms.app.features.auth.presentation.LoginViewModel
+
+@Composable
+// Renderiza el formulario de inicio de sesion y dispara la navegacion cuando el login termina bien.
+fun LoginScreen(
+    onLoginSuccess: () -> Unit,
+    modifier: Modifier = Modifier,
+    initialServerUrl: String = "",
+) {
+    // Prepara el estado de login y la configuracion guardada para evitar pedir datos repetidos.
+    val loginViewModel: LoginViewModel = viewModel {
+        LoginViewModel()
+    }
+    val state by loginViewModel.state.collectAsState()
+    val sessionExpired by SessionStore.expired.collectAsState()
+    val savedConfiguration = remember { ClientConfigurationStore.load() }
+    val companyIdentity = remember { CompanyIdentityStore.current() }
+    val colors = AppTheme.colors
+
+    var serverUrl by rememberSaveable {
+        mutableStateOf(savedConfiguration?.serverUrl ?: initialServerUrl)
+    }
+    var companyCode by rememberSaveable {
+        mutableStateOf(savedConfiguration?.companyCode ?: "")
+    }
+    var serverAdministration by rememberSaveable {
+        mutableStateOf(savedConfiguration?.serverAdministration ?: false)
+    }
+    var username by rememberSaveable { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var keepSignedIn by rememberSaveable { mutableStateOf(false) }
+    var versionMessage by remember { mutableStateOf<String?>(null) }
+    var administratorClickCount by rememberSaveable { mutableStateOf(0) }
+    var administratorToggleVisible by rememberSaveable { mutableStateOf(false) }
+    var recoveringPassword by remember { mutableStateOf(false) }
+    val needsServerConfiguration = savedConfiguration == null
+    // Con un servidor guardado el campo se oculta, pero se puede cambiar sin iniciar sesion.
+    var editingServer by rememberSaveable { mutableStateOf(needsServerConfiguration) }
+
+    val isLoading = state.isLoading
+    val canSubmit = serverUrl.isNotBlank() &&
+        username.isNotBlank() &&
+        password.isNotEmpty() &&
+        (serverAdministration || companyCode.isNotBlank()) &&
+        !isLoading
+
+    // Lo usan el boton y la tecla Enter de cualquier campo cuando los datos estan completos.
+    fun submit() {
+        if (!canSubmit) return
+        loginViewModel.login(
+            serverUrl = serverUrl,
+            username = username,
+            password = password,
+            companyCode = if (serverAdministration) null else companyCode,
+            keepSignedIn = keepSignedIn,
+        )
+    }
+
+    // Enter de teclados fisicos (escritorio, web y tabletas con teclado).
+    val submitOnEnter = Modifier.onPreviewKeyEvent { event ->
+        val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
+        if (enter && event.type == KeyEventType.KeyDown && canSubmit) {
+            submit()
+            true
+        } else {
+            false
+        }
+    }
+    // Boton de accion del teclado en pantalla (Android e iOS).
+    val submitKeyboardActions = KeyboardActions(onGo = { submit() })
+
+    // Cuando el ViewModel confirma el login, limpia la contrasena y avanza al dashboard.
+    LaunchedEffect(state.succeeded) {
+        if (state.succeeded) {
+            password = ""
+            onLoginSuccess()
+        }
+    }
+
+    LaunchedEffect(serverUrl) {
+        if (serverUrl.isNotBlank()) {
+            val version = VersionApi(serverUrl).use { it.version() }
+            versionMessage = version?.latestAppVersion
+                ?.takeIf { it.isNotBlank() && it != ClientVersion }
+                ?.let { "Nueva version de la app disponible: $it" }
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(colors.screenBrush)
+    ) {
+        Column(
+            modifier = Modifier
+                .contentWidth(ContentWidth.Card, 0.9f)
+                .align(Alignment.Center)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = CenterHorizontally
+        ) {
+            // Renderiza el logo provisional con la identidad visual configurada.
+            Spacer(modifier = Modifier.height(40.dp))
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(AppTheme.colors.surface, AppTheme.colors.surfaceAlt),
+                            center = Offset(50f, 50f),
+                            radius = 60f
+                        ),
+                        shape = androidx.compose.foundation.shape.CircleShape
+                    )
+            ) {}
+
+            Text(
+                text = companyIdentity.name,
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                color = AppTheme.colors.onScreen,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+
+            Text(
+                text = "Inicia sesión en tu cuenta",
+                fontSize = 16.sp,
+                color = AppTheme.colors.onScreenMuted,
+                modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 32.dp)
+            )
+            // Aviso cuando la app regreso aqui porque la sesion vencio o el servidor la rechazo.
+            if (sessionExpired) {
+                Text(
+                    text = "Tu sesion expiro. Inicia sesion de nuevo para continuar.",
+                    color = AppTheme.colors.onScreen,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            // Tarjeta del formulario: superficie del tema sobre el fondo de marca, de ancho acotado.
+            Surface(
+                color = AppTheme.colors.surface,
+                contentColor = AppTheme.colors.text,
+                shape = MaterialTheme.shapes.large,
+                shadowElevation = 6.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(if (AdaptiveLayout.roomy) 24.dp else 20.dp),
+                    horizontalAlignment = CenterHorizontally,
+                ) {
+            if (!editingServer) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Servidor: $serverUrl",
+                        color = AppTheme.colors.muted,
+                        fontSize = 13.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { editingServer = true }, enabled = !isLoading) {
+                        Text("Cambiar servidor", color = AppTheme.colors.text)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            if (editingServer) {
+                // Solicita la URL la primera vez o cuando el usuario quiere cambiar de servidor.
+                    OutlinedTextField(
+                        value = serverUrl,
+                        onValueChange = { serverUrl = it },
+                        label = { Text("URL del servidor") },
+                        placeholder = { Text("https://sub.domain.tld o http://sub.domain.tld") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = submitKeyboardActions,
+                        modifier = Modifier.fillMaxWidth().then(submitOnEnter),
+                        shape = MaterialTheme.shapes.medium,
+                        enabled = !isLoading,
+                        colors = appFieldColors(),
+                    )
+                Spacer(Modifier.height(16.dp))
+            }
+                if (!serverAdministration) {
+                    // Solicita codigo de empresa solo para sesiones tenant.
+                        OutlinedTextField(
+                            value = companyCode,
+                            onValueChange = { companyCode = it },
+                            label = { Text("Código de empresa") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                            keyboardActions = submitKeyboardActions,
+                            modifier = Modifier.fillMaxWidth().then(submitOnEnter),
+                            shape = MaterialTheme.shapes.medium,
+                            enabled = !isLoading,
+                            colors = appFieldColors(),
+                        )
+                }
+                Spacer(Modifier.height(16.dp))
+
+            // Captura el usuario con el que se autenticara contra el servidor.
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text("Usuario") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Go),
+                    keyboardActions = submitKeyboardActions,
+                    modifier = Modifier.fillMaxWidth().then(submitOnEnter),
+                    shape = MaterialTheme.shapes.medium,
+                    enabled = !isLoading,
+                    colors = appFieldColors(),
+                )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Captura la contrasena y permite alternar su visibilidad.
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Contraseña") },
+                    singleLine = true,
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
+                    keyboardActions = submitKeyboardActions,
+                    enabled = !isLoading,
+                    trailingIcon = {
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                imageVector = if (showPassword) AppIcons.VisibilityOff else AppIcons.Visibility,
+                                contentDescription = if (showPassword) "Ocultar contraseña" else "Mostrar contraseña",
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().then(submitOnEnter),
+                    shape = MaterialTheme.shapes.medium,
+
+                    colors = appFieldColors(),
+                )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Permite persistir la sesion para que la app abra directo al dashboard.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = keepSignedIn,
+                    onCheckedChange = { keepSignedIn = it },
+                    enabled = !isLoading,
+                )
+                Text("Mantener sesión iniciada", color = AppTheme.colors.text)
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Muestra errores de validacion local o del servidor.
+            state.error?.let { message ->
+                Text(
+                    text = message,
+                    color = AppTheme.colors.danger,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
+            versionMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = AppTheme.colors.text,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
+
+            // Envia credenciales, URL y codigo de empresa al ViewModel.
+            Button(
+                onClick = { submit() },
+                enabled = canSubmit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                shape = MaterialTheme.shapes.medium,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AppTheme.colors.accent,
+                    contentColor = AppTheme.colors.onAccent,
+                )
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        color = AppTheme.colors.onAccent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(20.dp)
+                    )
+                } else {
+                    Text(
+                        text = "INICIAR SESIÓN",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Envia un codigo al correo del usuario para poner una nueva contrasena.
+            TextButton(
+                onClick = { recoveringPassword = true },
+                enabled = !isLoading && serverUrl.isNotBlank() && (serverAdministration || companyCode.isNotBlank()),
+            ) {
+                Text("¿Olvidaste tu contraseña?", color = AppTheme.colors.text)
+            }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        if (recoveringPassword) {
+            PasswordResetDialog(
+                serverUrl = serverUrl,
+                companyCode = if (serverAdministration) null else companyCode.trim(),
+                initialUsername = username,
+                onDismiss = { recoveringPassword = false },
+            )
+        }
+
+        // Renderiza el pie con version y acceso oculto a administracion del servidor.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 24.dp, vertical = 24.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (administratorToggleVisible) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = serverAdministration,
+                        onCheckedChange = { serverAdministration = it },
+                        enabled = !isLoading,
+                    )
+                    Text("Administrar servidor", color = AppTheme.colors.onScreen)
+                }
+            } else {
+                Spacer(modifier = Modifier.width(1.dp))
+            }
+
+            Column(
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    if (!administratorToggleVisible) {
+                        administratorClickCount += 1
+                        if (administratorClickCount >= 6) {
+                            administratorToggleVisible = true
+                        }
+                    }
+                },
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    text = "BMS v$ClientVersion",
+                    color = AppTheme.colors.onScreenMuted,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = "Flow Tier",
+                    color = AppTheme.colors.onScreenMuted,
+                    fontSize = 10.sp
+                )
+            }
+        }
+    }
+}
+
+private suspend inline fun <T> VersionApi.use(block: suspend (VersionApi) -> T): T {
+    return try {
+        block(this)
+    } finally {
+        close()
+    }
+}

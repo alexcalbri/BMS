@@ -1,0 +1,450 @@
+package com.ideasdeveloper.bms.app.features.company.ui
+
+import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.bms.app.core.layout.ContentWidth
+import com.ideasdeveloper.bms.app.core.layout.contentWidth
+import com.ideasdeveloper.bms.app.features.extensions.data.ExtensionTarget
+import com.ideasdeveloper.bms.app.features.extensions.ui.ExtensionsScreen
+import com.ideasdeveloper.bms.app.features.shell.ui.CollapsibleSection
+import com.ideasdeveloper.bms.app.core.theme.AppTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.ideasdeveloper.bms.app.core.company.CompanyIdentity
+import com.ideasdeveloper.bms.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
+import com.ideasdeveloper.bms.app.features.company.data.CompanyBackupResponse
+import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import com.ideasdeveloper.bms.app.features.company.data.CompanyProfileResponse
+import com.ideasdeveloper.bms.app.features.company.data.UpdateCompanyProfileRequest
+import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
+import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.bms.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.bms.app.features.shell.ui.toComposeColor
+import kotlinx.coroutines.launch
+
+@Composable
+// Renderiza la administracion de la empresa para el usuario business_owner.
+fun CompanyManagementScreen(
+    serverUrl: String?,
+    session: LoginResponse?,
+    onSettings: () -> Unit,
+    onLogout: () -> Unit,
+    onReturnToDashboard: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    val companyIdentity = remember { CompanyIdentityStore.current() }
+    var primaryColor by remember { mutableStateOf(companyIdentity.primaryColor) }
+    var secondaryColor by remember { mutableStateOf(companyIdentity.secondaryColor) }
+    val primaryCompose = primaryColor.toComposeColor(Color(0xFF667EEA))
+    val secondaryCompose = secondaryColor.toComposeColor(Color(0xFF764BA2))
+
+    var name by remember { mutableStateOf(companyIdentity.name) }
+    var logoUrl by remember { mutableStateOf(companyIdentity.logoUrl.orEmpty()) }
+    var accentColor by remember { mutableStateOf(companyIdentity.accentColor) }
+    var savedName by remember { mutableStateOf(companyIdentity.name) }
+    var savedLogoUrl by remember { mutableStateOf(companyIdentity.logoUrl.orEmpty()) }
+    var savedPrimaryColor by remember { mutableStateOf(companyIdentity.primaryColor) }
+    var savedSecondaryColor by remember { mutableStateOf(companyIdentity.secondaryColor) }
+    var savedAccentColor by remember { mutableStateOf(companyIdentity.accentColor) }
+    var backups by remember { mutableStateOf<List<CompanyBackupResponse>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var confirmReturnToDashboard by remember { mutableStateOf(false) }
+    var showExtensions by remember { mutableStateOf(false) }
+    val hasUnsavedChanges =
+        name != savedName ||
+                logoUrl != savedLogoUrl ||
+                primaryColor != savedPrimaryColor ||
+                secondaryColor != savedSecondaryColor ||
+                accentColor != savedAccentColor
+
+    fun requestReturnToDashboard() {
+        if (hasUnsavedChanges) {
+            confirmReturnToDashboard = true
+        } else {
+            onReturnToDashboard()
+        }
+    }
+
+    // Recarga los ZIPs disponibles para la empresa autenticada.
+    fun refreshBackups() {
+        val activeServerUrl = serverUrl ?: return
+        val activeSession = session ?: return
+        val companyCode = activeSession.companyCode ?: return
+        scope.launch {
+            try {
+                backups = CompanyApi(activeServerUrl).use { api ->
+                    api.listBackups(activeSession.accessToken, companyCode)
+                }
+            } catch (exception: CompanyException) {
+                error = exception.message
+            }
+        }
+    }
+
+    // Aplica el perfil recibido del servidor a la UI y a la identidad visual local.
+    fun applyProfile(profile: CompanyProfileResponse) {
+        name = profile.name
+        logoUrl = profile.logoUrl.orEmpty()
+        primaryColor = profile.primaryColor
+        secondaryColor = profile.secondaryColor
+        accentColor = profile.accentColor
+        savedName = profile.name
+        savedLogoUrl = profile.logoUrl.orEmpty()
+        savedPrimaryColor = profile.primaryColor
+        savedSecondaryColor = profile.secondaryColor
+        savedAccentColor = profile.accentColor
+        CompanyIdentityStore.save(
+            CompanyIdentity(
+                id = profile.code,
+                code = profile.code,
+                name = profile.name,
+                logoUrl = profile.logoUrl,
+                primaryColor = profile.primaryColor,
+                secondaryColor = profile.secondaryColor,
+                accentColor = profile.accentColor,
+            )
+        )
+    }
+
+    LaunchedEffect(serverUrl, session?.accessToken, session?.companyCode) {
+        val activeServerUrl = serverUrl ?: return@LaunchedEffect
+        val activeSession = session ?: return@LaunchedEffect
+        val companyCode = activeSession.companyCode ?: return@LaunchedEffect
+        isLoading = true
+        try {
+            CompanyApi(activeServerUrl).use { api ->
+                applyProfile(api.companyProfile(activeSession.accessToken, companyCode))
+                backups = api.listBackups(activeSession.accessToken, companyCode)
+            }
+            error = null
+        } catch (exception: CompanyException) {
+            error = exception.message
+        } finally {
+            isLoading = false
+        }
+    }
+
+    // Se crea antes del return temprano para conservar la posicion del scroll al volver de Extensiones.
+    val scrollState = rememberScrollState()
+
+    // Extensiones de la empresa: pantalla completa que reemplaza a esta hasta que se cierra.
+    if (showExtensions) {
+        val companyCode = session?.companyCode
+        if (companyCode != null) {
+            ExtensionsScreen(
+                serverUrl = serverUrl,
+                session = session,
+                target = ExtensionTarget(companyCode, asServerOwner = false),
+                companyName = name,
+                onSettings = onSettings,
+                onLogout = onLogout,
+                onClose = { showExtensions = false },
+                modifier = modifier,
+            )
+            return
+        }
+    }
+
+    AuthenticatedScreen(
+        // Vista previa en vivo de los colores de marca que se estan editando.
+        modifier = modifier.background(AppTheme.colors.copy(accent = primaryCompose, accentSecondary = secondaryCompose).screenBrush),
+        topBar = {
+            AuthenticatedTopBar(
+                title = "Empresa",
+                subtitle = "Perfil y backups",
+                primaryColor = primaryCompose,
+                onReturnToDashboard = ::requestReturnToDashboard,
+                onSettings = onSettings,
+                onLogout = onLogout,
+            )
+        },
+    ) {
+        if (confirmReturnToDashboard) {
+            AlertDialog(
+                onDismissRequest = { confirmReturnToDashboard = false },
+                title = { Text("Salir sin guardar") },
+                text = { Text("Hay cambios sin guardar. Deseas volver al panel?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmReturnToDashboard = false
+                            onReturnToDashboard()
+                        },
+                    ) {
+                        Text("Salir y volver")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmReturnToDashboard = false }) {
+                        Text("Permanecer")
+                    }
+                },
+            )
+        }
+
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = ::requestReturnToDashboard,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(bottom = 16.dp)
+                .contentWidth(ContentWidth.Max, 0.92f),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState),
+                shape = MaterialTheme.shapes.medium,
+                color = AppTheme.colors.surface,
+            ) {
+                Column(
+                    modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    // Formulario y copias en ancho legible; los usuarios de abajo usan la cuadricula.
+                    Column(
+                        modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                    Text("Datos de empresa", style = MaterialTheme.typography.titleLarge, color = primaryCompose)
+
+                    CompanyProfileFields(
+                        name = name,
+                        logoUrl = logoUrl,
+                        primaryColor = primaryColor,
+                        secondaryColor = secondaryColor,
+                        accentColor = accentColor,
+                        enabled = !isLoading,
+                        onNameChange = { name = it },
+                        onLogoUrlChange = { logoUrl = it },
+                        onPrimaryColorChange = { primaryColor = it },
+                        onSecondaryColorChange = { secondaryColor = it },
+                        onAccentColorChange = { accentColor = it },
+                    )
+
+                    error?.let { Text(it, color = AppTheme.colors.danger) }
+                    message?.let { Text(it, color = AppTheme.colors.success) }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = ::requestReturnToDashboard,
+                            enabled = !isLoading,
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryCompose),
+                        ) {
+                            Text("Volver al panel")
+                        }
+                        // Integraciones de los modulos de la empresa (Meta, WordPress, etc.).
+                        Button(
+                            onClick = { showExtensions = true },
+                            enabled = !isLoading && session?.companyCode != null,
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryCompose),
+                        ) {
+                            Text("Extensiones")
+                        }
+                        Button(
+                            enabled = !isLoading && serverUrl != null && session?.companyCode != null,
+                            onClick = {
+                                val activeServerUrl = serverUrl ?: return@Button
+                                val activeSession = session ?: return@Button
+                                val companyCode = activeSession.companyCode ?: return@Button
+                                isLoading = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        val profile = CompanyApi(activeServerUrl).use { api ->
+                                            api.updateCompanyProfile(
+                                                activeSession.accessToken,
+                                                companyCode,
+                                                UpdateCompanyProfileRequest(
+                                                    name = name,
+                                                    logoUrl = logoUrl.ifBlank { null },
+                                                    primaryColor = primaryColor,
+                                                    secondaryColor = secondaryColor,
+                                                    accentColor = accentColor,
+                                                ),
+                                            )
+                                        }
+                                        applyProfile(profile)
+                                        message = "Empresa actualizada."
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isLoading = false
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(color = AppTheme.colors.onAccent, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
+                            } else {
+                                Text("Guardar")
+                            }
+                        }
+                    }
+
+                    // Copias del perfil: se usan pocas veces, empiezan cerradas.
+                    CollapsibleSection("Exportar e importar", primaryCompose, subtitle = "ZIP del perfil de empresa") {
+                        Text(
+                            "Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor.",
+                            color = AppTheme.colors.muted,
+                        )
+                        Button(
+                            enabled = !isLoading && serverUrl != null && session?.companyCode != null,
+                            onClick = {
+                                val activeServerUrl = serverUrl ?: return@Button
+                                val activeSession = session ?: return@Button
+                                val companyCode = activeSession.companyCode ?: return@Button
+                                isLoading = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        val created = CompanyApi(activeServerUrl).use { api ->
+                                            api.createBackup(activeSession.accessToken, companyCode)
+                                        }
+                                        message = "Backup ${created.fileName} creado."
+                                        refreshBackups()
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isLoading = false
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
+                        ) {
+                            Text("Exportar ZIP")
+                        }
+
+                        backups.forEach { backup ->
+                            BackupRow(
+                                backup = backup,
+                                serverUrl = serverUrl.orEmpty(),
+                                primaryColor = primaryCompose,
+                                enabled = !isLoading && session?.companyCode != null,
+                                onDelete = {
+                                    val activeServerUrl = serverUrl
+                                    val activeSession = session
+                                    val companyCode = activeSession?.companyCode
+                                    if (activeServerUrl != null && activeSession != null && companyCode != null) {
+                                        scope.launch {
+                                            try {
+                                                CompanyApi(activeServerUrl).use { api ->
+                                                    api.deleteBackup(activeSession.accessToken, companyCode, backup.fileName)
+                                                }
+                                                backups = backups.filterNot { it.fileName == backup.fileName }
+                                                message = "Backup eliminado."
+                                            } catch (exception: CompanyException) {
+                                                error = exception.message
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                    }
+
+                    // Servidor SMTP de la empresa; el estado y el guardado viven en la propia seccion.
+                    CompanyMailSection(
+                        serverUrl = serverUrl,
+                        accessToken = session?.accessToken,
+                        companyCode = session?.companyCode,
+                        primaryColor = primaryCompose,
+                    )
+                    }
+
+                    CompanyUsersSection(
+                        serverUrl = serverUrl,
+                        accessToken = session?.accessToken,
+                        companyCode = session?.companyCode,
+                        primaryColor = primaryCompose,
+                        description = "El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos.",
+                    )
+
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+// Renderiza un ZIP disponible con URL de descarga y accion de eliminar.
+private fun BackupRow(
+    backup: CompanyBackupResponse,
+    serverUrl: String,
+    primaryColor: Color,
+    enabled: Boolean,
+    onDelete: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(backup.fileName, fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
+        Text("Tamano: ${backup.sizeBytes} bytes", color = AppTheme.colors.muted)
+        Text("Descarga: ${serverUrl.trimEnd('/')}${backup.downloadUrl}", color = AppTheme.colors.text)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Button(
+                enabled = enabled,
+                onClick = onDelete,
+                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.danger),
+            ) {
+                Text("Eliminar")
+            }
+        }
+    }
+}
+
+private suspend inline fun <T> CompanyApi.use(block: suspend (CompanyApi) -> T): T {
+    return try {
+        block(this)
+    } finally {
+        close()
+    }
+}

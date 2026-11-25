@@ -1,0 +1,863 @@
+package com.ideasdeveloper.bms.app.features.company.data
+
+import com.ideasdeveloper.bms.app.core.session.SessionExpiry
+import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.delete
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.put
+import io.ktor.client.request.setBody
+import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import io.ktor.client.plugins.timeout
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.encodeURLPathPart
+import io.ktor.http.isSuccess
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.Url
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.Json
+
+// Cliente HTTP para administrar tenants, estado de empresas y modulos instalados.
+class CompanyApi(serverUrl: String) {
+    // Normaliza la URL base configurada en el login.
+    private val baseUrl = serverUrl.trim().trimEnd('/')
+
+    init {
+        // Valida que la URL sea parseable antes de lanzar solicitudes.
+        Url(baseUrl)
+    }
+
+    // Carga el perfil editable de la empresa de la sesion business_owner.
+    suspend fun companyProfile(accessToken: String, companyCode: String): CompanyProfileResponse {
+        try {
+            val response = client.get("$baseUrl/companies/me") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (response.status == HttpStatusCode.Forbidden || response.status == HttpStatusCode.ServiceUnavailable) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cargar la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Actualiza nombre, logo y colores de la empresa actual.
+    suspend fun updateCompanyProfile(
+        accessToken: String,
+        companyCode: String,
+        request: UpdateCompanyProfileRequest,
+    ): CompanyProfileResponse {
+        try {
+            val response = client.put("$baseUrl/companies/me") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Carga la configuracion SMTP de la empresa de la sesion business_owner.
+    suspend fun mailSettings(accessToken: String, companyCode: String): CompanyMailForm =
+        call("No se pudo cargar la configuracion de correo.") {
+            client.get("$baseUrl/companies/me/mail") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+        }
+
+    // Guarda el SMTP; el servidor responde 400 con un mensaje en espanol si algun dato no es valido.
+    suspend fun updateMailSettings(accessToken: String, companyCode: String, input: CompanyMailInput): CompanyMailForm =
+        call("No se pudo guardar la configuracion de correo.") {
+            client.put("$baseUrl/companies/me/mail") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                contentType(ContentType.Application.Json)
+                setBody(input)
+            }
+        }
+
+    // Lista los ZIPs de backup creados o importados para esta empresa.
+    suspend fun listBackups(accessToken: String, companyCode: String): List<CompanyBackupResponse> {
+        try {
+            val response = client.get("$baseUrl/companies/me/backups") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body<CompanyBackupListResponse>().backups
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Crea un ZIP descargable desde el servidor.
+    suspend fun createBackup(accessToken: String, companyCode: String): CompanyBackupResponse {
+        try {
+            val response = client.post("$baseUrl/companies/me/backups") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+
+            if (response.status == HttpStatusCode.Created) {
+                return response.body()
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Elimina un ZIP de backup ya creado en el servidor.
+    suspend fun deleteBackup(accessToken: String, companyCode: String, fileName: String) {
+        try {
+            val response = client.delete("$baseUrl/companies/me/backups/$fileName") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+
+            if (response.status == HttpStatusCode.NoContent) return
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun companyUsers(accessToken: String, companyCode: String): CompanyUsersResponse {
+        try {
+            val response = client.get("$baseUrl/companies/me/users") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun createCompanyUser(
+        accessToken: String,
+        companyCode: String,
+        request: CreateCompanyUserRequest,
+    ): CompanyUserResponse {
+        try {
+            val response = client.post("$baseUrl/companies/me/users") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+
+            if (response.status == HttpStatusCode.Created) {
+                return response.body()
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun updateCompanyUserPermissions(
+        accessToken: String,
+        companyCode: String,
+        userId: String,
+        permissions: List<String>,
+    ): CompanyUserResponse {
+        try {
+            val response = client.put("$baseUrl/companies/me/users/$userId/permissions") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateCompanyUserPermissionsRequest(permissions))
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Cliente Ktor usado por las operaciones administrativas de empresa.
+    private val client = HttpClient {
+        installAppVersionHeader()
+        expectSuccess = false
+        followRedirects = false
+        install(SessionExpiry)
+
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true })
+        }
+
+        install(HttpTimeout) {
+            requestTimeoutMillis = 60_000
+            connectTimeoutMillis = 10_000
+        }
+    }
+
+    // Crea un tenant y su usuario business owner inicial.
+    suspend fun createCompany(accessToken: String, request: CreateCompanyRequest): CreateCompanyResponse {
+        try {
+            val response = client.post("$baseUrl/companies") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+
+            if (response.status == HttpStatusCode.Created) {
+                return response.body<CreateCompanyResponse>()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo crear la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Lista empresas existentes junto con sus modulos disponibles.
+    suspend fun listCompanies(accessToken: String): List<CompanySummaryResponse> {
+        try {
+            val response = client.get("$baseUrl/companies") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cargar las empresas.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Lista los modulos instalados en el servidor y su uso en empresas.
+    suspend fun listServerModules(accessToken: String): List<ServerModuleResponse> {
+        try {
+            val response = client.get("$baseUrl/server/modules") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cargar los modulos.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun serverModuleCatalog(accessToken: String): ServerModuleCatalogResponse {
+        try {
+            val response = client.get("$baseUrl/server/modules/catalog") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cargar el catalogo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun updateServerModuleCatalog(accessToken: String, catalogUrl: String): ServerModuleCatalogResponse {
+        try {
+            val response = client.put("$baseUrl/server/modules/catalog") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateServerModuleCatalogRequest(catalogUrl))
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar el catalogo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Elimina del catalogo activo del servidor un modulo que no esta en uso.
+    suspend fun deleteServerModule(accessToken: String, moduleId: String) {
+        try {
+            val response = client.delete("$baseUrl/server/modules/$moduleId") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.NoContent) {
+                return
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo eliminar el modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Instala en el catalogo activo un modulo disponible en el repositorio del servidor.
+    suspend fun installServerModule(accessToken: String, moduleId: String): ServerModuleResponse {
+        try {
+            val response = client.post("$baseUrl/server/modules/$moduleId/install") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo instalar el modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Crea la empresa del servidor si aun no existe y devuelve su codigo.
+    suspend fun createServerWorkspace(accessToken: String): ServerWorkspaceResponse {
+        try {
+            val response = client.post("$baseUrl/server/workspace") {
+                bearerAuth(accessToken)
+            }
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                throw CompanyException(response.body<CompanyErrorResponse>().message)
+            }
+            throw CompanyException("El servidor no pudo crear la empresa del servidor.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Activa o desactiva un modulo en el espacio del servidor (se crea al activar el primero).
+    suspend fun setServerModuleUsage(accessToken: String, moduleId: String, enabled: Boolean): ServerModuleResponse {
+        try {
+            val response = client.put("$baseUrl/server/modules/$moduleId/server-usage") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateCompanyModuleRequest(enabled))
+            }
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                throw CompanyException(response.body<CompanyErrorResponse>().message)
+            }
+            throw CompanyException("El servidor no pudo cambiar el uso del modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Actualiza los datos administrables de una empresa desde el dueno del servidor.
+    suspend fun updateCompany(
+        accessToken: String,
+        companyCode: String,
+        request: UpdateCompanyRequest,
+    ): CompanySummaryResponse {
+        try {
+            val response = client.put("$baseUrl/companies/$companyCode") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Activa o desactiva una empresa sin cambiar sus modulos individualmente.
+    suspend fun updateCompanyStatus(
+        accessToken: String,
+        companyCode: String,
+        active: Boolean,
+    ): CompanySummaryResponse {
+        try {
+            val response = client.put("$baseUrl/companies/$companyCode/status") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateCompanyStatusRequest(active))
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Todos los datos de un usuario de la empresa: usuario, nombre, correo, estado, permisos y contrasena.
+    suspend fun updateCompanyUser(
+        accessToken: String,
+        companyCode: String,
+        userId: String,
+        request: UpdateCompanyUserRequest,
+    ): CompanyUserResponse = send {
+        client.put("$baseUrl/companies/me/users/$userId") {
+            bearerAuth(accessToken)
+            header("X-Company-Code", companyCode)
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }
+    }
+
+    // Usuario, nombre y correo del business owner de una empresa (solo el dueno del servidor).
+    suspend fun businessOwner(accessToken: String, companyCode: String): BusinessOwnerResponse = send {
+        client.get("$baseUrl/companies/$companyCode/business-owner") { bearerAuth(accessToken) }
+    }
+
+    suspend fun updateBusinessOwner(accessToken: String, companyCode: String, request: UpdateBusinessOwnerRequest): BusinessOwnerResponse = send {
+        client.put("$baseUrl/companies/$companyCode/business-owner") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }
+    }
+
+    // Respuesta OK como [T]; cualquier otra, el mensaje de error del servidor.
+    private suspend inline fun <reified T> send(request: () -> HttpResponse): T {
+        try {
+            val response = request()
+            if (response.status == HttpStatusCode.OK) return response.body()
+            val error = runCatching { response.body<CompanyErrorResponse>() }.getOrNull()
+            throw CompanyException(error?.message ?: "El servidor no pudo completar la operacion.", code = error?.code)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Pone una nueva contrasena al business owner de una empresa y cierra sus sesiones.
+    suspend fun resetBusinessOwnerPassword(accessToken: String, companyCode: String, password: String) {
+        try {
+            val response = client.put("$baseUrl/companies/$companyCode/owner-password") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(ResetBusinessOwnerPasswordRequest(password))
+            }
+
+            if (response.status == HttpStatusCode.NoContent) {
+                return
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cambiar la contrasena.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Elimina una empresa desactivada y delega al servidor el borrado de su base tenant.
+    suspend fun deleteCompany(accessToken: String, companyCode: String) {
+        try {
+            val response = client.delete("$baseUrl/companies/$companyCode") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.NoContent) {
+                return
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo eliminar la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Activa o desactiva un modulo especifico para una empresa.
+    suspend fun updateModule(
+        accessToken: String,
+        companyCode: String,
+        moduleId: String,
+        enabled: Boolean,
+    ): CompanySummaryResponse {
+        try {
+            val response = client.put("$baseUrl/companies/$companyCode/modules/$moduleId") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateCompanyModuleRequest(enabled))
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar el modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // A donde puede cambiar la sesion: empresas y, para el dueno del servidor, el servidor.
+    suspend fun switchTargets(accessToken: String, companyCode: String?): SwitchTargetsResponse = call("No se pudieron cargar las empresas.") {
+        client.get("$baseUrl/auth/switch-targets") {
+            bearerAuth(accessToken)
+            companyCode?.let { header("X-Company-Code", it) }
+        }
+    }
+
+    // Nombre del servidor (solo el dueno del servidor).
+    suspend fun updateServerName(accessToken: String, name: String): ServerNameResponse = call("No se pudo cambiar el nombre del servidor.") {
+        client.put("$baseUrl/server/name") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(ServerNameRequest(name.trim()))
+        }
+    }
+
+    // El dueno del servidor duplica una empresa; sin newOwner la copia mantiene el business owner.
+    suspend fun duplicateCompany(accessToken: String, sourceCode: String, newCode: String, newOwner: DuplicateOwnerRequest?): CreateCompanyResponse =
+        call("No se pudo duplicar la empresa.") {
+            client.post("$baseUrl/companies/${sourceCode.encodeURLPathPart()}/duplicate") {
+                bearerAuth(accessToken)
+                // Copiar modulos y configuracion tarda mas que una pantalla.
+                timeout { requestTimeoutMillis = 5 * 60_000 }
+                contentType(ContentType.Application.Json)
+                setBody(DuplicateCompanyRequest(newCode.trim(), newOwner))
+            }
+        }
+
+    // Vincula la empresa al grupo de otra (mismo business owner) o, con targetCode null, la desvincula.
+    suspend fun linkCompany(accessToken: String, companyCode: String, targetCode: String?): List<CompanySummaryResponse> =
+        call("No se pudo vincular la empresa.") {
+            client.put("$baseUrl/companies/${companyCode.encodeURLPathPart()}/link") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(LinkCompanyRequest(targetCode))
+            }
+        }
+
+    // Abre una sesion en otra empresa (o, con targetCode null, en el servidor) sin pedir la contrasena.
+    suspend fun switchCompany(accessToken: String, companyCode: String?, targetCode: String?): LoginResponse = call("No se pudo cambiar de empresa.") {
+        client.post("$baseUrl/auth/switch-company") {
+            bearerAuth(accessToken)
+            companyCode?.let { header("X-Company-Code", it) }
+            contentType(ContentType.Application.Json)
+            setBody(SwitchCompanyRequest(targetCode))
+        }
+    }
+
+    suspend fun serverLogs(accessToken: String): ServerLogsResponse = call("No se pudieron cargar los errores del servidor.") {
+        client.get("$baseUrl/server/logs") {
+            bearerAuth(accessToken)
+        }
+    }
+
+    suspend fun coreUpdateStatus(accessToken: String): CoreUpdateStatusResponse = call("No se pudo consultar el estado de la actualizacion.") {
+        client.get("$baseUrl/server/core-update") {
+            bearerAuth(accessToken)
+        }
+    }
+
+    // Solicita actualizar el Core; el servidor responde 202 con la solicitud creada.
+    suspend fun requestCoreUpdate(accessToken: String): CoreUpdateRequestDto = call("No se pudo solicitar la actualizacion.") {
+        client.post("$baseUrl/server/core-update") {
+            bearerAuth(accessToken)
+        }
+    }
+
+    // Respuesta 2xx como [T]; si no, el mensaje del servidor o [failure].
+    private suspend inline fun <reified T> call(failure: String, request: () -> HttpResponse): T {
+        try {
+            val response = request()
+            if (response.status.isSuccess()) return response.body()
+            val message = runCatching { response.body<CompanyErrorResponse>().message }.getOrNull()
+            throw CompanyException(message ?: failure, status = response.status.value)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.", network = true)
+        }
+    }
+
+    // Libera recursos del cliente HTTP.
+    fun close() {
+        client.close()
+    }
+}
+
+// [network] es true cuando no hubo respuesta del servidor (por ejemplo, durante un reinicio).
+// [status] es el codigo HTTP de la respuesta de error, o null si no hubo respuesta.
+class CompanyException(message: String, val network: Boolean = false, val status: Int? = null, val code: String? = null) : Exception(message)

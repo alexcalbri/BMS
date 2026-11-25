@@ -1,0 +1,818 @@
+package com.ideasdeveloper.bms.modules.crm
+
+import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
+import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpTool
+import com.ideasdeveloper.bms.server.modules.McpToolCall
+import com.ideasdeveloper.bms.server.modules.McpToolException
+import com.ideasdeveloper.bms.server.modules.ModuleMcp
+import com.ideasdeveloper.bms.ui.UiFieldValues
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import java.util.UUID
+
+/**
+ * Agent tools of the CRM. They load the same [CrmScreens.Context] as the screens, so an agent sees
+ * only the leads of its user's scope (interests, ownership, reception, "see all") and follows the
+ * same rules to create, edit, move and assign leads.
+ */
+object CrmMcpTools {
+    // Assigned users (several, all equal). `owner` keeps working as "replace the assigned users by this one".
+    internal val ownerArguments = mapOf(
+        "owner" to McpSchema.string("Un solo usuario asignado (compatibilidad): reemplaza a los asignados por este; vacio deja el lead sin asignar. Solo si el usuario puede asignar leads."),
+        "owners" to buildJsonObject {
+            put("type", "array")
+            put("description", "Usuarios asignados al lead, por nombre (ver list_pipeline); todos son iguales. Segun ownersMode se anaden, se quitan o reemplazan a los actuales. Solo si el usuario puede asignar leads.")
+            put("items", McpSchema.string("Nombre del usuario."))
+        },
+        "ownersMode" to McpSchema.string("Que hacer con owners/owner: replace (por defecto, deja solo esos), add (los anade a los actuales) o remove (los quita).", listOf("replace", "add", "remove")),
+    )
+
+    /** What the agent asked to do with the assigned users: how and with whom. */
+    class OwnersChange(val mode: CrmAssignees.Mode, val ids: List<UUID>)
+
+    /**
+     * The assigned users the call asks for, or null when it sends neither `owner` nor `owners`. Names are the ones of
+     * list_pipeline (an email also works); an unknown one is an error. A blank `owner` with replace leaves nobody assigned.
+     */
+    internal fun ownersChange(call: McpToolCall, context: CrmScreens.Context, legacy: List<CrmUser> = emptyList(), blankNeedsPermission: Boolean = true): OwnersChange? =
+        ownersRequest(call.arguments, context.canAssign, context.users, legacy, blankNeedsPermission)
+
+    /** [ownersChange] over the raw arguments, with no database: the rules of owner / owners / ownersMode. */
+    fun ownersRequest(arguments: JsonObject, canAssign: Boolean, users: List<CrmUser>, legacy: List<CrmUser> = emptyList(), blankNeedsPermission: Boolean = true): OwnersChange? {
+        if ("owner" !in arguments && "owners" !in arguments) return null
+        val modeText = (arguments["ownersMode"] as? JsonPrimitive)?.contentOrNull.orEmpty().trim().lowercase()
+        val mode = when (modeText) {
+            "", "replace" -> CrmAssignees.Mode.Replace
+            "add" -> CrmAssignees.Mode.Add
+            "remove" -> CrmAssignees.Mode.Remove
+            else -> throw McpToolException("'ownersMode' debe ser replace, add o remove (recibido '$modeText').")
+        }
+        val sent = when (val owners = arguments["owners"]) {
+            is JsonArray -> owners.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.flatMap { CrmAssignees.parseList(it) }
+            is JsonNull -> emptyList()
+            is JsonPrimitive -> CrmAssignees.parseList(owners.content)
+            else -> emptyList()
+        }
+        // `owner` takes several names too ("Ana, Beto"); "Sin asignar" is the explicit way to say nobody.
+        val ownerText = (arguments["owner"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.contentOrNull.orEmpty()
+        val people = (sent + CrmAssignees.parseList(ownerText)).filter { it != CrmForms.Unassigned }.distinctBy { it.lowercase() }
+        if (!canAssign) {
+            // Creating a lead with a blank owner asks for nothing: it just starts assigned to the user like the form does.
+            if (!blankNeedsPermission && people.isEmpty() && mode == CrmAssignees.Mode.Replace) return null
+            throw McpToolException("El usuario no puede cambiar los asignados del lead.")
+        }
+        // Removing may name users that no longer have access (shown as "<usuario> (sin acceso)"): they can still be taken out.
+        val matched = CrmAssignees.match(people, users + if (mode == CrmAssignees.Mode.Remove) legacy else emptyList())
+        if (matched.unmatched.isNotEmpty()) {
+            throw McpToolException("No son usuarios con acceso al CRM: ${matched.unmatched.joinToString()}. Usuarios: ${users.joinToString { it.name }}.")
+        }
+        if (mode != CrmAssignees.Mode.Replace && matched.ids.isEmpty()) throw McpToolException("Indica a quien anadir o quitar en 'owners'.")
+        return OwnersChange(mode, matched.ids)
+    }
+
+    /** The bulk tool never empties the assigned users by omission: owners / owner must be sent (an empty owners list or "Sin asignar" empties them). */
+    fun ownersRequiredForBulk(arguments: JsonObject, canAssign: Boolean, users: List<CrmUser>, legacy: List<CrmUser> = emptyList()): OwnersChange =
+        ownersRequest(arguments, canAssign, users, legacy)
+            ?: throw McpToolException("Indica owners (lista, vacia para dejar sin asignar) u owner; ownersMode: replace, add o remove.")
+
+    private val leadArguments = mapOf(
+        "name" to McpSchema.string("Nombre de la persona."),
+        "email" to McpSchema.string("Correo electronico.", format = "email"),
+        "phone" to McpSchema.string("Telefono con codigo de pais."),
+        "stage" to McpSchema.string("Nombre de la etapa del embudo (ver list_pipeline)."),
+        "interest" to McpSchema.string("Nombre del interes, cuando la empresa usa intereses (ver list_pipeline)."),
+        "source" to McpSchema.string("Origen del lead, por ejemplo Web, WhatsApp o Referido."),
+        "language" to McpSchema.string("Idioma de la persona."),
+        "message" to McpSchema.string("Mensaje o consulta original."),
+        "details" to McpSchema.string("Notas fijas o detalles del lead."),
+        "targetStart" to McpSchema.date("Alias de la fecha de ingreso (check-in): escribe en el campo de fecha elegido como ingreso en Configuracion > Integraciones > Fechas de estadia (ver stayDates en list_pipeline). Si la empresa no eligio ninguno, da error. Tambien se puede enviar en customFields."),
+        "targetEnd" to McpSchema.date("Alias de la fecha de salida (check-out): escribe en el campo de fecha elegido como salida en Fechas de estadia. Debe ser igual o posterior al ingreso. Tambien se puede enviar en customFields."),
+        "estimatedValue" to McpSchema.number("Valor estimado del negocio."),
+        "followUpOn" to McpSchema.date("Proximo seguimiento."),
+        "customFields" to buildJsonObject {
+            put("type", "object")
+            put(
+                "description",
+                "Campos personalizados de la empresa (ver list_pipeline), por nombre o clave: texto, numero, fecha AAAA-MM-DD, " +
+                    "true/false o, en listas de varias opciones, un arreglo de opciones. Los archivos se adjuntan solo desde la app.",
+            )
+        },
+    ) + ownerArguments
+
+    // What this module tells agents about itself (see ModuleMcp): leads, settings and integrations.
+    val mcp: ModuleMcp
+        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmAutomationMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools + CrmImportSources.mcpTools + CrmScreenProviders.mcpTools)
+
+    private const val Instructions =
+        "El CRM sigue a los interesados (leads) por un embudo de etapas; cerrar en una etapa ganada o perdida termina el seguimiento. " +
+            "Cada lead es un cliente de Clientes. Con intereses activados, cada usuario ve solo los leads de sus intereses o los que tiene " +
+            "asignados (un lead puede tener varios usuarios asignados, todos iguales y sin responsable principal; cada uno lo ve aunque no sea de sus intereses): " +
+            "veras exactamente lo que ve tu usuario. Si en una nota mencionan a tu usuario (add_lead_note con mentions o @Nombre), tambien ves ese lead mientras " +
+            "este abierto, pero solo para leerlo (search_leads, get_lead, get_lead_messages) y responder con notas (add_lead_note): no puedes moverlo, editarlo, " +
+            "asignarlo, archivarlo ni usar acciones en lote en el. Las etapas, intereses y usuarios se nombran como los devuelve list_pipeline. " +
+            "Los nuevos leads pueden traer un usuario sugerido que, al aprobarlo, se anade a los asignados. Antes de enviar un mensaje a un lead, crear " +
+            "una reserva o cambiar configuracion o integraciones, muestra lo que vas a hacer y espera la confirmacion del usuario. " +
+            "Las credenciales de las integraciones y del correo (API keys, tokens, secretos, contrasenas) se configuran solo en la app; " +
+            "nunca las pidas ni las recibas. Meta, WordPress, Encuentra24, Cloudbeds y las fuentes externas de importacion son extensiones que cada empresa instala " +
+            "y activa en Empresa > Extensiones: si una herramienta responde que la extension no esta activa, dile al usuario que la instale o la active alli. Las automatizaciones (list_automations) envian plantillas, cambian etapas o campos, avisan a usuarios y usan Cloudbeds " +
+            "cuando se dispara su evento o su fecha; los campos de tipo Boton de la ficha (press_lead_button) y las automatizaciones manuales (run_automation) " +
+            "se ejecutan solo a pedido del usuario: muestra lo que haran y espera su confirmacion."
+
+    val tools = listOf(
+        McpTool(
+            name = "list_pipeline",
+            title = "Etapas, intereses y usuarios asignables",
+            description = "Devuelve las etapas del embudo (en orden), los intereses que el usuario puede usar y los usuarios a quienes se puede asignar un lead (owners). Usalo antes de crear o mover leads.",
+            permission = CrmScreens.View,
+            readOnly = true,
+        ) { call -> pipeline(call) },
+        McpTool(
+            name = "search_leads",
+            title = "Buscar leads",
+            description = "Busca leads visibles para el usuario por nombre, correo, telefono, origen o mensaje, con filtros por etapa y asignado. Cada lead trae la lista de asignados (owners). Los mas recientes primero. Incluye los leads donde mencionaron al usuario (solo lectura y notas).",
+            permission = CrmScreens.View,
+            readOnly = true,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "query" to McpSchema.string("Texto a buscar (opcional)."),
+                    "stage" to McpSchema.string("Solo leads de esta etapa."),
+                    "mine" to McpSchema.boolean("Solo leads donde el usuario es uno de los asignados."),
+                    "openOnly" to McpSchema.boolean("Solo leads abiertos (no ganados ni perdidos)."),
+                    "limit" to McpSchema.integer("Cantidad maxima de resultados.", 1, 100),
+                    "offset" to McpSchema.integer("Resultados a saltar, para paginar.", 0),
+                ),
+            ),
+        ) { call -> search(call) },
+        McpTool(
+            name = "get_lead",
+            title = "Ver lead",
+            description = "Devuelve un lead con sus datos, la lista de usuarios asignados (owners), los usuarios mencionados con acceso activo (mentioned) y su actividad reciente (notas, cambios de etapa, mensajes). Si el usuario lo ve solo porque lo mencionaron, viene readOnly=true: solo puede leerlo y agregar notas.",
+            permission = CrmScreens.View,
+            readOnly = true,
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> lead(call) },
+        McpTool(
+            name = "list_follow_ups",
+            title = "Seguimientos pendientes",
+            description = "Leads abiertos con seguimiento hasta una fecha (incluye los vencidos), el mas proximo primero.",
+            permission = CrmScreens.View,
+            readOnly = true,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "until" to McpSchema.date("Fecha limite; por defecto dentro de 7 dias."),
+                    "mine" to McpSchema.boolean("Solo leads donde el usuario es uno de los asignados."),
+                ),
+            ),
+        ) { call -> followUps(call) },
+        McpTool(
+            name = "pipeline_summary",
+            title = "Resumen del embudo",
+            description = "Totales de leads visibles: abiertos, creados y ganados en el periodo, seguimientos vencidos y cantidad por etapa.",
+            permission = CrmScreens.View,
+            readOnly = true,
+            inputSchema = McpSchema.obj(mapOf("days" to McpSchema.integer("Dias hacia atras del periodo; por defecto 30.", 1, 365))),
+        ) { call -> summary(call) },
+        McpTool(
+            name = "create_lead",
+            title = "Crear lead",
+            description = "Crea un lead. Si ya existe un cliente con el mismo correo (o telefono) se usa ese cliente; si no, se crea un prospecto en Clientes. Busca antes para no duplicar. Para asignar a varias personas envia owners (lista de nombres); owner (uno solo) sigue funcionando.",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(leadArguments, required = listOf("name")),
+        ) { call -> create(call) },
+        McpTool(
+            name = "update_lead",
+            title = "Editar lead",
+            description = "Modifica un lead visible. Solo cambia los datos enviados; enviar un texto vacio borra ese dato. Los cambios de contacto se guardan en el cliente. Asignados: owners con ownersMode add (anade), remove (quita) o replace (reemplaza); owner (uno solo) reemplaza a los asignados por ese. Cada usuario anadido recibe el aviso Te asignaron un lead.",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(leadArguments + ("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> update(call) },
+        McpTool(
+            name = "move_lead",
+            title = "Mover lead de etapa",
+            description = "Pasa un lead visible a otra etapa del embudo. Pasarlo a una etapa ganada o perdida lo cierra.",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(
+                mapOf("id" to McpSchema.uuid("Id del lead."), "stage" to McpSchema.string("Nombre de la etapa destino.")),
+                required = listOf("id", "stage"),
+            ),
+        ) { call -> move(call) },
+        McpTool(
+            name = "restore_lead",
+            title = "Restaurar lead archivado",
+            description = "Saca un lead archivado del archivo: vuelve a la etapa que tenia al archivarse. Si ya estaba abierto no hace nada. " +
+                "Cloudbeds y las importaciones no restauran leads por su cuenta.",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> restore(call) },
+        McpTool(
+            name = "add_lead_note",
+            title = "Agregar nota a un lead",
+            description = "Agrega una nota a la actividad de un lead visible. Puede mencionar a usuarios del CRM, aunque el lead no sea suyo: con mentions (nombres o correos, ver list_pipeline) " +
+                "y tambien se reconoce @Nombre o @correo dentro del texto (por ejemplo \"@Ana revisa esto\"). Cada mencionado puede leer el lead y responder con notas mientras este abierto " +
+                "y recibe el aviso Te mencionaron en un lead (no se avisa a quien se menciona a si mismo). Devuelve a quien se menciono (mentioned) y lo que no se reconocio (notRecognized). " +
+                "Tambien lo puede usar un usuario al que mencionaron en ese lead, aunque no tenga el permiso de gestionar leads.",
+            // View: a mentioned user without crm.leads.manage can answer; for leads inside the scope note() still asks for crm.leads.manage.
+            permission = CrmScreens.View,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "id" to McpSchema.uuid("Id del lead."),
+                    "note" to McpSchema.string("Texto de la nota."),
+                    "mentions" to buildJsonObject {
+                        put("type", "array")
+                        put("description", "Usuarios a mencionar, por nombre o correo; se anaden a los @ del texto. Solo usuarios con acceso al CRM.")
+                        put("items", McpSchema.string("Nombre o correo del usuario."))
+                    },
+                ),
+                required = listOf("id", "note"),
+            ),
+        ) { call -> note(call) },
+        McpTool(
+            name = "get_lead_messages",
+            title = "Mensajes de un lead",
+            description = "Devuelve los mensajes enviados y recibidos con un lead visible (correo, WhatsApp, Messenger, Instagram), del mas reciente al mas antiguo.",
+            permission = CrmScreens.View,
+            readOnly = true,
+            inputSchema = McpSchema.obj(
+                mapOf("id" to McpSchema.uuid("Id del lead."), "limit" to McpSchema.integer("Cantidad maxima de mensajes.", 1, 100)),
+                required = listOf("id"),
+            ),
+        ) { call -> messages(call) },
+        McpTool(
+            name = "list_message_templates",
+            title = "Plantillas y canales de mensajes",
+            description = "Lista las plantillas de mensajes de la empresa y los canales por los que se puede escribir a los leads.",
+            permission = CrmScreens.View,
+            readOnly = true,
+        ) { call -> templates(call) },
+        McpTool(
+            name = "send_message",
+            title = "Enviar mensaje a un lead",
+            description = "Envia un mensaje a un lead visible por un canal (correo, WhatsApp...), con texto propio o una plantilla; los marcadores de la plantilla " +
+                "se llenan con los datos del lead. Le llega de inmediato a la persona: muestra el mensaje al usuario y espera su confirmacion antes de enviarlo.",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "id" to McpSchema.uuid("Id del lead."),
+                    "channel" to McpSchema.string("Canal: id o nombre de list_message_templates, por ejemplo email o WhatsApp."),
+                    "text" to McpSchema.string("Texto del mensaje; si se omite se usa la plantilla."),
+                    "subject" to McpSchema.string("Asunto (correo); si se omite se usa el de la plantilla."),
+                    "template" to McpSchema.string("Nombre de la plantilla (list_message_templates)."),
+                ),
+                required = listOf("id", "channel"),
+            ),
+        ) { call -> send(call) },
+        McpTool(
+            name = "mark_lead_reviewed",
+            title = "Marcar lead como revisado",
+            description = "Quita el aviso de revision de un lead visible (por ejemplo un lead que volvio a escribir o un posible duplicado).",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> reviewed(call) },
+        McpTool(
+            name = "list_pending_assignments",
+            title = "Asignaciones pendientes",
+            description = "Lista los leads con un usuario sugerido para asignar que falta aprobar o descartar.",
+            permission = CrmScreens.Assign,
+            readOnly = true,
+            inputSchema = McpSchema.obj(mapOf("limit" to McpSchema.integer("Cantidad maxima de leads.", 1, 100))),
+        ) { call -> pendingAssignments(call) },
+        McpTool(
+            name = "resolve_assignment",
+            title = "Aprobar o descartar asignacion",
+            description = "Aprueba (el sugerido se anade a los asignados del lead) o descarta la sugerencia de asignado de un lead visible.",
+            permission = CrmScreens.Assign,
+            inputSchema = McpSchema.obj(
+                mapOf("id" to McpSchema.uuid("Id del lead."), "approve" to McpSchema.boolean("true aprueba, false descarta.")),
+                required = listOf("id", "approve"),
+            ),
+        ) { call -> resolveAssignment(call) },
+        McpTool(
+            name = "delete_lead",
+            title = "Eliminar lead",
+            description = "Elimina un lead visible con su actividad; el cliente queda en Clientes. No se puede deshacer: confirma con el usuario antes.",
+            permission = CrmScreens.Delete,
+            destructive = true,
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> delete(call) },
+    )
+
+    private fun context(call: McpToolCall) = CrmScreens.Context.load(call.tenant, call.permissions)
+
+    // The user, marked as acting through an agent in the lead's activity.
+    private fun actor(call: McpToolCall): CrmActor {
+        val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
+        return actor.copy(name = "${actor.name} (agente ${call.agentName})")
+    }
+
+    private fun visibleLead(call: McpToolCall, context: CrmScreens.Context): CrmLead =
+        CrmRepository.lead(call.tenant, call.requiredUuid("id"))?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
+            ?: throw McpToolException("Lead no encontrado o no visible para el usuario.")
+
+    // Scope or an active mention: only to read a lead and add notes (get_lead, get_lead_messages, add_lead_note). Every other tool uses [visibleLead].
+    private fun readableLead(call: McpToolCall, context: CrmScreens.Context): CrmLead =
+        CrmRepository.lead(call.tenant, call.requiredUuid("id"))?.takeIf { context.readAccess(it).canRead }
+            ?: throw McpToolException("Lead no encontrado o no visible para el usuario.")
+
+    private fun stage(context: CrmScreens.Context, name: String): CrmStage =
+        context.stages.firstOrNull { it.name.equals(name, ignoreCase = true) || it.id.toString() == name }
+            ?: throw McpToolException("No existe la etapa '$name'. Etapas: ${context.stages.joinToString { it.name }}.")
+
+    private fun pipeline(call: McpToolCall): JsonElement {
+        val context = context(call)
+        return buildJsonObject {
+            putJsonArray("stages") {
+                context.stages.forEach { stage ->
+                    add(buildJsonObject {
+                        put("id", stage.id.toString())
+                        put("name", stage.name)
+                        put("kind", stage.kind.id)
+                    })
+                }
+            }
+            put("interestsEnabled", context.interestsEnabled)
+            if (context.interestsEnabled) {
+                putJsonArray("interests") { context.usableInterests.forEach { add(JsonPrimitive(it.name)) } }
+                put("canUseNoInterest", context.scope.seesAll || context.scope.reception)
+            }
+            putJsonArray("customFields") {
+                context.fields.forEach { field ->
+                    add(
+                        buildJsonObject {
+                            put("key", field.key)
+                            put("name", field.label)
+                            put("type", field.type.label)
+                            if (field.type == CrmFieldType.Dropdown) {
+                                putJsonArray("options") { field.options.forEach { add(JsonPrimitive(it)) } }
+                                put("multiple", field.multiple)
+                            }
+                            put("required", field.required)
+                            put("section", CrmFieldSections.title(field, context.sections))
+                        },
+                    )
+                }
+            }
+            // Sections of the lead form in order; a custom field can be in any of them (fixed = built-in, cannot be deleted).
+            putJsonArray("sections") {
+                CrmFieldSections.sorted(context.sections).forEach { section ->
+                    add(buildJsonObject { put("name", section.name); put("fixed", section.isSystem) })
+                }
+            }
+            // The date fields that are the check-in and check-out: targetStart and targetEnd write in them.
+            val stay = CrmStay.effective(context.stay, context.fields)
+            put(
+                "stayDates",
+                buildJsonObject {
+                    put("start", context.fields.firstOrNull { it.key == stay.startKey }?.label.orEmpty())
+                    put("end", context.fields.firstOrNull { it.key == stay.endKey }?.label.orEmpty())
+                },
+            )
+            put("canAssign", context.canAssign)
+            putJsonArray("owners") { context.users.forEach { add(JsonPrimitive(it.name)) } }
+        }
+    }
+
+    private fun filter(call: McpToolCall, context: CrmScreens.Context) = CrmLeadFilter(
+        ownerUserId = if (call.boolean("mine")) context.scope.userId ?: throw McpToolException("El usuario no puede tener leads propios.") else null,
+        stageId = call.string("stage", 60).takeIf { it.isNotEmpty() }?.let { stage(context, it).id },
+        search = call.string("query", 100),
+        openOnly = call.boolean("openOnly"),
+        // The leads the user was mentioned in show too (read-only).
+        withMentions = true,
+    )
+
+    private fun search(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val filter = filter(call, context)
+        val limit = call.int("limit", 20, 1..100)
+        val offset = call.int("offset", 0, 0..100_000)
+        val leads = CrmRepository.leads(call.tenant, context.scope, filter, limit, offset)
+        return buildJsonObject {
+            put("total", CrmRepository.count(call.tenant, context.scope, filter))
+            putJsonArray("leads") { leads.forEach { add(json(it, context, brief = true, mentions = true)) } }
+        }
+    }
+
+    private fun lead(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = readableLead(call, context)
+        val access = context.readAccess(lead)
+        return JsonObject(json(lead, context, brief = false) + buildJsonObject {
+            // Seen only because of a mention: the agent may read it and add notes, nothing else.
+            if (!access.canWrite) put("readOnly", true)
+            putJsonArray("mentioned") {
+                CrmMentions.active(call.tenant, lead.id).forEach { mention ->
+                    add(buildJsonObject {
+                        put("name", CrmRepository.displayNames(call.tenant, context.names, listOf(mention.userId)))
+                        if (mention.byName.isNotBlank()) put("by", mention.byName)
+                        put("at", mention.at.toString())
+                    })
+                }
+            }
+            putJsonArray("activity") {
+                CrmRepository.activity(call.tenant, lead.id, 30).forEach { entry ->
+                    add(buildJsonObject {
+                        put("kind", entry.kind)
+                        put("body", entry.body.take(2_000))
+                        entry.fromStage?.let { put("fromStage", it) }
+                        entry.toStage?.let { put("toStage", it) }
+                        put("author", entry.author)
+                        put("at", entry.createdAt.toString())
+                    })
+                }
+            }
+        })
+    }
+
+    private fun followUps(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val until = call.date("until") ?: context.today.plusDays(7)
+        val filter = CrmLeadFilter(ownerUserId = if (call.boolean("mine")) context.scope.userId else null)
+        val leads = CrmRepository.followUps(call.tenant, context.scope, filter, until, 100)
+        return buildJsonObject { putJsonArray("leads") { leads.forEach { add(json(it, context, brief = true)) } } }
+    }
+
+    private fun summary(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val days = call.int("days", 30, 1..365)
+        val totals = CrmRepository.summary(call.tenant, context.scope, context.today.minusDays(days.toLong()), context.today)
+        val perStage = CrmRepository.board(call.tenant, context.scope, CrmLeadFilter(), 0).second
+        return buildJsonObject {
+            put("days", days)
+            put("open", totals.open)
+            put("createdInPeriod", totals.createdSince)
+            put("wonInPeriod", totals.wonSince)
+            put("overdueFollowUps", totals.overdue)
+            putJsonArray("stages") {
+                context.stages.forEach { stage ->
+                    add(buildJsonObject {
+                        put("name", stage.name)
+                        put("kind", stage.kind.id)
+                        put("leads", perStage[stage.id] ?: 0)
+                    })
+                }
+            }
+        }
+    }
+
+    private fun create(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val values = (leadValues(call, emptyMap()) + customValues(call, context)).toMutableMap()
+        values["stage"] = values["stage"]?.takeIf { it.isNotEmpty() }?.let { stage(context, it).name }
+            ?: context.stages.firstOrNull { it.kind == StageKind.Open }?.name.orEmpty()
+        // Like the form: users limited to their interests start with the first one.
+        if (values["interest"].isNullOrEmpty() && context.interestsEnabled && !context.scope.seesAll && !context.scope.reception) {
+            values["interest"] = context.usableInterests.firstOrNull()?.name.orEmpty()
+        }
+        // Throws when the user cannot assign; without owner/owners the lead starts assigned to the user (like the form).
+        val change = ownersChange(call, context, blankNeedsPermission = false)
+        val input = parse(values, context)
+        if (!context.scope.canUseInterest(input.interestId)) throw McpToolException("El usuario no puede crear leads de ese interes.")
+        val owned = input.copy(
+            ownerUserIds = if (change != null) CrmAssignees.combine(emptyList(), change.mode, change.ids)
+            else listOfNotNull(context.scope.userId?.takeIf { id -> context.users.any { it.id == id } }),
+        )
+        val stage = context.stage(input.stageId)!!
+        val id = CrmRepository.createLead(call.tenant, owned, stage, actor(call), fields = context.fields, scope = context.scope, origin = OutboundOrigin.Agent)
+        CrmNotify.newLead(call.tenant, id)
+        CrmNotify.assigned(call.tenant, call.notifier, id, owned.ownerUserIds.orEmpty(), context.scope.userId)
+        return json(CrmRepository.lead(call.tenant, id)!!, context, brief = false)
+    }
+
+    private fun update(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        val current = mapOf(
+            "name" to lead.name,
+            "email" to lead.email,
+            "phone" to lead.phone,
+            "stage" to (context.stage(lead.stageId)?.name.orEmpty()),
+            "interest" to (lead.interestId?.let { context.names.interest(it) }.orEmpty()),
+            "source" to lead.source,
+            "language" to lead.language,
+            "message" to lead.message,
+            "details" to lead.details,
+            "estimatedValue" to lead.estimatedValue?.toPlainString().orEmpty(),
+            "followUpOn" to lead.followUpOn?.toString().orEmpty(),
+        )
+        // The assigned users only change when the agent sends owner/owners (throws when the user cannot assign).
+        val change = ownersChange(call, context, CrmRepository.legacyUsers(call.tenant, context.users, lead.ownerUserIds))
+        val values = (leadValues(call, current) + customValues(call, context)).toMutableMap()
+        if (call.has("stage")) values["stage"] = stage(context, call.string("stage", 60)).name
+        val parsed = parse(values, context, lead.customFields)
+        // A new stage is applied afterwards like move_lead, which records the stage history.
+        val input = parsed.copy(
+            stageId = lead.stageId,
+            // null (nothing sent): the assigned users are not touched at all.
+            ownerUserIds = change?.let { CrmAssignees.combineKeepingInactive(lead.ownerUserIds, it.mode, it.ids, context.users.map { user -> user.id }) },
+        )
+        if (input.interestId != lead.interestId && !context.scope.canUseInterest(input.interestId)) throw McpToolException("El usuario no puede asignar ese interes.")
+        // Checked before saving anything: an archived lead does not change stage.
+        if (call.has("stage") && parsed.stageId != lead.stageId && lead.archivedAt != null) throw McpToolException("Restaura el lead antes de moverlo.")
+        val ownersChanged = CrmRepository.updateLead(call.tenant, lead, input, context.stages, context.names, actor(call), context.fields, origin = OutboundOrigin.Agent)
+        // Only the users really added are told.
+        CrmNotify.assigned(call.tenant, call.notifier, lead.id, ownersChanged.added, context.scope.userId)
+        if (call.has("stage") && parsed.stageId != lead.stageId) {
+            CrmRepository.lead(call.tenant, lead.id)?.let { moveChecked(call, context, it, context.stage(parsed.stageId)!!) }
+        }
+        val updated = CrmRepository.lead(call.tenant, lead.id)!!
+        return if (context.scope.canSee(updated.interestId, updated.ownerUserIds)) {
+            json(updated, context, brief = false)
+        } else {
+            buildJsonObject {
+                put("id", lead.id.toString())
+                put("result", "Cambios guardados. El lead paso a un interes que el usuario no ve.")
+            }
+        }
+    }
+
+    private fun move(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        val target = stage(context, call.requiredString("stage", 60))
+        moveChecked(call, context, lead, target)
+        return json(CrmRepository.lead(call.tenant, lead.id)!!, context, brief = true)
+    }
+
+    // Same rule as dragging on the board: with rooms chosen in Cloudbeds the lead is won by confirming the reservation.
+    private fun moveChecked(call: McpToolCall, context: CrmScreens.Context, lead: CrmLead, stage: CrmStage) {
+        val pendingRooms = CrmHost.chosenRooms(call.tenant, lead.id).isNotEmpty()
+        val reserved = CrmHost.reservationsForLead(call.tenant, lead.id).any { it.status !in setOf("canceled", "no_show") }
+        if (stage.kind == StageKind.Won && pendingRooms && !reserved) {
+            throw McpToolException("${lead.name} tiene habitaciones asignadas: la reserva debe confirmarse desde su ficha en el CRM.")
+        }
+        try {
+            CrmRepository.moveLead(call.tenant, lead, stage, context.stages, actor(call), OutboundOrigin.Agent)
+        } catch (failure: CrmValidationException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+    }
+
+    private fun restore(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        return when (restoreCheck(lead.archivedAt != null, call.permissions.has(CrmScreens.Manage))) {
+            CrmRestoreCheck.Restore -> {
+                if (!CrmRepository.restoreLead(call.tenant, lead.id, actor(call))) throw McpToolException("${lead.name} no esta archivado.")
+                json(CrmRepository.lead(call.tenant, lead.id)!!, context, brief = true)
+            }
+            CrmRestoreCheck.AlreadyOpen -> throw McpToolException("${lead.name} no esta archivado.")
+            CrmRestoreCheck.NoPermission -> throw McpToolException("El usuario no puede restaurar leads.")
+        }
+    }
+
+    private fun note(call: McpToolCall): JsonElement {
+        val context = context(call)
+        // The one write a mention allows: with the scope it needs crm.leads.manage (as before), through a mention it does not.
+        val lead = readableLead(call, context)
+        if (!CrmMentions.canAddNote(context.readAccess(lead), call.permissions.has(CrmScreens.Manage))) {
+            throw McpToolException("El usuario no puede agregar notas a ese lead.")
+        }
+        val body = try {
+            CrmForms.note(mapOf("note" to call.string("note", 10_000)))
+        } catch (failure: CrmValidationException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        val chosen = mentionNames(call)
+        val unmatched = CrmAssignees.match(chosen, context.mentionable).unmatched
+        if (unmatched.isNotEmpty()) {
+            throw McpToolException("No son usuarios con acceso al CRM: ${unmatched.joinToString()}. Usuarios: ${context.mentionable.joinToString { it.name }}.")
+        }
+        val actor = actor(call)
+        val result = CrmMentions.addNote(call.tenant, lead.id, body, chosen, context.mentionable, actor, CrmMentions.canGrant(context.readAccess(lead)), OutboundOrigin.Agent)
+        CrmNotify.mentioned(call.tenant, call.notifier, lead.id, body, actor, result.mentioned)
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", "Nota agregada.")
+            putJsonArray("mentioned") { result.mentioned.forEach { add(JsonPrimitive(it.name)) } }
+            if (!result.granted) put("mentionsIgnored", "Solo quien gestiona el lead da acceso al mencionar: las @ quedaron como texto.")
+            if (result.unknown.isNotEmpty()) putJsonArray("notRecognized") { result.unknown.forEach { add(JsonPrimitive(it)) } }
+        }
+    }
+
+    // `mentions` of add_lead_note: names or emails, as an array (a plain text with commas also works).
+    private fun mentionNames(call: McpToolCall): List<String> = when (val sent = call.arguments["mentions"]) {
+        is JsonArray -> sent.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.flatMap { CrmAssignees.parseList(it) }
+        is JsonNull -> emptyList()
+        is JsonPrimitive -> CrmAssignees.parseList(sent.content)
+        else -> emptyList()
+    }.distinctBy { it.lowercase() }
+
+    // The agent's arguments over [base], as the lead form would send them.
+    private fun messages(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = readableLead(call, context)
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            putJsonArray("messages") {
+                CrmInbox.messages(call.tenant, lead.id, call.int("limit", 20, 1..100)).forEach { message ->
+                    add(buildJsonObject {
+                        put("direction", if (message.direction == "out") "enviado" else "recibido")
+                        put("channel", CrmChannels.find(message.channel)?.label ?: message.channel)
+                        if (message.subject.isNotEmpty()) put("subject", message.subject)
+                        put("body", message.body.take(5_000))
+                        put("status", message.status)
+                        if (message.error.isNotEmpty()) put("error", message.error)
+                        put("author", message.author)
+                        put("at", message.createdAt.toString())
+                    })
+                }
+            }
+        }
+    }
+
+    private fun templates(call: McpToolCall): JsonElement = buildJsonObject {
+        putJsonArray("channels") {
+            CrmChannels.all.forEach { channel ->
+                add(buildJsonObject {
+                    put("id", channel.id)
+                    put("name", channel.label)
+                })
+            }
+        }
+        putJsonArray("templates") {
+            CrmMail.templates(call.tenant).forEach { template ->
+                add(buildJsonObject {
+                    put("name", template.name)
+                    put("subject", template.subject)
+                    put("body", template.body.take(5_000))
+                })
+            }
+        }
+    }
+
+    // Same composition and channel checks as the reply form of the lead.
+    private fun send(call: McpToolCall): JsonElement {
+        val context = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
+        val lead = visibleLead(call, context)
+        val wanted = call.requiredString("channel", 40)
+        val channel = CrmChannels.all.firstOrNull { it.id.equals(wanted, ignoreCase = true) || it.label.equals(wanted, ignoreCase = true) }
+            ?: throw McpToolException("No existe el canal '$wanted'. Canales: ${CrmChannels.all.joinToString { it.label }}.")
+        val values = mapOf(
+            "channel" to channel.label,
+            "template" to call.string("template", 200),
+            "text" to call.string("text", 20_001),
+            "subject" to call.string("subject", 500),
+        )
+        val (_, email) = try {
+            CrmAdminScreens.composeReply(context, lead, values)
+        } catch (failure: CrmValidationException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        val actor = actor(call)
+        try {
+            val externalId = channel.send(CrmChannelContext(call.tenant, call.access.serverMail), lead, email)
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, externalId, "sent", "", actor.userId, actor.name)
+        } catch (failure: CrmChannelException) {
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, null, "failed", failure.message.orEmpty(), actor.userId, actor.name)
+            throw McpToolException("No se pudo enviar por ${channel.label}: ${failure.message.orEmpty()}")
+        }
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", "Mensaje enviado por ${channel.label}.")
+        }
+    }
+
+    private fun reviewed(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        if (lead.reviewReason.isEmpty()) throw McpToolException("Ese lead no tiene nada pendiente de revisar.")
+        CrmRepository.clearReview(call.tenant, lead, actor(call))
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", "Lead marcado como revisado.")
+        }
+    }
+
+    private fun pendingAssignments(call: McpToolCall): JsonElement {
+        val context = context(call)
+        return buildJsonObject {
+            putJsonArray("leads") {
+                CrmRepository.pendingSuggestions(call.tenant, context.scope, call.int("limit", 50, 1..100)).forEach { add(json(it, context, brief = true)) }
+            }
+        }
+    }
+
+    private fun resolveAssignment(call: McpToolCall): JsonElement {
+        val context = context(call)
+        if (!context.canAssign) throw McpToolException("El usuario no tiene permiso para asignar leads.")
+        if (!call.has("approve")) throw McpToolException("El argumento 'approve' es obligatorio.")
+        val lead = visibleLead(call, context)
+        val suggested = lead.suggestedOwnerUserId ?: throw McpToolException("Ese lead no tiene una sugerencia de asignado pendiente.")
+        val approve = call.boolean("approve")
+        val resolved = CrmRepository.resolveSuggestion(call.tenant, lead, approve, context.names, actor(call), OutboundOrigin.Agent)
+        CrmNotify.assigned(call.tenant, call.notifier, lead.id, listOfNotNull(resolved.added), context.scope.userId)
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put(
+                "result",
+                when {
+                    resolved.noAccess -> "El usuario sugerido ya no tiene acceso: se descarto la sugerencia y no se asigno a nadie."
+                    approve -> "Asignado: ${context.names.user(suggested)} se anadio a los asignados del lead."
+                    else -> "Sugerencia descartada."
+                },
+            )
+        }
+    }
+
+    private fun delete(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        if (!CrmRepository.deleteLead(call.tenant, lead.id)) throw McpToolException("Ese lead ya no existe.")
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", "Lead ${lead.name} eliminado; el cliente sigue en Clientes.")
+        }
+    }
+
+    private fun leadValues(call: McpToolCall, base: Map<String, String>): Map<String, String> =
+        base + leadArguments.keys.filter { it != "customFields" && it !in ownerArguments && call.has(it) }.associateWith { call.string(it, 10_000) }
+
+    // customFields of the call as form values, by field key.
+    private fun customValues(call: McpToolCall, context: CrmScreens.Context): Map<String, String> {
+        val sent = call.arguments["customFields"] as? JsonObject ?: return emptyMap()
+        return sent.entries.associate { (name, value) ->
+            val field = context.fields.firstOrNull { it.key == name || it.label.equals(name.trim(), ignoreCase = true) }
+                ?: throw McpToolException("No existe el campo personalizado $name (ver list_pipeline).")
+            if (field.type == CrmFieldType.Files) throw McpToolException("Los archivos de ${field.label} se adjuntan desde la app.")
+            if (field.type == CrmFieldType.Button) throw McpToolException("${field.label} es un boton, no guarda valores: usa press_lead_button.")
+            field.key to when (value) {
+                is JsonArray -> UiFieldValues.options(value.mapNotNull { (it as? JsonPrimitive)?.contentOrNull })
+                is JsonNull -> ""
+                is JsonPrimitive -> value.content
+                else -> throw McpToolException("Valor invalido para ${field.label}.")
+            }
+        }
+    }
+
+    private fun parse(values: Map<String, String>, context: CrmScreens.Context, stored: JsonObject = JsonObject(emptyMap())): CrmLeadInput = try {
+        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users, context.fields, stored, context.stay)
+    } catch (failure: CrmValidationException) {
+        throw McpToolException(failure.message.orEmpty())
+    }
+
+    private fun json(lead: CrmLead, context: CrmScreens.Context, brief: Boolean, mentions: Boolean = false): JsonObject = buildJsonObject {
+        put("id", lead.id.toString())
+        if (mentions) {
+            // Read-only when the user reaches the lead only through a mention; mentioned = users with active access.
+            put("readOnly", !context.readAccess(lead).canWrite)
+            putJsonArray("mentioned") {
+                CrmMentions.active(context.tenant, lead.id).forEach { add(JsonPrimitive(CrmRepository.displayNames(context.tenant, context.names, listOf(it.userId)))) }
+            }
+        }
+        put("customerId", lead.customerId.toString())
+        put("name", lead.name)
+        put("email", lead.email)
+        put("phone", lead.phone)
+        val stage = context.stage(lead.stageId)
+        put("stage", stage?.name.orEmpty())
+        put("stageKind", stage?.kind?.id.orEmpty())
+        if (context.interestsEnabled) put("interest", lead.interestId?.let { context.names.interest(it) } ?: CrmForms.NoInterest)
+        // owners: every assigned user (all equal). owner: the same names joined by comma, kept for older agents.
+        // Users without access appear as "<usuario> (sin acceso)": that name also works to remove them with ownersMode=remove.
+        val ownerNames = lead.ownerUserIds.map { CrmRepository.displayNames(context.tenant, context.names, listOf(it)) }
+        putJsonArray("owners") { ownerNames.forEach { add(JsonPrimitive(it)) } }
+        put("owner", if (ownerNames.isEmpty()) CrmForms.Unassigned else ownerNames.joinToString(", "))
+        put("source", lead.source)
+        lead.followUpOn?.let { put("followUpOn", it.toString()) }
+        lead.estimatedValue?.let { put("estimatedValue", it.toPlainString()) }
+        put("createdAt", lead.createdAt.toString())
+        lead.closedAt?.let { put("closedAt", it.toString()) }
+        if (lead.reviewReason.isNotEmpty()) put("needsReview", lead.reviewReason)
+        if (brief) {
+            put("message", lead.message.take(300))
+        } else {
+            put("language", lead.language)
+            put("message", lead.message)
+            put("details", lead.details)
+            lead.targetStart?.let { put("targetStart", it.toString()) }
+            lead.targetEnd?.let { put("targetEnd", it.toString()) }
+            lead.suggestedOwnerUserId?.let { put("suggestedOwner", context.names.user(it)) }
+            val files = CrmAttachments.forLead(context.tenant, lead.id)
+            if (context.fields.isNotEmpty()) {
+                put(
+                    "customFields",
+                    buildJsonObject {
+                        context.fields.forEach { field ->
+                            if (field.type == CrmFieldType.Files) {
+                                putJsonArray(field.label) { files[field.key].orEmpty().forEach { add(JsonPrimitive(listOf(it.path, it.name).filter { p -> p.isNotEmpty() }.joinToString("/"))) } }
+                            } else {
+                                lead.customFields[field.key]?.let { put(field.label, it) }
+                            }
+                        }
+                    },
+                )
+            }
+            putJsonArray("documents") {
+                files[CrmFields.Documents].orEmpty().forEach { add(JsonPrimitive(listOf(it.path, it.name).filter { p -> p.isNotEmpty() }.joinToString("/"))) }
+            }
+        }
+    }
+}

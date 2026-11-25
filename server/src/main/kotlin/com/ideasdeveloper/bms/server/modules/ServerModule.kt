@@ -1,0 +1,325 @@
+package com.ideasdeveloper.bms.server.modules
+
+import com.ideasdeveloper.bms.ui.ModuleUiEntry
+import com.ideasdeveloper.bms.ui.UiAppTheme
+import com.ideasdeveloper.bms.ui.isValid
+import java.util.concurrent.ConcurrentHashMap
+import io.ktor.server.routing.Route
+import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
+
+interface ServerModule {
+    val definition: ModuleDefinition
+    val migrationModule: String
+        get() = definition.id
+    val migrationPaths: List<String>
+        get() = emptyList()
+    // Tenant tables created by this module's migrations that the runtime role must read and write.
+    val runtimeTables: List<String>
+        get() = emptyList()
+    // Themes this module adds to the app while it is installed (see UiAppTheme).
+    val themes: List<UiAppTheme>
+        get() = emptyList()
+    // Periodic work run for every company that has the module enabled (see ModuleJob).
+    val jobs: List<ModuleJob>
+        get() = emptyList()
+    // The module's own MCP for AI agents: its instructions and tools, each tool behind a permission
+    // (see ModuleMcp). Override it with a getter (`get() = ...`) so it is built when first read.
+    val mcp: ModuleMcp?
+        get() = null
+    // What the module adds to a customer's history (see CustomerTimeline); override it with a getter.
+    val customerTimeline: CustomerTimeline?
+        get() = null
+    // Where modules write events of a customer's history (ModuleAccessService.recordCustomerEvent).
+    // Only the module that owns customers (Clientes) provides it.
+    val customerHistoryWriter: CustomerHistoryWriter?
+        get() = null
+    // Copies a customer changed by another module to the companies it is shared with
+    // (ModuleAccessService.customerChanged). Only the module that owns customers provides it.
+    val customerChangeListener: CustomerChangeListener?
+        get() = null
+    // The customer's notes for other modules (ModuleAccessService.customerNotes). Only the module
+    // that owns customers provides it.
+    val customerNotesReader: CustomerNotesReader?
+        get() = null
+    // Columns of this module's tables that store a customers.id without a foreign key (see CustomerReference);
+    // Clientes repoints them when it merges customers. Only tables that exist in the company are touched.
+    val customerReferences: List<CustomerReference>
+        get() = emptyList()
+    // Configuration copied when a company is duplicated (see SettingsTable): parent tables first.
+    // Leave out data (customers, leads...) and per-user rows; reset credentials and anything that
+    // identifies the original company outside the server (domains, webhook secrets, API keys).
+    val duplicatedSettings: List<SettingsTable>
+        get() = emptyList()
+    // Extensions shipped inside this module (EXTENSIONS.md, source "bundled"); each company installs
+    // them on its own. Override it with a getter so they are built when first read.
+    val bundledExtensions: List<com.ideasdeveloper.bms.server.extensions.ServerExtension>
+        get() = emptyList()
+
+    // Las extensiones (bundled + paquetes) de este modulo, entregadas una vez al arrancar tras construir el
+    // ExtensionRegistry; el modulo se queda con las que le sirven (p. ej. proveedores de acciones de automatizacion).
+    fun linkExtensions(extensions: List<com.ideasdeveloper.bms.server.extensions.ServerExtension>) {
+    }
+
+    fun routes(route: Route, access: ModuleAccessService) {
+    }
+}
+
+interface ServerModuleProvider {
+    fun create(): ServerModule
+}
+
+@Serializable
+// Contract for server-driven modules. New modules must provide enough metadata
+// for the generic client module screen to render their views without a client
+// release. Module-specific Compose screens are an explicit exception.
+data class ModuleDefinition(
+    val id: String,
+    val displayName: String,
+    val description: String,
+    val version: String = "0.1.0",
+    val locked: Boolean = false,
+    val views: List<ModuleViewDefinition> = emptyList(),
+    val permissions: List<ModulePermissionDefinition> = emptyList(),
+    // How clients show the module: native pieces (UiScreen) or the module's own web pages.
+    val ui: ModuleUiEntry? = null,
+    // Versiones minimas de Core y app que el modulo necesita (module.json); nulo = sin minimo.
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
+    // Permissions this module lets its extensions declare (EXTENSIONS.md), e.g. "crm.leads.create".
+    val extensionPermissions: List<String> = emptyList(),
+    // Whether this module supports per-company extensions: shows an "Extensiones" section in its config.
+    val supportsExtensions: Boolean = false,
+)
+
+@Serializable
+data class ModuleViewDefinition(
+    val id: String,
+    val title: String,
+    val route: String,
+    val kind: String,
+    val fields: List<ModuleFieldDefinition> = emptyList(),
+    val actions: List<ModuleActionDefinition> = emptyList(),
+)
+
+@Serializable
+data class ModulePermissionDefinition(
+    val id: String,
+    val title: String,
+    val description: String,
+)
+
+@Serializable
+data class ModuleFieldDefinition(
+    val key: String,
+    val label: String,
+    val type: String,
+    val required: Boolean = false,
+    val dynamic: Boolean = false,
+    // Values allowed by "select" fields.
+    val options: List<String> = emptyList(),
+    val readOnly: Boolean = false,
+    val help: String = "",
+    // Consecutive fields with the same section are grouped under one heading.
+    val section: String = "",
+)
+
+@Serializable
+data class ModuleActionDefinition(
+    val id: String,
+    val title: String,
+    val route: String,
+    val method: String,
+    val permission: String,
+)
+
+class ModuleRegistry(
+    modules: List<ServerModule>,
+    installedModuleIds: Set<String> = modules.filter { it.definition.locked }.map { it.definition.id }.toSet(),
+    // Modules loaded from packages built on this server (not compiled into the distribution).
+    private val packagedModuleIds: Set<String> = emptySet(),
+    // Minimos leidos del module.json de cada paquete instalado; sobreescriben los de la definicion en codigo.
+    private val packageRequirements: Map<String, ModuleRequirements> = emptyMap(),
+) {
+    private val modulesById = modules.associateBy { it.definition.id }.toMutableMap()
+    private val externalDefinitionsById = ConcurrentHashMap<String, ModuleDefinition>()
+    // Read on every module request and changed when the server owner installs or removes modules.
+    private val installedIds: MutableSet<String> = ConcurrentHashMap.newKeySet<String>().apply { addAll(installedModuleIds) }
+
+    val definitions: List<ModuleDefinition>
+        get() = installedIds.mapNotNull { definitionOrExternal(it) }.sortedBy { it.id }
+
+    val availableDefinitions: List<ModuleDefinition>
+        get() = (modulesById.values.map { it.definition } + externalDefinitionsById.values)
+            .distinctBy { it.id }
+            .sortedBy { it.id }
+
+    fun definition(moduleId: String): ModuleDefinition? =
+        definitionOrExternal(moduleId)?.takeIf { installedIds.contains(moduleId) }
+
+    fun availableDefinition(moduleId: String): ModuleDefinition? = definitionOrExternal(moduleId)
+
+    fun module(moduleId: String): ServerModule? = modulesById[moduleId]?.takeIf { installedIds.contains(moduleId) }
+
+    fun registerAvailable(definition: ModuleDefinition) {
+        if (!modulesById.containsKey(definition.id)) {
+            externalDefinitionsById[definition.id] = definition
+        }
+    }
+
+    fun registerInstalled(definition: ModuleDefinition) {
+        registerAvailable(definition)
+        installedIds += definition.id
+    }
+
+    fun install(moduleId: String): ModuleDefinition? {
+        val definition = modulesById[moduleId]?.definition ?: return null
+        installedIds += moduleId
+        return definition
+    }
+
+    fun remove(moduleId: String): ModuleDefinition? {
+        val definition = modulesById[moduleId]?.definition ?: return null
+        installedIds -= moduleId
+        return definition
+    }
+
+    fun isInstalled(moduleId: String): Boolean = installedIds.contains(moduleId)
+
+    // Whether the module's code is loaded in this process (compiled in or from a package).
+    fun hasCode(moduleId: String): Boolean = modulesById.containsKey(moduleId)
+
+    fun isPackaged(moduleId: String): Boolean = moduleId in packagedModuleIds
+
+    fun loadedVersion(moduleId: String): String? = modulesById[moduleId]?.definition?.version
+
+    fun installedModuleIds(): Set<String> = installedIds.toSet()
+
+    /**
+     * Registers the routes of every module compiled into the server, installed or not, because
+     * Ktor routes cannot be added after startup. Installing or removing a module therefore takes
+     * effect immediately: ModuleAccessService rejects requests to modules that are not installed.
+     */
+    fun installRoutes(route: Route, access: ModuleAccessService) {
+        routedModules().forEach { module ->
+            module.routes(route, access)
+        }
+    }
+
+    internal fun routedModules(): Collection<ServerModule> = modulesById.values
+
+    private val ignoredMcpTools: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * The MCP of every installed module that has one, read on every call so an updated module is
+     * offered as it is now. A package built for an older server has no mcp and offers nothing; a
+     * module whose mcp fails to build is skipped, so it never breaks the others.
+     */
+    fun mcp(): List<RegisteredModuleMcp> = installedIds.sorted().mapNotNull { moduleId ->
+        val module = modulesById[moduleId] ?: return@mapNotNull null
+        val mcp = try {
+            module.mcp
+        } catch (_: LinkageError) {
+            null
+        } catch (failure: Exception) {
+            if (ignoredMcpTools.add("$moduleId/*")) {
+                LoggerFactory.getLogger("ModuleRegistry").warn("MCP del modulo '{}' ignorado: no se pudo construir.", moduleId, failure)
+            }
+            null
+        } ?: return@mapNotNull null
+        val tools = mcp.tools.distinctBy { it.name }
+            .filter { tool ->
+                val problem = McpToolRules.problem(module.definition, tool) ?: return@filter true
+                // Tools are listed on every agent request: warn once per tool.
+                if (ignoredMcpTools.add("$moduleId/${tool.name}")) {
+                    LoggerFactory.getLogger("ModuleRegistry").warn("Herramienta MCP '{}' del modulo '{}' ignorada: {}", tool.name, moduleId, problem)
+                }
+                false
+            }
+            .map { RegisteredMcpTool(moduleId, module.definition.displayName, it) }
+        RegisteredModuleMcp(moduleId, module.definition.displayName, mcp.instructions.trim(), tools).takeIf { tools.isNotEmpty() }
+    }
+
+    // Customer history providers of installed modules whose permission the module declares.
+    fun customerTimelines(): List<RegisteredCustomerTimeline> = installedIds.sorted().mapNotNull { moduleId ->
+        val module = modulesById[moduleId] ?: return@mapNotNull null
+        val timeline = try {
+            module.customerTimeline
+        } catch (_: LinkageError) {
+            null
+        } catch (failure: Exception) {
+            if (ignoredMcpTools.add("$moduleId/timeline")) {
+                LoggerFactory.getLogger("ModuleRegistry").warn("Historial de clientes del modulo '{}' ignorado: no se pudo construir.", moduleId, failure)
+            }
+            null
+        } ?: return@mapNotNull null
+        if (module.definition.permissions.none { it.id == timeline.permission }) {
+            if (ignoredMcpTools.add("$moduleId/timeline-permission")) {
+                LoggerFactory.getLogger("ModuleRegistry").warn("Historial de clientes del modulo '{}' ignorado: el permiso '{}' no esta declarado.", moduleId, timeline.permission)
+            }
+            return@mapNotNull null
+        }
+        RegisteredCustomerTimeline(moduleId, module.definition.displayName, timeline)
+    }
+
+    // The customer notes reader of the first installed module that has one (Clientes).
+    fun customerNotesReader(): CustomerNotesReader? = installedIds.sorted().firstNotNullOfOrNull { moduleId ->
+        try {
+            modulesById[moduleId]?.customerNotesReader
+        } catch (_: LinkageError) {
+            null
+        }
+    }
+
+    // The customer change listener of the first installed module that has one (Clientes).
+    fun customerChangeListener(): CustomerChangeListener? = installedIds.sorted().firstNotNullOfOrNull { moduleId ->
+        try {
+            modulesById[moduleId]?.customerChangeListener
+        } catch (_: LinkageError) {
+            null
+        }
+    }
+
+    // The customer history writer of the first installed module that has one (Clientes).
+    fun customerHistoryWriter(): CustomerHistoryWriter? = installedIds.sorted().firstNotNullOfOrNull { moduleId ->
+        try {
+            modulesById[moduleId]?.customerHistoryWriter
+        } catch (_: LinkageError) {
+            null
+        }
+    }
+
+    // Customer references of installed modules; a module that fails to build them is skipped, so it never breaks the others.
+    fun customerReferenceSources(): List<CustomerReferenceSource> = installedIds.sorted().mapNotNull { moduleId ->
+        val references = try {
+            modulesById[moduleId]?.customerReferences
+        } catch (_: LinkageError) {
+            null
+        } catch (failure: Exception) {
+            if (ignoredMcpTools.add("$moduleId/customer-references")) {
+                LoggerFactory.getLogger("ModuleRegistry").warn("Referencias a clientes del modulo '{}' ignoradas: no se pudieron construir.", moduleId, failure)
+            }
+            null
+        }
+        references?.takeIf { it.isNotEmpty() }?.let { CustomerReferenceSource(moduleId, null, it) }
+    }
+
+    // Agent tools of every installed module.
+    fun mcpTools(): List<RegisteredMcpTool> = mcp().flatMap { it.tools }
+
+    // Valid themes of installed modules, with ids prefixed by the module id.
+    fun themes(): List<UiAppTheme> = installedIds.sorted().flatMap { moduleId ->
+        modulesById[moduleId]?.themes.orEmpty()
+            .filter { it.id.isNotBlank() && it.name.isNotBlank() && it.colors.isValid() }
+            .map { it.copy(id = "$moduleId.${it.id}") }
+    }
+
+    private fun definitionOrExternal(moduleId: String): ModuleDefinition? {
+        val definition = modulesById[moduleId]?.definition ?: return externalDefinitionsById[moduleId]
+        val requirements = packageRequirements[moduleId] ?: return definition
+        return definition.copy(
+            minCoreVersion = requirements.minCoreVersion ?: definition.minCoreVersion,
+            minAppVersion = requirements.minAppVersion ?: definition.minAppVersion,
+        )
+    }
+}

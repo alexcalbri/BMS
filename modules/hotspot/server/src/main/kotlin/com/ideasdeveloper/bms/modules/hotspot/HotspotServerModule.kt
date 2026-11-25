@@ -1,0 +1,631 @@
+package com.ideasdeveloper.bms.modules.hotspot
+
+import com.ideasdeveloper.bms.server.modules.SettingsTable
+import com.ideasdeveloper.bms.server.modules.ModuleAccessService
+import com.ideasdeveloper.bms.server.modules.ModuleDefinition
+import com.ideasdeveloper.bms.server.modules.CustomerTimeline
+import com.ideasdeveloper.bms.server.modules.ModuleJob
+import com.ideasdeveloper.bms.server.modules.ModuleJobSchedule
+import com.ideasdeveloper.bms.server.modules.ModuleMcp
+import com.ideasdeveloper.bms.server.modules.ModulePermissionDefinition
+import com.ideasdeveloper.bms.server.modules.ModulePermissions
+import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.modules.ServerModule
+import com.ideasdeveloper.bms.server.modules.ServerModuleProvider
+import com.ideasdeveloper.bms.server.modules.requireModuleAccess
+import com.ideasdeveloper.bms.server.modules.requireModulePermission
+import com.ideasdeveloper.bms.ui.ModuleUiEntry
+import com.ideasdeveloper.bms.ui.UiJson
+import com.ideasdeveloper.bms.ui.UiNode
+import com.ideasdeveloper.bms.ui.UiNotice
+import com.ideasdeveloper.bms.ui.UiScreen
+import com.ideasdeveloper.bms.ui.UiTone
+import io.ktor.http.ContentDisposition
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.request.receiveText
+import io.ktor.server.response.header
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.route
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.slf4j.LoggerFactory
+import java.sql.Connection
+import java.sql.SQLException
+import java.time.Duration
+import java.time.Instant
+import java.time.LocalDate
+import java.util.UUID
+
+object HotspotServerModule : ServerModule {
+    private val log = LoggerFactory.getLogger(HotspotServerModule::class.java)
+
+    override val migrationPaths = listOf(
+        "modules/hotspot/migrations/V001__create_hotspot.sql",
+        "modules/hotspot/migrations/V002__add_networks.sql",
+        "modules/hotspot/migrations/V003__add_integrations_and_user_codes.sql",
+        "modules/hotspot/migrations/V004__add_access_passes.sql",
+        "modules/hotspot/migrations/V005__add_code_sessions.sql",
+        "modules/hotspot/migrations/V006__crm_pipeline_and_manual_user_access.sql",
+        "modules/hotspot/migrations/V007__prefix_user_codes.sql",
+        "modules/hotspot/migrations/V008__remove_hotspot_user_code.sql",
+        "modules/hotspot/migrations/V009__shared_networks.sql",
+        "modules/hotspot/migrations/V010__portal_templates.sql",
+        "modules/hotspot/migrations/V011__portal_colors.sql",
+        "modules/hotspot/migrations/V012__ip_throttle.sql",
+        "modules/hotspot/migrations/V013__registrations_customer_idx.sql",
+    )
+
+    override val runtimeTables = listOf(
+        "hotspot_settings",
+        "hotspot_registrations",
+        "hotspot_codes",
+        "hotspot_accesses",
+        "hotspot_networks",
+        "hotspot_code_sessions",
+        "hotspot_code_attempts",
+        "hotspot_ip_throttle",
+        "hotspot_integrations",
+        "hotspot_user_codes",
+        "hotspot_user_network_grants",
+        "hotspot_pass_sources",
+        "hotspot_access_passes",
+        "hotspot_code_sessions",
+        "hotspot_portal_templates",
+    )
+
+    /**
+     * A duplicated company gets the same portal, times, networks and integrations between modules.
+     * Visitors, codes and accesses stay behind; the UniFi connection and the
+     * portal domain are cleared, so the copy never controls or answers for the original's WiFi.
+     */
+    override val duplicatedSettings = listOf(
+        SettingsTable(
+            "hotspot_settings",
+            reset = mapOf(
+                "domain" to null,
+                "unifi_console_id" to null,
+                "unifi_site_id" to null,
+                "unifi_api_key" to null,
+                // Columnas de SMTP en desuso desde 0.10.0 (el SMTP es el de la empresa): la copia nunca hereda lo que aun quede ahi.
+                // Quitarlas junto con la migracion SQL que las borre.
+                "smtp_mode" to "servidor",
+                "smtp_host" to null,
+                "smtp_username" to null,
+                "smtp_password" to null,
+                "smtp_from" to null,
+            ),
+        ),
+        SettingsTable("hotspot_networks"),
+        SettingsTable("hotspot_integrations"),
+        SettingsTable("hotspot_pass_sources"),
+        SettingsTable("hotspot_portal_templates"),
+    )
+
+    override val definition = ModuleDefinition(
+        id = HotspotModule.id,
+        displayName = HotspotModule.displayName,
+        description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
+        version = "0.12.0",
+        supportsExtensions = true,
+        permissions = listOf(
+            ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
+            ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
+            ModulePermissionDefinition(HotspotScreens.SettingsManage, "Configurar hotspot", "Permite cambiar dominio, UniFi, correo, tiempos y apariencia del portal."),
+            ModulePermissionDefinition(HotspotScreens.ReportsView, "Ver reportes del hotspot", "Permite consultar el dashboard, visitantes y reportes del portal WiFi."),
+            ModulePermissionDefinition(HotspotScreens.ReportsExport, "Exportar reportes del hotspot", "Permite descargar los registros en CSV."),
+        ),
+        ui = ModuleUiEntry(type = "native", entry = HotspotScreens.UiRoute, home = "dashboard"),
+    )
+
+    // Los controladores de red (UniFi hoy) llegan como extensiones instaladas por empresa (EXTENSIONS.md).
+    override fun linkExtensions(extensions: List<ServerExtension>) {
+        HotspotModuleExtensions.link(extensions)
+    }
+
+    override val mcp: ModuleMcp
+        get() = HotspotMcpTools.mcp
+
+    override val customerTimeline: CustomerTimeline
+        get() = HotspotCustomerTimeline.timeline
+
+    // Checks CRM stage access and handles scheduled or owner-requested disconnects.
+    override val jobs = listOf(
+        // Una sola vez por empresa: el SMTP propio de Hotspot pasa al SMTP de la empresa si esta aun no tiene uno (el del CRM gana).
+        ModuleJob(id = "mail-migration", interval = Duration.ofMinutes(5)) { context ->
+            val result = HotspotMailMigration.run(context.tenant, context.access.secrets)
+            when (result.outcome) {
+                HotspotMailMigration.Outcome.Migrated -> log.info("Hotspot {}: SMTP propio de Hotspot sembrado en el SMTP de la empresa (fuente: Hotspot, {}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.KeptCompany -> log.info("Hotspot {}: la empresa ya tenia SMTP; no se pisa y se descarta el de Hotspot ({}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Skipped -> log.info("Hotspot {}: SMTP propio de Hotspot sin uso, se limpia ({}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Waiting -> log.warn("Hotspot {}: el SMTP propio de Hotspot sigue sin migrar ({}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Failed -> log.warn("Hotspot {}: {}.", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Absent -> Unit
+            }
+        },
+        ModuleJob(
+            id = "code-sessions",
+            interval = Duration.ofMinutes(1),
+            scheduleFor = { tenant ->
+                val settings = HotspotSettingsRepository.load(tenant)
+                if (settings.crmScheduleMode == "daily") {
+                    ModuleJobSchedule(dailyAt = settings.crmCheckTime)
+                } else {
+                    ModuleJobSchedule(interval = Duration.ofMinutes(settings.crmCheckIntervalMinutes.toLong()))
+                }
+            },
+        ) { context ->
+            val now = Instant.now()
+            val settings = HotspotSettingsRepository.load(context.tenant)
+            HotspotCrmPipeline.enforceAccess(context.tenant, settings, LocalDate.now(), now)
+            HotspotCodeSessions.expire(context.tenant, settings, HotspotIntegrations.controller(context.tenant), now)
+        },
+        // UniFi authorizes guests for every SSID of the site; a device that changes network must log in there.
+        ModuleJob(id = "network-guard", interval = Duration.ofMinutes(1)) { context ->
+            val settings = HotspotSettingsRepository.load(context.tenant)
+            HotspotNetworkGuard.run(context.tenant, context.companyCode, settings, HotspotIntegrations.controller(context.tenant))
+        },
+    )
+
+    override fun routes(route: Route, access: ModuleAccessService) {
+        HotspotPortal(access).install(route)
+        val userAccess = HotspotAccess(access)
+
+        route.route(HotspotScreens.UiRoute) {
+            get("/{screen}") {
+                val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@get
+                val screen = call.screenId(permissions) ?: return@get
+                val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
+                call.respondScreen(access) { tenant -> render(access, tenant, permissions, screen, params, customBody = customBody(userAccess, tenant, permissions, screen)) }
+            }
+
+            // Saves the "portal" and "settings" forms and answers with the same screen and a notice.
+            post("/{screen}") {
+                val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@post
+                val screen = call.screenId(permissions)?.takeIf { it in setOf("portal", "design", "settings", "access", "integrations") }
+                    ?: return@post call.respond(HttpStatusCode.NotFound, HotspotErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada."))
+                if (screen == "integrations") {
+                    if (!permissions.businessOwner) {
+                        return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "Solo el dueno de la empresa o del servidor cambia las integraciones."))
+                    }
+                    val id = call.request.queryParameters["integration"].orEmpty()
+                    val enabled = call.request.queryParameters["enabled"] == "true"
+                    return@post call.respondScreen(access) { tenant ->
+                        val notice = try {
+                            HotspotIntegrations.setEnabled(tenant, id, enabled)
+                            UiNotice(if (enabled) "Integracion activada." else "Integracion desactivada.", UiTone.Success)
+                        } catch (failure: HotspotValidationException) {
+                            UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                        }
+                        render(access, tenant, permissions, screen, emptyMap(), notice, customBody = userAccess.integrationsBody(tenant))
+                    }
+                }
+                if (screen == "access") {
+                    val userCodeStep = call.request.queryParameters["usercode"]
+                    if (userCodeStep != null) {
+                        if (!permissions.businessOwner && !permissions.serverOwner) {
+                            return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "Solo los duenos pueden cambiar accesos WiFi."))
+                        }
+                        val id = call.request.queryParameters["id"]
+                        return@post call.respondScreen(access) { tenant ->
+                            val (message, tone) = userAccess.userCodeAction(tenant, userCodeStep, id, permissions)
+                            render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, tone), customBody = userAccess.accessBody(tenant, permissions))
+                        }
+                    }
+                    if (!userAccess.isServerCompanyOwner(permissions)) {
+                        return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "Solo los duenos del servidor dan acceso a redes de otras empresas."))
+                    }
+                    val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
+                        ?.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }.orEmpty()
+                    val step = call.request.queryParameters["grant"].orEmpty()
+                    val id = call.request.queryParameters["id"]
+                    return@post call.respondScreen(access) { tenant ->
+                        val (message, tone) = userAccess.grantAction(tenant, step, id, values)
+                        render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, tone), customBody = userAccess.accessBody(tenant, permissions))
+                    }
+                }
+                if (!permissions.has(HotspotScreens.SettingsManage)) {
+                    return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "No tienes permiso para cambiar la configuracion."))
+                }
+                val body = call.receiveText()
+                if (screen == "design" && call.request.queryParameters["view"] == HotspotScreens.ColorsView) {
+                    val colors = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: JsonObject(emptyMap())
+                    fun color(key: String) = colors[key]?.jsonPrimitive?.contentOrNull
+                    return@post call.respondScreen(access) { tenant -> saveColors(access, tenant, permissions, color("primary"), color("secondary"), color("text")) }
+                }
+                if (screen == "design") {
+                    val html = runCatching { UiJson.parseToJsonElement(body).jsonObject["html"]?.jsonPrimitive?.contentOrNull }.getOrNull().orEmpty()
+                    val viewId = call.request.queryParameters["view"].orEmpty()
+                    return@post call.respondScreen(access) { tenant -> saveTemplate(access, tenant, permissions, viewId, html) }
+                }
+                // Network actions: deleting sends no form, so it has no body.
+                val networkStep = call.request.queryParameters["network"]
+                if (screen == "settings" && networkStep != null) {
+                    val values = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: JsonObject(emptyMap())
+                    val id = call.request.queryParameters["id"]
+                    return@post call.respondScreen(access) { tenant -> networkAction(access, tenant, permissions, networkStep, id, values) }
+                }
+                val values = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull()
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, HotspotErrorResponse("INVALID_BODY", "Datos invalidos."))
+                val unifiStep = call.request.queryParameters["unifi"]
+                if (screen == "settings" && unifiStep != null) {
+                    val id = call.request.queryParameters["id"]
+                    return@post call.respondScreen(access) { tenant -> unifiPicker(access, tenant, permissions, unifiStep, id, values) }
+                }
+                call.respondScreen(access) { tenant -> save(access, tenant, permissions, screen, values) }
+            }
+        }
+
+        route.get(HotspotScreens.ExportRoute) {
+            if (!call.requireModulePermission(access, HotspotModule.id, HotspotScreens.ReportsExport)) return@get
+            val range = call.dateRange() ?: return@get
+            val companyCode = access.companyCode(call).orEmpty()
+            call.respondScreen(access) { tenant ->
+                val csv = HotspotReports.csv(tenant, range.first, range.second)
+                call.response.header(
+                    HttpHeaders.ContentDisposition,
+                    ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "hotspot-$companyCode-${range.first}-${range.second}.csv").toString(),
+                )
+                call.respondText(csv, ContentType.Text.CSV.withParameter("charset", "utf-8"))
+                null
+            }
+        }
+    }
+
+    // Saves the portal colors of Diseño; an invalid one saves nothing and keeps what was typed.
+    private fun saveColors(
+        access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions,
+        primary: String?, secondary: String?, text: String?,
+    ): UiScreen = try {
+        HotspotSettingsRepository.saveColors(tenant, primary, secondary, text)
+        render(access, tenant, permissions, "design", emptyMap(), UiNotice("Colores del portal guardados.", UiTone.Success))
+    } catch (error: HotspotValidationException) {
+        render(
+            access, tenant, permissions, "design", emptyMap(), UiNotice(error.message.orEmpty(), UiTone.Danger),
+            submittedValues = mapOf(
+                HotspotScreens.colorKey("primary") to primary.orEmpty(),
+                HotspotScreens.colorKey("secondary") to secondary.orEmpty(),
+                HotspotScreens.colorKey("text") to text.orEmpty(),
+            ),
+        )
+    }
+
+    // Validates the custom HTML of a portal view and saves it; when it fails, nothing is saved and the
+    // editor keeps what was typed together with every problem found.
+    private fun saveTemplate(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, viewId: String, html: String): UiScreen {
+        val view = HotspotTemplates.view(viewId)
+            ?: return render(access, tenant, permissions, "design", emptyMap(), UiNotice("Vista desconocida.", UiTone.Danger))
+        val problems = if (html.isBlank()) emptyList() else HotspotTemplates.validate(view, html)
+        if (problems.isNotEmpty()) {
+            return render(
+                access, tenant, permissions, "design", emptyMap(),
+                UiNotice("No se guardo el HTML de ${view.label}: " + problems.joinToString(" "), UiTone.Danger),
+                submittedValues = mapOf(HotspotScreens.templateKey(view.id) to html),
+            )
+        }
+        HotspotTemplates.save(tenant, view, html)
+        val message = if (html.isBlank()) "${view.label} vuelve a usar el diseno de BMS." else "HTML de ${view.label} validado y guardado."
+        return render(access, tenant, permissions, "design", emptyMap(), UiNotice(message, UiTone.Success))
+    }
+
+    private fun render(
+        access: ModuleAccessService,
+        tenant: Connection,
+        permissions: ModulePermissions,
+        screen: String,
+        params: Map<String, String>,
+        notice: UiNotice? = null,
+        submittedValues: Map<String, String>? = null,
+        networkValues: Map<String, String>? = null,
+        customBody: List<UiNode>? = null,
+        extraNodes: List<UiNode> = emptyList(),
+    ): UiScreen {
+        val settings = HotspotSettingsRepository.load(tenant)
+        val (status, active) = domainState(access, permissions.companyCode, settings.domain)
+        // El estado del envio solo se muestra cuando la pantalla se arma desde lo guardado (no desde lo enviado): una consulta, no varias.
+        return HotspotScreens.build(
+            screen, tenant, permissions, params, status, active, submittedValues == null && HotspotMail.smtp(tenant, access.serverMail, access.secrets) != null, notice, submittedValues,
+            pickers = extraNodes, networkValues = networkValues, customBody = customBody,
+        )
+    }
+
+    // Sections whose body needs the central database or other companies.
+    private fun customBody(userAccess: HotspotAccess, tenant: Connection, permissions: ModulePermissions, screen: String): List<UiNode>? =
+        when {
+            !permissions.has(HotspotScreens.permissionFor(screen)!!) -> null
+            screen == "access" -> userAccess.accessBody(tenant, permissions)
+            screen == "integrations" -> userAccess.integrationsBody(tenant)
+            else -> null
+        }
+
+    /** Saves ("save", from the network form) or deletes ("delete") a WiFi network and shows the settings again. */
+    private fun networkAction(
+        access: ModuleAccessService,
+        tenant: Connection,
+        permissions: ModulePermissions,
+        step: String,
+        id: String?,
+        values: JsonObject,
+    ): UiScreen {
+        val networkId = id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        fun screen(notice: UiNotice, params: Map<String, String> = emptyMap(), submitted: Map<String, String>? = null) =
+            render(access, tenant, permissions, "settings", params, notice, networkValues = submitted)
+        if (id != null && networkId == null) return screen(UiNotice("Red invalida.", UiTone.Danger))
+        return when (step) {
+            "save" -> {
+                if (networkId != null && HotspotNetworks.find(tenant, networkId) == null) {
+                    return screen(UiNotice("Esa red ya no existe.", UiTone.Warning))
+                }
+                val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
+                try {
+                    val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
+                    val crmEnabled = HotspotSettingsRepository.load(tenant).crmAccessEnabled && HotspotCrmPipeline.isInstalled(tenant)
+                    val sources = if (crmEnabled) HotspotPasses.choosable(tenant).map { it.id }.toSet() else emptySet()
+                    val network = HotspotNetworks.parse(networkId ?: UUID.randomUUID(), submitted, usersEnabled, sources, crmEnabled)
+                    HotspotNetworks.save(tenant, network)
+                    screen(UiNotice("Red ${network.ssid} guardada.", UiTone.Success))
+                } catch (failure: HotspotValidationException) {
+                    // Keep the network open in the form with what the user typed.
+                    screen(UiNotice(failure.message.orEmpty(), UiTone.Danger), networkId?.let { mapOf("networkId" to it.toString()) }.orEmpty(), submitted)
+                }
+            }
+            "delete" -> if (networkId != null && HotspotNetworks.delete(tenant, networkId)) {
+                screen(UiNotice("Red eliminada; vuelve a usar el formulario de registro.", UiTone.Success))
+            } else {
+                screen(UiNotice("Esa red ya no existe.", UiTone.Warning))
+            }
+            else -> screen(UiNotice("Accion de red desconocida.", UiTone.Danger))
+        }
+    }
+
+    private fun save(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, screen: String, posted: JsonObject): UiScreen {
+        val current = HotspotSettingsRepository.load(tenant)
+        // The UniFi settings are only editable while UniFi is the enabled network controller.
+        val unifiKeys = HotspotScreens.unifiFields.map { it.key }.toSet()
+        var values = if (HotspotIntegrations.controller(tenant)?.id == HotspotIntegrations.NetworkUnifi) posted else JsonObject(posted.filterKeys { it !in unifiKeys })
+        if ("crmStage" in values) {
+            val name = values["crmStage"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (name.isNotBlank() && !HotspotCrmPipeline.isInstalled(tenant)) {
+                return render(
+                    access, tenant, permissions, screen, emptyMap(),
+                    UiNotice("Instala CRM antes de seleccionar una etapa del embudo.", UiTone.Danger),
+                )
+            }
+            val stageId = name.takeIf { it.isNotBlank() }?.let { HotspotCrmPipeline.stageId(tenant, it) }
+            if (name.isNotBlank() && stageId == null) {
+                return render(
+                    access, tenant, permissions, screen, emptyMap(),
+                    UiNotice("El estado seleccionado ya no existe en el CRM.", UiTone.Danger),
+                )
+            }
+            values = JsonObject(values + ("crmStageId" to JsonPrimitive(stageId?.toString().orEmpty())))
+        }
+        val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
+        fun failed(message: String): UiScreen {
+            // Keep what the user typed so the error can be corrected without retyping.
+            val (status, _) = domainState(access, permissions.companyCode, current.domain)
+            val shown = HotspotSettingsRepository.toFormValues(current, status, HotspotMail.smtp(tenant, access.serverMail, access.secrets) != null) + submitted
+            return render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, UiTone.Danger), shown)
+        }
+        val updated = try {
+            HotspotSettingsRepository.merge(current, values)
+        } catch (failure: HotspotValidationException) {
+            return failed(failure.message.orEmpty())
+        }
+        if (updated.crmAccessEnabled &&
+            (!HotspotCrmPipeline.isInstalled(tenant) || updated.crmStageId !in HotspotCrmPipeline.stages(tenant).map { it.id })
+        ) {
+            return failed("Instala CRM y selecciona un estado valido del embudo antes de activar la integracion.")
+        }
+        if (!registerDomain(access, permissions.companyCode, updated.domain)) {
+            return failed("Ese dominio ya esta registrado en este servidor.")
+        }
+        HotspotSettingsRepository.save(tenant, updated)
+        val now = Instant.now()
+        HotspotCrmPipeline.enforceAccess(tenant, updated, LocalDate.now(), now)
+        HotspotCodeSessions.expire(tenant, updated, HotspotIntegrations.controller(tenant), now)
+        return render(access, tenant, permissions, screen, emptyMap(), UiNotice("Cambios guardados.", UiTone.Success))
+    }
+
+    /**
+     * Picks the UniFi console and site by name: "consoles" saves a typed API key and lists its
+     * consoles, "console" saves one and lists its sites (a single site is chosen right away) and
+     * "site" saves the site. Other typed values stay in the form without being saved.
+     */
+    private fun unifiPicker(
+        access: ModuleAccessService,
+        tenant: Connection,
+        permissions: ModulePermissions,
+        step: String,
+        id: String?,
+        values: JsonObject,
+    ): UiScreen {
+        var settings = HotspotSettingsRepository.load(tenant)
+        if (HotspotIntegrations.controller(tenant)?.id != HotspotIntegrations.NetworkUnifi) {
+            return render(access, tenant, permissions, "settings", emptyMap(), UiNotice("Activa la integracion UniFi en Integraciones.", UiTone.Warning))
+        }
+        val provider = HotspotModuleExtensions.providerFor(HotspotIntegrations.NetworkUnifi)
+            ?: return render(access, tenant, permissions, "settings", emptyMap(), UiNotice("Instala la extension UniFi para configurar la conexion.", UiTone.Warning))
+        val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } - "unifiApiKey"
+        fun screen(notice: UiNotice, picker: UiNode? = null): UiScreen {
+            val (status, active) = domainState(access, permissions.companyCode, settings.domain)
+            val sending = HotspotMail.smtp(tenant, access.serverMail, access.secrets) != null
+            val saved = HotspotSettingsRepository.toFormValues(settings, status, sending)
+            // The ids just chosen win over what the form had; the API key always shows the saved mask.
+            val shown = saved + submitted + mapOf("unifiConsoleId" to saved.getValue("unifiConsoleId"), "unifiSiteId" to saved.getValue("unifiSiteId"))
+            return HotspotScreens.build("settings", tenant, permissions, emptyMap(), status, active, sending, notice, shown, listOfNotNull(picker))
+        }
+        fun store(vararg changes: Pair<String, String>) {
+            settings = HotspotSettingsRepository.merge(settings, JsonObject(changes.associate { it.first to JsonPrimitive(it.second) }))
+            HotspotSettingsRepository.save(tenant, settings)
+        }
+        return try {
+            when (step) {
+                "consoles" -> {
+                    values["unifiApiKey"]?.jsonPrimitive?.contentOrNull?.let { store("unifiApiKey" to it) }
+                    settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
+                    val consoles = provider.consoles(settings)
+                    screen(UiNotice("${consoles.size} consola(s) encontradas. Elige la del hotspot.", UiTone.Success), HotspotScreens.consolePicker(consoles, settings.unifiConsoleId))
+                }
+                "console" -> {
+                    val consoleId = id?.takeIf { it.isNotBlank() } ?: return screen(UiNotice("Elige una consola de la lista.", UiTone.Warning))
+                    if (consoleId != settings.unifiConsoleId) store("unifiConsoleId" to consoleId, "unifiSiteId" to "") else store("unifiConsoleId" to consoleId)
+                    settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
+                    val sites = provider.sites(settings, consoleId)
+                    if (sites.size == 1) {
+                        store("unifiSiteId" to sites.single().id)
+                        screen(UiNotice("Consola guardada y sitio \"${sites.single().name}\" seleccionado.", UiTone.Success))
+                    } else {
+                        screen(UiNotice("Consola guardada. Ahora elige el sitio.", UiTone.Success), HotspotScreens.sitePicker(sites, settings.unifiSiteId))
+                    }
+                }
+                "site" -> {
+                    val siteId = id?.takeIf { it.isNotBlank() } ?: return screen(UiNotice("Elige un sitio de la lista.", UiTone.Warning))
+                    store("unifiSiteId" to siteId)
+                    screen(UiNotice("Sitio guardado. UniFi quedo configurado.", UiTone.Success))
+                }
+                else -> screen(UiNotice("Paso de UniFi desconocido.", UiTone.Danger))
+            }
+        } catch (failure: HotspotValidationException) {
+            screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
+        } catch (failure: NetworkControllerException) {
+            screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
+        }
+    }
+
+    /**
+     * Keeps central public_domains in sync with the company's hotspot domain. A changed or failed
+     * domain goes back to 'pending' so the root helper publishes it again. Returns false when the
+     * domain belongs to another company.
+     */
+    internal fun registerDomain(access: ModuleAccessService, companyCode: String, domain: String?): Boolean =
+        access.centralConnection().use { central ->
+            central.autoCommit = false
+            try {
+                val owner = domain?.let {
+                    central.prepareStatement("SELECT company_code, module_id FROM public_domains WHERE domain = ? FOR UPDATE").use { query ->
+                        query.setString(1, it)
+                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+                    }
+                }
+                if (owner != null && owner != (companyCode to HotspotModule.id)) {
+                    central.rollback()
+                    return@use false
+                }
+                central.prepareStatement(
+                    "DELETE FROM public_domains WHERE company_code = ? AND module_id = ? AND domain IS DISTINCT FROM ?"
+                ).use { delete ->
+                    delete.setString(1, companyCode)
+                    delete.setString(2, HotspotModule.id)
+                    delete.setString(3, domain)
+                    delete.executeUpdate()
+                }
+                if (domain != null) {
+                    central.prepareStatement(
+                        """
+                        INSERT INTO public_domains (domain, company_code, module_id, status)
+                        VALUES (?, ?, ?, 'pending')
+                        ON CONFLICT (domain) DO UPDATE SET
+                            status = CASE WHEN public_domains.status = 'error' THEN 'pending' ELSE public_domains.status END,
+                            last_error = CASE WHEN public_domains.status = 'error' THEN NULL ELSE public_domains.last_error END,
+                            updated_at = CURRENT_TIMESTAMP
+                        """.trimIndent()
+                    ).use { insert ->
+                        insert.setString(1, domain)
+                        insert.setString(2, companyCode)
+                        insert.setString(3, HotspotModule.id)
+                        insert.executeUpdate()
+                    }
+                }
+                central.commit()
+                true
+            } catch (failure: Exception) {
+                central.rollback()
+                throw failure
+            } finally {
+                central.autoCommit = true
+            }
+        }
+
+    // Human-readable domain status and whether the portal is published.
+    internal fun domainState(access: ModuleAccessService, companyCode: String, domain: String?): Pair<String, Boolean> {
+        if (domain == null) return "Sin dominio configurado" to false
+        return access.centralConnection().use { central ->
+            central.prepareStatement(
+                "SELECT status, last_error FROM public_domains WHERE domain = ? AND company_code = ? AND module_id = ?"
+            ).use { query ->
+                query.setString(1, domain)
+                query.setString(2, companyCode)
+                query.setString(3, HotspotModule.id)
+                query.executeQuery().use { rows ->
+                    if (!rows.next()) {
+                        "No registrado; guarda la configuracion de nuevo" to false
+                    } else when (rows.getString("status")) {
+                        "active" -> "Activo: $domain" to true
+                        "pending" -> "Pendiente: el servidor esta configurando Nginx y HTTPS (puede tardar unos minutos)" to false
+                        "error" -> "Error: ${rows.getString("last_error").orEmpty()} Corrige el DNS y guarda de nuevo para reintentar." to false
+                        else -> rows.getString("status") to false
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun ApplicationCall.screenId(permissions: ModulePermissions): String? {
+        val requested = parameters["screen"].orEmpty()
+        val screen = if (requested == "home") HotspotScreens.home(permissions) else requested.takeIf { HotspotScreens.isScreen(it) }
+        if (screen == null) {
+            respond(HttpStatusCode.NotFound, HotspotErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada o sin permisos."))
+        }
+        return screen
+    }
+
+    // Opens the tenant database of the authorized company, runs [block] and responds with its screen.
+    private suspend fun ApplicationCall.respondScreen(access: ModuleAccessService, block: suspend (Connection) -> UiScreen?) {
+        val companyCode = access.companyCode(this)
+            ?: return respond(HttpStatusCode.BadRequest, HotspotErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+        val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
+            ?: return respond(HttpStatusCode.Forbidden, HotspotErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+        try {
+            val screen = connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }
+            if (screen != null) respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
+        } catch (failure: SQLException) {
+            log.error("Hotspot screen failed for company {}", companyCode, failure)
+            respond(HttpStatusCode.InternalServerError, HotspotErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+        }
+    }
+
+    private suspend fun ApplicationCall.dateRange(): Pair<LocalDate, LocalDate>? {
+        val today = LocalDate.now()
+        val from = request.queryParameters["from"]?.takeIf { it.isNotBlank() }?.let { runCatching { LocalDate.parse(it) }.getOrNull() ?: return invalidRange() }
+            ?: today.minusDays(6)
+        val to = request.queryParameters["to"]?.takeIf { it.isNotBlank() }?.let { runCatching { LocalDate.parse(it) }.getOrNull() ?: return invalidRange() }
+            ?: today
+        if (to.isBefore(from) || from.plusDays(366).isBefore(to)) return invalidRange()
+        return from to to
+    }
+
+    private suspend fun ApplicationCall.invalidRange(): Pair<LocalDate, LocalDate>? {
+        respond(HttpStatusCode.BadRequest, HotspotErrorResponse("INVALID_RANGE", "Usa fechas AAAA-MM-DD; el rango maximo es de un ano."))
+        return null
+    }
+}
+
+@Serializable
+data class HotspotErrorResponse(val code: String, val message: String)
+
+class HotspotServerModuleProvider : ServerModuleProvider {
+    override fun create(): ServerModule = HotspotServerModule
+}

@@ -1,0 +1,275 @@
+package com.ideasdeveloper.bms.app.features.settings.ui
+
+import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
+import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.bms.app.core.layout.ContentWidth
+import com.ideasdeveloper.bms.app.core.layout.contentWidth
+import com.ideasdeveloper.bms.app.core.theme.AppTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.ideasdeveloper.bms.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.bms.app.core.config.ClientConfiguration
+import com.ideasdeveloper.bms.app.core.version.ClientVersion
+import com.ideasdeveloper.bms.app.core.version.VersionApi
+import com.ideasdeveloper.bms.app.core.session.SessionStore
+import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.ui.ProfileDialog
+import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
+import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.bms.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.bms.app.features.shell.ui.ConfirmDialog
+import com.ideasdeveloper.bms.app.features.shell.ui.toComposeColor
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.RadioButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.semantics.Role
+import com.ideasdeveloper.bms.app.core.theme.BuiltInThemes
+import com.ideasdeveloper.bms.app.core.theme.ThemeStore
+import kotlinx.coroutines.launch
+
+@Composable
+// Muestra ajustes locales seguros del cliente; los cambios sensibles siguen viviendo en el servidor.
+fun SettingsScreen(
+    configuration: ClientConfiguration?,
+    session: LoginResponse?,
+    onReturnToDashboard: () -> Unit,
+    onLogout: () -> Unit,
+    onClearLocalConfiguration: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val companyIdentity = remember { CompanyIdentityStore.current() }
+    val colors = AppTheme.colors
+    val primaryColor = colors.accent
+    val scope = rememberCoroutineScope()
+    var versionStatus by remember { mutableStateOf<String?>(null) }
+    var checkingVersion by remember { mutableStateOf(false) }
+    var editingProfile by remember { mutableStateOf(false) }
+    var confirmingClear by remember { mutableStateOf(false) }
+    val selectedTheme by ThemeStore.selection.collectAsState()
+    val moduleThemes by ThemeStore.moduleThemes.collectAsState()
+    // Al abrir Ajustes vuelve a pedir los temas por si se instalo o quito un modulo.
+    LaunchedEffect(configuration?.serverUrl) { ThemeStore.refresh(configuration?.serverUrl) }
+
+    if (confirmingClear) {
+        ConfirmDialog(
+            title = "Limpiar configuracion local",
+            message = "Se borraran de este dispositivo la URL del servidor, la empresa guardada y tu sesion. " +
+                "Tendras que configurar el servidor e iniciar sesion de nuevo. Los datos del servidor no se modifican.",
+            confirmLabel = "Limpiar y cerrar sesion",
+            onConfirm = {
+                confirmingClear = false
+                onClearLocalConfiguration()
+            },
+            onDismiss = { confirmingClear = false },
+        )
+    }
+
+    if (editingProfile && session != null) {
+        ProfileDialog(
+            serverUrl = configuration?.serverUrl,
+            session = session,
+            required = false,
+            onSaved = { profile ->
+                SessionStore.update { it.copy(displayName = profile.displayName, email = profile.email, profileComplete = profile.profileComplete) }
+                editingProfile = false
+            },
+            onDismiss = { editingProfile = false },
+            onLogout = onLogout,
+        )
+    }
+
+    AuthenticatedScreen(
+        modifier = modifier.background(colors.screenBrush),
+        topBar = {
+            AuthenticatedTopBar(
+                title = "Ajustes",
+                subtitle = "Cliente",
+                primaryColor = primaryColor,
+                onReturnToDashboard = onReturnToDashboard,
+                onSettings = {},
+                onLogout = onLogout,
+            )
+        },
+    ) {
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = onReturnToDashboard,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(bottom = 16.dp)
+                .contentWidth(ContentWidth.Form, 0.9f),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(AdaptiveLayout.gap),
+            ) {
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Apariencia", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "El tema se guarda en este dispositivo. Los modulos instalados en el servidor pueden agregar temas.",
+                        color = AppTheme.colors.muted,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    ThemeOption("Automatico (segun el sistema)", BuiltInThemes.System, selectedTheme)
+                    ThemeOption(BuiltInThemes.light.name, BuiltInThemes.Light, selectedTheme)
+                    ThemeOption(BuiltInThemes.dark.name, BuiltInThemes.Dark, selectedTheme)
+                    moduleThemes.forEach { theme ->
+                        ThemeOption("${theme.name} (modulo ${theme.id.substringBefore('.')})", theme.id, selectedTheme)
+                    }
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Conexion", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Servidor", configuration?.serverUrl ?: "Sin configurar")
+                    SettingRow("Empresa", configuration?.companyCode ?: "Administracion del servidor")
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Sesion", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Usuario", session?.username ?: "Sin sesion")
+                    SettingRow("Nombre", session?.displayName ?: "Sin nombre")
+                    SettingRow("Correo", session?.email ?: "Sin correo")
+                    SettingRow("Rol", session?.role ?: "Sin rol")
+                    SettingRow("Empresa activa", session?.companyCode ?: "Servidor")
+                    if (session != null) {
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(onClick = { editingProfile = true }) {
+                            Text("Editar nombre y correo")
+                        }
+                    }
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Version", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Cliente", ClientVersion)
+                    versionStatus?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = AppTheme.colors.muted)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            val serverUrl = configuration?.serverUrl.orEmpty()
+                            if (serverUrl.isBlank()) {
+                                versionStatus = "No hay servidor configurado para revisar actualizaciones."
+                                return@Button
+                            }
+                            checkingVersion = true
+                            scope.launch {
+                                val version = VersionApi(serverUrl).use { it.version() }
+                                versionStatus = when {
+                                    version == null -> "No se pudo consultar la version del servidor."
+                                    !version.latestAppVersion.isNullOrBlank() && version.latestAppVersion != ClientVersion ->
+                                        "Nueva version del cliente disponible: ${version.latestAppVersion}."
+                                    else -> "El cliente esta actualizado."
+                                }
+                                checkingVersion = false
+                            }
+                        },
+                        enabled = !checkingVersion,
+                        colors = accentButtonColors(),
+                    ) {
+                        Text(if (checkingVersion) "Revisando..." else "Revisar actualizaciones")
+                    }
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Datos locales", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor.",
+                        color = AppTheme.colors.muted,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = { confirmingClear = true }) {
+                        Text("Limpiar configuracion local")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsCard(
+    primaryColor: Color,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = AppTheme.colors.surface, contentColor = AppTheme.colors.accentText),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(modifier = Modifier.padding(if (AdaptiveLayout.roomy) 14.dp else 16.dp), content = content)
+    }
+}
+
+@Composable
+private fun ThemeOption(label: String, themeId: String, selectedTheme: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = themeId == selectedTheme, role = Role.RadioButton, onClick = { ThemeStore.select(themeId) }),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = themeId == selectedTheme, onClick = null)
+        Spacer(Modifier.width(8.dp))
+        Text(label, color = AppTheme.colors.text)
+    }
+}
+
+@Composable
+private fun SettingRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = AppTheme.colors.muted)
+        Text(value, color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+private suspend inline fun <T> VersionApi.use(block: suspend (VersionApi) -> T): T {
+    return try {
+        block(this)
+    } finally {
+        close()
+    }
+}
