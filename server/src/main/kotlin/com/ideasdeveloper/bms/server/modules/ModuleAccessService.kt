@@ -192,6 +192,45 @@ class ModuleAccessService(
         return tenant to UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, moduleInstalled)
     }
 
+    /**
+     * Companies where the AI agent of the business owner of [companyCode] may act: that company and
+     * the others of its owner group, see [OwnerGroupScope.companies]. Only [companyCode] for a company
+     * in no group; empty when it is not active, is suspended in its group or is the server workspace.
+     */
+    fun ownerGroupCompanies(companyCode: String): List<GroupCompany> =
+        central.connection.use { connection -> OwnerGroupScope.companies(connection, companyCode) }
+
+    /**
+     * The business owner of [fromCode] acting in [toCode], another company of the same owner group,
+     * as the business owner of [toCode]: each company may have its own user, so being the same person
+     * means the same owner group and the same business owner email in both, read now. [fromTenant] and [fromUserId] are
+     * the caller's own company and user; that user must be its active business owner now. Null when
+     * any rule fails, without saying which, so the answer never tells whether a company exists.
+     * The caller closes the connection.
+     */
+    fun groupOwnerAccess(fromTenant: Connection, fromCode: String, fromUserId: UUID, toCode: String): Pair<Connection, UserModuleAccess>? {
+        if (fromCode == toCode || !CompanyCodePattern.matches(toCode) || !CompanyCodePattern.matches(fromCode)) return null
+        val fromOwner = OwnerGroupScope.activeBusinessOwner(fromTenant)?.takeIf { it.id == fromUserId } ?: return null
+        if (ownerGroupCompanies(fromCode).none { it.code == toCode }) return null
+        val tenant = tenantConnectionForCompany(toCode) ?: return null
+        val granted = try {
+            // The group alone is not enough: both companies must have the same business owner email now,
+            // so a company linked by mistake or whose owner changed is out without waiting for anyone to suspend it.
+            OwnerGroupScope.activeBusinessOwner(tenant)
+                ?.takeIf { OwnerGroupScope.sameOwner(fromOwner, it) }
+                ?.let { owner -> userAccess(tenant, toCode, owner.id, serverOwner = false) }
+                ?.takeIf { it.businessOwner }
+        } catch (failure: Exception) {
+            tenant.close()
+            throw failure
+        }
+        if (granted == null) {
+            tenant.close()
+            return null
+        }
+        return tenant to granted
+    }
+
     private fun enabledModules(tenant: Connection): Set<String> =
         tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
@@ -678,6 +717,60 @@ class ModulePermissions(
     fun hasAnyWithPrefix(prefix: String): Boolean = businessOwner || granted.any { it.startsWith(prefix) }
 }
 
+/**
+ * Which companies the AI agent of a business owner may act in besides its own: the ones the server
+ * owner put in the same owner group (control V008). Plain SQL over a connection so the rule can be
+ * tested against a real database.
+ */
+object OwnerGroupScope {
+    /**
+     * [companyCode] first and then the other companies of its owner group by name: all active, not
+     * suspended in the group and never the server workspace. Empty when [companyCode] itself is not
+     * active, is suspended in its group, is the server workspace or does not exist.
+     */
+    fun companies(central: Connection, companyCode: String): List<GroupCompany> =
+        central.prepareStatement(
+            """
+            SELECT target.code, target.name
+            FROM companies origin
+            JOIN companies target ON target.owner_group = origin.owner_group
+            WHERE origin.code = ?
+              AND origin.is_active AND NOT origin.is_server_workspace AND NOT origin.group_suspended
+              AND target.is_active AND NOT target.is_server_workspace AND NOT target.group_suspended
+            ORDER BY CASE WHEN target.code = origin.code THEN 0 ELSE 1 END, lower(target.name), target.code
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, companyCode)
+            query.executeQuery().use { rows ->
+                buildList { while (rows.next()) add(GroupCompany(rows.getString(1), rows.getString(2))) }
+            }
+        }
+
+    /** The active business owner of a company: its user and its email as stored. */
+    data class Owner(val id: UUID, val email: String?)
+
+    /** The active business owner of the company behind [tenant], or null when it has none. */
+    fun activeBusinessOwner(tenant: Connection): Owner? =
+        tenant.prepareStatement(
+            """
+            SELECT users.id, users.email
+            FROM business_owner owner
+            JOIN application_users users ON users.id = owner.user_id
+            WHERE users.is_active = TRUE
+            ORDER BY users.id
+            LIMIT 1
+            """.trimIndent()
+        ).use { query ->
+            query.executeQuery().use { rows -> if (rows.next()) Owner(rows.getObject(1, UUID::class.java), rows.getString(2)) else null }
+        }
+
+    /** Whether two business owners are the same person: the same email, and neither without one. */
+    fun sameOwner(one: Owner, other: Owner): Boolean {
+        val email = one.email?.trim().orEmpty()
+        return email.isNotEmpty() && email.equals(other.email?.trim().orEmpty(), ignoreCase = true)
+    }
+}
+
 /** A company link rule was broken (different owner, inactive, server workspace...); the message is for people. */
 class CompanyLinkException(message: String) : Exception(message)
 
@@ -708,6 +801,9 @@ class UserModuleAccess internal constructor(
     }
     // Whether the user can use the tool somewhere: a server owner in every company of the server
     // (ModuleAccessService.serverOwnerAccess), anyone else where the module is enabled and permitted.
+    // Modules enabled and installed in the company.
+    fun enabledModuleIds(): Set<String> = enabledModules.filter(installed).toSet()
+
     fun mayUse(tool: RegisteredMcpTool): Boolean = serverOwner || permissions(tool.moduleId)?.has(tool.tool.permission) == true
 }
 

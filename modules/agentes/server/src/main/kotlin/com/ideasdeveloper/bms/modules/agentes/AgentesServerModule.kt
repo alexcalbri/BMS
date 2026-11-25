@@ -8,6 +8,7 @@ import com.ideasdeveloper.bms.server.modules.ModuleMcp
 import com.ideasdeveloper.bms.server.modules.ModuleJob
 import com.ideasdeveloper.bms.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
+import com.ideasdeveloper.bms.server.modules.ServerMcpModuleId
 import com.ideasdeveloper.bms.server.modules.ServerModule
 import com.ideasdeveloper.bms.server.modules.ServerModuleProvider
 import com.ideasdeveloper.bms.server.modules.UserModuleAccess
@@ -48,6 +49,7 @@ import java.sql.Connection
 import java.sql.SQLException
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * AI agents (MCP clients) connected by each user. The endpoint authenticates the agent token, loads
@@ -56,6 +58,10 @@ import java.util.UUID
  */
 object AgentesServerModule : ServerModule {
     private val log = LoggerFactory.getLogger(AgentesServerModule::class.java)
+    // One answer for every company a business owner's agent may not act in, so it never tells whether the company exists.
+    private const val OutOfReach = "No puedes actuar en esa empresa: no pertenece a tu grupo o no esta disponible."
+    // What this company's log keeps when a call in another company of the group fails; the agent gets the real message.
+    private const val ElsewhereDetail = "No se completo en la empresa de destino."
     private val rateLimiter = AgentRateLimiter(perMinute = 120)
     private const val ActivityDays = 180
     private const val MaxBodyBytes = 1_000_000
@@ -64,9 +70,10 @@ object AgentesServerModule : ServerModule {
         "modules/agentes/migrations/V001__create_agent_tokens.sql",
         "modules/agentes/migrations/V002__refresh_reuse_detection.sql",
         "modules/agentes/migrations/V003__refresh_history.sql",
+        "modules/agentes/migrations/V004__group_scope.sql",
     )
 
-    override val runtimeTables = listOf("agent_tokens", "agent_activity", "agent_refresh_history")
+    override val runtimeTables = listOf("agent_tokens", "agent_activity", "agent_refresh_history", "agent_group_activity")
 
     // Its own MCP (managing connections), offered through the same bridge as every module.
     override val mcp: ModuleMcp
@@ -76,7 +83,8 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.3.3",
+        version = "0.4.0",
+        minCoreVersion = "0.9.1",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,
@@ -147,6 +155,7 @@ object AgentesServerModule : ServerModule {
                 val (token, value) = AgentTokens.create(
                     context.tenant, context.permissions.companyCode, context.owner,
                     request.name, request.allowedModules, request.readOnly, request.expiresAt,
+                    groupScope = request.groupScope && context.permissions.businessOwner && !context.owner.serverOwner,
                 )
                 AgentesScreens.created(context, token, value)
             }
@@ -215,43 +224,85 @@ object AgentesServerModule : ServerModule {
     private fun AgentSession.protocol(tenant: Connection, access: ModuleAccessService): AgentesMcp {
         // Each module's own MCP (instructions and tools), filtered to what this agent may use.
         val modules = access.moduleMcp()
-        val visible = AgentesMcp.visibleTools(modules.flatMap { it.tools }, token, this.access)
+        // A business owner's connection made for the group may act in the other companies of its owner group:
+        // the ones it reaches now, and with the tools of the modules enabled in some of them.
+        val reach = if (token.groupScope && this.access.businessOwner && !token.serverOwner && !this.access.serverOwner) {
+            groupReach(tenant, access, this.access.companyCode, token.userId)
+        } else {
+            null
+        }
+        val ownerGroup = reach != null
+        val visible = AgentesMcp.visibleTools(modules.flatMap { it.tools }, token, this.access, ownerGroup, reach.orEmpty())
         return AgentesMcp(
-            instructions = AgentesMcp.instructions(instructions(token, this.access.companyCode), modules, visible),
+            instructions = AgentesMcp.instructions(instructions(token, this.access.companyCode, ownerGroup), modules, visible),
             tools = { visible },
             invoke = { tool, arguments -> runTool(tenant, access, tool, arguments) },
-            denied = { name -> AgentTokens.log(tenant, token.id, name.ifBlank { "(sin nombre)" }, "denied", "Herramienta desconocida o sin permiso.") },
+            denied = { name -> AgentTokens.log(tenant, token.id, if (name.isBlank()) "(sin nombre)" else AgentesMcp.logTool(name), "denied", "Herramienta desconocida o sin permiso.") },
         )
     }
 
     /**
-     * Runs a tool in the agent's own company, or for a server owner's agent in the company named by
-     * [AgentesMcp.ActingCompany], with the server owner's live access there. The activity log stays in
-     * the agent's own company.
+     * Runs a tool in the agent's own company, or in the company named by [AgentesMcp.ActingCompany]:
+     * a server owner's agent in any company with the server owner's live access there, a business
+     * owner's agent only in another company of its owner group and as the business owner of that
+     * company (ModuleAccessService.groupOwnerAccess checks the group on every call). The activity log
+     * stays in the agent's own company, refusals included.
      */
     private fun AgentSession.runTool(tenant: Connection, access: ModuleAccessService, tool: VisibleTool, arguments: JsonObject): ToolOutcome {
-        val target = AgentesMcp.actingCompany(arguments)?.takeIf { tool.anyCompany && it != this.access.companyCode }
+        // A request may carry several calls: one of them may have revoked this very connection.
+        if (!AgentTokens.stillActive(tenant, token.id)) return ToolOutcome.Failure("Esta conexion fue revocada o vencio.")
+        val own = this.access.companyCode
+        val requested = AgentesMcp.actingCompany(arguments)?.takeIf { it != own }
         val toolArguments = JsonObject(arguments - AgentesMcp.ActingCompany)
-        val logName = if (target == null) tool.name else "${tool.name} @ $target"
-        fun refuse(message: String): ToolOutcome {
-            AgentTokens.log(tenant, token.id, logName, "error", message)
+        val logName = if (requested == null) tool.name else "${tool.name} @ ${AgentesMcp.logTarget(requested)}"
+        // What the agent reads and what is kept in the log may differ: the log of this company never
+        // carries details of another one.
+        fun refuse(message: String, status: String = "error", logged: String = message): ToolOutcome {
+            AgentTokens.log(tenant, token.id, logName, status, logged)
             return ToolOutcome.Failure(message)
         }
+        // Asked for another company but not honoured: refuse, never run it here instead.
+        if (AgentesMcp.malformedActingCompany(arguments)) return refuse(OutOfReach, "denied")
+        if (requested != null && !tool.anyCompany) return refuse("Esta herramienta no admite ${AgentesMcp.ActingCompany}.", "denied")
+        val target = requested
         if (target == null) {
             val permissions = tool.permissions
-                ?: return refuse("${tool.registered.moduleName} no esta activo en el espacio del servidor. Indica la empresa en ${AgentesMcp.ActingCompany}.")
-            return execute(tenant, tenant, access, tool, permissions, toolArguments, logName)
+                ?: return refuse(
+                    if (tool.ownerGroup) "${tool.registered.moduleName} no esta activo en tu empresa. Indica otra empresa de tu grupo en ${AgentesMcp.ActingCompany}."
+                    else "${tool.registered.moduleName} no esta activo en el espacio del servidor. Indica la empresa en ${AgentesMcp.ActingCompany}."
+                )
+            return execute(tenant, tenant, access, tool, permissions, toolArguments, logName, elsewhere = false)
         }
-        val (company, companyAccess) = try {
-            access.serverOwnerAccess(target, token.userId)
-        } catch (failure: SQLException) {
-            log.warn("Agent could not open company {}: {}", target, failure.message)
+        // The server's own tools never run in another company, whatever the caller sends.
+        if (tool.registered.moduleId == ServerMcpModuleId) return refuse(OutOfReach, "denied")
+        val asServerOwner = token.serverOwner && this.access.serverOwner
+        val opened = try {
+            when {
+                asServerOwner -> access.serverOwnerAccess(target, token.userId)
+                tool.ownerGroup && token.groupScope && this.access.businessOwner -> access.groupOwnerAccess(tenant, own, token.userId, target)
+                else -> null
+            }
+        } catch (failure: Exception) {
+            log.warn("Agent of company {} could not open company {}: {}", own, AgentesMcp.logTarget(target), failure.message)
             null
-        } ?: return refuse("La empresa $target no existe, esta desactivada o no se pudo abrir.")
+        }
+        val (company, companyAccess) = opened
+            ?: return if (asServerOwner) refuse("La empresa ${AgentesMcp.logTarget(target)} no existe, esta desactivada o no se pudo abrir.") else refuse(OutOfReach, "denied")
         return company.use { connection ->
+            if (!asServerOwner) {
+                // Agents must be allowed in the company where it acts too: the module enabled there and its owner allowed to connect them.
+                val agents = companyAccess.permissions(AgentesModule.id)
+                if (agents?.has(AgentesScreens.Connect) != true) {
+                    return@use refuse("Agentes IA no esta activo en la empresa $target; activalo alli para que tu agente pueda actuar.", "denied", ElsewhereDetail)
+                }
+            }
             val permissions = companyAccess.permissions(tool.registered.moduleId)
-                ?: return@use refuse("${tool.registered.moduleName} no esta activo en la empresa $target.")
-            execute(tenant, connection, access, tool, permissions, toolArguments, logName)
+                ?: return@use refuse(
+                    "${tool.registered.moduleName} no esta activo en la empresa $target.",
+                    logged = if (asServerOwner) "${tool.registered.moduleName} no esta activo en la empresa $target." else ElsewhereDetail,
+                )
+            if (!permissions.has(tool.registered.tool.permission)) return@use refuse("No tienes permiso para esta herramienta en la empresa $target.", "denied", ElsewhereDetail)
+            execute(tenant, connection, access, tool, permissions, toolArguments, logName, elsewhere = !asServerOwner)
         }
     }
 
@@ -263,28 +314,73 @@ object AgentesServerModule : ServerModule {
         permissions: ModulePermissions,
         arguments: JsonObject,
         logName: String,
+        // A business owner's agent acting in another company of its group: the error text stays out of this company's log.
+        elsewhere: Boolean,
     ): ToolOutcome {
         val call = McpToolCall(arguments, permissions, tenant, access, token.name, tool.registered.moduleId)
+        // The company where it acted keeps its own row too, so its people see who came from outside.
+        fun there(outcome: String) {
+            if (!elsewhere) return
+            runCatching { AgentTokens.logGroupCall(tenant, this.access.companyCode, token.name, token.userName, tool.name, outcome) }
+                .onFailure { log.warn("Group call {} not recorded in company {}: {}", tool.name, permissions.companyCode, it.message) }
+        }
         return try {
             val result: JsonElement = tool.registered.tool.handler(call)
             AgentTokens.log(logTenant, token.id, logName, "ok")
+            there("ok")
             ToolOutcome.Success(result)
         } catch (failure: McpToolException) {
-            AgentTokens.log(logTenant, token.id, logName, "error", failure.message.orEmpty())
+            AgentTokens.log(logTenant, token.id, logName, "error", if (elsewhere) ElsewhereDetail else failure.message.orEmpty())
+            there("error")
             ToolOutcome.Failure(failure.message.orEmpty())
         } catch (failure: Exception) {
             log.error("Agent tool {} failed for company {}", tool.name, permissions.companyCode, failure)
             runCatching { AgentTokens.log(logTenant, token.id, logName, "error", "Error interno") }
+            there("error")
             ToolOutcome.Failure("No se pudo completar la operacion.")
         }
     }
 
-    private fun instructions(token: AgentToken, companyCode: String): String =
+    private class Reach(val modules: Set<String>, val at: Long)
+
+    // Modules enabled in the companies a business owner's agent reaches, per company of origin. Short lived:
+    // it only decides which tools are offered; every call checks the group again.
+    private val reachCache = ConcurrentHashMap<String, Reach>()
+    private const val ReachMillis = 60_000L
+
+    /**
+     * Modules enabled in the other companies of the owner group that the business owner of [companyCode]
+     * reaches now (same owner, Agentes IA enabled there), or null when it reaches none.
+     */
+    private fun groupReach(tenant: Connection, access: ModuleAccessService, companyCode: String, userId: UUID): Set<String>? {
+        val now = System.currentTimeMillis()
+        val key = "$companyCode:$userId"
+        reachCache[key]?.takeIf { now - it.at < ReachMillis }?.let { return it.modules.takeIf(Set<String>::isNotEmpty) }
+        if (reachCache.size > 5_000) reachCache.clear()
+        val modules = try {
+            access.ownerGroupCompanies(companyCode).filter { it.code != companyCode }.take(MaxGroupCompanies).flatMap { company ->
+                access.groupOwnerAccess(tenant, companyCode, userId, company.code)?.let { (connection, there) ->
+                    connection.use { if (there.permissions(AgentesModule.id)?.has(AgentesScreens.Connect) == true) there.enabledModuleIds() else emptySet() }
+                }.orEmpty()
+            }.toSet()
+        } catch (failure: Exception) {
+            log.warn("Could not read the owner group of company {}: {}", companyCode, failure.message)
+            return null
+        }
+        reachCache[key] = Reach(modules, now)
+        return modules.takeIf { it.isNotEmpty() }
+    }
+
+    private const val MaxGroupCompanies = 50
+
+    private fun instructions(token: AgentToken, companyCode: String, ownerGroup: Boolean = false): String =
         "Estas conectado a BMS en nombre de ${token.userName} (empresa $companyCode). " +
             "Solo tienes las herramientas que ese usuario tiene permitidas" +
             (if (token.readOnly) ", en modo solo lectura" else "") +
             ". Si necesitas algo que no aparece en tus herramientas, pide al usuario que solicite el permiso a su administrador. " +
             (if (token.serverOwner) "Como dueno del servidor puedes usar las herramientas de los modulos en cualquier empresa del servidor indicando su codigo en ${AgentesMcp.ActingCompany}. " else "") +
+            (if (ownerGroup) "Como dueno de la empresa puedes usar las herramientas de los modulos en las otras empresas de tu grupo indicando su codigo en ${AgentesMcp.ActingCompany}; " +
+                "consulta cuales son con ${AgentesMcp.GroupCompaniesTool} y di siempre al usuario en que empresa vas a actuar. " else "") +
             "Todo lo que hagas queda registrado a nombre del usuario; confirma con el antes de crear, modificar o eliminar datos."
 
     // Browsers send Origin; a page on another site must not reach the endpoint with a user's token.

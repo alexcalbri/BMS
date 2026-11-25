@@ -67,6 +67,7 @@ object OAuthPages {
               ${moduleChecks.ifEmpty { "<p class=\"error\">Aun no tienes funciones que un agente pueda usar.</p>" }}
               <h2>Limites</h2>
               <label class="check"><input type="checkbox" name="readOnly" value="true"> Solo lectura: puede consultar, pero no crear ni modificar</label>
+              ${if (user.serverOwner) "" else "<label class=\"check\"><input type=\"checkbox\" name=\"groupScope\" value=\"true\"> Tambien en las demas empresas de mi grupo (solo si eres el dueno de la empresa)</label>"}
               <label>La conexion vence en
                 <select name="expires">$expirations</select>
               </label>

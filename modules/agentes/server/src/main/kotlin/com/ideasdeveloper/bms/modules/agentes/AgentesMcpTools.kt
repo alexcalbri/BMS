@@ -25,7 +25,8 @@ object AgentesMcpTools {
     private const val Instructions =
         "Agentes IA administra las conexiones de agentes como tu: cada una pertenece a un usuario y nunca tiene mas permisos que el. " +
             "Puedes ver las conexiones, su actividad y revocarlas; las conexiones nuevas solo se crean en la app, porque su token es una credencial. " +
-            "Tambien puedes leer las notificaciones del usuario (list_notifications) y marcarlas como leidas (mark_notifications_read)."
+            "Tambien puedes leer las notificaciones del usuario (list_notifications) y marcarlas como leidas (mark_notifications_read)." +
+            " list_group_companies dice en que empresas puede actuar el agente del dueno de una empresa: la suya y las demas de su grupo."
 
     private val tools = listOf(
         McpTool(
@@ -83,7 +84,54 @@ object AgentesMcpTools {
                 ),
             ),
         ) { call -> markRead(call) },
+        McpTool(
+            name = "list_group_activity",
+            title = "Actividad de agentes de otras empresas",
+            description = "Ultimas llamadas que hicieron en esta empresa los agentes de otras empresas del mismo grupo de dueno " +
+                "(empresa de origen, agente, usuario, herramienta, resultado y hora). Necesita el permiso de administrar agentes.",
+            permission = AgentesScreens.Manage,
+            readOnly = true,
+            inputSchema = McpSchema.obj(mapOf("limit" to McpSchema.integer("Cantidad maxima (50 por defecto).", 1, 200))),
+        ) { call ->
+            buildJsonObject {
+                put("activity", JsonArray(AgentTokens.groupActivity(call.tenant, call.int("limit", 50, 1..200)).map { entry ->
+                    buildJsonObject {
+                        put("company", entry.originCompany)
+                        put("agent", entry.agentName)
+                        put("user", entry.userName)
+                        put("tool", entry.tool)
+                        put("outcome", entry.outcome)
+                        put("at", entry.createdAt.toString())
+                    }
+                }))
+            }
+        },
+        McpTool(
+            name = "list_group_companies",
+            title = "Empresas de mi grupo",
+            description = "Empresas donde puede actuar este agente: la del usuario y, si es el dueno de la empresa, las demas de su grupo " +
+                "(codigo y nombre). El codigo se usa en acting_company de las herramientas de los modulos.",
+            permission = AgentesScreens.Connect,
+            readOnly = true,
+            inputSchema = McpSchema.obj(emptyMap()),
+        ) { call -> groupCompanies(call) },
     )
+
+    // Only codes and names, and only of the user's own owner group: nothing about other companies of the server.
+    private fun groupCompanies(call: McpToolCall): JsonElement {
+        val own = call.permissions.companyCode
+        if (call.permissions.serverOwner) throw McpToolException("El dueno del servidor consulta las empresas con servidor_list_companies.")
+        val group = if (call.permissions.businessOwner) call.access.ownerGroupCompanies(own) else emptyList()
+        return buildJsonObject {
+            put("company", own)
+            put("companies", JsonArray(group.filter { it.code != own }.map { company ->
+                buildJsonObject {
+                    put("code", company.code)
+                    put("name", company.name)
+                }
+            }))
+        }
+    }
 
     private fun notifications(call: McpToolCall): JsonElement {
         val userId = call.permissions.userId ?: throw McpToolException("No se pudo identificar al usuario.")
@@ -145,6 +193,7 @@ object AgentesMcpTools {
         put("connection", if (token.oauthClient != null) "OAuth" else "token ...${token.hint}")
         put("modules", token.allowedModules?.let { modules -> JsonArray(modules.sorted().map(::JsonPrimitive)) } ?: JsonPrimitive("todos"))
         put("readOnly", token.readOnly)
+        put("groupScope", token.groupScope)
         put("active", token.isActive())
         put("createdAt", token.createdAt.toString())
         put("expiresAt", token.expiresAt?.toString()?.let(::JsonPrimitive) ?: JsonNull)
