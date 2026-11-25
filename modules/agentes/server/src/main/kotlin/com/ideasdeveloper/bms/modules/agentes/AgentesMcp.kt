@@ -19,11 +19,17 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * A tool the connected agent may use, with the user's permissions in its module in the agent's own
- * company. [anyCompany]: a server owner's agent, which may also run it in any company of the server
- * (argument [AgentesMcp.ActingCompany]); [permissions] is then null when the module is not enabled
- * in the agent's own company.
+ * company. [anyCompany]: the agent may also run it in another company (argument
+ * [AgentesMcp.ActingCompany]): a server owner's agent in any company of the server, or with
+ * [ownerGroup] a business owner's agent in the other companies of its owner group. [permissions] is
+ * then null when the module is not enabled in the agent's own company.
  */
-class VisibleTool(val registered: RegisteredMcpTool, val permissions: ModulePermissions?, val anyCompany: Boolean = false) {
+class VisibleTool(
+    val registered: RegisteredMcpTool,
+    val permissions: ModulePermissions?,
+    val anyCompany: Boolean = false,
+    val ownerGroup: Boolean = false,
+) {
     val name: String get() = registered.qualifiedName
 }
 
@@ -118,7 +124,7 @@ class AgentesMcp(
             put("name", visible.name)
             put("title", title)
             put("description", tool.description)
-            put("inputSchema", if (visible.anyCompany) withActingCompany(tool.inputSchema) else tool.inputSchema)
+            put("inputSchema", if (visible.anyCompany) withActingCompany(tool.inputSchema, visible.ownerGroup) else tool.inputSchema)
             putJsonObject("annotations") {
                 put("title", title)
                 put("readOnlyHint", tool.readOnly)
@@ -129,18 +135,25 @@ class AgentesMcp(
     }
 
     // Adds the bridge's own argument to a module tool's schema; the bridge removes it before the tool runs.
-    private fun withActingCompany(schema: JsonObject): JsonObject {
+    private fun withActingCompany(schema: JsonObject, ownerGroup: Boolean): JsonObject {
         val properties = schema["properties"] as? JsonObject ?: JsonObject(emptyMap())
         val acting = buildJsonObject {
             put("type", "string")
-            put("description", "Codigo de la empresa donde actuar (servidor_list_companies). Si se omite, el espacio del servidor.")
+            put(
+                "description",
+                if (ownerGroup) "Codigo de otra empresa de tu grupo donde actuar ($GroupCompaniesTool). Si se omite, tu empresa."
+                else "Codigo de la empresa donde actuar (servidor_list_companies). Si se omite, el espacio del servidor.",
+            )
         }
         return JsonObject(schema + ("properties" to JsonObject(properties + (ActingCompany to acting))))
     }
 
     companion object {
-        // Argument of a server owner's agent to run a module tool in another company. Modules must not use it.
+        // Argument of a server owner's or a group owner's agent to run a module tool in another company. Modules must not use it.
         const val ActingCompany = "acting_company"
+        // This module's tool that lists the companies a business owner's agent may act in.
+        const val GroupCompaniesTool = "agentes_list_group_companies"
+        private val CompanyCode = Regex("[a-z][a-z0-9_]{0,62}")
         val SupportedVersions = listOf("2025-06-18", "2025-03-26", "2024-11-05")
         const val ParseError = -32700
         const val InvalidRequest = -32600
@@ -160,22 +173,32 @@ class AgentesMcp(
         /**
          * Tools the agent may use now: allowed by its token and permitted to its user in an enabled module.
          * A server owner's agent gets every installed module's tools, to use in any company; whether the
-         * module is enabled there is checked on each call.
+         * module is enabled there is checked on each call. With [ownerGroup] (the business owner of a
+         * company that shares its owner group with others, never a server owner) the same holds for the
+         * companies of that group. The server's own tools stay with server owners.
          */
-        fun visibleTools(all: List<RegisteredMcpTool>, token: AgentToken, access: UserModuleAccess): List<VisibleTool> =
-            all.mapNotNull { registered ->
+        fun visibleTools(all: List<RegisteredMcpTool>, token: AgentToken, access: UserModuleAccess, ownerGroup: Boolean = false): List<VisibleTool> {
+            val groupScope = ownerGroup && access.businessOwner && !access.serverOwner
+            return all.mapNotNull { registered ->
                 if (!token.allowsModule(registered.moduleId)) return@mapNotNull null
                 if (token.readOnly && !registered.tool.readOnly) return@mapNotNull null
-                val anyCompany = access.serverOwner && registered.moduleId != ServerMcpModuleId
+                val anyCompany = (access.serverOwner || groupScope) && registered.moduleId != ServerMcpModuleId
                 val permissions = access.permissions(registered.moduleId)
                 if (permissions == null && !anyCompany) return@mapNotNull null
                 if (permissions != null && !permissions.has(registered.tool.permission)) return@mapNotNull null
-                VisibleTool(registered, permissions, anyCompany)
+                VisibleTool(registered, permissions, anyCompany, ownerGroup = anyCompany && groupScope)
             }
+        }
 
-        // The company a server owner's agent asked to act on, or null for its own company.
+        // The company the agent asked to act on, or null for its own company.
         fun actingCompany(arguments: JsonObject): String? =
             (arguments[ActingCompany] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+
+        /**
+         * How a requested company is written in the activity log: its code, or a fixed text when it
+         * does not look like one, so whatever the agent sent never reaches the log as is.
+         */
+        fun logTarget(target: String): String = if (CompanyCode.matches(target)) target else "(empresa no valida)"
 
         fun result(id: JsonElement, result: JsonObject) = buildJsonObject {
             put("jsonrpc", "2.0")

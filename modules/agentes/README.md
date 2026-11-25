@@ -160,5 +160,31 @@ A server owner's agent manages the whole server:
   a random password nobody sees; the server owner sets the real one in the app (*Empresas > Editar >
   Contrasena del business owner*), which also closes the business owner's open sessions.
 
+## Business owners with several companies (0.4.0)
+
+The server owner puts companies in the same **owner group** (duplicating a company with the same owner,
+or linking them): the group says they belong to the same business owner, who already switches between
+them in the app without a password. Since 0.4.0 that business owner's agent can work in all of them:
+
+- Only for the **business owner** of the company the token belongs to, and only when that company shares
+  its group with at least one other active company. Any other user's agent is unchanged. A server
+  owner's agent is unchanged too.
+- The module tools get the `acting_company` argument. The target must be a company of the same owner
+  group that is active, not suspended in the group and not the server workspace; the company the token
+  belongs to must not be suspended either. This is read from the central database **on every call**
+  (`ModuleAccessService.groupOwnerAccess`, `OwnerGroupScope`), so taking a company out of the group
+  applies to the next call.
+- In the target the tool runs as **the business owner of that company** (each company may have its own
+  user; the group is what says they are the same person, like the company switcher), with its live
+  access: the module must be enabled there. The token still narrows modules and read-only mode.
+- `agentes_list_group_companies` (read only) returns the code and name of the companies of the group,
+  nothing else about the server.
+- The server's own tools (`servidor_*`) stay with server owners.
+- Every call is recorded in the activity log of the token's company as `<tool> @ <company>`. A target
+  outside the group is refused and recorded as `denied`, always with the same message, which does not
+  tell whether that company exists. Whatever the agent sent as company is logged only when it looks
+  like a company code.
+- Requires Core 0.9.1 (`ModuleAccessService.ownerGroupCompanies` and `groupOwnerAccess`).
+
 How a module writes its MCP, and the rules the registry enforces (names, permissions, no
 credentials), are in `modules/README.md`; each module's README lists its own tools.

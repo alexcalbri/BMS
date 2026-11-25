@@ -192,6 +192,40 @@ class ModuleAccessService(
         return tenant to UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, moduleInstalled)
     }
 
+    /**
+     * Companies where the AI agent of the business owner of [companyCode] may act: that company and
+     * the others of its owner group, see [OwnerGroupScope.companies]. Only [companyCode] for a company
+     * in no group; empty when it is not active, is suspended in its group or is the server workspace.
+     */
+    fun ownerGroupCompanies(companyCode: String): List<GroupCompany> =
+        central.connection.use { connection -> OwnerGroupScope.companies(connection, companyCode) }
+
+    /**
+     * The business owner of [fromCode] acting in [toCode], another company of the same owner group,
+     * as the business owner of [toCode]: the group says both owners are the same person even when each
+     * company has its own user (see LoginDatabases.switchCompany). [fromTenant] and [fromUserId] are
+     * the caller's own company and user; that user must be its active business owner now. Null when
+     * any rule fails, without saying which, so the answer never tells whether a company exists.
+     * The caller closes the connection.
+     */
+    fun groupOwnerAccess(fromTenant: Connection, fromCode: String, fromUserId: UUID, toCode: String): Pair<Connection, UserModuleAccess>? {
+        if (fromCode == toCode || !CompanyCodePattern.matches(toCode) || !CompanyCodePattern.matches(fromCode)) return null
+        if (OwnerGroupScope.activeBusinessOwner(fromTenant) != fromUserId) return null
+        if (ownerGroupCompanies(fromCode).none { it.code == toCode }) return null
+        val tenant = tenantConnectionForCompany(toCode) ?: return null
+        val granted = try {
+            OwnerGroupScope.activeBusinessOwner(tenant)?.let { owner -> userAccess(tenant, toCode, owner, serverOwner = false) }
+        } catch (failure: SQLException) {
+            tenant.close()
+            throw failure
+        }
+        if (granted == null || !granted.businessOwner) {
+            tenant.close()
+            return null
+        }
+        return tenant to granted
+    }
+
     private fun enabledModules(tenant: Connection): Set<String> =
         tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
@@ -676,6 +710,51 @@ class ModulePermissions(
 
     /** Whether the user holds any permission whose id starts with [prefix] (e.g. "crm."). */
     fun hasAnyWithPrefix(prefix: String): Boolean = businessOwner || granted.any { it.startsWith(prefix) }
+}
+
+/**
+ * Which companies the AI agent of a business owner may act in besides its own: the ones the server
+ * owner put in the same owner group (control V008). Plain SQL over a connection so the rule can be
+ * tested against a real database.
+ */
+object OwnerGroupScope {
+    /**
+     * [companyCode] first and then the other companies of its owner group by name: all active, not
+     * suspended in the group and never the server workspace. Empty when [companyCode] itself is not
+     * active, is suspended in its group, is the server workspace or does not exist.
+     */
+    fun companies(central: Connection, companyCode: String): List<GroupCompany> =
+        central.prepareStatement(
+            """
+            SELECT target.code, target.name
+            FROM companies origin
+            JOIN companies target ON target.owner_group = origin.owner_group
+            WHERE origin.code = ?
+              AND origin.is_active AND NOT origin.is_server_workspace AND NOT origin.group_suspended
+              AND target.is_active AND NOT target.is_server_workspace AND NOT target.group_suspended
+            ORDER BY CASE WHEN target.code = origin.code THEN 0 ELSE 1 END, lower(target.name), target.code
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, companyCode)
+            query.executeQuery().use { rows ->
+                buildList { while (rows.next()) add(GroupCompany(rows.getString(1), rows.getString(2))) }
+            }
+        }
+
+    /** The active business owner of the company behind [tenant], or null when it has none. */
+    fun activeBusinessOwner(tenant: Connection): UUID? =
+        tenant.prepareStatement(
+            """
+            SELECT users.id
+            FROM business_owner owner
+            JOIN application_users users ON users.id = owner.user_id
+            WHERE users.is_active = TRUE
+            ORDER BY users.id
+            LIMIT 1
+            """.trimIndent()
+        ).use { query ->
+            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+        }
 }
 
 /** A company link rule was broken (different owner, inactive, server workspace...); the message is for people. */
