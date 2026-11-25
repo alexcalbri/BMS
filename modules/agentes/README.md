@@ -166,9 +166,13 @@ The server owner puts companies in the same **owner group** (duplicating a compa
 or linking them): the group says they belong to the same business owner, who already switches between
 them in the app without a password. Since 0.4.0 that business owner's agent can work in all of them:
 
-- Only for the **business owner** of the company the token belongs to, and only when that company shares
-  its group with at least one other active company. Any other user's agent is unchanged. A server
-  owner's agent is unchanged too.
+- Only for the **business owner** of the company the token belongs to, and only for a connection created
+  with **"Tambien en las demas empresas de mi grupo"** (`agent_tokens.group_scope`, migration V004; the
+  option is in the new-agent form and in the OAuth consent page, and is ignored for anyone who is not the
+  business owner). Every connection that existed before, and every new one without the option, stays in
+  its own company. Any other user's agent is unchanged. A server owner's agent is unchanged too.
+- The agent is offered the tools of the modules enabled in its own company plus, with `acting_company`,
+  those of the modules enabled in some company of the group it reaches now (read at most once a minute).
 - The module tools get the `acting_company` argument. The target must be a company of the same owner
   group that is active, not suspended in the group and not the server workspace; the company the token
   belongs to must not be suspended either. This is read from the central database **on every call**
@@ -192,9 +196,10 @@ them in the app without a password. Since 0.4.0 that business owner's agent can 
   the log of the token's company keeps a fixed text, so details of one company do not end in another's log.
 - `acting_company` that cannot be honoured (a tool that does not take it, a value that is not text) is
   **refused**; the tool never runs in the token's own company instead.
-- Known limit: the target company keeps no activity row of its own (its `agent_activity` only holds its
-  own tokens); the changes a tool makes there are attributed to that company's business owner and the
-  agent's name, as with any agent.
+- The company where it acted keeps its own record too (`agent_group_activity`: company of origin, agent,
+  user, tool, outcome and time, purged with the rest of the activity). People with *Administrar agentes*
+  there read it with `agentes_list_group_activity`.
+- A connection revoked or expired in the middle of a request (a batch) stops at its next call.
 
 A JSON-RPC batch holds at most 20 messages (it is answered by one request of the rate limit).
 - Requires Core 0.9.1 (`ModuleAccessService.ownerGroupCompanies` and `groupOwnerAccess`).

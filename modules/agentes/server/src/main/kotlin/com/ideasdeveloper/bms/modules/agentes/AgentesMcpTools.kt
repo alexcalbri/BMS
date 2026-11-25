@@ -85,6 +85,28 @@ object AgentesMcpTools {
             ),
         ) { call -> markRead(call) },
         McpTool(
+            name = "list_group_activity",
+            title = "Actividad de agentes de otras empresas",
+            description = "Ultimas llamadas que hicieron en esta empresa los agentes de otras empresas del mismo grupo de dueno " +
+                "(empresa de origen, agente, usuario, herramienta, resultado y hora). Necesita el permiso de administrar agentes.",
+            permission = AgentesScreens.Manage,
+            readOnly = true,
+            inputSchema = McpSchema.obj(mapOf("limit" to McpSchema.integer("Cantidad maxima (50 por defecto).", 1, 200))),
+        ) { call ->
+            buildJsonObject {
+                put("activity", JsonArray(AgentTokens.groupActivity(call.tenant, call.int("limit", 50, 1..200)).map { entry ->
+                    buildJsonObject {
+                        put("company", entry.originCompany)
+                        put("agent", entry.agentName)
+                        put("user", entry.userName)
+                        put("tool", entry.tool)
+                        put("outcome", entry.outcome)
+                        put("at", entry.createdAt.toString())
+                    }
+                }))
+            }
+        },
+        McpTool(
             name = "list_group_companies",
             title = "Empresas de mi grupo",
             description = "Empresas donde puede actuar este agente: la del usuario y, si es el dueno de la empresa, las demas de su grupo " +
@@ -171,6 +193,7 @@ object AgentesMcpTools {
         put("connection", if (token.oauthClient != null) "OAuth" else "token ...${token.hint}")
         put("modules", token.allowedModules?.let { modules -> JsonArray(modules.sorted().map(::JsonPrimitive)) } ?: JsonPrimitive("todos"))
         put("readOnly", token.readOnly)
+        put("groupScope", token.groupScope)
         put("active", token.isActive())
         put("createdAt", token.createdAt.toString())
         put("expiresAt", token.expiresAt?.toString()?.let(::JsonPrimitive) ?: JsonNull)

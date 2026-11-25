@@ -182,12 +182,19 @@ class AgentesMcp(
          * company that shares its owner group with others, never a server owner) the same holds for the
          * companies of that group. The server's own tools stay with server owners.
          */
-        fun visibleTools(all: List<RegisteredMcpTool>, token: AgentToken, access: UserModuleAccess, ownerGroup: Boolean = false): List<VisibleTool> {
+        fun visibleTools(
+            all: List<RegisteredMcpTool>,
+            token: AgentToken,
+            access: UserModuleAccess,
+            ownerGroup: Boolean = false,
+            // Modules enabled in some other company of the group: only their tools are offered for those companies.
+            groupModules: Set<String> = emptySet(),
+        ): List<VisibleTool> {
             val groupScope = ownerGroup && access.businessOwner && !access.serverOwner
             return all.mapNotNull { registered ->
                 if (!token.allowsModule(registered.moduleId)) return@mapNotNull null
                 if (token.readOnly && !registered.tool.readOnly) return@mapNotNull null
-                val anyCompany = (access.serverOwner || groupScope) && registered.moduleId != ServerMcpModuleId
+                val anyCompany = (access.serverOwner || (groupScope && registered.moduleId in groupModules)) && registered.moduleId != ServerMcpModuleId
                 val permissions = access.permissions(registered.moduleId)
                 if (permissions == null && !anyCompany) return@mapNotNull null
                 if (permissions != null && !permissions.has(registered.tool.permission)) return@mapNotNull null

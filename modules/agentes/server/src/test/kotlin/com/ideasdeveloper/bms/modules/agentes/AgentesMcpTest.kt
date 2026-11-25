@@ -112,13 +112,19 @@ class AgentesMcpTest {
         val server = RegisteredMcpTool(ServerMcpModuleId, "Servidor", tool("list_companies", "server_owner"))
         val all = catalog + server
         val owner = access(emptySet(), enabled = setOf("clientes"), owner = true)
-        val visible = AgentesMcp.visibleTools(all, token(), owner, ownerGroup = true)
-        // Every module tool, also of modules that are only enabled in another company of the group; never the server's.
-        assertEquals(names(catalog.map { VisibleTool(it, null) }), names(visible))
+        // The other companies of the group have clientes and crm enabled; nobody in the group has hotspot.
+        val visible = AgentesMcp.visibleTools(all, token(), owner, ownerGroup = true, groupModules = setOf("clientes", "crm"))
+        // The tools of its own modules and of the modules enabled elsewhere in the group; never the server's
+        // nor those of a module no company of the group uses.
+        assertEquals(setOf("clientes_search_customers", "clientes_create_customer", "crm_search_leads"), names(visible))
         val byName = visible.associateBy { it.name }
         assertTrue(visible.all { it.anyCompany && it.ownerGroup })
         assertNull(byName.getValue("crm_search_leads").permissions)
         assertTrue(byName.getValue("clientes_search_customers").permissions != null)
+        // A module enabled only in its own company keeps its tools, without acting_company.
+        val onlyHere = AgentesMcp.visibleTools(all, token(), owner, ownerGroup = true, groupModules = setOf("crm")).associateBy { it.name }
+        assertTrue(!onlyHere.getValue("clientes_search_customers").anyCompany)
+        assertTrue(onlyHere.getValue("crm_search_leads").anyCompany)
 
         val listed = AgentesMcp("test", { visible }, { _, _ -> ToolOutcome.Success(JsonPrimitive("ok")) })
             .handle(request(1, "tools/list"))!!.jsonObject["result"]!!.jsonObject["tools"]!!.jsonArray
@@ -133,22 +139,23 @@ class AgentesMcpTest {
         val server = RegisteredMcpTool(ServerMcpModuleId, "Servidor", tool("list_companies", "server_owner"))
         val all = catalog + server
         // A user that is not the business owner gets nothing new, whatever the caller claims.
-        val staff = AgentesMcp.visibleTools(all, token(), access(setOf("crm.view")), ownerGroup = true)
+        val everywhere = setOf("clientes", "crm", "hotspot")
+        val staff = AgentesMcp.visibleTools(all, token(), access(setOf("crm.view")), ownerGroup = true, groupModules = everywhere)
         assertEquals(setOf("crm_search_leads"), names(staff))
         assertTrue(staff.none { it.anyCompany || it.ownerGroup })
         // A business owner whose company is alone in its group keeps the tools of its own company only.
-        val alone = AgentesMcp.visibleTools(all, token(), access(emptySet(), owner = true), ownerGroup = false)
+        val alone = AgentesMcp.visibleTools(all, token(), access(emptySet(), owner = true), ownerGroup = false, groupModules = everywhere)
         assertEquals(setOf("clientes_search_customers", "clientes_create_customer", "crm_search_leads"), names(alone))
         assertTrue(alone.none { it.anyCompany })
         // The token still narrows modules and writes in every company of the group.
         val owner = access(emptySet(), owner = true)
-        assertEquals(setOf("crm_search_leads"), names(AgentesMcp.visibleTools(all, token(modules = setOf("crm")), owner, ownerGroup = true)))
-        val readOnly = AgentesMcp.visibleTools(all, token(readOnly = true), owner, ownerGroup = true)
+        assertEquals(setOf("crm_search_leads"), names(AgentesMcp.visibleTools(all, token(modules = setOf("crm")), owner, ownerGroup = true, groupModules = everywhere)))
+        val readOnly = AgentesMcp.visibleTools(all, token(readOnly = true), owner, ownerGroup = true, groupModules = everywhere)
         assertEquals(setOf("clientes_search_customers", "crm_search_leads", "hotspot_reports"), names(readOnly))
         assertTrue(readOnly.none { !it.registered.tool.readOnly })
         // The server owner is unchanged by the flag: any company, and not marked as group scope.
         val serverOwner = UserModuleAccess(ServerWorkspace.Code, userId, true, serverOwner = true, emptySet(), setOf("clientes")) { true }
-        val asServerOwner = AgentesMcp.visibleTools(all, token().copy(serverOwner = true), serverOwner, ownerGroup = true)
+        val asServerOwner = AgentesMcp.visibleTools(all, token().copy(serverOwner = true), serverOwner, ownerGroup = true, groupModules = everywhere)
         assertEquals(names(all.map { VisibleTool(it, null) }), names(asServerOwner))
         assertTrue(asServerOwner.none { it.ownerGroup })
         assertTrue(!asServerOwner.first { it.name == "servidor_list_companies" }.anyCompany)

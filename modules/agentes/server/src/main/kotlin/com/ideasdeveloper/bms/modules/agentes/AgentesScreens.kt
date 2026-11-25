@@ -147,13 +147,19 @@ object AgentesScreens {
         val moduleFields = context.toolModules.map { (id, name) ->
             UiField("$ModuleFieldPrefix$id", name, "boolean", section = "Modulos que el agente puede usar")
         }
-        val defaults = mapOf("expires" to "90 dias", "readOnly" to "false") + context.toolModules.associate { "$ModuleFieldPrefix${it.first}" to "true" }
+        val defaults = mapOf("expires" to "90 dias", "readOnly" to "false", "groupScope" to "false") + context.toolModules.associate { "$ModuleFieldPrefix${it.first}" to "true" }
         val form = UiForm(
             id = "token",
             fields = listOf(
                 UiField("name", "Nombre del agente", required = true, placeholder = "Ej. Claude de ventas", help = "Para reconocerlo en la lista y en la actividad."),
             ) + moduleFields + listOf(
                 UiField("readOnly", "Solo lectura: puede consultar, pero no crear ni modificar", "boolean", section = "Limites"),
+            ) + listOfNotNull(
+                // Only the business owner may give an agent the other companies of the owner group.
+                UiField(
+                    "groupScope", "Tambien en las demas empresas de mi grupo (mismo dueno y Agentes IA activo en cada una)", "boolean", section = "Limites",
+                ).takeIf { context.permissions.businessOwner && !context.owner.serverOwner },
+            ) + listOf(
                 UiField("expires", "Vence en", "select", options = expirations.keys.toList(), section = "Limites"),
             ),
             values = defaults + submitted.orEmpty(),
@@ -215,6 +221,7 @@ object AgentesScreens {
                 UiListItem("Usuario", trailing = token.userName),
                 UiListItem("Modulos", trailing = token.allowedModules?.sorted()?.joinToString().orEmpty().ifEmpty { "Todos los que el usuario puede usar" }),
                 UiListItem("Acceso", trailing = if (token.readOnly) "Solo lectura" else "Lectura y escritura"),
+                UiListItem("Empresas", trailing = if (token.groupScope) "Esta y las demas de su grupo" else "Solo esta empresa"),
                 UiListItem("Conexion", trailing = if (token.oauthClient != null) "OAuth (el token se renueva solo)" else "Token ${AgentTokens.Prefix}...${token.hint}..."),
                 UiListItem("Creado", trailing = format(token.createdAt)),
                 UiListItem("Vence", trailing = token.expiresAt?.let(::format) ?: "Nunca"),
@@ -253,9 +260,10 @@ object AgentesScreens {
             val scope = listOf(
                 token.allowedModules?.sorted()?.joinToString() ?: "Todos los modulos",
                 if (token.readOnly) "solo lectura" else "lectura y escritura",
+                if (token.groupScope) "empresas del grupo" else null,
                 if (token.oauthClient != null) "OAuth" else "token",
                 "ultimo uso: ${token.lastUsedAt?.let(::format) ?: "nunca"}",
-            ).joinToString(" · ")
+            ).filterNotNull().joinToString(" · ")
             UiListItem(
                 title = token.name,
                 subtitle = if (showUser) "${token.userName} · $scope" else scope,
@@ -319,10 +327,18 @@ object AgentesScreens {
             allowedModules = chosen.takeIf { it.size < toolModules.size },
             readOnly = values["readOnly"] == "true",
             expiresAt = expirations[expiration]?.let { now.plus(it) },
+            groupScope = values["groupScope"] == "true",
         )
     }
 }
 
-data class NewTokenRequest(val name: String, val allowedModules: Set<String>?, val readOnly: Boolean, val expiresAt: Instant?)
+data class NewTokenRequest(
+    val name: String,
+    val allowedModules: Set<String>?,
+    val readOnly: Boolean,
+    val expiresAt: Instant?,
+    // Asked for the other companies of the owner group; only honoured for a business owner.
+    val groupScope: Boolean = false,
+)
 
 class AgentesValidationException(message: String) : Exception(message)

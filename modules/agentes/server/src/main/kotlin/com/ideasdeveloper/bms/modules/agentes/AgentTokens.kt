@@ -26,6 +26,8 @@ data class AgentToken(
     val revokedBy: String?,
     // OAuth client id for connections authorized through OAuth (the client's name is [name]).
     val oauthClient: String? = null,
+    // A business owner's connection that may also act in the other companies of its owner group.
+    val groupScope: Boolean = false,
 ) {
     fun isActive(now: Instant = Instant.now()): Boolean = revokedAt == null && (expiresAt == null || expiresAt.isAfter(now))
 
@@ -33,6 +35,9 @@ data class AgentToken(
 }
 
 data class OAuthTokens(val token: AgentToken, val accessToken: String, val refreshToken: String)
+
+// A call an agent of another company of the owner group made in this company.
+data class GroupAgentActivity(val originCompany: String, val agentName: String, val userName: String, val tool: String, val outcome: String, val createdAt: Instant)
 
 data class AgentActivity(val tool: String, val outcome: String, val detail: String, val createdAt: Instant)
 
@@ -47,7 +52,7 @@ object AgentTokens {
     const val Prefix = "bmsmcp"
     const val RefreshPrefix = "bmsmcpr"
     private const val Columns =
-        "id, user_id, server_owner, user_name, name, token_hint, allowed_modules, read_only, created_at, expires_at, last_used_at, revoked_at, revoked_by, oauth_client"
+        "id, user_id, server_owner, user_name, name, token_hint, allowed_modules, read_only, created_at, expires_at, last_used_at, revoked_at, revoked_by, oauth_client, group_scope"
     private val companyPattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val secretPattern = Regex("[A-Za-z0-9_-]{43}")
     private val generator = SessionTokenGenerator()
@@ -78,14 +83,15 @@ object AgentTokens {
         allowedModules: Set<String>?,
         readOnly: Boolean,
         expiresAt: Instant?,
+        groupScope: Boolean = false,
     ): Pair<AgentToken, String> {
         val secret = generator.generate().value
         val token = "$Prefix.$companyCode.$secret"
         val id = UUID.randomUUID()
         tenant.prepareStatement(
             """
-            INSERT INTO agent_tokens (id, user_id, server_owner, user_name, name, token_hash, token_hint, allowed_modules, read_only, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO agent_tokens (id, user_id, server_owner, user_name, name, token_hash, token_hint, allowed_modules, read_only, expires_at, group_scope)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, id)
@@ -98,6 +104,7 @@ object AgentTokens {
             if (allowedModules == null) insert.setNull(8, Types.ARRAY) else insert.setArray(8, tenant.createArrayOf("text", allowedModules.sorted().toTypedArray()))
             insert.setBoolean(9, readOnly)
             insert.setTimestamp(10, expiresAt?.let(Timestamp::from))
+            insert.setBoolean(11, groupScope)
             insert.executeUpdate()
         }
         return find(tenant, id)!! to token
@@ -142,6 +149,7 @@ object AgentTokens {
         readOnly: Boolean,
         expiresAt: Instant?,
         accessLifetime: Duration,
+        groupScope: Boolean = false,
     ): OAuthTokens {
         val access = newValue(Prefix, companyCode)
         val refresh = newValue(RefreshPrefix, companyCode)
@@ -149,8 +157,8 @@ object AgentTokens {
         tenant.prepareStatement(
             """
             INSERT INTO agent_tokens (id, user_id, server_owner, user_name, name, token_hash, token_hint, allowed_modules, read_only, expires_at,
-                                      oauth_client, refresh_hash, access_expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'oauth', ?, ?, ?, ?, ?, ?)
+                                      oauth_client, refresh_hash, access_expires_at, group_scope)
+            VALUES (?, ?, ?, ?, ?, ?, 'oauth', ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, id)
@@ -165,6 +173,7 @@ object AgentTokens {
             insert.setString(10, clientId)
             insert.setString(11, hash(refresh))
             insert.setTimestamp(12, Timestamp.from(Instant.now().plus(accessLifetime)))
+            insert.setBoolean(13, groupScope)
             insert.executeUpdate()
         }
         return OAuthTokens(find(tenant, id)!!, access, refresh)
@@ -306,11 +315,55 @@ object AgentTokens {
 
     // Keeps the activity of the last [days] days.
     fun purgeActivity(tenant: Connection, days: Int) {
-        tenant.prepareStatement("DELETE FROM agent_activity WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => ?)").use { delete ->
-            delete.setInt(1, days)
-            delete.executeUpdate()
+        for (table in listOf("agent_activity", "agent_group_activity")) {
+            tenant.prepareStatement("DELETE FROM $table WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => ?)").use { delete ->
+                delete.setInt(1, days)
+                delete.executeUpdate()
+            }
         }
     }
+
+    /** Whether the token can still be used now: not revoked nor expired since the request started. */
+    fun stillActive(tenant: Connection, id: UUID): Boolean =
+        tenant.prepareStatement(
+            """
+            SELECT 1 FROM agent_tokens
+            WHERE id = ? AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+              AND (access_expires_at IS NULL OR access_expires_at > CURRENT_TIMESTAMP)
+            """.trimIndent()
+        ).use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    /** Records in [target], another company of the owner group, a call made there by an agent of [originCompany]. */
+    fun logGroupCall(target: Connection, originCompany: String, agentName: String, userName: String, tool: String, outcome: String) {
+        target.prepareStatement(
+            "INSERT INTO agent_group_activity (origin_company, agent_name, user_name, tool, outcome) VALUES (?, ?, ?, ?, ?)"
+        ).use { insert ->
+            insert.setString(1, originCompany)
+            insert.setString(2, agentName.take(80))
+            insert.setString(3, userName.take(200))
+            insert.setString(4, tool.take(128))
+            insert.setString(5, outcome)
+            insert.executeUpdate()
+        }
+    }
+
+    fun groupActivity(tenant: Connection, limit: Int): List<GroupAgentActivity> =
+        tenant.prepareStatement(
+            "SELECT origin_company, agent_name, user_name, tool, outcome, created_at FROM agent_group_activity ORDER BY created_at DESC LIMIT ?"
+        ).use { query ->
+            query.setInt(1, limit)
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        add(GroupAgentActivity(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getTimestamp(6).toInstant()))
+                    }
+                }
+            }
+        }
 
     private fun ResultSet.token() = AgentToken(
         id = getObject("id", UUID::class.java),
@@ -327,5 +380,6 @@ object AgentTokens {
         revokedAt = getTimestamp("revoked_at")?.toInstant(),
         revokedBy = getString("revoked_by"),
         oauthClient = getString("oauth_client"),
+        groupScope = getBoolean("group_scope"),
     )
 }

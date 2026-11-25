@@ -801,6 +801,9 @@ class UserModuleAccess internal constructor(
     }
     // Whether the user can use the tool somewhere: a server owner in every company of the server
     // (ModuleAccessService.serverOwnerAccess), anyone else where the module is enabled and permitted.
+    // Modules enabled and installed in the company.
+    fun enabledModuleIds(): Set<String> = enabledModules.filter(installed).toSet()
+
     fun mayUse(tool: RegisteredMcpTool): Boolean = serverOwner || permissions(tool.moduleId)?.has(tool.tool.permission) == true
 }
 

@@ -407,6 +407,7 @@ object AgentOAuth {
             AgentTokens.createOAuth(
                 connection, user.companyCode, owner, client.id, client.name,
                 grant.consent.allowedModules, grant.consent.readOnly, grant.consent.expiresAt, AccessLifetime,
+                groupScope = grant.consent.groupScope && own.businessOwner && !user.serverOwner,
             )
         }
     }
