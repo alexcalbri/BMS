@@ -6,7 +6,7 @@ CREATE TABLE ext_encuentra24__settings (
     id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
     api_key TEXT,
-    -- Slug de la empresa en Encuentra24 (p. ej. emerald-investment).
+    -- Slug de la empresa en Encuentra24 (p. ej. acme-inmobiliaria).
     slug TEXT CHECK (slug IS NULL OR slug ~ '^[a-z0-9][a-z0-9-]{0,99}$'),
     last_sync TIMESTAMPTZ,
     last_result TEXT NOT NULL DEFAULT '',
