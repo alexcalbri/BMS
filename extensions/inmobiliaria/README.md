@@ -1,4 +1,4 @@
-# Extensión `inmobiliaria` (CRM) — 1.1.1
+# Extensión `inmobiliaria` (CRM) — 1.2.0
 
 Convierte el CRM en una herramienta de corretaje inmobiliario: inventario maestro de propiedades, captaciones,
 transacciones (deals) con sus partes y comisiones, vistas por agente y herramientas MCP. Pensada para reemplazar los
@@ -169,3 +169,7 @@ migración pasa `MigrationTableValidator`. El SQL del almacén aún no se ha pro
 - **1.1.0** — historial del cliente: venta cerrada (compra y venta) y captación de propiedades con propietario.
 - **1.0.0** — primera versión: inventario, captaciones, transacciones con partes y comisiones, etapas configurables
   (plantilla ERE), vistas por agente, cierres por mes, panel en la ficha del lead y 7 herramientas MCP.
+
+## Idiomas
+
+Bilingüe español/inglés desde la 1.2.0 (necesita Core 0.10.0): los textos del código usan `tr("Texto en español")`, el catálogo inglés está en `server/src/main/resources/extensions/inmobiliaria/i18n/en.json`. Las etiquetas de tipos, estados, resultados y roles se guardan y se comparan en español (`label`) y se muestran con `display`; los valores de los selectores, las claves de importación y los datos de clientes no se traducen. Las herramientas MCP siguen en español.

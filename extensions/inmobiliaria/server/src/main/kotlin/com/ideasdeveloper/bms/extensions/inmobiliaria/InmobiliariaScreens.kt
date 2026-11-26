@@ -4,6 +4,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmActor
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionActionResult
 import com.ideasdeveloper.bms.modules.crm.CrmLead
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiNode
 import com.ideasdeveloper.bms.ui.UiNotice
 import com.ideasdeveloper.bms.ui.UiTone
@@ -22,7 +23,7 @@ object InmobiliariaScreens {
             InmobiliariaScreenIds.Deals -> InmobiliariaDealScreens.deals(context, params)
             InmobiliariaScreenIds.Deal -> InmobiliariaDealScreens.deal(context, params, submitted)
             InmobiliariaScreenIds.Stages -> InmobiliariaDealScreens.stages(context, params, submitted)
-            else -> InmobiliariaUi.message("Esa pantalla no existe.")
+            else -> InmobiliariaUi.message(tr("Esa pantalla no existe."))
         }
     } catch (failure: InmobiliariaException) {
         InmobiliariaUi.message(failure.message.orEmpty())
@@ -42,7 +43,7 @@ object InmobiliariaScreens {
                 InmobiliariaScreenIds.Property, InmobiliariaScreenIds.Intake -> InmobiliariaPropertyScreens.action(context, s, screen, op, params, values)
                 InmobiliariaScreenIds.Deal -> InmobiliariaDealScreens.dealAction(context, s, op, params, values)
                 InmobiliariaScreenIds.Stages -> InmobiliariaDealScreens.stagesAction(s, op, params, values)
-                else -> CrmExtensionActionResult(screen, UiNotice("Esa accion no existe.", UiTone.Warning), params - "op")
+                else -> CrmExtensionActionResult(screen, UiNotice(tr("Esa accion no existe."), UiTone.Warning), params - "op")
             }
         } catch (failure: InmobiliariaException) {
             // El mismo formulario vuelve con lo que se escribio para corregirlo.

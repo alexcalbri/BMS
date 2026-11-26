@@ -6,6 +6,8 @@ import com.ideasdeveloper.bms.modules.crm.CrmRepository
 import com.ideasdeveloper.bms.modules.crm.CrmUser
 import com.ideasdeveloper.bms.modules.crm.CrmWordPressException
 import com.ideasdeveloper.bms.modules.crm.WpListing
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.util.UUID
@@ -51,11 +53,11 @@ object InmobiliariaService {
     // ---- Comprobaciones ----
 
     private fun requireView(s: InmobiliariaSession) {
-        if (!s.access.canView) throw InmobiliariaException("No tienes permiso para ver las propiedades y cierres.")
+        if (!s.access.canView) throw InmobiliariaException(tr("No tienes permiso para ver las propiedades y cierres."))
     }
 
     private fun requireCreate(s: InmobiliariaSession) {
-        if (!s.access.canCreate) throw InmobiliariaException("No tienes permiso para crear ni cambiar propiedades y transacciones.")
+        if (!s.access.canCreate) throw InmobiliariaException(tr("No tienes permiso para crear ni cambiar propiedades y transacciones."))
     }
 
     /** Usuarios del CRM que pueden ser agentes. */
@@ -65,15 +67,15 @@ object InmobiliariaService {
     fun findAgent(s: InmobiliariaSession, wanted: String): CrmUser {
         val users = agents(s)
         return users.firstOrNull { it.id.toString().equals(wanted.trim(), ignoreCase = true) || it.name.equals(wanted.trim(), ignoreCase = true) }
-            ?: throw InmobiliariaException("'$wanted' no es un usuario con acceso al CRM. Usuarios: ${users.joinToString { it.name }}.")
+            ?: throw InmobiliariaException(tr("'{0}' no es un usuario con acceso al CRM. Usuarios: {1}.", wanted, users.joinToString { it.name }))
     }
 
     private fun requireAgent(s: InmobiliariaSession, id: UUID?) {
-        if (id != null && agents(s).none { it.id == id }) throw InmobiliariaException("Ese usuario no puede ser agente: no tiene acceso al CRM.")
+        if (id != null && agents(s).none { it.id == id }) throw InmobiliariaException(tr("Ese usuario no puede ser agente: no tiene acceso al CRM."))
     }
 
     private fun requireCustomer(s: InmobiliariaSession, id: UUID?, label: String) {
-        if (id != null && !CrmRepository.customerInScope(s.tenant, s.scope, id)) throw InmobiliariaException("$label no existe o no esta a tu alcance.")
+        if (id != null && !CrmRepository.customerInScope(s.tenant, s.scope, id)) throw InmobiliariaException(tr("{0} no existe o no esta a tu alcance.", tr(label)))
     }
 
     private fun visibleLeadOrNull(s: InmobiliariaSession, id: UUID): CrmLead? =
@@ -81,15 +83,15 @@ object InmobiliariaService {
 
     private fun visibleLead(s: InmobiliariaSession, id: UUID): CrmLead =
         visibleLeadOrNull(s, id)
-            ?: throw InmobiliariaException("El lead no existe o no esta a tu alcance.")
+            ?: throw InmobiliariaException(tr("El lead no existe o no esta a tu alcance."))
 
     private fun requireProperty(s: InmobiliariaSession, id: UUID): Property =
-        InmobiliariaStore.findProperty(s.tenant, id) ?: throw InmobiliariaException("La propiedad no existe.")
+        InmobiliariaStore.findProperty(s.tenant, id) ?: throw InmobiliariaException(tr("La propiedad no existe."))
 
     private fun requireEditableProperty(s: InmobiliariaSession, id: UUID): Property {
         val property = requireProperty(s, id)
         if (!s.access.canEditProperty(property)) {
-            throw InmobiliariaException("Solo el agente del listado, quien la capto o un gerente pueden cambiar esta propiedad.")
+            throw InmobiliariaException(tr("Solo el agente del listado, quien la capto o un gerente pueden cambiar esta propiedad."))
         }
         return property
     }
@@ -97,7 +99,7 @@ object InmobiliariaService {
     private fun requireDeal(s: InmobiliariaSession, id: UUID): Deal {
         val deal = InmobiliariaStore.findDeal(s.tenant, id)
         // Una transaccion que el usuario no ve se responde igual que una que no existe.
-        if (deal == null || !s.access.canSeeDeal(deal)) throw InmobiliariaException("La transaccion no existe o no esta a tu alcance.")
+        if (deal == null || !s.access.canSeeDeal(deal)) throw InmobiliariaException(tr("La transaccion no existe o no esta a tu alcance."))
         return deal
     }
 
@@ -134,7 +136,7 @@ object InmobiliariaService {
         requireView(s)
         val wanted = ref.trim()
         val byId = runCatching { UUID.fromString(wanted) }.getOrNull()?.let { InmobiliariaStore.findProperty(s.tenant, it) }
-        return byId ?: InmobiliariaStore.findPropertyByCode(s.tenant, wanted) ?: throw InmobiliariaException("No hay una propiedad con el id o codigo '$wanted'.")
+        return byId ?: InmobiliariaStore.findPropertyByCode(s.tenant, wanted) ?: throw InmobiliariaException(tr("No hay una propiedad con el id o codigo '{0}'.", wanted))
     }
 
     fun stages(s: InmobiliariaSession): List<DealStage> {
@@ -146,7 +148,7 @@ object InmobiliariaService {
     fun findStage(s: InmobiliariaSession, wanted: String): DealStage {
         val stages = stages(s)
         return stages.firstOrNull { it.id.toString().equals(wanted.trim(), ignoreCase = true) || it.name.equals(wanted.trim(), ignoreCase = true) }
-            ?: throw InmobiliariaException("No existe la etapa '$wanted'. Etapas: ${stages.joinToString { it.name }}.")
+            ?: throw InmobiliariaException(tr("No existe la etapa '{0}'. Etapas: {1}.", wanted, stages.joinToString { it.name }))
     }
 
     fun listDeals(s: InmobiliariaSession, filter: DealFilter, limit: Int = 50, offset: Int = 0): DealPage {
@@ -171,7 +173,7 @@ object InmobiliariaService {
         InmobiliariaInput.checkFields(fields)
         requireAgent(s, fields.listingAgentId)
         // Solo se revisa si cambia: una propiedad no se bloquea porque su vendedor dejo de estar a la vista.
-        if (fields.ownerCustomerId != currentOwnerCustomerId) requireCustomer(s, fields.ownerCustomerId, "El vendedor")
+        if (fields.ownerCustomerId != currentOwnerCustomerId) requireCustomer(s, fields.ownerCustomerId, msg("El vendedor"))
         return fields
     }
 
@@ -190,7 +192,7 @@ object InmobiliariaService {
     ): Property {
         requireCreate(s)
         val checked = checkedFields(s, fields.copy(listingAgentId = fields.listingAgentId ?: s.access.userId))
-        val validPrice = price?.let { InmobiliariaInput.requireMoney(it, "El precio") }
+        val validPrice = price?.let { InmobiliariaInput.requireMoney(it, msg("El precio")) }
         return InmobiliariaStore.inTransaction(s.tenant) {
             val code = checked.code?.takeIf { it.isNotEmpty() } ?: (nextCode?.invoke() ?: InmobiliariaStore.nextCode(s.tenant))
             val currency = checked.currency ?: InmobiliariaStore.loadSettings(s.tenant).currency
@@ -220,8 +222,8 @@ object InmobiliariaService {
     fun changePrice(s: InmobiliariaSession, id: UUID, price: BigDecimal, note: String = ""): Property {
         requireCreate(s)
         requireEditableProperty(s, id)
-        val valid = InmobiliariaInput.requireMoney(price, "El precio")
-        if (note.length > 500) throw InmobiliariaException("La nota del cambio de precio admite hasta 500 caracteres.")
+        val valid = InmobiliariaInput.requireMoney(price, msg("El precio"))
+        if (note.length > 500) throw InmobiliariaException(tr("La nota del cambio de precio admite hasta 500 caracteres."))
         InmobiliariaStore.changePrice(s.tenant, id, valid, s.access.userId, note.trim())
         return requireProperty(s, id)
     }
@@ -235,7 +237,7 @@ object InmobiliariaService {
             requireEditableProperty(s, id)
             // Vendida o Retirada con una transaccion abierta dejaria la venta en el aire.
             if ((status == PropertyStatus.Sold || status == PropertyStatus.Withdrawn) && InmobiliariaStore.openDealCount(s.tenant, id, null) > 0) {
-                throw InmobiliariaException("Cierra o cancela primero sus transacciones abiertas.")
+                throw InmobiliariaException(tr("Cierra o cancela primero sus transacciones abiertas."))
             }
             InmobiliariaStore.changeStatus(s.tenant, id, status, soldOn)
         }
@@ -246,7 +248,7 @@ object InmobiliariaService {
     fun publish(s: InmobiliariaSession, id: UUID): Property {
         requireCreate(s)
         val property = requireEditableProperty(s, id)
-        if (property.status != PropertyStatus.Intake) throw InmobiliariaException("Solo se publica una propiedad en captacion.")
+        if (property.status != PropertyStatus.Intake) throw InmobiliariaException(tr("Solo se publica una propiedad en captacion."))
         InmobiliariaStore.changeStatus(s.tenant, id, PropertyStatus.ForSale)
         return requireProperty(s, id)
     }
@@ -255,11 +257,11 @@ object InmobiliariaService {
     fun replaceLinks(s: InmobiliariaSession, id: UUID, links: List<LinkInput>): List<PropertyLink> {
         requireCreate(s)
         requireEditableProperty(s, id)
-        if (links.size > MaxLinks) throw InmobiliariaException("Una propiedad admite hasta $MaxLinks enlaces.")
+        if (links.size > MaxLinks) throw InmobiliariaException(tr("Una propiedad admite hasta {0} enlaces.", MaxLinks))
         val clean = links.map { link ->
             val label = link.label.trim()
-            if (label.isEmpty() || label.length > 60) throw InmobiliariaException("El nombre del enlace debe tener entre 1 y 60 caracteres.")
-            LinkInput(label, InmobiliariaInput.requireUrl(link.url, "El enlace '$label'"))
+            if (label.isEmpty() || label.length > 60) throw InmobiliariaException(tr("El nombre del enlace debe tener entre 1 y 60 caracteres."))
+            LinkInput(label, InmobiliariaInput.requireUrl(link.url, tr("El enlace '{0}'", label)))
         }
         InmobiliariaStore.replaceLinks(s.tenant, id, clean)
         return InmobiliariaStore.links(s.tenant, id)
@@ -295,34 +297,34 @@ object InmobiliariaService {
      * actual conserva el cliente de esa parte (el id de cliente nunca se toma del formulario).
      */
     private fun checkedParties(s: InmobiliariaSession, parties: List<PartyInput>, current: List<DealParty> = emptyList()): List<PartyInput> {
-        if (parties.size > MaxParties) throw InmobiliariaException("Una transaccion admite hasta $MaxParties partes.")
+        if (parties.size > MaxParties) throw InmobiliariaException(tr("Una transaccion admite hasta {0} partes.", MaxParties))
         val users = agents(s).map { it.id }.toSet()
         val knownCustomers = current.mapNotNull { it.customerId }.toSet()
         return parties.map { raw ->
             val kept = raw.keepPartyId?.let { keep -> current.firstOrNull { it.id == keep } }
             val party = if (raw.customerId == null && kept?.customerId != null) raw.copy(customerId = kept.customerId) else raw
             val name = party.name.trim()
-            if (name.length > 200) throw InmobiliariaException("El nombre de una parte admite hasta 200 caracteres.")
-            if (party.notes.length > 500) throw InmobiliariaException("Las notas de una parte admiten hasta 500 caracteres.")
+            if (name.length > 200) throw InmobiliariaException(tr("El nombre de una parte admite hasta 200 caracteres."))
+            if (party.notes.length > 500) throw InmobiliariaException(tr("Las notas de una parte admiten hasta 500 caracteres."))
             if (party.userId == null && party.customerId == null && name.isEmpty()) {
-                throw InmobiliariaException("Cada parte necesita un agente, un cliente o un nombre (${party.role.label}).")
+                throw InmobiliariaException(tr("Cada parte necesita un agente, un cliente o un nombre ({0}).", party.role.display))
             }
-            if (party.userId != null && party.userId !in users) throw InmobiliariaException("Una de las partes es un usuario sin acceso al CRM.")
-            if (party.customerId !in knownCustomers) requireCustomer(s, party.customerId, "El cliente de una parte")
-            party.copy(keepPartyId = null, name = name, sharePct = InmobiliariaInput.requirePercent(party.sharePct, "El porcentaje de una parte"), notes = party.notes.trim())
+            if (party.userId != null && party.userId !in users) throw InmobiliariaException(tr("Una de las partes es un usuario sin acceso al CRM."))
+            if (party.customerId !in knownCustomers) requireCustomer(s, party.customerId, msg("El cliente de una parte"))
+            party.copy(keepPartyId = null, name = name, sharePct = InmobiliariaInput.requirePercent(party.sharePct, msg("El porcentaje de una parte")), notes = party.notes.trim())
         }
     }
 
     private fun checkedEdit(s: InmobiliariaSession, edit: DealEdit, current: DealEdit?): DealEdit {
-        edit.agreedPrice?.let { InmobiliariaInput.requireMoney(it, "El precio acordado") }
-        edit.commissionAmount?.let { InmobiliariaInput.requireMoney(it, "La comision") }
-        InmobiliariaInput.requirePercent(edit.commissionPct, "El porcentaje de comision")
-        if (edit.comments.length > 5000) throw InmobiliariaException("Los comentarios admiten hasta 5000 caracteres.")
-        if (!InmobiliariaInput.isCurrency(edit.currency)) throw InmobiliariaException("La moneda es un codigo de 3 letras mayusculas (USD).")
+        edit.agreedPrice?.let { InmobiliariaInput.requireMoney(it, msg("El precio acordado")) }
+        edit.commissionAmount?.let { InmobiliariaInput.requireMoney(it, msg("La comision")) }
+        InmobiliariaInput.requirePercent(edit.commissionPct, msg("El porcentaje de comision"))
+        if (edit.comments.length > 5000) throw InmobiliariaException(tr("Los comentarios admiten hasta 5000 caracteres."))
+        if (!InmobiliariaInput.isCurrency(edit.currency)) throw InmobiliariaException(tr("La moneda es un codigo de 3 letras mayusculas (USD)."))
         // Solo se revisa lo que cambia: una transaccion ya abierta no debe bloquearse porque un lead dejo de estar a la vista.
         val leadId = edit.buyerLeadId
         if (leadId != null && leadId != current?.buyerLeadId) visibleLead(s, leadId)
-        if (edit.buyerCustomerId != current?.buyerCustomerId) requireCustomer(s, edit.buyerCustomerId, "El comprador")
+        if (edit.buyerCustomerId != current?.buyerCustomerId) requireCustomer(s, edit.buyerCustomerId, msg("El comprador"))
         return edit.copy(
             agreedPrice = edit.agreedPrice?.setScale(2),
             commissionAmount = edit.commissionAmount?.setScale(2),
@@ -350,16 +352,16 @@ object InmobiliariaService {
             InmobiliariaStore.lockProperty(s.tenant, draft.propertyId)
             val property = requireProperty(s, draft.propertyId)
             if (applyPropertyEffects && (property.status == PropertyStatus.Sold || property.status == PropertyStatus.Withdrawn)) {
-                throw InmobiliariaException("No se puede abrir una transaccion de una propiedad ${property.status.label.lowercase()}.")
+                throw InmobiliariaException(tr("No se puede abrir una transaccion de una propiedad {0}.", property.status.display.lowercase()))
             }
             val stages = InmobiliariaStore.stages(s.tenant).ifEmpty {
                 InmobiliariaStore.seedTemplate(s.tenant)
                 InmobiliariaStore.stages(s.tenant)
             }
             val stage = if (draft.stageId != null) {
-                stages.firstOrNull { it.id == draft.stageId } ?: throw InmobiliariaException("La etapa ya no existe.")
+                stages.firstOrNull { it.id == draft.stageId } ?: throw InmobiliariaException(tr("La etapa ya no existe."))
             } else {
-                stages.firstOrNull { it.outcome == DealOutcome.Open } ?: throw InmobiliariaException("No hay etapas abiertas: crea una en las etapas de cierres.")
+                stages.firstOrNull { it.outcome == DealOutcome.Open } ?: throw InmobiliariaException(tr("No hay etapas abiertas: crea una en las etapas de cierres."))
             }
             val settings = InmobiliariaStore.loadSettings(s.tenant)
             val customer = draft.buyerCustomerId ?: draft.buyerLeadId?.let { visibleLead(s, it).customerId }
@@ -399,7 +401,7 @@ object InmobiliariaService {
         return InmobiliariaStore.inTransaction(s.tenant) {
             InmobiliariaStore.lockDealAndProperty(s.tenant, id)
             val current = requireDeal(s, id)
-            if (!s.access.canEditDeal(current)) throw InmobiliariaException("No puedes cambiar esta transaccion.")
+            if (!s.access.canEditDeal(current)) throw InmobiliariaException(tr("No puedes cambiar esta transaccion."))
             val checked = checkedEdit(s, edit.copy(closedOn = current.closedOn), DealEdit.of(current))
             InmobiliariaStore.updateDeal(s.tenant, id, checked)
             if (parties != null) InmobiliariaStore.replaceParties(s.tenant, id, checkedParties(s, parties, current.parties))
@@ -440,8 +442,8 @@ object InmobiliariaService {
             // Se bloquea la transaccion y su propiedad antes de decidir la etapa y el estado.
             InmobiliariaStore.lockDealAndProperty(s.tenant, dealId)
             val current = requireDeal(s, dealId)
-            if (!s.access.canEditDeal(current)) throw InmobiliariaException("No puedes mover esta transaccion.")
-            val stage = InmobiliariaStore.stages(s.tenant).firstOrNull { it.id == stageId } ?: throw InmobiliariaException("La etapa ya no existe.")
+            if (!s.access.canEditDeal(current)) throw InmobiliariaException(tr("No puedes mover esta transaccion."))
+            val stage = InmobiliariaStore.stages(s.tenant).firstOrNull { it.id == stageId } ?: throw InmobiliariaException(tr("La etapa ya no existe."))
             if (current.stageId != stage.id) {
                 InmobiliariaStore.moveDeal(s.tenant, dealId, stage.id)
                 enterStage(s, current, current.stageOutcome, stage, closedOn, effects, applyPropertyEffects, external)
@@ -451,7 +453,7 @@ object InmobiliariaService {
                 val property = InmobiliariaStore.findProperty(s.tenant, current.propertyId)
                 if (applyPropertyEffects && property != null && property.status == PropertyStatus.Sold && property.soldOn != closedOn) {
                     if (s.access.canEditProperty(property)) InmobiliariaStore.changeStatus(s.tenant, property.id, PropertyStatus.Sold, closedOn)
-                    else effects.warnings += PropertyNotUpdatedWarning
+                    else effects.warnings += tr(PropertyNotUpdatedWarning)
                 }
             }
             requireNotNull(InmobiliariaStore.findDeal(s.tenant, dealId))
@@ -477,13 +479,13 @@ object InmobiliariaService {
         val property = InmobiliariaStore.findProperty(tenant, deal.propertyId) ?: return
         val canEditProperty = applyPropertyEffects && s.access.canEditProperty(property)
         val lead = deal.buyerLeadId?.let { visibleLeadOrNull(s, it) }
-        if (deal.buyerLeadId != null && lead == null) effects.warnings += "No se actualizo el lead comprador: no esta a tu alcance."
+        if (deal.buyerLeadId != null && lead == null) effects.warnings += tr("No se actualizo el lead comprador: no esta a tu alcance.")
         // Aplica un cambio de la propiedad solo con permiso; sin permiso lo recuerda para avisar una vez.
         val onProperty: (() -> Unit) -> Unit = { change -> if (canEditProperty) change() else if (applyPropertyEffects) effects.propertyDenied = true }
         // Abiertas y ganadas de las demas transacciones de la propiedad, en una sola consulta.
         val counts = InmobiliariaStore.dealCounts(tenant, property.id, deal.id)
         val otherWon = counts.won
-        if (stage.outcome == DealOutcome.Won && otherWon > 0) throw InmobiliariaException("Esa propiedad ya tiene una transaccion cerrada.")
+        if (stage.outcome == DealOutcome.Won && otherWon > 0) throw InmobiliariaException(tr("Esa propiedad ya tiene una transaccion cerrada."))
         val otherOpen = counts.open
         val newStatus = InmobiliariaRules.propertyStatusAfter(previous, stage.outcome, property.status, otherOpen, otherWon)
         when (stage.outcome) {
@@ -508,16 +510,16 @@ object InmobiliariaService {
                 }
             }
         }
-        if (effects.propertyDenied) effects.warnings += PropertyNotUpdatedWarning
+        if (effects.propertyDenied) effects.warnings += tr(PropertyNotUpdatedWarning)
     }
 
-    private const val PropertyNotUpdatedWarning = "La propiedad no se actualizo: solo su agente del listado o un gerente pueden cambiar su estado."
+    private val PropertyNotUpdatedWarning = msg("La propiedad no se actualizo: solo su agente del listado o un gerente pueden cambiar su estado.")
 
     // Salir de una etapa ganada: la transaccion pierde su fecha de cierre (el estado de la propiedad lo decide propertyStatusAfter).
     private fun undoSale(s: InmobiliariaSession, deal: Deal, property: Property, previous: DealOutcome?, effects: StageEffects) {
         if (previous != DealOutcome.Won) return
         InmobiliariaStore.setClosedOn(s.tenant, deal.id, null)
-        if (property.wordpressListingId != null) effects.warnings += "La propiedad sigue marcada vendida en el sitio WordPress; cambiala alli si hace falta."
+        if (property.wordpressListingId != null) effects.warnings += tr("La propiedad sigue marcada vendida en el sitio WordPress; cambiala alli si hace falta.")
     }
 
     // Anota en el historial del lead, salvo que este archivado.
@@ -543,9 +545,9 @@ object InmobiliariaService {
         try {
             CrmHost.wordpressMarkSold(s.tenant, sale.listingId, sale.price, sale.date)
         } catch (failure: CrmWordPressException) {
-            effects.warnings += "El cierre quedo guardado, pero no se pudo marcar vendida en el sitio WordPress."
+            effects.warnings += tr("El cierre quedo guardado, pero no se pudo marcar vendida en el sitio WordPress.")
         } catch (failure: Exception) {
-            effects.warnings += "El cierre quedo guardado, pero fallo la comunicacion con el sitio web."
+            effects.warnings += tr("El cierre quedo guardado, pero fallo la comunicacion con el sitio web.")
         }
     }
 
@@ -553,21 +555,21 @@ object InmobiliariaService {
 
     /** Guarda las etapas de las transacciones (permiso de configuracion). Al menos una abierta y una ganada. */
     fun saveStages(s: InmobiliariaSession, inputs: List<StageInput>) {
-        if (!s.access.canEditStages) throw InmobiliariaException("No tienes permiso para editar las etapas.")
+        if (!s.access.canEditStages) throw InmobiliariaException(tr("No tienes permiso para editar las etapas."))
         val clean = inputs.map { it.copy(name = it.name.trim()) }
-        if (clean.any { it.name.isEmpty() || it.name.length > 60 }) throw InmobiliariaException("El nombre de cada etapa debe tener entre 1 y 60 caracteres.")
-        if (clean.size > 30) throw InmobiliariaException("Hay demasiadas etapas (maximo 30).")
-        if (clean.map { it.name.lowercase() }.toSet().size != clean.size) throw InmobiliariaException("Los nombres de las etapas no pueden repetirse.")
-        if (clean.none { it.outcome == DealOutcome.Open }) throw InmobiliariaException("Debe haber al menos una etapa abierta.")
-        if (clean.none { it.outcome == DealOutcome.Won }) throw InmobiliariaException("Debe haber al menos una etapa ganada.")
+        if (clean.any { it.name.isEmpty() || it.name.length > 60 }) throw InmobiliariaException(tr("El nombre de cada etapa debe tener entre 1 y 60 caracteres."))
+        if (clean.size > 30) throw InmobiliariaException(tr("Hay demasiadas etapas (maximo 30)."))
+        if (clean.map { it.name.lowercase() }.toSet().size != clean.size) throw InmobiliariaException(tr("Los nombres de las etapas no pueden repetirse."))
+        if (clean.none { it.outcome == DealOutcome.Open }) throw InmobiliariaException(tr("Debe haber al menos una etapa abierta."))
+        if (clean.none { it.outcome == DealOutcome.Won }) throw InmobiliariaException(tr("Debe haber al menos una etapa ganada."))
         InmobiliariaStore.saveStages(s.tenant, clean)
     }
 
     /** Ajustes: moneda y comision por defecto (permiso de configuracion). */
     fun saveSettings(s: InmobiliariaSession, settings: Settings) {
-        if (!s.access.canEditStages) throw InmobiliariaException("No tienes permiso para cambiar los ajustes.")
-        if (!InmobiliariaInput.isCurrency(settings.currency)) throw InmobiliariaException("La moneda es un codigo de 3 letras mayusculas (USD).")
-        InmobiliariaStore.saveSettings(s.tenant, settings.copy(defaultCommissionPct = InmobiliariaInput.requirePercent(settings.defaultCommissionPct, "La comision por defecto")))
+        if (!s.access.canEditStages) throw InmobiliariaException(tr("No tienes permiso para cambiar los ajustes."))
+        if (!InmobiliariaInput.isCurrency(settings.currency)) throw InmobiliariaException(tr("La moneda es un codigo de 3 letras mayusculas (USD)."))
+        InmobiliariaStore.saveSettings(s.tenant, settings.copy(defaultCommissionPct = InmobiliariaInput.requirePercent(settings.defaultCommissionPct, msg("La comision por defecto"))))
     }
 
     // ---- WordPress ----
@@ -601,9 +603,9 @@ object InmobiliariaService {
     fun importFromWordPress(s: InmobiliariaSession, listingId: Long, propertyId: UUID? = null): ImportResult {
         requireCreate(s)
         CrmHost.wordpressInactiveReason(s.tenant)?.let { throw InmobiliariaException(it) }
-        if (!CrmHost.wordpressActive(s.tenant)) throw InmobiliariaException("WordPress no esta configurado: conectalo antes en Integraciones.")
+        if (!CrmHost.wordpressActive(s.tenant)) throw InmobiliariaException(tr("WordPress no esta configurado: conectalo antes en Integraciones."))
         InmobiliariaStore.findPropertyByWordPressListing(s.tenant, listingId)?.let { existing ->
-            if (existing.id != propertyId) throw InmobiliariaException("Ese listado ya esta importado como ${existing.code}.")
+            if (existing.id != propertyId) throw InmobiliariaException(tr("Ese listado ya esta importado como {0}.", existing.code))
         }
         val listing = try {
             CrmHost.wordpressListing(s.tenant, listingId)
@@ -627,7 +629,7 @@ object InmobiliariaService {
     private fun listingPrice(listing: WpListing, warnings: MutableList<String>): BigDecimal? {
         val price = listing.priceValue ?: return null
         return runCatching { InmobiliariaInput.requireMoney(price) }.getOrNull()
-            ?: run { warnings += "El precio del sitio web no tiene un formato valido y no se importo."; null }
+            ?: run { warnings += tr("El precio del sitio web no tiene un formato valido y no se importo."); null }
     }
 
     private fun createFromListing(s: InmobiliariaSession, listing: WpListing, warnings: MutableList<String>): Property {
