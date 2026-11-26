@@ -88,6 +88,10 @@ class TareasMondayReadingTest {
         val query = TareasMondayClient.updatesQuery(listOf("11", "22", "x; drop", "11"))
         assertTrue(query.startsWith("query { items(ids: [11, 22], limit: 2) {"))
         assertTrue("updates(limit: 100)" in query && "replies {" in query)
+        // monday rechaza `assets` dentro de las respuestas: solo las actualizaciones piden adjuntos.
+        val replies = query.substringAfter("replies {").substringBefore("}")
+        assertTrue("assets" !in replies && "text_body" in replies)
+        assertTrue("assets { id name }" in query.substringBefore("replies {"))
     }
 
     @Test
