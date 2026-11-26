@@ -8,6 +8,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmInbound
 import com.ideasdeveloper.bms.modules.crm.CrmIntakeResult
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -146,12 +147,12 @@ object CrmEncuentra24 {
     fun sync(host: CrmHost, tenant: Connection, fromDate: LocalDate? = null, onNewLead: (UUID) -> Unit = {}): CrmEncuentra24SyncResult {
         host.extensionInactiveReason(tenant, CrmExtensionIds.Encuentra24)?.let { throw CrmEncuentra24Exception(it) }
         val settings = Encuentra24SettingsStore.load(host, tenant)
-        if (settings.apiKey.isNullOrBlank() || host.isSecretUnreadable(settings.apiKey) || settings.slug.isNullOrBlank()) throw CrmEncuentra24Exception("Falta la API key o el slug de Encuentra24.")
+        if (settings.apiKey.isNullOrBlank() || host.isSecretUnreadable(settings.apiKey) || settings.slug.isNullOrBlank()) throw CrmEncuentra24Exception(tr("Falta la API key o el slug de Encuentra24."))
         val locked = tenant.prepareStatement("SELECT pg_try_advisory_lock(?)").use { query ->
             query.setLong(1, LockKey)
             query.executeQuery().use { it.next() && it.getBoolean(1) }
         }
-        if (!locked) throw CrmEncuentra24Exception("Ya hay una importacion de Encuentra24 en curso; intenta en unos minutos.")
+        if (!locked) throw CrmEncuentra24Exception(tr("Ya hay una importacion de Encuentra24 en curso; intenta en unos minutos."))
         try {
             return syncLocked(host, tenant, settings, fromDate, onNewLead)
         } finally {

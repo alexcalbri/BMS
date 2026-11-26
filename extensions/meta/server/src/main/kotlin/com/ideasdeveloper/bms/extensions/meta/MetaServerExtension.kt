@@ -22,6 +22,7 @@ import com.ideasdeveloper.bms.server.extensions.ExtensionUninstallDefinition
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiJson
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -59,7 +60,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
         module = "crm",
         displayName = "Meta (WhatsApp, Messenger e Instagram)",
         description = "Recibe y responde mensajes de WhatsApp, Messenger e Instagram en el CRM, con la app de Meta de la empresa o la del servidor.",
-        version = "1.0.0",
+        version = "1.1.0",
         minModuleVersion = "0.27.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -129,8 +130,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
         }
         route.get("/deletion") {
             call.respondText(
-                "Los tokens y la conexion con Meta de esta persona se eliminaron del CRM. Codigo: " +
-                    call.request.queryParameters["id"].orEmpty().filter { it.isLetterOrDigit() }.take(40),
+                tr("Los tokens y la conexion con Meta de esta persona se eliminaron del CRM. Codigo: {0}", call.request.queryParameters["id"].orEmpty().filter { it.isLetterOrDigit() }.take(40)),
                 ContentType.Text.Plain,
             )
         }
@@ -152,15 +152,15 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
                     val step = call.parameters["step"]
                     val result = try {
                         when (step) {
-                            "pages" -> if (app.pagesConfigId == null) CrmMetaServer.Outcome(false, "Messenger e Instagram no estan habilitados en la app del servidor.")
+                            "pages" -> if (app.pagesConfigId == null) CrmMetaServer.Outcome(false, tr("Messenger e Instagram no estan habilitados en la app del servidor."))
                             else CrmMetaServer.connectLogin(tenant, company, app, values["code"].orEmpty())
                             "page" -> CrmMetaServer.choosePage(tenant, company, values["pageId"].orEmpty())
-                            "whatsapp" -> if (app.whatsAppConfigId == null) CrmMetaServer.Outcome(false, "WhatsApp no esta habilitado en la app del servidor.")
+                            "whatsapp" -> if (app.whatsAppConfigId == null) CrmMetaServer.Outcome(false, tr("WhatsApp no esta habilitado en la app del servidor."))
                             else CrmMetaServer.connectWhatsApp(
                                 tenant, company, app, values["code"].orEmpty(), values["wabaId"].orEmpty(),
                                 values["phoneNumberId"].orEmpty(), values["pin"],
                             )
-                            else -> CrmMetaServer.Outcome(false, "Paso desconocido.")
+                            else -> CrmMetaServer.Outcome(false, tr("Paso desconocido."))
                         }
                     } catch (failure: CrmMetaException) {
                         CrmMeta.log(tenant, "conexion_error", failure.message.orEmpty())
@@ -276,7 +276,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
     ): T? {
         val app = withContext(Dispatchers.IO) { CrmMetaServer.app() }?.takeIf { it.ready }
         if (app == null) {
-            respondText("La app de Meta del servidor no esta activa.", ContentType.Text.Plain, HttpStatusCode.NotFound)
+            respondText(tr("La app de Meta del servidor no esta activa."), ContentType.Text.Plain, HttpStatusCode.NotFound)
             return null
         }
         val connection = withContext(Dispatchers.IO) { access.enabledTenant(company) }
@@ -290,7 +290,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
                     if (!CrmMetaServer.validTicket(tenant, ticket)) null else block(tenant, app)
                 }
             } ?: run {
-                respondText("El enlace vencio o no es valido: abre otra vez la conexion desde Integraciones.", ContentType.Text.Plain, HttpStatusCode.Forbidden)
+                respondText(tr("El enlace vencio o no es valido: abre otra vez la conexion desde Integraciones."), ContentType.Text.Plain, HttpStatusCode.Forbidden)
                 null
             }
         } catch (failure: SQLException) {
@@ -311,9 +311,9 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
                 "(CASE WHEN coalesce(phone_number_id, '') <> '' THEN 1 ELSE 0 END) FROM ${CrmMeta.SettingsTable} WHERE id = 1",
         )
         return listOf(
-            CrmExtensions.item(null, "Conexiones de pagina, Instagram y numero de WhatsApp (se borran con sus tokens y secretos)", connections, "delete"),
-            CrmExtensions.item(null, "Registro de eventos de Meta", CrmExtensions.count(tenant, "SELECT count(*) FROM ${CrmMeta.LogTable}"), "delete"),
-            CrmExtensions.item(null, "Mensajes de WhatsApp, Messenger e Instagram de los leads (se conservan)", CrmExtensions.count(tenant, "SELECT count(*) FROM crm_messages WHERE channel IN $messageChannels"), "keep"),
+            CrmExtensions.item(null, tr("Conexiones de pagina, Instagram y numero de WhatsApp (se borran con sus tokens y secretos)"), connections, "delete"),
+            CrmExtensions.item(null, tr("Registro de eventos de Meta"), CrmExtensions.count(tenant, "SELECT count(*) FROM ${CrmMeta.LogTable}"), "delete"),
+            CrmExtensions.item(null, tr("Mensajes de WhatsApp, Messenger e Instagram de los leads (se conservan)"), CrmExtensions.count(tenant, "SELECT count(*) FROM crm_messages WHERE channel IN $messageChannels"), "keep"),
         )
     }
 

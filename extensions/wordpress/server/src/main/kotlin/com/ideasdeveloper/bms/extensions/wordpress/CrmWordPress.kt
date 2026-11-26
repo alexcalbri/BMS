@@ -12,6 +12,7 @@ import com.ideasdeveloper.bms.modules.crm.WordPressPluginInfo
 import com.ideasdeveloper.bms.modules.crm.WpAgent
 import com.ideasdeveloper.bms.modules.crm.WpListing
 import com.ideasdeveloper.bms.modules.crm.WpSearchResult
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -80,20 +81,20 @@ object CrmWordPress {
     fun checkSite(url: String, resolve: (String) -> List<java.net.InetAddress> = { host -> java.net.InetAddress.getAllByName(host).toList() }) {
         val host = runCatching { URI.create(url).host }.getOrNull()?.lowercase()
         if (host.isNullOrBlank() || !host.contains('.') || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".localhost")) {
-            throw CrmWordPressException("La direccion del sitio debe ser un dominio publico (con punto).")
+            throw CrmWordPressException(tr("La direccion del sitio debe ser un dominio publico (con punto)."))
         }
         val addresses = try {
             resolve(host)
         } catch (failure: Exception) {
-            throw CrmWordPressException("No se encontro el sitio $host.")
+            throw CrmWordPressException(tr("No se encontro el sitio {0}.", host))
         }
-        if (addresses.isEmpty() || addresses.any(::blockedAddress)) throw CrmWordPressException("La direccion del sitio apunta a una red privada o local: no se permite.")
+        if (addresses.isEmpty() || addresses.any(::blockedAddress)) throw CrmWordPressException(tr("La direccion del sitio apunta a una red privada o local: no se permite."))
     }
 
     internal fun rpc(settings: CrmWordPressSettings, action: String, extra: JsonObject = JsonObject(emptyMap())): JsonElement {
-        val site = settings.siteUrl ?: throw CrmWordPressException("Escribe la direccion del sitio en Integraciones.")
+        val site = settings.siteUrl ?: throw CrmWordPressException(tr("Escribe la direccion del sitio en Integraciones."))
         val secret = settings.secret?.takeIf { !CrmHost.isSecretUnreadable(it) }
-            ?: throw CrmWordPressException(if (CrmHost.isSecretUnreadable(settings.secret)) CrmHost.UnreadableSecretText + ". Genera un secreto nuevo." else "Genera el secreto y pegalo en el plugin.")
+            ?: throw CrmWordPressException(if (CrmHost.isSecretUnreadable(settings.secret)) tr("{0}. Genera un secreto nuevo.", CrmHost.UnreadableSecretText) else tr("Genera el secreto y pegalo en el plugin."))
         checkSite(site)
         val body = JsonObject(mapOf("action" to JsonPrimitive(action)) + extra).toString().toByteArray()
         val timestamp = Instant.now().epochSecond.toString()
@@ -108,19 +109,19 @@ object CrmWordPress {
             val response = http.send(request, HttpResponse.BodyHandlers.ofInputStream())
             // The answer of a site is never read whole beyond MaxResponseBytes.
             val bytes = response.body().use { it.readNBytes(MaxResponseBytes + 1) }
-            if (bytes.size > MaxResponseBytes) throw CrmWordPressException("El sitio respondio algo demasiado grande.")
+            if (bytes.size > MaxResponseBytes) throw CrmWordPressException(tr("El sitio respondio algo demasiado grande."))
             response.statusCode() to String(bytes, Charsets.UTF_8)
         } catch (failure: CrmWordPressException) {
             throw failure
         } catch (failure: Exception) {
-            throw CrmWordPressException("No se pudo contactar el sitio $site.")
+            throw CrmWordPressException(tr("No se pudo contactar el sitio {0}.", site))
         }
         val parsed = runCatching { json.parseToJsonElement(text) }.getOrNull()
         return when (status) {
-            in 200..299 -> parsed ?: throw CrmWordPressException("El sitio respondio algo que no es JSON.")
-            401, 403 -> throw CrmWordPressException("El sitio rechazo la firma: revisa que el plugin BMS Connector este activo y tenga el mismo secreto.")
-            404 -> throw CrmWordPressException((parsed as? JsonObject)?.get("error").str().ifEmpty { "El sitio no tiene el plugin BMS Connector (o ese recurso no existe)." })
-            else -> throw CrmWordPressException("El sitio respondio HTTP $status.")
+            in 200..299 -> parsed ?: throw CrmWordPressException(tr("El sitio respondio algo que no es JSON."))
+            401, 403 -> throw CrmWordPressException(tr("El sitio rechazo la firma: revisa que el plugin BMS Connector este activo y tenga el mismo secreto."))
+            404 -> throw CrmWordPressException((parsed as? JsonObject)?.get("error").str().ifEmpty { tr("El sitio no tiene el plugin BMS Connector (o ese recurso no existe).") })
+            else -> throw CrmWordPressException(tr("El sitio respondio HTTP {0}.", status))
         }
     }
 
@@ -135,7 +136,7 @@ object CrmWordPress {
         val result = rpc(load(tenant), "ping").obj()
         val name = result?.get("site").str()
         WordPressSettingsStore.record(tenant, name, "")
-        return "${name.ifEmpty { "Sitio" }} (plugin ${result?.get("version").str()}, tema ${result?.get("theme").str()})"
+        return tr("{0} (plugin {1}, tema {2})", name.ifEmpty { tr("Sitio") }, result?.get("version").str(), result?.get("theme").str())
     }
 
     fun search(tenant: Connection, text: String, filters: Map<String, String>, minPrice: String, maxPrice: String, page: Int): WpSearchResult {
@@ -148,12 +149,12 @@ object CrmWordPress {
             put("max_price", maxPrice)
             putJsonObject("filters") { filters.forEach { (key, value) -> put(key, value) } }
         }
-        val result = rpc(load(tenant), "search", payload).obj() ?: throw CrmWordPressException("Respuesta invalida del sitio.")
+        val result = rpc(load(tenant), "search", payload).obj() ?: throw CrmWordPressException(tr("Respuesta invalida del sitio."))
         return WpSearchResult(result["total"].str().toIntOrNull() ?: 0, result["items"].arr().mapNotNull { listing(it) })
     }
 
     fun listing(tenant: Connection, id: Long): WpListing =
-        listing(rpc(checked(tenant), "listing", buildJsonObject { put("id", id) })) ?: throw CrmWordPressException("Respuesta invalida del sitio.")
+        listing(rpc(checked(tenant), "listing", buildJsonObject { put("id", id) })) ?: throw CrmWordPressException(tr("Respuesta invalida del sitio."))
 
     fun taxonomies(tenant: Connection): Map<String, List<String>> =
         rpc(checked(tenant), "taxonomies").obj()?.mapValues { (_, terms) -> terms.arr().mapNotNull { it.obj()?.get("name").str().ifEmpty { null } } }.orEmpty()

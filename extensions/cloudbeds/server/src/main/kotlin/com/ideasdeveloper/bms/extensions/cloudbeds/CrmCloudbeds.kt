@@ -12,6 +12,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmReservation
 import com.ideasdeveloper.bms.modules.crm.CrmReservations
 import com.ideasdeveloper.bms.modules.crm.CrmValidationException
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -50,20 +51,20 @@ object CrmCloudbeds {
 
     private fun send(settings: CrmCloudbedsSettings, request: HttpRequest.Builder): JsonObject {
         // Una llave ilegible (cifrada que no se pudo abrir) no se envia: cuenta como sin llave.
-        val key = settings.apiKey?.takeUnless { CrmHost.isSecretUnreadable(it) } ?: throw CrmCloudbedsException("Escribe la API key de Cloudbeds en Integraciones.")
+        val key = settings.apiKey?.takeUnless { CrmHost.isSecretUnreadable(it) } ?: throw CrmCloudbedsException(tr("Escribe la API key de Cloudbeds en Integraciones."))
         val response = try {
             http.send(request.timeout(Duration.ofSeconds(25)).header("x-api-key", key).header("Accept", "application/json").build(), HttpResponse.BodyHandlers.ofString())
         } catch (failure: InterruptedException) {
             Thread.currentThread().interrupt()
-            throw CrmCloudbedsException("Se interrumpio la llamada a Cloudbeds.")
+            throw CrmCloudbedsException(tr("Se interrumpio la llamada a Cloudbeds."))
         } catch (failure: IOException) {
-            throw CrmCloudbedsException("No se pudo contactar Cloudbeds.")
+            throw CrmCloudbedsException(tr("No se pudo contactar Cloudbeds."))
         }
         val body = runCatching { json.parseToJsonElement(response.body()) }.getOrNull() as? JsonObject
         when {
-            response.statusCode() == 401 || response.statusCode() == 403 -> throw CrmCloudbedsException("Cloudbeds rechazo la API key o le faltan permisos (read:room, read:rate, read:reservation, write:reservation).")
-            body == null -> throw CrmCloudbedsException("Cloudbeds respondio HTTP ${response.statusCode()}.")
-            body["success"].bool() == false -> throw CrmCloudbedsException("Cloudbeds: ${body["message"].str().ifEmpty { "la operacion no se completo" }}")
+            response.statusCode() == 401 || response.statusCode() == 403 -> throw CrmCloudbedsException(tr("Cloudbeds rechazo la API key o le faltan permisos (read:room, read:rate, read:reservation, write:reservation)."))
+            body == null -> throw CrmCloudbedsException(tr("Cloudbeds respondio HTTP {0}.", response.statusCode()))
+            body["success"].bool() == false -> throw CrmCloudbedsException(tr("Cloudbeds: {0}", body["message"].str().ifEmpty { tr("la operacion no se completo") }))
         }
         return requireNotNull(body)
     }
@@ -139,7 +140,7 @@ object CrmCloudbeds {
 
     fun availability(host: CrmHost, tenant: Connection, start: LocalDate, end: LocalDate, adults: Int, children: Int): List<CbRoom> {
         host.cloudbedsInactiveReason(tenant)?.let { throw CrmCloudbedsException(it) }
-        if (!end.isAfter(start)) throw CrmValidationException("La salida debe ser despues de la entrada.")
+        if (!end.isAfter(start)) throw CrmValidationException(tr("La salida debe ser despues de la entrada."))
         val settings = host.cloudbedsSettings(tenant)
         val dates = mapOf("startDate" to start.toString(), "endDate" to end.toString())
         val rooms = parseRooms(get(settings, "getRooms", dates + ("pageSize" to "100")))
@@ -206,18 +207,18 @@ object CrmCloudbeds {
     }
 
     fun parseReservation(body: JsonObject): CbReservationResult {
-        val id = body["reservationID"].str().ifEmpty { throw CrmCloudbedsException("Cloudbeds no devolvio el numero de reserva.") }
+        val id = body["reservationID"].str().ifEmpty { throw CrmCloudbedsException(tr("Cloudbeds no devolvio el numero de reserva.")) }
         return CbReservationResult(id, body["status"].str().ifEmpty { "confirmed" }, body["grandTotal"].str().toBigDecimalOrNull(), body["unassigned"].arr().size)
     }
 
     fun reserve(host: CrmHost, tenant: Connection, leadId: UUID, start: LocalDate, end: LocalDate, guest: CbGuest, rooms: List<CbRoomRequest>, payment: String? = null, estimatedValue: BigDecimal? = null): CbReservationResult {
         host.cloudbedsInactiveReason(tenant)?.let { throw CrmCloudbedsException(it) }
-        if (rooms.isEmpty()) throw CrmValidationException("Elige al menos una habitacion.")
-        if (!host.isEmail(guest.email)) throw CrmValidationException("Cloudbeds exige el correo del huesped: agregalo al lead.")
+        if (rooms.isEmpty()) throw CrmValidationException(tr("Elige al menos una habitacion."))
+        if (!host.isEmail(guest.email)) throw CrmValidationException(tr("Cloudbeds exige el correo del huesped: agregalo al lead."))
         // Check again: a room may have been taken since it was chosen.
         val free = availability(host, tenant, start, end, rooms.sumOf { it.adults }.coerceAtLeast(1), rooms.sumOf { it.children }).map { it.roomId }.toSet()
         rooms.filter { it.roomId !in free }.takeIf { it.isNotEmpty() }?.let { taken ->
-            throw CrmValidationException("Ya no estan libres: ${taken.joinToString { it.roomId }}. Busca de nuevo las habitaciones.")
+            throw CrmValidationException(tr("Ya no estan libres: {0}. Busca de nuevo las habitaciones.", taken.joinToString { it.roomId }))
         }
         val settings = host.cloudbedsSettings(tenant)
         return parseReservation(post(settings, "postReservation", reservationForm(settings, leadId, start, end, guest, rooms, payment ?: settings.paymentMethod, estimatedValue)))
@@ -245,9 +246,9 @@ object CrmCloudbeds {
     fun checkIn(host: CrmHost, tenant: Connection, reservation: CrmReservation) {
         host.cloudbedsInactiveReason(tenant)?.let { throw CrmCloudbedsException(it) }
         val settings = host.cloudbedsSettings(tenant)
-        if (!settings.ready) throw CrmCloudbedsException("Cloudbeds no esta activo: configuralo en Integraciones.")
+        if (!settings.ready) throw CrmCloudbedsException(tr("Cloudbeds no esta activo: configuralo en Integraciones."))
         if (reservation.status !in host.CheckInStatuses) {
-            throw CrmValidationException("La reserva ${reservation.reservationId} esta ${CrmReservations.statusLabels[reservation.status]?.lowercase() ?: reservation.status}: no se puede hacer el check-in.")
+            throw CrmValidationException(tr("La reserva {0} esta {1}: no se puede hacer el check-in.", reservation.reservationId, CrmReservations.statusLabel(reservation.status).lowercase()))
         }
         put(settings, "putReservation", checkInForm(settings, reservation.reservationId))
         host.markReservationCheckedIn(tenant, reservation.id)

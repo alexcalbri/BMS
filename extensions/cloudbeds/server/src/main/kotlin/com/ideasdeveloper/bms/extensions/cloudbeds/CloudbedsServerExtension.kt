@@ -33,6 +33,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -53,7 +54,7 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         module = "crm",
         displayName = "Cloudbeds",
         description = "Busca habitaciones libres, crea reservas y hace el check-in en Cloudbeds desde el lead; envia la bienvenida y archiva al salir el huesped.",
-        version = "1.0.0",
+        version = "1.1.0",
         minModuleVersion = "0.27.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -106,7 +107,7 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
                 CrmActionResult(reservation.message)
             }
             CrmActionKind.CloudbedsCheckIn.id -> CrmActionResult(checkInForLead(host, tenant, lead.id, context.actor))
-            else -> throw CrmValidationException("Accion desconocida: $kind.")
+            else -> throw CrmValidationException(tr("Accion desconocida: {0}.", kind))
         }
     }
 
@@ -134,10 +135,10 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
 
     override fun checkInForLead(host: CrmHost, tenant: Connection, leadId: UUID, actor: CrmActor): String {
         val reservation = host.reservationsForLead(tenant, leadId).firstOrNull { it.status in host.CheckInStatuses }
-            ?: throw CrmValidationException("El lead no tiene una reserva de Cloudbeds pendiente de check-in.")
+            ?: throw CrmValidationException(tr("El lead no tiene una reserva de Cloudbeds pendiente de check-in."))
         CrmCloudbeds.checkIn(host, tenant, reservation)
         host.addActivity(tenant, leadId, "item", "Check-in hecho en Cloudbeds: reserva ${reservation.reservationId}.", actor)
-        return "Check-in hecho en la reserva ${reservation.reservationId}."
+        return tr("Check-in hecho en la reserva {0}.", reservation.reservationId)
     }
 
     /**
@@ -151,10 +152,10 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         } catch (failure: CrmValidationException) {
             throw CrmActionNotice(failure.message.orEmpty())
         }
-        val room = params["room"].orEmpty().takeIf { it.isNotBlank() && it.length <= 60 } ?: throw CrmActionNotice("Habitacion invalida.")
+        val room = params["room"].orEmpty().takeIf { it.isNotBlank() && it.length <= 60 } ?: throw CrmActionNotice(tr("Habitacion invalida."))
         val chosenDates = host.chosenRooms(tenant, lead.id).map { it.startsOn to it.endsOn }.toSet()
         if (chosenDates.isNotEmpty() && chosenDates != setOf(stay.start to stay.end)) {
-            throw CrmActionNotice("Las habitaciones de una reserva comparten fechas: quita las otras o busca con sus fechas.", warning = true)
+            throw CrmActionNotice(tr("Las habitaciones de una reserva comparten fechas: quita las otras o busca con sus fechas."), warning = true)
         }
         val title = "${params["roomName"].orEmpty()} - ${params["typeName"].orEmpty()}".trim(' ', '-').ifEmpty { "Habitacion $room" }
         host.linkItem(
@@ -164,7 +165,7 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
             data = mapOf("roomTypeId" to params["type"].orEmpty(), "max" to params["max"].orEmpty(), "adults" to stay.adults.toString(), "children" to stay.children.toString()),
         )
         host.addActivity(tenant, lead.id, "item", "Habitacion asignada: $title, del ${stay.start} al ${stay.end}.", actor)
-        return CrmLeadItemActions.Reservation("$title asignada a ${lead.name}.", warning = false)
+        return CrmLeadItemActions.Reservation(tr("{0} asignada a {1}.", title, lead.name), warning = false)
     }
 
     /**
@@ -176,26 +177,26 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         val rooms = host.chosenRooms(tenant, lead.id)
         val start = rooms.firstOrNull()?.startsOn
         val end = rooms.firstOrNull()?.endsOn
-        if (rooms.isEmpty() || start == null || end == null) throw CrmActionNotice("Asigna al menos una habitacion.", warning = true)
-        if (rooms.any { it.startsOn != start || it.endsOn != end }) throw CrmActionNotice("Las habitaciones tienen fechas distintas; deja solo las de una estadia.", warning = true)
+        if (rooms.isEmpty() || start == null || end == null) throw CrmActionNotice(tr("Asigna al menos una habitacion."), warning = true)
+        if (rooms.any { it.startsOn != start || it.endsOn != end }) throw CrmActionNotice(tr("Las habitaciones tienen fechas distintas; deja solo las de una estadia."), warning = true)
         val requests = rooms.map { room ->
-            val adults = values["adults_${room.id}"]?.trim()?.toIntOrNull()?.takeIf { it in 1..50 } ?: throw CrmActionNotice("Cada habitacion necesita al menos un adulto (${room.title}).")
+            val adults = values["adults_${room.id}"]?.trim()?.toIntOrNull()?.takeIf { it in 1..50 } ?: throw CrmActionNotice(tr("Cada habitacion necesita al menos un adulto ({0}).", room.title))
             val children = values["children_${room.id}"]?.trim()?.ifEmpty { "0" }?.toIntOrNull()?.takeIf { it in 0..50 } ?: 0
             val max = room.data["max"]?.toIntOrNull() ?: 0
-            if (max > 0 && adults + children > max) throw CrmActionNotice("${room.title} admite hasta $max personas.")
-            CbRoomRequest(room.externalId, room.data["roomTypeId"].orEmpty().ifEmpty { throw CrmActionNotice("Vuelve a asignar ${room.title}.") }, adults, children)
+            if (max > 0 && adults + children > max) throw CrmActionNotice(tr("{0} admite hasta {1} personas.", room.title, max))
+            CbRoomRequest(room.externalId, room.data["roomTypeId"].orEmpty().ifEmpty { throw CrmActionNotice(tr("Vuelve a asignar {0}.", room.title)) }, adults, children)
         }
         // Cloudbeds rejects a reservation without the guest's country; the automations rely on the default of Integraciones.
         val country = values["country"].orEmpty().trim().uppercase().ifEmpty { host.cloudbedsSettings(tenant).defaultCountry }
-        if (country.isEmpty()) throw CrmActionNotice("Falta el pais del huesped: escribelo o pon un pais por defecto en Integraciones > Cloudbeds.", warning = true)
-        if (!country.matches(CrmCloudbedsStore.CountryCode)) throw CrmActionNotice("El pais es un codigo de 2 letras, por ejemplo NI o US.")
+        if (country.isEmpty()) throw CrmActionNotice(tr("Falta el pais del huesped: escribelo o pon un pais por defecto en Integraciones > Cloudbeds."), warning = true)
+        if (!country.matches(CrmCloudbedsStore.CountryCode)) throw CrmActionNotice(tr("El pais es un codigo de 2 letras, por ejemplo NI o US."))
         val (first, last) = host.splitName(lead.name)
         val guest = CbGuest(first, last, lead.email, host.normalizePhone(lead.phone), country, values["zip"].orEmpty().trim().take(20))
         val result = try {
             val payment = CrmCloudbedsStore.paymentLabels.entries.firstOrNull { it.value == values["payment"] }?.key
             CrmCloudbeds.reserve(host, tenant, lead.id, start, end, guest, requests, payment, lead.estimatedValue)
         } catch (failure: CrmCloudbedsException) {
-            throw CrmActionNotice("La reserva no se creo: ${failure.message}")
+            throw CrmActionNotice(tr("La reserva no se creo: {0}", failure.message))
         } catch (failure: CrmValidationException) {
             throw CrmActionNotice(failure.message.orEmpty())
         }
@@ -207,19 +208,19 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         }
         host.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor)
         return if (result.unassigned > 0) {
-            CrmLeadItemActions.Reservation("Reserva ${result.reservationId} creada, pero Cloudbeds dejo ${result.unassigned} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", warning = true)
+            CrmLeadItemActions.Reservation(tr("Reserva {0} creada, pero Cloudbeds dejo {1} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", result.reservationId, result.unassigned), warning = true)
         } else {
-            CrmLeadItemActions.Reservation("Reserva ${result.reservationId} creada en Cloudbeds.", warning = false)
+            CrmLeadItemActions.Reservation(tr("Reserva {0} creada en Cloudbeds.", result.reservationId), warning = false)
         }
     }
 
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            CrmExtensions.item(null, "Conexion con Cloudbeds y su API key (se borran)", CrmExtensions.count(tenant, "SELECT count(*) FROM ext_cloudbeds__settings WHERE enabled OR coalesce(api_key, '') <> ''"), UninstallDefault.Delete),
-            CrmExtensions.item(ReservationsOption, "Reservas de Cloudbeds registradas en los leads", CrmExtensions.count(tenant, "SELECT count(*) FROM crm_reservations"), UninstallDefault.Keep),
-            CrmExtensions.item(RoomsOption, "Habitaciones de Cloudbeds asignadas a los leads", CrmExtensions.count(tenant, "SELECT count(*) FROM crm_lead_items WHERE source = ?", CrmCloudbedsStore.Source), UninstallDefault.Keep),
-            CrmExtensions.item(CountryOption, "Pais por defecto del huesped", CrmExtensions.count(tenant, "SELECT count(*) FROM ext_cloudbeds__settings WHERE default_country <> ''"), UninstallDefault.Ask),
+            CrmExtensions.item(null, tr("Conexion con Cloudbeds y su API key (se borran)"), CrmExtensions.count(tenant, "SELECT count(*) FROM ext_cloudbeds__settings WHERE enabled OR coalesce(api_key, '') <> ''"), UninstallDefault.Delete),
+            CrmExtensions.item(ReservationsOption, tr("Reservas de Cloudbeds registradas en los leads"), CrmExtensions.count(tenant, "SELECT count(*) FROM crm_reservations"), UninstallDefault.Keep),
+            CrmExtensions.item(RoomsOption, tr("Habitaciones de Cloudbeds asignadas a los leads"), CrmExtensions.count(tenant, "SELECT count(*) FROM crm_lead_items WHERE source = ?", CrmCloudbedsStore.Source), UninstallDefault.Keep),
+            CrmExtensions.item(CountryOption, tr("Pais por defecto del huesped"), CrmExtensions.count(tenant, "SELECT count(*) FROM ext_cloudbeds__settings WHERE default_country <> ''"), UninstallDefault.Ask),
         )
     }
 
