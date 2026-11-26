@@ -6,6 +6,9 @@ import com.ideasdeveloper.bms.modules.crm.CrmMetaServerApp
 import com.ideasdeveloper.bms.modules.crm.CrmMetaSettings
 import com.ideasdeveloper.bms.modules.crm.CrmModule
 import com.ideasdeveloper.bms.modules.crm.CrmValidationException
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.modules.crm.MetaPaths
 import com.ideasdeveloper.bms.modules.crm.ServerMode
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -116,26 +119,26 @@ object CrmMetaServer {
     fun mergeApp(current: CrmMetaServerApp, values: Map<String, String>): CrmMetaServerApp {
         fun id(key: String, label: String): String? {
             val value = values[key].orEmpty().trim().ifEmpty { return null }
-            if (!numericId.matches(value)) throw CrmValidationException("$label solo lleva numeros.")
+            if (!numericId.matches(value)) throw CrmValidationException(tr("{0} solo lleva numeros.", label))
             return value
         }
         val verify = values["serverVerifyToken"].orEmpty().trim().ifEmpty { null }.let { if (CrmHost.isSecretPlaceholder(it)) current.verifyToken else it }
         if (verify != null && !CrmHost.isSecretUnreadable(verify) && !verify.matches(Regex("^[A-Za-z0-9_.-]{8,100}$"))) {
-            throw CrmValidationException("El verify token debe tener entre 8 y 100 letras, numeros, puntos, guiones o guiones bajos.")
+            throw CrmValidationException(tr("El verify token debe tener entre 8 y 100 letras, numeros, puntos, guiones o guiones bajos."))
         }
         val merged = CrmMetaServerApp(
             enabled = values["serverEnabled"] == "true",
-            appId = id("serverAppId", "El App ID"),
+            appId = id("serverAppId", tr("El App ID")),
             appSecret = values["serverAppSecret"]?.trim()?.takeIf { it.isNotEmpty() && !CrmHost.isSecretPlaceholder(it) } ?: current.appSecret,
             verifyToken = verify,
-            pagesConfigId = id("serverPagesConfigId", "La configuracion de Messenger e Instagram"),
-            whatsAppConfigId = id("serverWhatsAppConfigId", "La configuracion de WhatsApp"),
+            pagesConfigId = id("serverPagesConfigId", tr("La configuracion de Messenger e Instagram")),
+            whatsAppConfigId = id("serverWhatsAppConfigId", tr("La configuracion de WhatsApp")),
         )
         if (merged.enabled && (merged.appId == null || merged.appSecret.isNullOrBlank() || merged.verifyToken == null)) {
-            throw CrmValidationException("Para activar la app del servidor escribe el App ID, el App Secret y el verify token.")
+            throw CrmValidationException(tr("Para activar la app del servidor escribe el App ID, el App Secret y el verify token."))
         }
         if (merged.enabled && merged.pagesConfigId == null && merged.whatsAppConfigId == null) {
-            throw CrmValidationException("Escribe al menos una configuracion de Facebook Login for Business (Messenger e Instagram, o WhatsApp).")
+            throw CrmValidationException(tr("Escribe al menos una configuracion de Facebook Login for Business (Messenger e Instagram, o WhatsApp)."))
         }
         return merged
     }
@@ -250,14 +253,14 @@ object CrmMetaServer {
         val response = try {
             http.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(15)).GET().build(), HttpResponse.BodyHandlers.ofString())
         } catch (failure: Exception) {
-            throw CrmMetaException("No se pudo contactar la API de Meta.")
+            throw CrmMetaException(tr("No se pudo contactar la API de Meta."))
         }
         return response.statusCode() to (runCatching { json.parseToJsonElement(response.body()) }.getOrNull().jObj() ?: JsonObject(emptyMap()))
     }
 
     /** Exchanges the code of the login dialog (JS SDK) for a token of the person or of the business. */
     fun exchangeCode(app: CrmMetaServerApp, code: String): String {
-        if (code.isBlank() || code.length > 2000) throw CrmMetaException("Meta no devolvio el codigo de autorizacion.")
+        if (code.isBlank() || code.length > 2000) throw CrmMetaException(tr("Meta no devolvio el codigo de autorizacion."))
         // Un secreto ilegible (cifrado que no se pudo abrir) nunca se envia a Meta.
         if (CrmHost.isSecretUnreadable(app.appSecret)) throw CrmMetaException(CrmHost.UnreadableSecretText)
         val base = "${CrmMeta.Graph}/oauth/access_token?client_id=${app.appId}&client_secret=${encode(app.appSecret.orEmpty())}&code=${encode(code)}"
@@ -269,7 +272,7 @@ object CrmMetaServer {
             body = retry.second
         }
         val token = body["access_token"].jStr()
-        if (status != 200 || token.isEmpty()) throw CrmMetaException("Meta no acepto la autorizacion: ${CrmMeta.graphHint(body, status)}")
+        if (status != 200 || token.isEmpty()) throw CrmMetaException(tr("Meta no acepto la autorizacion: {0}", CrmMeta.graphHint(body, status)))
         return token
     }
 
@@ -290,7 +293,7 @@ object CrmMetaServer {
 
     private fun pagesOf(token: String): List<JsonObject> {
         val (status, body) = CrmMeta.request("${CrmMeta.Graph}/me/accounts?fields=id,name,access_token,instagram_business_account%7Bid,username%7D&limit=100", token)
-        if (status != 200) throw CrmMetaException("Meta rechazo la lista de paginas: ${CrmMeta.graphHint(body, status)}")
+        if (status != 200) throw CrmMetaException(tr("Meta rechazo la lista de paginas: {0}", CrmMeta.graphHint(body, status)))
         return body["data"].jArr().mapNotNull { it.jObj() }.filter { numericId.matches(it["id"].jStr()) }
     }
 
@@ -308,18 +311,18 @@ object CrmMetaServer {
         val pages = pagesOf(token)
         CrmMeta.log(tenant, "login_meta", "${pages.size} pagina(s)")
         return when (pages.size) {
-            0 -> Outcome(false, "La cuenta no administra ninguna pagina o no la elegiste al iniciar sesion. Vuelve a conectar y marca la pagina.")
+            0 -> Outcome(false, tr("La cuenta no administra ninguna pagina o no la elegiste al iniciar sesion. Vuelve a conectar y marca la pagina."))
             1 -> choosePage(tenant, company, pages.single()["id"].jStr())
-            else -> Outcome(true, "Elige la pagina de la empresa.", pages.map {
+            else -> Outcome(true, tr("Elige la pagina de la empresa."), pages.map {
                 PageChoice(it["id"].jStr(), it["name"].jStr(), it["instagram_business_account"].jObj()?.get("username").jStr())
             })
         }
     }
 
-    private const val NoServerWorkspace = "El espacio del servidor no tiene el CRM activo: pide al dueno del servidor que lo active."
+    private val NoServerWorkspace = msg("El espacio del servidor no tiene el CRM activo: pide al dueno del servidor que lo active.")
 
     // The message never names the other company.
-    private fun takenMessage(what: String) = "$what ya esta conectada a otra empresa de este servidor."
+    private fun takenMessage(what: String) = tr("{0} ya esta conectada a otra empresa de este servidor.", what)
 
     /** True when [assetId] already belongs to another company (read only; claiming happens after the asset was verified and subscribed). */
     private fun isTaken(server: Connection, kind: String, assetId: String, company: String) = companyOf(server, kind, assetId)?.let { it != company } == true
@@ -331,28 +334,28 @@ object CrmMetaServer {
      */
     fun choosePage(tenant: Connection, company: String, pageId: String): Outcome {
         val current = CrmMeta.load(tenant)
-        val token = current.oauthToken?.takeIf { !CrmHost.isSecretUnreadable(it) } ?: return Outcome(false, "Inicia sesion con Facebook otra vez.")
-        val page = pagesOf(token).firstOrNull { it["id"].jStr() == pageId } ?: return Outcome(false, "La cuenta ya no administra esa pagina.")
-        val pageToken = page["access_token"].jStr().ifEmpty { return Outcome(false, "Meta no devolvio el token de la pagina; revisa el permiso pages_messaging.") }
+        val token = current.oauthToken?.takeIf { !CrmHost.isSecretUnreadable(it) } ?: return Outcome(false, tr("Inicia sesion con Facebook otra vez."))
+        val page = pagesOf(token).firstOrNull { it["id"].jStr() == pageId } ?: return Outcome(false, tr("La cuenta ya no administra esa pagina."))
+        val pageToken = page["access_token"].jStr().ifEmpty { return Outcome(false, tr("Meta no devolvio el token de la pagina; revisa el permiso pages_messaging.")) }
         val instagram = page["instagram_business_account"].jObj()
         val instagramId = instagram?.get("id").jStr().takeIf { numericId.matches(it) }
         // "" when free or already this company's.
         val taken = withServerWorkspace { server ->
             when {
-                isTaken(server, "page", pageId, company) -> takenMessage("Esta pagina")
-                instagramId != null && isTaken(server, "instagram", instagramId, company) -> takenMessage("Esta cuenta de Instagram")
+                isTaken(server, "page", pageId, company) -> takenMessage(tr("Esta pagina"))
+                instagramId != null && isTaken(server, "instagram", instagramId, company) -> takenMessage(tr("Esta cuenta de Instagram"))
                 else -> ""
             }
-        } ?: NoServerWorkspace
+        } ?: tr(NoServerWorkspace)
         if (taken.isNotEmpty()) return Outcome(false, taken)
         // The page must subscribe the app: the app webhook alone does not send its messages.
         val (subStatus, subBody) = CrmMeta.request("${CrmMeta.Graph}/$pageId/subscribed_apps?subscribed_fields=messages,standby", pageToken, "POST")
         if (subStatus !in 200..299 || subBody["success"].jStr() != "true") {
             CrmMeta.log(tenant, "pagina_error", CrmMeta.graphHint(subBody, subStatus))
-            return Outcome(false, "Meta no suscribio la pagina: ${CrmMeta.graphHint(subBody, subStatus)}.")
+            return Outcome(false, tr("Meta no suscribio la pagina: {0}.", CrmMeta.graphHint(subBody, subStatus)))
         }
         val claimed = withServerWorkspace { server ->
-            if (claim(server, "page", pageId, company) != null) return@withServerWorkspace takenMessage("Esta pagina")
+            if (claim(server, "page", pageId, company) != null) return@withServerWorkspace takenMessage(tr("Esta pagina"))
             // The previous page of this company stops arriving here.
             server.prepareStatement("DELETE FROM $RoutesTable WHERE company_code = ? AND kind = 'page' AND asset_id <> ?").use { delete ->
                 delete.setString(1, company)
@@ -360,7 +363,7 @@ object CrmMetaServer {
                 delete.executeUpdate()
             }
             ""
-        } ?: NoServerWorkspace
+        } ?: tr(NoServerWorkspace)
         if (claimed.isNotEmpty()) return Outcome(false, claimed)
         var settings = current.copy(
             enabled = true, connectionMode = ServerMode, sharedTokens = true,
@@ -373,7 +376,7 @@ object CrmMetaServer {
             withServerWorkspace { server -> release(server, company, setOf("page")) }
             throw failure
         }
-        val done = mutableListOf("Pagina ${settings.pageName} conectada")
+        val done = mutableListOf(tr("Pagina {0} conectada", settings.pageName))
         CrmMeta.log(tenant, "pagina_conectada", settings.pageName.orEmpty())
         if (instagramId != null) {
             var instagramOk = false
@@ -381,18 +384,18 @@ object CrmMetaServer {
                 CrmMeta.subscribeInstagram(settings)
                 // Instagram routes are claimed only once the subscription worked.
                 val instagramClaim = withServerWorkspace { server ->
-                    if (claim(server, "instagram", instagramId, company) != null) return@withServerWorkspace takenMessage("Esta cuenta de Instagram")
+                    if (claim(server, "instagram", instagramId, company) != null) return@withServerWorkspace takenMessage(tr("Esta cuenta de Instagram"))
                     server.prepareStatement("DELETE FROM $RoutesTable WHERE company_code = ? AND kind = 'instagram' AND asset_id <> ?").use { delete ->
                         delete.setString(1, company)
                         delete.setString(2, instagramId)
                         delete.executeUpdate()
                     }
                     ""
-                } ?: NoServerWorkspace
+                } ?: tr(NoServerWorkspace)
                 if (instagramClaim.isEmpty()) {
                     instagramOk = true
                     CrmMeta.log(tenant, "instagram_suscrito", instagramId)
-                    done += "Instagram ${settings.instagramUsername?.let { "@$it" } ?: instagramId} recibe mensajes"
+                    done += tr("Instagram {0} recibe mensajes", settings.instagramUsername?.let { "@$it" } ?: instagramId)
                 } else done += instagramClaim
             } catch (failure: CrmMetaException) {
                 CrmMeta.log(tenant, "instagram_error", failure.message.orEmpty())
@@ -404,7 +407,7 @@ object CrmMetaServer {
                 withServerWorkspace { server -> release(server, company, setOf("instagram")) }
             }
         } else {
-            done += "sin Instagram vinculado a la pagina"
+            done += tr("sin Instagram vinculado a la pagina")
             withServerWorkspace { server -> release(server, company, setOf("instagram")) }
         }
         settings = CrmMeta.load(tenant)
@@ -418,44 +421,44 @@ object CrmMetaServer {
      * are never registered again; a new number is registered with the two-step [pin].
      */
     fun connectWhatsApp(tenant: Connection, company: String, app: CrmMetaServerApp, code: String, wabaId: String, phoneNumberId: String, pin: String?): Outcome {
-        if (!numericId.matches(wabaId) || !numericId.matches(phoneNumberId)) return Outcome(false, "Meta no devolvio la cuenta o el numero de WhatsApp; termina el registro en la ventana de Meta.")
+        if (!numericId.matches(wabaId) || !numericId.matches(phoneNumberId)) return Outcome(false, tr("Meta no devolvio la cuenta o el numero de WhatsApp; termina el registro en la ventana de Meta."))
         val token = exchangeCode(app, code)
         val (listStatus, list) = CrmMeta.request("${CrmMeta.Graph}/$wabaId/phone_numbers?fields=id&limit=100", token)
         if (listStatus != 200 || list["data"].jArr().none { it.jObj()?.get("id").jStr() == phoneNumberId }) {
             CrmMeta.log(tenant, "wa_no_verificado", "la cuenta de Meta no administra ese numero")
-            return Outcome(false, "Tu cuenta de Meta no administra esa cuenta o ese numero de WhatsApp.")
+            return Outcome(false, tr("Tu cuenta de Meta no administra esa cuenta o ese numero de WhatsApp."))
         }
-        val taken = withServerWorkspace { server -> if (isTaken(server, "waba", wabaId, company)) takenMessage("Esta cuenta de WhatsApp") else "" } ?: NoServerWorkspace
+        val taken = withServerWorkspace { server -> if (isTaken(server, "waba", wabaId, company)) takenMessage(tr("Esta cuenta de WhatsApp")) else "" } ?: tr(NoServerWorkspace)
         if (taken.isNotEmpty()) return Outcome(false, taken)
         val (phoneStatus, phone) = CrmMeta.request(
             "${CrmMeta.Graph}/$phoneNumberId?fields=display_phone_number,verified_name,status,platform_type,is_on_biz_app", token,
         )
-        if (phoneStatus != 200) return Outcome(false, "Meta rechazo el numero: ${CrmMeta.graphHint(phone, phoneStatus)}")
+        if (phoneStatus != 200) return Outcome(false, tr("Meta rechazo el numero: {0}", CrmMeta.graphHint(phone, phoneStatus)))
         val number = phone["display_phone_number"].jStr()
         val onCloud = phone["platform_type"].jStr().equals("CLOUD_API", ignoreCase = true) || phone["is_on_biz_app"].jTrue()
         if (!onCloud) {
             val digits = pin.orEmpty().trim()
             if (!digits.matches(Regex("^[0-9]{6}$"))) {
-                return Outcome(false, "El numero $number es nuevo en la API: escribe un PIN de 6 digitos para la verificacion en dos pasos y conecta otra vez.")
+                return Outcome(false, tr("El numero {0} es nuevo en la API: escribe un PIN de 6 digitos para la verificacion en dos pasos y conecta otra vez.", number))
             }
             val (regStatus, reg) = CrmMeta.request("${CrmMeta.Graph}/$phoneNumberId/register", token, "POST", buildJsonObject {
                 put("messaging_product", "whatsapp")
                 put("pin", digits)
             })
-            if (regStatus !in 200..299 || reg["success"].jStr() != "true") return Outcome(false, "Meta no registro el numero: ${CrmMeta.graphHint(reg, regStatus)}")
+            if (regStatus !in 200..299 || reg["success"].jStr() != "true") return Outcome(false, tr("Meta no registro el numero: {0}", CrmMeta.graphHint(reg, regStatus)))
             CrmMeta.log(tenant, "wa_registrado", number)
         }
         val (subStatus, sub) = CrmMeta.request("${CrmMeta.Graph}/$wabaId/subscribed_apps", token, "POST")
-        if (subStatus !in 200..299 || sub["success"].jStr() != "true") return Outcome(false, "Meta rechazo la suscripcion de la app: ${CrmMeta.graphHint(sub, subStatus)}")
+        if (subStatus !in 200..299 || sub["success"].jStr() != "true") return Outcome(false, tr("Meta rechazo la suscripcion de la app: {0}", CrmMeta.graphHint(sub, subStatus)))
         val claimed = withServerWorkspace { server ->
-            if (claim(server, "waba", wabaId, company) != null) return@withServerWorkspace takenMessage("Esta cuenta de WhatsApp")
+            if (claim(server, "waba", wabaId, company) != null) return@withServerWorkspace takenMessage(tr("Esta cuenta de WhatsApp"))
             server.prepareStatement("DELETE FROM $RoutesTable WHERE company_code = ? AND kind = 'waba' AND asset_id <> ?").use { delete ->
                 delete.setString(1, company)
                 delete.setString(2, wabaId)
                 delete.executeUpdate()
             }
             ""
-        } ?: NoServerWorkspace
+        } ?: tr(NoServerWorkspace)
         if (claimed.isNotEmpty()) return Outcome(false, claimed)
         try {
             CrmMeta.save(
@@ -467,7 +470,7 @@ object CrmMetaServer {
             throw failure
         }
         CrmMeta.log(tenant, "wa_conectado", "WABA $wabaId, numero $number")
-        return Outcome(true, "WhatsApp conectado con el numero $number${if (phone["is_on_biz_app"].jTrue()) " (coexistencia con la app de WhatsApp Business)" else ""}.")
+        return Outcome(true, tr("WhatsApp conectado con el numero {0}", number) + (if (phone["is_on_biz_app"].jTrue()) " " + tr("(coexistencia con la app de WhatsApp Business)") else "") + ".")
     }
 
     private fun unsubscribe(tenant: Connection, assetId: String?, token: String?) {
@@ -606,12 +609,12 @@ object CrmMetaServer {
     /** Page opened in the browser from Integraciones: logs in with Meta through the JS SDK of the server app. */
     fun connectPage(app: CrmMetaServerApp, company: String, ticket: String): String = """
         <!doctype html>
-        <html lang="es">
+        <html lang="${I18n.language()}">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="referrer" content="no-referrer">
-        <title>Conectar con Meta</title>
+        <title>${tr("Conectar con Meta")}</title>
         <style>
           body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7; color: #1d2433; }
           main { max-width: 560px; margin: 0 auto; padding: 24px 16px; }
@@ -628,38 +631,47 @@ object CrmMetaServer {
         </head>
         <body>
         <main>
-          <h1>Conectar ${html(company)} con Meta</h1>
-          <p>Inicia sesion con la cuenta de Facebook que administra la pagina, el Instagram y el WhatsApp de la empresa. Meta te muestra que permisos das; esta pagina nunca ve tu contrasena.</p>
+          <h1>${tr("Conectar {0} con Meta", html(company))}</h1>
+          <p>${tr("Inicia sesion con la cuenta de Facebook que administra la pagina, el Instagram y el WhatsApp de la empresa. Meta te muestra que permisos das; esta pagina nunca ve tu contrasena.")}</p>
           <section id="pagesBox">
             <h2>Messenger e Instagram</h2>
-            <p>Elige la pagina de la empresa. Su cuenta de Instagram vinculada se conecta con ella.</p>
-            <button id="pages">Conectar Facebook e Instagram</button>
+            <p>${tr("Elige la pagina de la empresa. Su cuenta de Instagram vinculada se conecta con ella.")}</p>
+            <button id="pages">${tr("Conectar Facebook e Instagram")}</button>
             <div id="pageList"></div>
           </section>
           <section id="waBox">
             <h2>WhatsApp</h2>
-            <p>Elige o crea la cuenta de WhatsApp Business y el numero. Si el numero ya funciona con otro sistema o con la app de WhatsApp Business, eligelo tal cual: no se vuelve a registrar.</p>
-            <p><label><input type="checkbox" id="coex"> Agregar un numero que hoy solo usa la app de WhatsApp Business (coexistencia)</label></p>
-            <p><label>PIN de verificacion en dos pasos, solo para numeros nuevos en la API (6 digitos):<br><input type="text" id="pin" inputmode="numeric" maxlength="6" autocomplete="off"></label></p>
-            <button id="wa">Conectar WhatsApp</button>
+            <p>${tr("Elige o crea la cuenta de WhatsApp Business y el numero. Si el numero ya funciona con otro sistema o con la app de WhatsApp Business, eligelo tal cual: no se vuelve a registrar.")}</p>
+            <p><label><input type="checkbox" id="coex"> ${tr("Agregar un numero que hoy solo usa la app de WhatsApp Business (coexistencia)")}</label></p>
+            <p><label>${tr("PIN de verificacion en dos pasos, solo para numeros nuevos en la API (6 digitos):")}<br><input type="text" id="pin" inputmode="numeric" maxlength="6" autocomplete="off"></label></p>
+            <button id="wa">${tr("Conectar WhatsApp")}</button>
           </section>
           <p id="msg"></p>
-          <p>Al terminar vuelve a la app y abre otra vez Integraciones. Este enlace vence en 30 minutos.</p>
+          <p>${tr("Al terminar vuelve a la app y abre otra vez Integraciones. Este enlace vence en 30 minutos.")}</p>
         </main>
         <script>
         const cfg = { appId: ${js(app.appId.orEmpty())}, pages: ${js(app.pagesConfigId.orEmpty())}, wa: ${js(app.whatsAppConfigId.orEmpty())}, ticket: ${js(ticket)}, version: ${js(CrmMeta.GraphVersion)} };
+        const T = {
+          connecting: ${js(tr("Conectando..."))},
+          noResponse: ${js(tr("Sin respuesta del servidor."))},
+          noServer: ${js(tr("No se pudo contactar el servidor."))},
+          loginCancelled: ${js(tr("No se completo el inicio de sesion."))},
+          signupCancelled: ${js(tr("No se completo el registro de WhatsApp."))},
+          signupStopped: ${js(tr("Registro de WhatsApp cancelado."))},
+          signupStoppedAt: ${js(tr("Registro de WhatsApp cancelado en {0}."))}
+        };
         const msg = document.getElementById('msg');
         function show(text, ok) { msg.textContent = text; msg.className = ok ? 'ok' : 'bad'; }
         if (!cfg.pages) document.getElementById('pagesBox').style.display = 'none';
         if (!cfg.wa) document.getElementById('waBox').style.display = 'none';
         async function send(step, data) {
-          show('Conectando...', true);
+          show(T.connecting, true);
           try {
             const response = await fetch(location.pathname + '/' + step, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ t: cfg.ticket }, data)) });
             const result = await response.json();
-            show(result.message || 'Sin respuesta del servidor.', !!result.ok);
+            show(result.message || T.noResponse, !!result.ok);
             return result;
-          } catch (e) { show('No se pudo contactar el servidor.', false); return {}; }
+          } catch (e) { show(T.noServer, false); return {}; }
         }
         let signup = null;
         window.addEventListener('message', (event) => {
@@ -668,7 +680,7 @@ object CrmMetaServer {
             const data = JSON.parse(event.data);
             if (data.type === 'WA_EMBEDDED_SIGNUP') {
               if (String(data.event).startsWith('FINISH')) signup = data.data || {};
-              else if (data.event === 'CANCEL') show('Registro de WhatsApp cancelado' + (data.data && data.data.current_step ? ' en ' + data.data.current_step : '') + '.', false);
+              else if (data.event === 'CANCEL') show(data.data && data.data.current_step ? T.signupStoppedAt.replace('{0}', data.data.current_step) : T.signupStopped, false);
             }
           } catch (e) {}
         });
@@ -678,7 +690,7 @@ object CrmMetaServer {
         document.getElementById('pages').onclick = () => {
           FB.login(async (response) => {
             const code = response.authResponse && response.authResponse.code;
-            if (!code) return show('No se completo el inicio de sesion.', false);
+            if (!code) return show(T.loginCancelled, false);
             const result = await send('pages', { code });
             const list = document.getElementById('pageList');
             list.innerHTML = '';
@@ -696,7 +708,7 @@ object CrmMetaServer {
           const coex = document.getElementById('coex').checked;
           FB.login(async (response) => {
             const code = response.authResponse && response.authResponse.code;
-            if (!code) return show('No se completo el registro de WhatsApp.', false);
+            if (!code) return show(T.signupCancelled, false);
             // The account and number arrive by message right before or after the login answer.
             for (let i = 0; i < 20 && !signup; i++) await new Promise((r) => setTimeout(r, 250));
             const data = signup || {};
@@ -705,7 +717,7 @@ object CrmMetaServer {
                extras: { setup: {}, featureType: coex ? 'whatsapp_business_app_onboarding' : '', sessionInfoVersion: '3' } });
         };
         </script>
-        <script async defer crossorigin="anonymous" src="https://connect.facebook.net/es_LA/sdk.js"></script>
+        <script async defer crossorigin="anonymous" src="https://connect.facebook.net/${if (I18n.language() == "en") "en_US" else "es_LA"}/sdk.js"></script>
         </body>
         </html>
     """.trimIndent()
