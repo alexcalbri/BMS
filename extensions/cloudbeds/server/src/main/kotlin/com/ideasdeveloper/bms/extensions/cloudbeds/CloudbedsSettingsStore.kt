@@ -5,6 +5,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmCloudbedsStore
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmTemplate
 import com.ideasdeveloper.bms.modules.crm.CrmValidationException
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.util.UUID
 
@@ -40,19 +41,19 @@ object CloudbedsSettingsStore {
         val current = load(host, tenant)
         val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !host.isSecretPlaceholder(it) } ?: current.apiKey
         val property = values["propertyId"].orEmpty().trim().ifEmpty { null }
-        if (property != null && !property.matches(Regex("^[0-9]{1,30}$"))) throw CrmValidationException("El ID de la propiedad solo lleva numeros.")
+        if (property != null && !property.matches(Regex("^[0-9]{1,30}$"))) throw CrmValidationException(tr("El ID de la propiedad solo lleva numeros."))
         val country = values["defaultCountry"].orEmpty().trim().uppercase()
-        if (!country.matches(CrmCloudbedsStore.CountryCode) && country.isNotEmpty()) throw CrmValidationException("El pais por defecto es un codigo de 2 letras, por ejemplo US o NI.")
+        if (!country.matches(CrmCloudbedsStore.CountryCode) && country.isNotEmpty()) throw CrmValidationException(tr("El pais por defecto es un codigo de 2 letras, por ejemplo US o NI."))
         val enabled = values["enabled"] == "true"
-        if (enabled && key.isNullOrBlank()) throw CrmValidationException("Para activar Cloudbeds escribe la API key.")
+        if (enabled && key.isNullOrBlank()) throw CrmValidationException(tr("Para activar Cloudbeds escribe la API key."))
         val payment = CrmCloudbedsStore.paymentLabels.entries.firstOrNull { it.value == values["paymentMethod"] }?.key ?: current.paymentMethod
         val template = values["welcomeTemplate"]?.let { name -> templates.firstOrNull { it.name == name }?.id }
         val welcome = values["welcomeEnabled"] == "true"
-        if (welcome && template == null) throw CrmValidationException("Elige la plantilla del correo de bienvenida (creala en Plantillas).")
+        if (welcome && template == null) throw CrmValidationException(tr("Elige la plantilla del correo de bienvenida (creala en Plantillas)."))
         val days = values["welcomeDaysBefore"].orEmpty().trim().ifEmpty { "1" }.toIntOrNull()?.takeIf { it in 0..60 }
-            ?: throw CrmValidationException("Los dias antes del check-in deben ser un numero entre 0 y 60.")
+            ?: throw CrmValidationException(tr("Los dias antes del check-in deben ser un numero entre 0 y 60."))
         val hour = values["welcomeHour"].orEmpty().trim().ifEmpty { "9" }.toIntOrNull()?.takeIf { it in 0..23 }
-            ?: throw CrmValidationException("La hora de envio debe ser un numero entre 0 y 23.")
+            ?: throw CrmValidationException(tr("La hora de envio debe ser un numero entre 0 y 23."))
         // Upsert: la fila la crea onEnable, pero si faltara se crea aqui en vez de perder el guardado.
         tenant.prepareStatement(
             """
