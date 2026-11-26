@@ -1,13 +1,14 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
-import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /**
  * Writes imported rows into Eventos. Every row is its own transaction, idempotent (the event is found by its import_key),
@@ -58,10 +59,10 @@ object EventosImportApply {
         rows.forEach { row ->
             val key = row.key.trim()
             when {
-                key.isEmpty() -> problems += "Un ítem no tiene identificador y se omitirá."
-                row.startsAt == null -> problems += "El ítem $key no tiene fecha y se omitirá."
-                row.title.isBlank() && row.clientName.isBlank() -> problems += "El ítem $key no tiene título ni cliente y se omitirá."
-                !seen.add(key) -> problems += "El ítem $key aparece más de una vez."
+                key.isEmpty() -> problems += tr("Un ítem no tiene identificador y se omitirá.")
+                row.startsAt == null -> problems += tr("El ítem {0} no tiene fecha y se omitirá.", key)
+                row.title.isBlank() && row.clientName.isBlank() -> problems += tr("El ítem {0} no tiene título ni cliente y se omitirá.", key)
+                !seen.add(key) -> problems += tr("El ítem {0} aparece más de una vez.", key)
                 else -> valid += row
             }
         }

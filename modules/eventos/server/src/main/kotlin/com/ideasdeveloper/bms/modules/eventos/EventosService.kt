@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import java.sql.Connection
@@ -19,10 +21,10 @@ import java.util.UUID
  * company's users).
  */
 object EventosService {
-    private const val EventNotFound = "Evento no encontrado."
-    private const val RegistrationNotFound = "Inscripción no encontrada."
-    private const val NoPermission = "No tienes permiso para esta acción."
-    private const val AlreadyRegistered = "El cliente ya está inscrito en este evento (o en su lista de espera)."
+    private val EventNotFound = msg("Evento no encontrado.")
+    private val RegistrationNotFound = msg("Inscripción no encontrada.")
+    private val NoPermission = msg("No tienes permiso para esta acción.")
+    private val AlreadyRegistered = msg("El cliente ya está inscrito en este evento (o en su lista de espera).")
     private const val UniqueViolation = "23505"
     private const val LiveRegistrationIndex = "eventos_registrations_live_idx"
 
@@ -38,7 +40,7 @@ object EventosService {
     }
 
     private fun requirePermission(permissions: ModulePermissions, id: String) {
-        if (!permissions.has(id)) throw EventosValidationException(NoPermission)
+        if (!permissions.has(id)) throw EventosValidationException(tr(NoPermission))
     }
 
     private fun actorId(permissions: ModulePermissions): UUID? = permissions.userId?.takeUnless { permissions.serverOwner }
@@ -47,27 +49,27 @@ object EventosService {
         access.userIdentity(tenant, permissions)?.name ?: "Usuario"
 
     private fun loadEvent(tenant: Connection, id: UUID): EventWithStats =
-        EventosRepository.getEvent(tenant, id) ?: throw EventosValidationException(EventNotFound)
+        EventosRepository.getEvent(tenant, id) ?: throw EventosValidationException(tr(EventNotFound))
 
     private fun loadRegistration(tenant: Connection, id: UUID): Registration =
-        EventosRepository.getRegistration(tenant, id) ?: throw EventosValidationException(RegistrationNotFound)
+        EventosRepository.getRegistration(tenant, id) ?: throw EventosValidationException(tr(RegistrationNotFound))
 
     /** The event row is locked until the end of the transaction; it is read after the lock so the numbers are the ones that count. */
     private fun lockedEvent(tenant: Connection, id: UUID): EventWithStats {
-        if (!EventosRepository.lockEvent(tenant, id)) throw EventosValidationException(EventNotFound)
+        if (!EventosRepository.lockEvent(tenant, id)) throw EventosValidationException(tr(EventNotFound))
         return loadEvent(tenant, id)
     }
 
     private fun requireResponsible(tenant: Connection, userId: UUID?) {
         if (userId == null) return
         if (EventosRepository.users(tenant).none { it.id == userId }) {
-            throw EventosValidationException("El responsable debe ser un usuario activo del módulo de eventos.")
+            throw EventosValidationException(tr("El responsable debe ser un usuario activo del módulo de eventos."))
         }
     }
 
     private fun requireClient(tenant: Connection, input: EventInput) {
         val client = input.clientCustomerId ?: return
-        if (EventosRepository.visibleCustomer(tenant, client) == null) throw EventosValidationException("El cliente no existe o no está disponible.")
+        if (EventosRepository.visibleCustomer(tenant, client) == null) throw EventosValidationException(tr("El cliente no existe o no está disponible."))
     }
 
     private fun validate(input: EventInput, requireClient: Boolean) {
@@ -112,7 +114,7 @@ object EventosService {
         EventosRepository.transaction(tenant) {
             val current = lockedEvent(tenant, id)
             val event = current.event
-            if (input.kind != event.kind) throw EventosValidationException("No se puede cambiar el tipo de un evento: duplícalo como otro tipo.")
+            if (input.kind != event.kind) throw EventosValidationException(tr("No se puede cambiar el tipo de un evento: duplícalo como otro tipo."))
             EventosRules.capacityError(input.capacity, current.stats.occupied)?.let { throw EventosValidationException(it) }
             if (input.clientCustomerId != event.clientCustomerId) requireClient(tenant, input)
             if (input.responsibleUserId != event.responsibleUserId) requireResponsible(tenant, input.responsibleUserId)
@@ -193,7 +195,7 @@ object EventosService {
         requirePermission(permissions, EventosModule.Register)
         val errors = EventosRules.validateRegistration(input.seats, input.amount, input.note)
         if (errors.isNotEmpty()) throw EventosValidationException(errors)
-        if (newCustomer == null && input.customerId == null) throw EventosValidationException("Elige el cliente que se inscribe.")
+        if (newCustomer == null && input.customerId == null) throw EventosValidationException(tr("Elige el cliente que se inscribe."))
         val actor = actorId(permissions)
         val author = actorName(tenant, access, permissions)
         var createdCustomer: UUID? = null
@@ -210,12 +212,12 @@ object EventosService {
                     customerId = lookup.customerId
                     customerName = if (lookup.created) newCustomer.name.trim() else EventosRepository.visibleCustomer(tenant, lookup.customerId)?.name.orEmpty()
                 } else {
-                    val wanted = input.customerId ?: throw EventosValidationException("Elige el cliente que se inscribe.")
-                    val customer = EventosRepository.visibleCustomer(tenant, wanted) ?: throw EventosValidationException("El cliente no existe o no está disponible.")
+                    val wanted = input.customerId ?: throw EventosValidationException(tr("Elige el cliente que se inscribe."))
+                    val customer = EventosRepository.visibleCustomer(tenant, wanted) ?: throw EventosValidationException(tr("El cliente no existe o no está disponible."))
                     customerId = customer.id
                     customerName = customer.name
                 }
-                if (EventosRepository.liveRegistration(tenant, event.id, customerId) != null) throw EventosValidationException(AlreadyRegistered)
+                if (EventosRepository.liveRegistration(tenant, event.id, customerId) != null) throw EventosValidationException(tr(AlreadyRegistered))
                 val occupied = current.stats.occupied
                 val status = EventosRules.decide(event.capacity, occupied, input.seats, current.stats.waiting)
                 val membership = EventosMembership.activeMembership(tenant, customerId)
@@ -230,7 +232,7 @@ object EventosService {
             }
         } catch (failure: SQLException) {
             // The unique index (one live registration per customer and event) catches two requests at the same moment.
-            if (failure.sqlState == UniqueViolation && failure.message.orEmpty().contains(LiveRegistrationIndex)) throw EventosValidationException(AlreadyRegistered)
+            if (failure.sqlState == UniqueViolation && failure.message.orEmpty().contains(LiveRegistrationIndex)) throw EventosValidationException(tr(AlreadyRegistered))
             throw failure
         }
         createdCustomer?.let { created -> afterCommit("el aviso a Clientes") { access.customerChanged(tenant, created) } }
@@ -258,7 +260,7 @@ object EventosService {
         EventosRepository.transaction(tenant) {
             lockedEvent(tenant, eventId)
             val registration = loadRegistration(tenant, registrationId)
-            if (registration.status == RegistrationStatus.Cancelled) throw EventosValidationException("La inscripción ya estaba cancelada.")
+            if (registration.status == RegistrationStatus.Cancelled) throw EventosValidationException(tr("La inscripción ya estaba cancelada."))
             previous = registration.status
             EventosRepository.setRegistrationStatus(tenant, registrationId, RegistrationStatus.Cancelled)
             val current = loadEvent(tenant, eventId)
@@ -283,10 +285,10 @@ object EventosService {
             val current = lockedEvent(tenant, eventId)
             val event = current.event
             val registration = loadRegistration(tenant, registrationId)
-            if (registration.status != RegistrationStatus.Waitlist) throw EventosValidationException("La inscripción no está en la lista de espera.")
+            if (registration.status != RegistrationStatus.Waitlist) throw EventosValidationException(tr("La inscripción no está en la lista de espera."))
             EventosRules.registerError(event.kind, event.status)?.let { throw EventosValidationException(it) }
             if (!EventosRules.fits(event.capacity, current.stats.occupied, registration.seats)) {
-                throw EventosValidationException("No hay plazas; aumenta el cupo.")
+                throw EventosValidationException(tr("No hay plazas; aumenta el cupo."))
             }
             EventosRepository.setRegistrationStatus(tenant, registrationId, RegistrationStatus.Registered)
             val next = EventosRules.statusAfterOccupancy(event.status, event.capacity, current.stats.occupied + registration.seats)
@@ -298,9 +300,9 @@ object EventosService {
     /** Marks or unmarks the payment of a registration (the date is recorded; [note] is optional, up to 200 characters). */
     fun setPaid(tenant: Connection, permissions: ModulePermissions, registrationId: UUID, paid: Boolean, note: String = ""): Registration {
         requirePermission(permissions, EventosModule.Register)
-        if (note.length > EventosRules.MaxPaymentNote) throw EventosValidationException("La nota del pago admite hasta ${EventosRules.MaxPaymentNote} caracteres.")
+        if (note.length > EventosRules.MaxPaymentNote) throw EventosValidationException(tr("La nota del pago admite hasta {0} caracteres.", EventosRules.MaxPaymentNote))
         val registration = loadRegistration(tenant, registrationId)
-        if (registration.status == RegistrationStatus.Cancelled) throw EventosValidationException("La inscripción está cancelada.")
+        if (registration.status == RegistrationStatus.Cancelled) throw EventosValidationException(tr("La inscripción está cancelada."))
         EventosRepository.setPaid(tenant, registrationId, paid, if (paid) note else "")
         return loadRegistration(tenant, registrationId)
     }
@@ -336,15 +338,15 @@ object EventosService {
         val id = UUID.randomUUID()
         EventosRepository.transaction(tenant) {
             val event = lockedEvent(tenant, eventId).event
-            if (event.kind != EventKind.Private) throw EventosValidationException("Los abonos son solo para eventos privados.")
+            if (event.kind != EventKind.Private) throw EventosValidationException(tr("Los abonos son solo para eventos privados."))
             EventosRepository.insertPayment(tenant, id, eventId, paidOn, amount, method, note, author)
         }
-        return EventosRepository.getPayment(tenant, id) ?: throw EventosValidationException("No se pudo guardar el abono.")
+        return EventosRepository.getPayment(tenant, id) ?: throw EventosValidationException(tr("No se pudo guardar el abono."))
     }
 
     fun deletePayment(tenant: Connection, permissions: ModulePermissions, eventId: UUID, paymentId: UUID) {
         requirePermission(permissions, EventosModule.Manage)
-        if (EventosRepository.deletePayment(tenant, eventId, paymentId) == 0) throw EventosValidationException("Abono no encontrado.")
+        if (EventosRepository.deletePayment(tenant, eventId, paymentId) == 0) throw EventosValidationException(tr("Abono no encontrado."))
     }
 
     // ---- settings ----

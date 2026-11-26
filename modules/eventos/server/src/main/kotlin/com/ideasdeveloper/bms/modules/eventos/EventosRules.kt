@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
@@ -56,7 +58,7 @@ object EventosRules {
 
     /** The capacity cannot go below the seats already taken. Returns the error or null. */
     fun capacityError(newCapacity: Int?, occupied: Int): String? =
-        if (newCapacity != null && newCapacity < occupied) "El cupo no puede ser menor que las plazas ocupadas ($occupied)." else null
+        if (newCapacity != null && newCapacity < occupied) tr("El cupo no puede ser menor que las plazas ocupadas ({0}).", occupied) else null
 
     /** Whether somebody should be told that a seat was freed: a registered person left and there are people waiting. */
     fun freedSeatNotice(previous: RegistrationStatus, waiting: Int): Boolean = previous == RegistrationStatus.Registered && waiting > 0
@@ -65,10 +67,10 @@ object EventosRules {
 
     /** Why nobody can be registered in this event now, or null. Only public events that are published or full admit registrations. */
     fun registerError(kind: EventKind, status: EventStatus): String? = when {
-        kind == EventKind.Private -> "Los eventos privados no tienen inscripciones."
-        status == EventStatus.Draft -> "El evento es un borrador: publícalo para inscribir."
-        status == EventStatus.Done -> "El evento ya se realizó."
-        status == EventStatus.Cancelled -> "El evento está cancelado."
+        kind == EventKind.Private -> tr("Los eventos privados no tienen inscripciones.")
+        status == EventStatus.Draft -> tr("El evento es un borrador: publícalo para inscribir.")
+        status == EventStatus.Done -> tr("El evento ya se realizó.")
+        status == EventStatus.Cancelled -> tr("El evento está cancelado.")
         else -> null
     }
 
@@ -114,10 +116,10 @@ object EventosRules {
 
     /** Why attendance cannot be marked, or null: only registered people, in a published, full or finished event that already started. */
     fun attendanceError(registration: RegistrationStatus, event: EventStatus, startsAt: Instant, now: Instant, zone: ZoneId = ZoneId.systemDefault()): String? = when {
-        registration != RegistrationStatus.Registered -> "Solo se registra la asistencia de personas inscritas."
-        event == EventStatus.Cancelled -> "El evento está cancelado."
-        event == EventStatus.Draft -> "El evento es un borrador."
-        !startedBy(startsAt, now, zone) -> "El evento todavía no empieza: la asistencia se registra desde el día del evento."
+        registration != RegistrationStatus.Registered -> tr("Solo se registra la asistencia de personas inscritas.")
+        event == EventStatus.Cancelled -> tr("El evento está cancelado.")
+        event == EventStatus.Draft -> tr("El evento es un borrador.")
+        !startedBy(startsAt, now, zone) -> tr("El evento todavía no empieza: la asistencia se registra desde el día del evento.")
         else -> null
     }
 
@@ -136,20 +138,20 @@ object EventosRules {
             EventStatus.Done -> false
         }
         return when {
-            !allowed -> "No se puede pasar el evento de ${statusLabel(kind, from)} a ${statusLabel(kind, to)}."
-            to == EventStatus.Cancelled && reason.isBlank() -> "Escribe el motivo de la cancelación."
-            to == EventStatus.Cancelled && reason.length > MaxCancelReason -> "El motivo admite hasta $MaxCancelReason caracteres."
+            !allowed -> tr("No se puede pasar el evento de {0} a {1}.", tr(statusLabel(kind, from)), tr(statusLabel(kind, to)))
+            to == EventStatus.Cancelled && reason.isBlank() -> tr("Escribe el motivo de la cancelación.")
+            to == EventStatus.Cancelled && reason.length > MaxCancelReason -> tr("El motivo admite hasta {0} caracteres.", MaxCancelReason)
             else -> null
         }
     }
 
     /** The label of a state: a private event shows Published as "Confirmado" and Draft as "Tentativo". */
     fun statusLabel(kind: EventKind, status: EventStatus): String = when (status) {
-        EventStatus.Draft -> if (kind == EventKind.Private) "Tentativo" else "Borrador"
-        EventStatus.Published -> if (kind == EventKind.Private) "Confirmado" else "Publicado"
-        EventStatus.Full -> "Lleno"
-        EventStatus.Done -> "Realizado"
-        EventStatus.Cancelled -> "Cancelado"
+        EventStatus.Draft -> if (kind == EventKind.Private) msg("Tentativo") else msg("Borrador")
+        EventStatus.Published -> if (kind == EventKind.Private) msg("Confirmado") else msg("Publicado")
+        EventStatus.Full -> msg("Lleno")
+        EventStatus.Done -> msg("Realizado")
+        EventStatus.Cancelled -> msg("Cancelado")
     }
 
     /** A private event that is confirmed: what writes "Evento privado" in the customer's history. */
@@ -158,57 +160,57 @@ object EventosRules {
     // ---- validation ----
 
     private fun moneyError(label: String, value: BigDecimal?): String? =
-        if (value != null && !validMoney(value)) "$label debe estar entre 0 y $MaxAmount, con 2 decimales como máximo." else null
+        if (value != null && !validMoney(value)) tr("{0} debe estar entre 0 y {1}, con 2 decimales como máximo.", label, MaxAmount) else null
 
     fun validateEvent(input: EventInput, requireClient: Boolean = false): List<String> = buildList {
-        if (input.title.isBlank()) add("Escribe el título del evento.")
-        if (input.title.trim().length > MaxTitle) add("El título admite hasta $MaxTitle caracteres.")
-        if (input.description.length > MaxText) add("La descripción admite hasta $MaxText caracteres.")
-        if (input.notes.length > MaxText) add("Las notas admiten hasta $MaxText caracteres.")
-        if (input.category.trim().length > MaxCategory) add("La categoría admite hasta $MaxCategory caracteres.")
-        if (input.series.trim().length > MaxSeries) add("La serie admite hasta $MaxSeries caracteres.")
-        if (input.space.trim().length > MaxSpace) add("El espacio admite hasta $MaxSpace caracteres.")
-        if (input.hostName.trim().length > MaxHost) add("El nombre del anfitrión admite hasta $MaxHost caracteres.")
-        if (input.endsAt != null && input.endsAt.isBefore(input.startsAt)) add("La hora de fin no puede ser anterior al inicio.")
-        if (input.capacity != null && input.capacity !in 1..MaxCapacity) add("El cupo debe estar entre 1 y $MaxCapacity.")
-        if (input.guests != null && input.guests !in 1..MaxGuests) add("Los invitados deben estar entre 1 y $MaxGuests.")
-        moneyError("El precio de miembro", input.priceMember)?.let { add(it) }
-        moneyError("El precio general", input.pricePublic)?.let { add(it) }
-        moneyError("El monto acordado", input.agreedAmount)?.let { add(it) }
+        if (input.title.isBlank()) add(tr("Escribe el título del evento."))
+        if (input.title.trim().length > MaxTitle) add(tr("El título admite hasta {0} caracteres.", MaxTitle))
+        if (input.description.length > MaxText) add(tr("La descripción admite hasta {0} caracteres.", MaxText))
+        if (input.notes.length > MaxText) add(tr("Las notas admiten hasta {0} caracteres.", MaxText))
+        if (input.category.trim().length > MaxCategory) add(tr("La categoría admite hasta {0} caracteres.", MaxCategory))
+        if (input.series.trim().length > MaxSeries) add(tr("La serie admite hasta {0} caracteres.", MaxSeries))
+        if (input.space.trim().length > MaxSpace) add(tr("El espacio admite hasta {0} caracteres.", MaxSpace))
+        if (input.hostName.trim().length > MaxHost) add(tr("El nombre del anfitrión admite hasta {0} caracteres.", MaxHost))
+        if (input.endsAt != null && input.endsAt.isBefore(input.startsAt)) add(tr("La hora de fin no puede ser anterior al inicio."))
+        if (input.capacity != null && input.capacity !in 1..MaxCapacity) add(tr("El cupo debe estar entre 1 y {0}.", MaxCapacity))
+        if (input.guests != null && input.guests !in 1..MaxGuests) add(tr("Los invitados deben estar entre 1 y {0}.", MaxGuests))
+        moneyError(tr("El precio de miembro"), input.priceMember)?.let { add(it) }
+        moneyError(tr("El precio general"), input.pricePublic)?.let { add(it) }
+        moneyError(tr("El monto acordado"), input.agreedAmount)?.let { add(it) }
         when (input.kind) {
             EventKind.Public -> {
                 if (input.clientCustomerId != null || input.agreedAmount != null || input.guests != null) {
-                    add("Un evento público no tiene contratante, monto acordado ni invitados.")
+                    add(tr("Un evento público no tiene contratante, monto acordado ni invitados."))
                 }
             }
             EventKind.Private -> {
                 if (input.capacity != null || input.priceMember != null || input.pricePublic != null) {
-                    add("Un evento privado no tiene cupo ni precios por persona: usa el monto acordado.")
+                    add(tr("Un evento privado no tiene cupo ni precios por persona: usa el monto acordado."))
                 }
-                if (requireClient && input.clientCustomerId == null) add("Elige el cliente que contrata el evento.")
+                if (requireClient && input.clientCustomerId == null) add(tr("Elige el cliente que contrata el evento."))
             }
         }
     }
 
     /** [seats] 1..100, [amount] valid, note up to 1000 characters. */
     fun validateRegistration(seats: Int, amount: BigDecimal?, note: String): List<String> = buildList {
-        if (seats !in 1..MaxSeats) add("Las plazas deben estar entre 1 y $MaxSeats.")
-        moneyError("El monto", amount)?.let { add(it) }
-        if (note.length > MaxRegistrationNote) add("La nota admite hasta $MaxRegistrationNote caracteres.")
+        if (seats !in 1..MaxSeats) add(tr("Las plazas deben estar entre 1 y {0}.", MaxSeats))
+        moneyError(tr("El monto"), amount)?.let { add(it) }
+        if (note.length > MaxRegistrationNote) add(tr("La nota admite hasta {0} caracteres.", MaxRegistrationNote))
     }
 
     fun validatePayment(amount: BigDecimal, method: String, note: String): List<String> = buildList {
-        if (amount.signum() <= 0) add("El abono debe ser mayor que 0.")
-        moneyError("El abono", amount)?.let { add(it) }
-        if (method.trim().length > MaxPaymentMethod) add("El método admite hasta $MaxPaymentMethod caracteres.")
-        if (note.length > MaxAbonoNote) add("La nota admite hasta $MaxAbonoNote caracteres.")
+        if (amount.signum() <= 0) add(tr("El abono debe ser mayor que 0."))
+        moneyError(tr("El abono"), amount)?.let { add(it) }
+        if (method.trim().length > MaxPaymentMethod) add(tr("El método admite hasta {0} caracteres.", MaxPaymentMethod))
+        if (note.length > MaxAbonoNote) add(tr("La nota admite hasta {0} caracteres.", MaxAbonoNote))
     }
 
     fun validateSettings(currency: String, spaces: List<String>, categories: List<String>): List<String> = buildList {
-        if (!CurrencyPattern.matches(currency.trim())) add("La moneda debe ser un código de 3 letras mayúsculas, por ejemplo USD.")
-        if (spaces.size > MaxListItems) add("Hay demasiados espacios (máximo $MaxListItems).")
-        if (categories.size > MaxListItems) add("Hay demasiadas categorías (máximo $MaxListItems).")
-        if ((spaces + categories).any { it.length > MaxListItemLength }) add("Cada espacio o categoría admite hasta $MaxListItemLength caracteres.")
+        if (!CurrencyPattern.matches(currency.trim())) add(tr("La moneda debe ser un código de 3 letras mayúsculas, por ejemplo USD."))
+        if (spaces.size > MaxListItems) add(tr("Hay demasiados espacios (máximo {0}).", MaxListItems))
+        if (categories.size > MaxListItems) add(tr("Hay demasiadas categorías (máximo {0}).", MaxListItems))
+        if ((spaces + categories).any { it.length > MaxListItemLength }) add(tr("Cada espacio o categoría admite hasta {0} caracteres.", MaxListItemLength))
     }
 
     fun validCurrency(currency: String): Boolean = CurrencyPattern.matches(currency)
@@ -229,5 +231,5 @@ object EventosRules {
     fun day(instant: Instant, zone: ZoneId = ZoneId.systemDefault()): LocalDate = instant.atZone(zone).toLocalDate()
 
     /** "{n} plaza(s)" with the right number. */
-    fun seatsLabel(seats: Int): String = if (seats == 1) "1 plaza" else "$seats plazas"
+    fun seatsLabel(seats: Int): String = if (seats == 1) tr("1 plaza") else tr("{0} plazas", seats)
 }

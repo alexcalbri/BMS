@@ -36,7 +36,7 @@ class EventosModuleDefinitionTest {
     @Test
     fun identityAndVersion() {
         assertEquals("eventos", definition.id)
-        assertEquals("0.2.1", definition.version)
+        assertEquals("0.3.0", definition.version)
         assertEquals("eventos", EventosModule.id)
         assertTrue(definition.supportsExtensions)
         assertEquals(listOf("eventos.import.write"), definition.extensionPermissions)

@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.eventos
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
@@ -23,14 +25,14 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
+import java.sql.Connection
+import java.sql.SQLException
+import java.time.Duration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
-import java.sql.Connection
-import java.sql.SQLException
-import java.time.Duration
 
 object EventosServerModule : ServerModule {
     private val log = LoggerFactory.getLogger(EventosServerModule::class.java)
@@ -97,8 +99,8 @@ object EventosServerModule : ServerModule {
         id = EventosModule.id,
         displayName = EventosModule.displayName,
         description = "Eventos publicos con cupo, lista de espera, inscripciones, asistencia y precio de miembro, y eventos privados con contratante, monto acordado y abonos.",
-        version = "0.2.1",
-        minCoreVersion = "0.8.0",
+        version = "0.3.0",
+        minCoreVersion = "0.10.0",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -134,7 +136,7 @@ object EventosServerModule : ServerModule {
             get("/suggest/customers") {
                 val permissions = call.requireModuleAccess(access, EventosModule.id) ?: return@get
                 if (!permissions.has(EventosModule.Register) && !permissions.has(EventosModule.Manage)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, EventosErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@get call.respond(HttpStatusCode.Forbidden, EventosErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val typed = call.request.queryParameters["q"].orEmpty().trim().take(100)
                 call.respondEventos(access, UiSuggestions.serializer()) { tenant ->
@@ -161,16 +163,16 @@ data class EventosErrorResponse(val code: String, val message: String)
  */
 suspend fun <T> ApplicationCall.respondEventos(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
     val companyCode = access.companyCode(this)
-        ?: return respond(HttpStatusCode.BadRequest, EventosErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+        ?: return respond(HttpStatusCode.BadRequest, EventosErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
     val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
-        ?: return respond(HttpStatusCode.Forbidden, EventosErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+        ?: return respond(HttpStatusCode.Forbidden, EventosErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
     try {
         val result = withContext(Dispatchers.IO) { connection.use { tenant -> block(tenant) } }
-        respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
+        respondText(UiJson.encodeToString(serializer, localizedPayload(result)), ContentType.Application.Json)
     } catch (failure: EventosValidationException) {
         respond(HttpStatusCode.BadRequest, EventosErrorResponse("invalid_request", failure.message.orEmpty()))
     } catch (failure: SQLException) {
-        respond(HttpStatusCode.InternalServerError, EventosErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+        respond(HttpStatusCode.InternalServerError, EventosErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
     }
 }
 

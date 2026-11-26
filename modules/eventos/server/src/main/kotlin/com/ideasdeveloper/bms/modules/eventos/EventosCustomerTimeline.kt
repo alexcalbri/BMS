@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.CustomerTimelineEntry
 import com.ideasdeveloper.bms.ui.UiOpenModule
@@ -104,25 +105,25 @@ object EventosCustomerTimeline {
             entry(
                 at = minOf(row.createdAt, row.startsAt),
                 kind = "evento_inscripcion",
-                title = "Inscripción: ${row.title}",
+                title = tr("Inscripción: {0}", row.title),
                 detail = listOf(
                     EventosRules.stamp(row.startsAt, zone),
                     EventosRules.seatsLabel(row.seats),
                     money(row.amount, row.currency),
-                    if (row.paid) "Pagado" else "Pago pendiente",
+                    if (row.paid) tr("Pagado") else tr("Pago pendiente"),
                 ).joinToString(" · "),
                 eventId = row.eventId,
             )
         )
         row.paidAt?.let {
-            add(entry(it, "evento_pago", "Pago de inscripción: ${row.title}", money(row.amount, row.currency), row.eventId))
+            add(entry(it, "evento_pago", tr("Pago de inscripción: {0}", row.title), money(row.amount, row.currency), row.eventId))
         }
         row.attendedAt?.let {
-            add(entry(it, "evento_asistencia", "Asistió: ${row.title}", EventosRules.stamp(row.startsAt, zone), row.eventId))
+            add(entry(it, "evento_asistencia", tr("Asistió: {0}", row.title), EventosRules.stamp(row.startsAt, zone), row.eventId))
         }
         if (row.cancelled) {
             row.cancelledAt?.let {
-                add(entry(it, "evento_inscripcion_cancelada", "Inscripción cancelada: ${row.title}", EventosRules.stamp(row.startsAt, zone), row.eventId))
+                add(entry(it, "evento_inscripcion_cancelada", tr("Inscripción cancelada: {0}", row.title), EventosRules.stamp(row.startsAt, zone), row.eventId))
             }
         }
     }
@@ -132,12 +133,12 @@ object EventosCustomerTimeline {
             entry(
                 at = minOf(row.createdAt, row.startsAt),
                 kind = "evento_privado",
-                title = "Evento privado: ${row.title}",
+                title = tr("Evento privado: {0}", row.title),
                 detail = listOfNotNull(
                     EventosRules.stamp(row.startsAt, zone),
                     row.space.trim().takeIf { it.isNotEmpty() },
-                    row.agreedAmount?.let { "Acordado: ${money(it, row.currency)}" },
-                    "Pagado: ${money(row.paidTotal, row.currency)}",
+                    row.agreedAmount?.let { tr("Acordado: {0}", money(it, row.currency)) },
+                    tr("Pagado: {0}", money(row.paidTotal, row.currency)),
                 ).joinToString(" · "),
                 eventId = row.eventId,
             )
@@ -145,13 +146,13 @@ object EventosCustomerTimeline {
         // The reason of the cancellation can be internal, so it is not shown.
         if (row.cancelled) {
             row.cancelledAt?.let {
-                add(entry(it, "evento_cancelado", "Evento cancelado: ${row.title}", EventosRules.stamp(row.startsAt, zone), row.eventId))
+                add(entry(it, "evento_cancelado", tr("Evento cancelado: {0}", row.title), EventosRules.stamp(row.startsAt, zone), row.eventId))
             }
         }
     }
 
     private fun paymentEntry(row: TimelinePayment, zone: ZoneId) =
-        entry(row.paidOn.atStartOfDay(zone).toInstant(), "evento_pago", "Pago del evento privado: ${row.title}", money(row.amount, row.currency), row.eventId)
+        entry(row.paidOn.atStartOfDay(zone).toInstant(), "evento_pago", tr("Pago del evento privado: {0}", row.title), money(row.amount, row.currency), row.eventId)
 
     private fun instant(rows: ResultSet, column: String): Instant? = rows.getObject(column, OffsetDateTime::class.java)?.toInstant()
 
