@@ -31,7 +31,7 @@ object ComprasMondayServerExtension : ServerExtension, ComprasImportSource by Co
         module = "compras",
         displayName = "Importacion desde monday",
         description = "Importa tableros de monday como solicitudes de compra: eliges los grupos de cada tablero, mapeas sus columnas y traen cotizaciones y archivos.",
-        version = "1.0.1",
+        version = "1.0.2",
         minModuleVersion = "0.2.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,

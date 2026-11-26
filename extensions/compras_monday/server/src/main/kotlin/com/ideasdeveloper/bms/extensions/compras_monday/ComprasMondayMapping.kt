@@ -66,7 +66,11 @@ object ComprasMondayMapping {
     // ---- Estados y prioridades ----
 
     private val statuses: Map<String, RequestStatus> = buildMap {
-        listOf("pending", "pendiente", "pendiente de aprobacion", "pending approval", "por aprobar").forEach { put(it, RequestStatus.PendingApproval) }
+        listOf(
+            "pending", "pendiente", "pendiente de aprobacion", "pending approval", "por aprobar",
+            // Esperando a quien revisa o aprueba: es la misma espera.
+            "pending review", "in review", "under review", "pendiente de revision", "en revision", "por revisar",
+        ).forEach { put(it, RequestStatus.PendingApproval) }
         listOf("approved", "aprobado", "aprobada").forEach { put(it, RequestStatus.Approved) }
         listOf("aprobado en progreso", "approved in progress", "in progress", "en progreso", "working on it", "comprado", "comprada")
             .forEach { put(it, RequestStatus.InProgress) }

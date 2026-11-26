@@ -9,6 +9,12 @@ Una importacion a la vez por empresa; todo paso es idempotente (cada fila se rec
 `ext_compras_monday__settings` (token sellado), `ext_compras_monday__jobs` y `ext_compras_monday__rows`. Migracion:
 `migrations/V001__staging.sql`. Cada pasada purga las importaciones terminadas, fallidas o canceladas de mas de 30 dias.
 
+## Version 1.0.2 (estados de revision)
+
+- Los estados de monday "Pending Review", "In review", "Under review", "Pendiente de revision", "En revision" y "Por revisar"
+  pasan a **pendiente de aprobacion**. Antes daban "Estado desconocido" y la solicitud quedaba en borrador. Volver a importar el
+  tablero actualiza las solicitudes ya importadas.
+
 ## Version 1.0.1 (rendimiento)
 
 - Tope de respuesta de monday: 5 MB.
