@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiFieldValues
@@ -12,8 +14,8 @@ import java.util.UUID
  * que el usuario no ve se informa como inexistente. Todo es síncrono: quien llama lo ejecuta dentro de withContext(Dispatchers.IO).
  */
 object MantenimientoService {
-    private const val NotFound = "Orden no encontrada."
-    private const val NotManager = "Solo quien gestiona mantenimiento puede hacer esto."
+    private val NotFound = msg("Orden no encontrada.")
+    private val NotManager = msg("Solo quien gestiona mantenimiento puede hacer esto.")
 
     fun scope(permissions: ModulePermissions): MantenimientoScope = MantenimientoScope.from(permissions)
 
@@ -21,10 +23,10 @@ object MantenimientoService {
         MantenimientoActor(scope.userId, access.userIdentity(tenant, permissions)?.name ?: "Usuario")
 
     fun visibleOrder(tenant: Connection, scope: MantenimientoScope, id: UUID): Order =
-        MantenimientoRepository.getOrderVisible(tenant, scope, id) ?: throw MantenimientoValidationException(NotFound)
+        MantenimientoRepository.getOrderVisible(tenant, scope, id) ?: throw MantenimientoValidationException(tr(NotFound))
 
     private fun requireManage(scope: MantenimientoScope) {
-        if (!scope.canManage) throw MantenimientoValidationException(NotManager)
+        if (!scope.canManage) throw MantenimientoValidationException(tr(NotManager))
     }
 
     private fun missing(what: String): Nothing = throw MantenimientoValidationException(what)
@@ -49,7 +51,7 @@ object MantenimientoService {
 
     /** Crea una avería o un proyecto. Responsable, fecha límite y "cotizado por" solo cuentan si quien crea gestiona. */
     fun createOrder(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, kind: OrderKind, values: Map<String, String>): Order {
-        if (kind == OrderKind.Preventive) missing("Las órdenes preventivas las genera un plan.")
+        if (kind == OrderKind.Preventive) missing(tr("Las órdenes preventivas las genera un plan."))
         val scope = scope(permissions)
         val actor = actor(tenant, access, permissions, scope)
         val input = MantenimientoActions.orderInput(kind, values, lookups(tenant, null), scope.canManage)
@@ -59,7 +61,7 @@ object MantenimientoService {
             MantenimientoRepository.attach(tenant, result.id, fileIds(values), permissions.userId)
             result
         }
-        val order = MantenimientoRepository.getOrder(tenant, created.id) ?: missing(NotFound)
+        val order = MantenimientoRepository.getOrder(tenant, created.id) ?: missing(tr(NotFound))
         MantenimientoNotify.created(tenant, access.notificationsFor(MantenimientoModule.id), order, scope.userId)
         return order
     }
@@ -75,7 +77,7 @@ object MantenimientoService {
             scope.canEdit(before) -> {
                 val input = MantenimientoActions.orderInput(before.kind, values, lookups(tenant, before.assetId), canManage = true, existing = before)
                 MantenimientoRepository.transaction(tenant) {
-                    val saved = MantenimientoRepository.updateOrder(tenant, id, input, actor) ?: missing(NotFound)
+                    val saved = MantenimientoRepository.updateOrder(tenant, id, input, actor) ?: missing(tr(NotFound))
                     applyFiles(tenant, scope, permissions, saved, values)
                     saved
                 }
@@ -83,9 +85,9 @@ object MantenimientoService {
             MantenimientoActions.canWorkNow(scope, before) -> {
                 val work = MantenimientoActions.workValues(values, before)
                 MantenimientoRepository.updateWork(tenant, id, work.costAmount, work.costCurrency, work.resolution)
-                MantenimientoRepository.getOrder(tenant, id) ?: missing(NotFound)
+                MantenimientoRepository.getOrder(tenant, id) ?: missing(tr(NotFound))
             }
-            else -> missing("No tienes permiso para editar esta orden.")
+            else -> missing(tr("No tienes permiso para editar esta orden."))
         }
         if (updated.assigneeId != before.assigneeId) MantenimientoNotify.assigned(tenant, access.notificationsFor(MantenimientoModule.id), updated, scope.userId)
         return updated
@@ -96,7 +98,7 @@ object MantenimientoService {
         val current = MantenimientoRepository.listAttachments(tenant, scope, order.id)
         val changes = MantenimientoActions.fileChanges(values, current)
         if (changes.added.isEmpty() && changes.removed.isEmpty()) return
-        if (!MantenimientoActions.canAttach(scope, order)) missing("No puedes cambiar los archivos de esta orden.")
+        if (!MantenimientoActions.canAttach(scope, order)) missing(tr("No puedes cambiar los archivos de esta orden."))
         if (changes.added.isNotEmpty()) {
             MantenimientoRepository.attach(tenant, order.id, changes.added.mapNotNull { MantenimientoActions.uuid(it.id) }, permissions.userId)
         }
@@ -120,7 +122,7 @@ object MantenimientoService {
         val actor = actor(tenant, access, permissions, scope)
         val after = if (to == OrderStatus.Done) {
             val resolution = values["resolution"]
-            val cost = if ("cost" in values) MantenimientoActions.amount(values["cost"], "El costo") else null
+            val cost = if ("cost" in values) MantenimientoActions.amount(values["cost"], tr("El costo")) else null
             MantenimientoRepository.closeOrder(tenant, id, resolution, cost, actor, scope)
         } else {
             MantenimientoRepository.changeStatus(tenant, id, to, actor, scope, reason = values["reason"].orEmpty())
@@ -133,37 +135,37 @@ object MantenimientoService {
     fun take(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, id: UUID) {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
-        if (!scope.canTake(order)) missing("No puedes tomar esta orden.")
+        if (!scope.canTake(order)) missing(tr("No puedes tomar esta orden."))
         val actor = actor(tenant, access, permissions, scope)
-        if (!MantenimientoRepository.takeOrder(tenant, id, actor)) missing("Otra persona ya tomó la orden.")
+        if (!MantenimientoRepository.takeOrder(tenant, id, actor)) missing(tr("Otra persona ya tomó la orden."))
     }
 
     fun addNote(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, id: UUID, body: String) {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
-        if (!MantenimientoActions.canNote(scope, order)) missing("No puedes anotar en esta orden.")
+        if (!MantenimientoActions.canNote(scope, order)) missing(tr("No puedes anotar en esta orden."))
         MantenimientoRepository.addNote(tenant, id, body, actor(tenant, access, permissions, scope))
     }
 
     fun addCheck(tenant: Connection, permissions: ModulePermissions, id: UUID, text: String) {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
-        if (!MantenimientoActions.canWorkChecklist(scope, order)) missing("No puedes cambiar la lista de esta orden.")
+        if (!MantenimientoActions.canWorkChecklist(scope, order)) missing(tr("No puedes cambiar la lista de esta orden."))
         MantenimientoRepository.addCheckItem(tenant, id, text)
     }
 
     fun toggleCheck(tenant: Connection, permissions: ModulePermissions, id: UUID, item: UUID, done: Boolean) {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
-        if (!MantenimientoActions.canWorkChecklist(scope, order)) missing("No puedes cambiar la lista de esta orden.")
-        if (!MantenimientoRepository.setCheckDone(tenant, id, item, done, scope.userId)) missing("Ese elemento ya no existe.")
+        if (!MantenimientoActions.canWorkChecklist(scope, order)) missing(tr("No puedes cambiar la lista de esta orden."))
+        if (!MantenimientoRepository.setCheckDone(tenant, id, item, done, scope.userId)) missing(tr("Ese elemento ya no existe."))
     }
 
     fun removeCheck(tenant: Connection, permissions: ModulePermissions, id: UUID, item: UUID) {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
-        if (!scope.canEdit(order)) missing(NotManager)
-        if (!MantenimientoRepository.removeCheckItem(tenant, id, item)) missing("Ese elemento ya no existe.")
+        if (!scope.canEdit(order)) missing(tr(NotManager))
+        if (!MantenimientoRepository.removeCheckItem(tenant, id, item)) missing(tr("Ese elemento ya no existe."))
     }
 
     // ---- Compras ----
@@ -178,10 +180,10 @@ object MantenimientoService {
     fun requestPurchase(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, id: UUID): String {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
-        if (!scope.canWork(order) || !order.status.isActive) missing("No puedes pedir la compra de esta orden.")
-        val userId = permissions.userId ?: missing("No se pudo identificar a tu usuario.")
+        if (!scope.canWork(order) || !order.status.isActive) missing(tr("No puedes pedir la compra de esta orden."))
+        val userId = permissions.userId ?: missing(tr("No se pudo identificar a tu usuario."))
         return when (val outcome = MantenimientoPurchases.request(access, tenant, permissions.companyCode, userId, permissions.serverOwner, id)) {
-            is MantenimientoPurchases.PurchaseOutcome.Created -> "Solicitud de compra ${outcome.folio} creada como borrador en Compras."
+            is MantenimientoPurchases.PurchaseOutcome.Created -> tr("Solicitud de compra {0} creada como borrador en Compras.", outcome.folio)
             is MantenimientoPurchases.PurchaseOutcome.Busy -> missing(outcome.message)
             is MantenimientoPurchases.PurchaseOutcome.Failed -> missing(outcome.reason)
         }
@@ -194,14 +196,14 @@ object MantenimientoService {
         requireManage(scope)
         val properties = MantenimientoRepository.listProperties(tenant)
         if (id == null) return MantenimientoRepository.createAsset(tenant, MantenimientoActions.assetInput(values, properties))
-        val existing = MantenimientoRepository.getAsset(tenant, id) ?: missing("Activo no encontrado.")
-        if (!MantenimientoRepository.updateAsset(tenant, id, MantenimientoActions.assetInput(values, properties, existing))) missing("Activo no encontrado.")
+        val existing = MantenimientoRepository.getAsset(tenant, id) ?: missing(tr("Activo no encontrado."))
+        if (!MantenimientoRepository.updateAsset(tenant, id, MantenimientoActions.assetInput(values, properties, existing))) missing(tr("Activo no encontrado."))
         return id
     }
 
     fun archiveAsset(tenant: Connection, permissions: ModulePermissions, id: UUID, archived: Boolean) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.archiveAsset(tenant, id, archived)) missing("Activo no encontrado.")
+        if (!MantenimientoRepository.archiveAsset(tenant, id, archived)) missing(tr("Activo no encontrado."))
     }
 
     // ---- planes ----
@@ -213,26 +215,26 @@ object MantenimientoService {
             val input = MantenimientoActions.planInput(values, lookups(tenant, null), emptyList())
             return MantenimientoRepository.createPlan(tenant, input, scope.userId)
         }
-        val existing = MantenimientoRepository.getPlan(tenant, id) ?: missing("Plan no encontrado.")
+        val existing = MantenimientoRepository.getPlan(tenant, id) ?: missing(tr("Plan no encontrado."))
         val checklist = MantenimientoRepository.planChecklist(tenant, id).map { it.text }
         val input = MantenimientoActions.planInput(values, lookups(tenant, existing.assetId), checklist, existing)
-        if (!MantenimientoRepository.updatePlan(tenant, id, input)) missing("Plan no encontrado.")
+        if (!MantenimientoRepository.updatePlan(tenant, id, input)) missing(tr("Plan no encontrado."))
         return id
     }
 
     fun setPlanActive(tenant: Connection, permissions: ModulePermissions, id: UUID, active: Boolean) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.setPlanActive(tenant, id, active)) missing("Plan no encontrado.")
+        if (!MantenimientoRepository.setPlanActive(tenant, id, active)) missing(tr("Plan no encontrado."))
     }
 
     /** Cambia la lista de comprobación del plan: [change] recibe los textos actuales y el índice del elemento tocado (-1 si no hay). */
     fun changePlanChecklist(tenant: Connection, permissions: ModulePermissions, id: UUID, itemId: UUID?, change: (List<String>, Int) -> List<String>) {
         requireManage(scope(permissions))
-        val plan = MantenimientoRepository.getPlan(tenant, id) ?: missing("Plan no encontrado.")
+        val plan = MantenimientoRepository.getPlan(tenant, id) ?: missing(tr("Plan no encontrado."))
         val items = MantenimientoRepository.planChecklist(tenant, id)
-        val index = itemId?.let { wanted -> items.indexOfFirst { it.id == wanted }.also { if (it < 0) missing("Ese elemento ya no existe.") } } ?: -1
+        val index = itemId?.let { wanted -> items.indexOfFirst { it.id == wanted }.also { if (it < 0) missing(tr("Ese elemento ya no existe.")) } } ?: -1
         val changed = change(items.map { it.text }, index)
-        if (!MantenimientoRepository.updatePlan(tenant, id, MantenimientoActions.planInputOf(plan, changed))) missing("Plan no encontrado.")
+        if (!MantenimientoRepository.updatePlan(tenant, id, MantenimientoActions.planInputOf(plan, changed))) missing(tr("Plan no encontrado."))
     }
 
     // ---- ajustes ----
@@ -244,12 +246,12 @@ object MantenimientoService {
 
     fun renameProperty(tenant: Connection, permissions: ModulePermissions, id: UUID, name: String) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.renameProperty(tenant, id, name)) missing("Propiedad no encontrada.")
+        if (!MantenimientoRepository.renameProperty(tenant, id, name)) missing(tr("Propiedad no encontrada."))
     }
 
     fun archiveProperty(tenant: Connection, permissions: ModulePermissions, id: UUID, archived: Boolean) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.archiveProperty(tenant, id, archived)) missing("Propiedad no encontrada.")
+        if (!MantenimientoRepository.archiveProperty(tenant, id, archived)) missing(tr("Propiedad no encontrada."))
     }
 
     fun moveProperty(tenant: Connection, permissions: ModulePermissions, id: UUID, up: Boolean) {
@@ -259,7 +261,7 @@ object MantenimientoService {
 
     fun saveDueSoon(tenant: Connection, permissions: ModulePermissions, text: String?) {
         requireManage(scope(permissions))
-        val days = MantenimientoActions.int(text, "Los días de aviso") ?: missing("Indica los días de aviso (0 a 30).")
+        val days = MantenimientoActions.int(text, tr("Los días de aviso")) ?: missing(tr("Indica los días de aviso (0 a 30)."))
         MantenimientoRepository.saveDueSoonDays(tenant, days)
     }
 
@@ -269,13 +271,13 @@ object MantenimientoService {
      */
     fun tareasChoice(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions): TareasChoice {
         val scope = scope(permissions)
-        val userId = scope.userId ?: return TareasChoice(emptyList(), false, "El dueño del servidor no es usuario de la empresa: configura la integración con un usuario de la empresa.")
-        if (!scope.canManage) return TareasChoice(emptyList(), false, NotManager)
+        val userId = scope.userId ?: return TareasChoice(emptyList(), false, tr("El dueño del servidor no es usuario de la empresa: configura la integración con un usuario de la empresa."))
+        if (!scope.canManage) return TareasChoice(emptyList(), false, tr(NotManager))
         if (!MantenimientoBridge.available(access, tenant, permissions.companyCode, userId, false, MantenimientoTareasSync.ListBoardsTool)) {
-            return TareasChoice(emptyList(), false, "Tareas no está activo o tu usuario no tiene permiso para usarlo.")
+            return TareasChoice(emptyList(), false, tr("Tareas no está activo o tu usuario no tiene permiso para usarlo."))
         }
         val boards = MantenimientoTareasSync.boards(access, tenant, permissions.companyCode, userId, false)
-            ?: return TareasChoice(emptyList(), false, "No se pudieron leer los tableros de Tareas.")
+            ?: return TareasChoice(emptyList(), false, tr("No se pudieron leer los tableros de Tareas."))
         return TareasChoice(boards, true)
     }
 
@@ -288,10 +290,10 @@ object MantenimientoService {
             MantenimientoRepository.saveTareasBoard(tenant, null, null)
             return
         }
-        val userId = scope.userId ?: missing("Solo un usuario de la empresa puede configurar la integración.")
+        val userId = scope.userId ?: missing(tr("Solo un usuario de la empresa puede configurar la integración."))
         val choice = tareasChoice(tenant, access, permissions)
-        if (!choice.editable) missing(choice.reason.ifBlank { "Tareas no está disponible para tu usuario." })
-        val board = choice.labels.firstOrNull { it.second.equals(clean, ignoreCase = true) } ?: missing("Tablero no válido: $clean. Elige uno de la lista.")
+        if (!choice.editable) missing(choice.reason.ifBlank { tr("Tareas no está disponible para tu usuario.") })
+        val board = choice.labels.firstOrNull { it.second.equals(clean, ignoreCase = true) } ?: missing(tr("Tablero no válido: {0}. Elige uno de la lista.", clean))
         MantenimientoRepository.saveTareasBoard(tenant, board.first, userId)
     }
 

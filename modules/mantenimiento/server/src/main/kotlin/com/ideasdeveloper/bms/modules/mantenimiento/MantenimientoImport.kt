@@ -1,13 +1,13 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiNode
-import org.slf4j.LoggerFactory
 import java.io.InputStream
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -21,6 +21,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /**
  * Un lugar desde donde importar datos (por ejemplo Monday). Las extensiones del módulo lo implementan: Mantenimiento lista las activas
@@ -268,14 +269,14 @@ object MantenimientoImportApply {
         rows.forEach { row ->
             val key = row.key.trim()
             when {
-                key.isEmpty() -> problems += "Un ítem no tiene identificador y se omitirá."
-                row.title.isBlank() -> problems += "El ítem $key no tiene título y se omitirá."
-                !seen.add(key) -> problems += "El ítem $key aparece más de una vez."
+                key.isEmpty() -> problems += tr("Un ítem no tiene identificador y se omitirá.")
+                row.title.isBlank() -> problems += tr("El ítem {0} no tiene título y se omitirá.", key)
+                !seen.add(key) -> problems += tr("El ítem {0} aparece más de una vez.", key)
                 else -> valid += row
             }
         }
         valid.filter { it.frequency == PlanFrequency.EveryNDays && (it.intervalDays == null || it.intervalDays !in 1..PlanInput.MaxIntervalDays) }
-            .forEach { problems += "El plan ${it.key.trim()} no tiene un número de días válido: se usarán 30." }
+            .forEach { problems += tr("El plan {0} no tiene un número de días válido: se usarán 30.", it.key.trim()) }
         val people = PeopleTally()
         valid.forEach { people.add(it.assigneeEmail, it.assigneeName, users) }
         return ImportSummary(
@@ -300,14 +301,14 @@ object MantenimientoImportApply {
         rows.forEach { row ->
             val key = row.key.trim()
             when {
-                key.isEmpty() -> problems += "Un ítem no tiene identificador y se omitirá."
-                row.title.isBlank() -> problems += "El ítem $key no tiene título y se omitirá."
-                !seen.add(key) -> problems += "El ítem $key aparece más de una vez."
+                key.isEmpty() -> problems += tr("Un ítem no tiene identificador y se omitirá.")
+                row.title.isBlank() -> problems += tr("El ítem {0} no tiene título y se omitirá.", key)
+                !seen.add(key) -> problems += tr("El ítem {0} aparece más de una vez.", key)
                 else -> valid += row
             }
         }
         valid.filter { normalizeStatus(it.kind, it.status) != it.status }
-            .forEach { problems += "El ítem ${it.key.trim()} tiene un estado de proyecto pero no es un proyecto: se importará como ${normalizeStatus(it.kind, it.status).label}." }
+            .forEach { problems += tr("El ítem {0} tiene un estado de proyecto pero no es un proyecto: se importará como {1}.", it.key.trim(), tr(normalizeStatus(it.kind, it.status).label)) }
         val people = PeopleTally()
         valid.forEach { people.add(it.assigneeEmail, it.assigneeName, users) }
         return ImportSummary(
@@ -383,9 +384,9 @@ object MantenimientoImportApply {
      */
     fun applyPlan(tenant: Connection, row: ImportedPlan, users: List<MantenimientoUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
         val key = row.key.trim()
-        if (key.isEmpty()) return ImportOutcome.Skipped("El ítem no tiene identificador.")
-        if (key.length > MaxKey) return ImportOutcome.Skipped("El identificador del ítem $key es demasiado largo.")
-        if (row.title.isBlank()) return ImportOutcome.Skipped("El ítem $key no tiene título.")
+        if (key.isEmpty()) return ImportOutcome.Skipped(tr("El ítem no tiene identificador."))
+        if (key.length > MaxKey) return ImportOutcome.Skipped(tr("El identificador del ítem {0} es demasiado largo.", key))
+        if (row.title.isBlank()) return ImportOutcome.Skipped(tr("El ítem {0} no tiene título.", key))
         return MantenimientoRepository.transaction(tenant) {
             val assignee = assigneeOf(row.assigneeEmail, row.assigneeName, users)
             val property = propertyId(tenant, row.propertyName)
@@ -414,7 +415,7 @@ object MantenimientoImportApply {
                     planId = tenant.rows("SELECT id FROM mantenimiento_plans WHERE import_key = ?", listOf(key)) { it.getObject("id", UUID::class.java) }.firstOrNull()
                 }
             }
-            val id = planId ?: throw MantenimientoValidationException("No se pudo guardar el ítem $key.")
+            val id = planId ?: throw MantenimientoValidationException(tr("No se pudo guardar el ítem {0}.", key))
             if (!created) {
                 tenant.exec(
                     """
@@ -461,9 +462,9 @@ object MantenimientoImportApply {
      */
     fun applyOrder(tenant: Connection, row: ImportedOrder, users: List<MantenimientoUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
         val key = row.key.trim()
-        if (key.isEmpty()) return ImportOutcome.Skipped("El ítem no tiene identificador.")
-        if (key.length > MaxKey) return ImportOutcome.Skipped("El identificador del ítem $key es demasiado largo.")
-        if (row.title.isBlank()) return ImportOutcome.Skipped("El ítem $key no tiene título.")
+        if (key.isEmpty()) return ImportOutcome.Skipped(tr("El ítem no tiene identificador."))
+        if (key.length > MaxKey) return ImportOutcome.Skipped(tr("El identificador del ítem {0} es demasiado largo.", key))
+        if (row.title.isBlank()) return ImportOutcome.Skipped(tr("El ítem {0} no tiene título.", key))
         return MantenimientoRepository.transaction(tenant) {
             val assignee = assigneeOf(row.assigneeEmail, row.assigneeName, users)
             val property = propertyId(tenant, row.propertyName)
@@ -506,7 +507,7 @@ object MantenimientoImportApply {
                     orderId = tenant.rows("SELECT id FROM mantenimiento_orders WHERE import_key = ?", listOf(key)) { it.getObject("id", UUID::class.java) }.firstOrNull()
                 }
             }
-            val id = orderId ?: throw MantenimientoValidationException("No se pudo guardar el ítem $key.")
+            val id = orderId ?: throw MantenimientoValidationException(tr("No se pudo guardar el ítem {0}.", key))
             if (!created) {
                 tenant.exec(
                     """
@@ -602,19 +603,19 @@ object MantenimientoImportApply {
      */
     fun attachFile(tenant: Connection, files: ModuleFiles, orderId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
         val key = importKey.trim().take(MaxKey)
-        if (key.isEmpty()) throw MantenimientoValidationException("La clave del archivo no es válida.")
+        if (key.isEmpty()) throw MantenimientoValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM mantenimiento_attachments WHERE order_id = ? AND import_key = ?", listOf(orderId, key)) { it.getInt("found") }.isNotEmpty()
         if (already) return false
         val total = tenant.rows("SELECT count(*) AS total FROM mantenimiento_attachments WHERE order_id = ? AND NOT delete_pending", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
         if (total >= MantenimientoRepository.MaxFilesPerOrder) {
-            throw MantenimientoValidationException("La orden ya tiene el máximo de ${MantenimientoRepository.MaxFilesPerOrder} archivos.")
+            throw MantenimientoValidationException(tr("La orden ya tiene el máximo de {0} archivos.", MantenimientoRepository.MaxFilesPerOrder))
         }
         val fileName = MantenimientoRepository.cleanFileName(name).ifEmpty { "archivo" }
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         val stored = try {
             files.put(fileName, type, content, MantenimientoRepository.MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw MantenimientoValidationException("$fileName supera el máximo de ${MantenimientoRepository.MaxFileBytes / (1024 * 1024)} MB.")
+            throw MantenimientoValidationException(tr("{0} supera el máximo de {1} MB.", fileName, MantenimientoRepository.MaxFileBytes / (1024 * 1024)))
         }
         try {
             val inserted = tenant.exec(

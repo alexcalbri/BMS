@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
@@ -23,15 +25,15 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
+import java.sql.Connection
+import java.sql.SQLException
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
-import java.sql.Connection
-import java.sql.SQLException
-import java.util.UUID
 
 @Serializable
 data class MantenimientoErrorResponse(val code: String, val message: String)
@@ -42,21 +44,21 @@ data class MantenimientoErrorResponse(val code: String, val message: String)
  */
 suspend fun <T> ApplicationCall.respondMantenimiento(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
     val companyCode = access.companyCode(this)
-        ?: return respond(HttpStatusCode.BadRequest, MantenimientoErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+        ?: return respond(HttpStatusCode.BadRequest, MantenimientoErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
     try {
         // La conexión se abre y se cierra dentro del mismo withContext(IO).
         val result = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode)?.use { tenant -> block(tenant) } }
-            ?: return respond(HttpStatusCode.Forbidden, MantenimientoErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
-        respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
+            ?: return respond(HttpStatusCode.Forbidden, MantenimientoErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
+        respondText(UiJson.encodeToString(serializer, localizedPayload(result)), ContentType.Application.Json)
     } catch (failure: MantenimientoValidationException) {
         respond(HttpStatusCode.BadRequest, MantenimientoErrorResponse("invalid_request", failure.message.orEmpty()))
     } catch (failure: SQLException) {
-        respond(HttpStatusCode.InternalServerError, MantenimientoErrorResponse("DATABASE_ERROR", "No se pudo completar la operación."))
+        respond(HttpStatusCode.InternalServerError, MantenimientoErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operación.")))
     } catch (failure: CancellationException) {
         throw failure
     } catch (failure: Exception) {
         LoggerFactory.getLogger("MantenimientoRoutes").warn("Falló una operación de mantenimiento ({}).", failure.javaClass.simpleName)
-        respond(HttpStatusCode.InternalServerError, MantenimientoErrorResponse("INTERNAL_ERROR", "No se pudo completar la operación."))
+        respond(HttpStatusCode.InternalServerError, MantenimientoErrorResponse("INTERNAL_ERROR", tr("No se pudo completar la operación.")))
     }
 }
 
@@ -116,7 +118,7 @@ object MantenimientoRoutes {
     }
 
     private suspend fun ApplicationCall.forbidden() =
-        respond(HttpStatusCode.Forbidden, MantenimientoErrorResponse("missing_permission", "No tienes permiso para esta acción."))
+        respond(HttpStatusCode.Forbidden, MantenimientoErrorResponse("missing_permission", tr("No tienes permiso para esta acción.")))
 
     // ---- cargar pantallas ----
 
@@ -172,7 +174,7 @@ object MantenimientoRoutes {
             }
 
             "orders" -> {
-                if (!scope.seesAll) throw missing("Solo quienes ejecutan o gestionan mantenimiento ven todas las órdenes. Revisa Mis órdenes.")
+                if (!scope.seesAll) throw missing(tr("Solo quienes ejecutan o gestionan mantenimiento ven todas las órdenes. Revisa Mis órdenes."))
                 val board = MantenimientoScreens.viewOf(params) == MantenimientoScreens.ViewBoard
                 val filter = MantenimientoActions.orderFilter(params, context.users, context.properties, board, MantenimientoScreens.ListLimit + 1)
                 val now = java.time.Instant.now()
@@ -189,7 +191,7 @@ object MantenimientoRoutes {
             }
 
             "order" -> {
-                val order = MantenimientoService.visibleOrder(tenant, scope, uuid(params, "id") ?: throw missing("Orden no encontrada."))
+                val order = MantenimientoService.visibleOrder(tenant, scope, uuid(params, "id") ?: throw missing(tr("Orden no encontrada.")))
                 val needsPurchase = order.purchaseRequestId != null || (scope.canWork(order) && order.status.isActive)
                 MantenimientoScreens.order(
                     context,
@@ -219,8 +221,8 @@ object MantenimientoRoutes {
 
             "asset" -> {
                 val id = uuid(params, "id")
-                val asset = id?.let { MantenimientoRepository.getAsset(tenant, it) ?: throw missing("Activo no encontrado.") }
-                if (asset == null && !scope.canManage) throw missing("No tienes permiso para crear activos.")
+                val asset = id?.let { MantenimientoRepository.getAsset(tenant, it) ?: throw missing(tr("Activo no encontrado.")) }
+                if (asset == null && !scope.canManage) throw missing(tr("No tienes permiso para crear activos."))
                 val history = asset?.let {
                     MantenimientoRepository.listOrders(tenant, scope, OrderFilter(assetId = it.id, sort = OrderSort.Newest, limit = MantenimientoScreens.HistoryLimit + 1))
                 }.orEmpty()
@@ -232,8 +234,8 @@ object MantenimientoRoutes {
 
             "plan" -> {
                 val id = uuid(params, "id")
-                val plan = id?.let { MantenimientoRepository.getPlan(tenant, it) ?: throw missing("Plan no encontrado.") }
-                if (plan == null && !scope.canManage) throw missing("No tienes permiso para crear planes.")
+                val plan = id?.let { MantenimientoRepository.getPlan(tenant, it) ?: throw missing(tr("Plan no encontrado.")) }
+                if (plan == null && !scope.canManage) throw missing(tr("No tienes permiso para crear planes."))
                 val checklist = plan?.let { MantenimientoRepository.planChecklist(tenant, it.id) }.orEmpty()
                 val generated = plan?.let {
                     MantenimientoRepository.listOrders(tenant, scope, OrderFilter(planId = it.id, sort = OrderSort.Newest, limit = MantenimientoScreens.HistoryLimit + 1))
@@ -243,7 +245,7 @@ object MantenimientoRoutes {
             }
 
             "admin" -> {
-                if (!scope.canManage) throw missing("Solo quien gestiona mantenimiento puede abrir los ajustes.")
+                if (!scope.canManage) throw missing(tr("Solo quien gestiona mantenimiento puede abrir los ajustes."))
                 MantenimientoAdminScreens.admin(
                     context,
                     MantenimientoRepository.listProperties(tenant, includeArchived = true),
@@ -305,17 +307,17 @@ object MantenimientoRoutes {
         values: Map<String, String>,
     ): Outcome {
         val op = params["op"].orEmpty()
-        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing("Falta el elemento sobre el que actuar.")
+        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing(tr("Falta el elemento sobre el que actuar."))
         fun orderOutcome(id: UUID, text: String) = success("order", mapOf("id" to id.toString()), text)
 
         return when (screen) {
             "orders" -> when (op) {
                 "move" -> {
-                    val target = OrderStatus.fromId(params["column"]) ?: throw missing("Estado no válido.")
+                    val target = OrderStatus.fromId(params["column"]) ?: throw missing(tr("Estado no válido."))
                     val after = MantenimientoService.changeStatus(tenant, access, permissions, requireId("card"), target, emptyMap())
-                    success("orders", keep(screen, params), "${after.displayNumber} pasó a ${after.status.label}.")
+                    success("orders", keep(screen, params), tr("{0} pasó a {1}.", after.displayNumber, tr(after.status.label)))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "order" -> {
@@ -323,38 +325,38 @@ object MantenimientoRoutes {
                 when (op) {
                     "save" -> {
                         MantenimientoService.saveOrder(tenant, access, permissions, id, values)
-                        orderOutcome(id, "Cambios guardados.")
+                        orderOutcome(id, tr("Cambios guardados."))
                     }
                     "files" -> {
                         MantenimientoService.saveFiles(tenant, permissions, id, values)
-                        orderOutcome(id, "Adjuntos actualizados.")
+                        orderOutcome(id, tr("Adjuntos actualizados."))
                     }
                     "status" -> {
                         val after = MantenimientoService.changeStatus(tenant, access, permissions, id, MantenimientoActions.status(params["status"]), values)
-                        orderOutcome(id, "Estado: ${after.status.label}.")
+                        orderOutcome(id, tr("Estado: {0}.", tr(after.status.label)))
                     }
                     "take" -> {
                         MantenimientoService.take(tenant, access, permissions, id)
-                        orderOutcome(id, "Ahora eres responsable de la orden.")
+                        orderOutcome(id, tr("Ahora eres responsable de la orden."))
                     }
                     "note" -> {
                         MantenimientoService.addNote(tenant, access, permissions, id, values["body"].orEmpty())
-                        orderOutcome(id, "Nota añadida.")
+                        orderOutcome(id, tr("Nota añadida."))
                     }
                     "check-add" -> {
                         MantenimientoService.addCheck(tenant, permissions, id, values["text"].orEmpty())
-                        orderOutcome(id, "Elemento añadido.")
+                        orderOutcome(id, tr("Elemento añadido."))
                     }
                     "check-toggle" -> {
                         MantenimientoService.toggleCheck(tenant, permissions, id, requireId("item"), params["done"].toBoolean())
-                        orderOutcome(id, "Lista actualizada.")
+                        orderOutcome(id, tr("Lista actualizada."))
                     }
                     "check-remove" -> {
                         MantenimientoService.removeCheck(tenant, permissions, id, requireId("item"))
-                        orderOutcome(id, "Elemento quitado.")
+                        orderOutcome(id, tr("Elemento quitado."))
                     }
                     "purchase" -> orderOutcome(id, MantenimientoService.requestPurchase(tenant, access, permissions, id))
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -362,86 +364,86 @@ object MantenimientoRoutes {
                 "create" -> {
                     val kind = MantenimientoScreens.creatableKind(params["kind"])
                     val order = MantenimientoService.createOrder(tenant, access, permissions, kind, values)
-                    orderOutcome(order.id, if (kind == OrderKind.Project) "Solicitud de proyecto enviada." else "Avería reportada.")
+                    orderOutcome(order.id, if (kind == OrderKind.Project) tr("Solicitud de proyecto enviada.") else tr("Avería reportada."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "asset" -> when (op) {
                 "save" -> {
                     val saved = MantenimientoService.saveAsset(tenant, permissions, uuid(params, "id"), values)
-                    success("asset", mapOf("id" to saved.toString()), "Activo guardado.")
+                    success("asset", mapOf("id" to saved.toString()), tr("Activo guardado."))
                 }
                 "archive", "restore" -> {
                     val id = requireId("id")
                     MantenimientoService.archiveAsset(tenant, permissions, id, archived = op == "archive")
-                    success("asset", mapOf("id" to id.toString()), if (op == "archive") "Activo archivado." else "Activo restaurado.")
+                    success("asset", mapOf("id" to id.toString()), if (op == "archive") tr("Activo archivado.") else tr("Activo restaurado."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "plan" -> {
                 fun planOutcome(id: UUID, text: String) = success("plan", mapOf("id" to id.toString()), text)
                 when (op) {
-                    "save" -> planOutcome(MantenimientoService.savePlan(tenant, permissions, uuid(params, "id"), values), "Plan guardado.")
+                    "save" -> planOutcome(MantenimientoService.savePlan(tenant, permissions, uuid(params, "id"), values), tr("Plan guardado."))
                     "active" -> {
                         val id = requireId("id")
                         val active = params["active"].toBoolean()
                         MantenimientoService.setPlanActive(tenant, permissions, id, active)
-                        planOutcome(id, if (active) "Plan activado." else "Plan desactivado.")
+                        planOutcome(id, if (active) tr("Plan activado.") else tr("Plan desactivado."))
                     }
                     "plan-check-add" -> {
                         val id = requireId("id")
                         MantenimientoService.changePlanChecklist(tenant, permissions, id, null) { items, _ -> items + values["text"].orEmpty() }
-                        planOutcome(id, "Elemento añadido.")
+                        planOutcome(id, tr("Elemento añadido."))
                     }
                     "plan-check-remove" -> {
                         val id = requireId("id")
                         MantenimientoService.changePlanChecklist(tenant, permissions, id, requireId("item")) { items, index -> items.filterIndexed { n, _ -> n != index } }
-                        planOutcome(id, "Elemento quitado.")
+                        planOutcome(id, tr("Elemento quitado."))
                     }
                     "plan-check-up", "plan-check-down" -> {
                         val id = requireId("id")
                         MantenimientoService.changePlanChecklist(tenant, permissions, id, requireId("item")) { items, index -> MantenimientoActions.moved(items, index, up = op == "plan-check-up") }
-                        planOutcome(id, "Elemento movido.")
+                        planOutcome(id, tr("Elemento movido."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
             "admin" -> when (op) {
                 "prop-add" -> {
                     MantenimientoService.addProperty(tenant, permissions, values["name"].orEmpty())
-                    success("admin", emptyMap(), "Propiedad añadida.")
+                    success("admin", emptyMap(), tr("Propiedad añadida."))
                 }
                 "prop-rename" -> {
                     MantenimientoService.renameProperty(tenant, permissions, requireId("prop"), values["name"].orEmpty())
-                    success("admin", emptyMap(), "Propiedad renombrada.")
+                    success("admin", emptyMap(), tr("Propiedad renombrada."))
                 }
                 "prop-up", "prop-down" -> {
                     MantenimientoService.moveProperty(tenant, permissions, requireId("prop"), up = op == "prop-up")
-                    success("admin", emptyMap(), "Propiedad movida.")
+                    success("admin", emptyMap(), tr("Propiedad movida."))
                 }
                 "prop-archive", "prop-restore" -> {
                     MantenimientoService.archiveProperty(tenant, permissions, requireId("prop"), archived = op == "prop-archive")
-                    success("admin", emptyMap(), if (op == "prop-archive") "Propiedad archivada." else "Propiedad restaurada.")
+                    success("admin", emptyMap(), if (op == "prop-archive") tr("Propiedad archivada.") else tr("Propiedad restaurada."))
                 }
                 "settings-save" -> {
                     MantenimientoService.saveDueSoon(tenant, permissions, values["due_soon"])
-                    success("admin", emptyMap(), "Ajustes guardados.")
+                    success("admin", emptyMap(), tr("Ajustes guardados."))
                 }
                 "tareas-save" -> {
                     MantenimientoService.saveTareasBoard(tenant, access, permissions, values["board"])
-                    success("admin", emptyMap(), "Integración con Tareas guardada.")
+                    success("admin", emptyMap(), tr("Integración con Tareas guardada."))
                 }
                 "tareas-off" -> {
                     MantenimientoService.turnOffTareas(tenant, permissions)
-                    success("admin", emptyMap(), "Integración con Tareas apagada.")
+                    success("admin", emptyMap(), tr("Integración con Tareas apagada."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
-            else -> throw missing("Acción no disponible.")
+            else -> throw missing(tr("Acción no disponible."))
         }
     }
 
@@ -458,13 +460,13 @@ object MantenimientoRoutes {
         val scope = MantenimientoService.scope(permissions)
         val sources = MantenimientoImportSources.enabled(tenant, permissions.companyCode)
         fun screen(body: List<UiNode>) = UiScreen(
-            title = "Importar",
+            title = tr("Importar"),
             navigation = MantenimientoScreens.navigation(scope, ImportScreen, import = sources.isNotEmpty()),
             notice = notice,
             body = body,
         )
         if (sources.isEmpty()) {
-            return screen(listOf(UiText("No hay fuentes de importación activas. Instala y activa una extensión de importación de Mantenimiento (por ejemplo Monday) y vuelve aquí.")))
+            return screen(listOf(UiText(tr("No hay fuentes de importación activas. Instala y activa una extensión de importación de Mantenimiento (por ejemplo Monday) y vuelve aquí."))))
         }
         val chosen = sources.firstOrNull { it.sourceId == params["source"] } ?: sources.singleOrNull()
         val picker = if (sources.size > 1) {
@@ -472,7 +474,7 @@ object MantenimientoRoutes {
         } else {
             emptyList()
         }
-        if (chosen == null) return screen(picker + UiText("Elige desde dónde quieres importar.", UiTextStyle.Caption))
+        if (chosen == null) return screen(picker + UiText(tr("Elige desde dónde quieres importar."), UiTextStyle.Caption))
         val body = try {
             chosen.screen(importContext(tenant, access, permissions), params)
         } catch (failure: MantenimientoValidationException) {
@@ -481,14 +483,14 @@ object MantenimientoRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("No se pudo mostrar la fuente de importación {} ({}).", chosen.sourceId, failure.javaClass.simpleName)
-            errorBody("No se pudo mostrar esta fuente de importación.")
+            errorBody(tr("No se pudo mostrar esta fuente de importación."))
         }
         return screen(picker + body)
     }
 
     private fun importAct(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): UiScreen {
         val source = MantenimientoImportSources.enabled(tenant, permissions.companyCode).firstOrNull { it.sourceId == params["source"] }
-            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice("Esa fuente de importación no está disponible.", UiTone.Danger))
+            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice(tr("Esa fuente de importación no está disponible."), UiTone.Danger))
         val reply = try {
             source.action(importContext(tenant, access, permissions), params["op"].orEmpty(), values)
         } catch (failure: MantenimientoValidationException) {
@@ -497,7 +499,7 @@ object MantenimientoRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("Falló una operación de importación de {} ({}).", source.sourceId, failure.javaClass.simpleName)
-            MantenimientoImportReply("No se pudo completar la operación.", error = true)
+            MantenimientoImportReply(tr("No se pudo completar la operación."), error = true)
         }
         return importScreen(tenant, access, permissions, reply.params + ("source" to source.sourceId), UiNotice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
     }
