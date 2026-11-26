@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
@@ -155,13 +157,13 @@ object PropietariosRepository {
                 listOf(id, input.name.trim(), input.location.trim(), input.mapUrl.trim(), input.latitude, input.longitude, input.notes.trim(), actorId),
             )
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw PropietariosValidationException(DuplicateDevelopment)
+            if (isUniqueViolation(failure)) throw PropietariosValidationException(tr(DuplicateDevelopment))
             throw failure
         }
         return id
     }
 
-    private const val DuplicateDevelopment = "Ya existe un desarrollo con ese nombre."
+    private val DuplicateDevelopment = msg("Ya existe un desarrollo con ese nombre.")
 
     fun updateDevelopment(tenant: Connection, id: UUID, input: DevelopmentInput): Boolean {
         check(input)
@@ -175,7 +177,7 @@ object PropietariosRepository {
                 listOf(input.name.trim(), input.location.trim(), input.mapUrl.trim(), input.latitude, input.longitude, input.notes.trim(), id),
             ) > 0
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw PropietariosValidationException(DuplicateDevelopment)
+            if (isUniqueViolation(failure)) throw PropietariosValidationException(tr(DuplicateDevelopment))
             throw failure
         }
     }
@@ -272,7 +274,7 @@ object PropietariosRepository {
                 ),
             )
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw PropietariosValidationException(DuplicateLot)
+            if (isUniqueViolation(failure)) throw PropietariosValidationException(tr(DuplicateLot))
             throw failure
         }
         return id
@@ -294,7 +296,7 @@ object PropietariosRepository {
                 ),
             ) > 0
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw PropietariosValidationException(DuplicateLot)
+            if (isUniqueViolation(failure)) throw PropietariosValidationException(tr(DuplicateLot))
             throw failure
         }
     }
@@ -308,7 +310,7 @@ object PropietariosRepository {
         }
     }
 
-    private const val DuplicateLot = "Ya existe un lote con ese número en el desarrollo."
+    private val DuplicateLot = msg("Ya existe un lote con ese número en el desarrollo.")
 
     private fun checkLot(input: LotInput) {
         val problems = input.validate()
@@ -387,7 +389,7 @@ object PropietariosRepository {
                 listOf(id, lotId, customerId, share, startsOn, PropietariosRules.clip(notes.trim(), PropietariosRules.MaxNotes), actorId),
             )
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw PropietariosValidationException("Ese cliente ya es titular vigente del lote.")
+            if (isUniqueViolation(failure)) throw PropietariosValidationException(tr("Ese cliente ya es titular vigente del lote."))
             throw failure
         }
         return id
@@ -406,7 +408,7 @@ object PropietariosRepository {
                 listOf(share, startsOn, endsOn, PropietariosRules.clip(notes.trim(), PropietariosRules.MaxNotes), endsOn, id),
             ) > 0
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw PropietariosValidationException("Ese cliente ya es titular vigente del lote.")
+            if (isUniqueViolation(failure)) throw PropietariosValidationException(tr("Ese cliente ya es titular vigente del lote."))
             throw failure
         }
     }
@@ -518,7 +520,7 @@ object PropietariosRepository {
      */
     fun upload(openTenant: () -> Connection?, files: ModuleFiles, name: String, path: String, contentType: String, content: InputStream, uploadedBy: UUID?): UiFileRef? {
         val fileName = cleanFileName(name)
-        if (fileName.isEmpty()) throw PropietariosValidationException("El archivo no tiene nombre.")
+        if (fileName.isEmpty()) throw PropietariosValidationException(tr("El archivo no tiene nombre."))
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         // Precomprobacion barata del tope (conexion corta, sin candado) para no guardar un archivo que se va a rechazar.
         // La comprobacion definitiva, con candado, va dentro de la transaccion.
@@ -527,7 +529,7 @@ object PropietariosRepository {
         val stored = try {
             files.put(fileName, type, content, MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw PropietariosValidationException("$fileName supera el máximo de ${MaxFileBytes / (1024 * 1024)} MB.")
+            throw PropietariosValidationException(tr("{0} supera el máximo de {1} MB.", fileName, MaxFileBytes / (1024 * 1024)))
         }
         fun discard() {
             try {
@@ -568,7 +570,7 @@ object PropietariosRepository {
             listOf(uploadedBy),
         ) { it.getInt("total") to it.getLong("bytes") }.firstOrNull() ?: (0 to 0L)
         if (pending.first >= MaxPendingFiles || pending.second >= MaxPendingBytes) {
-            throw PropietariosValidationException("Tienes demasiados archivos sin guardar; guarda o espera.")
+            throw PropietariosValidationException(tr("Tienes demasiados archivos sin guardar; guarda o espera."))
         }
     }
 
@@ -579,7 +581,7 @@ object PropietariosRepository {
         return transaction(tenant) {
             tenant.query("SELECT 1 AS found FROM propietarios_lots WHERE id = ? FOR UPDATE", listOf(lotId)) { it.getInt("found") }
             val total = tenant.query("SELECT count(*) AS total FROM propietarios_attachments WHERE lot_id = ? AND NOT delete_pending", listOf(lotId)) { it.getInt("total") }.firstOrNull() ?: 0
-            if (total + pending.size > MaxFilesPerLot) throw PropietariosValidationException("Un lote admite hasta $MaxFilesPerLot archivos.")
+            if (total + pending.size > MaxFilesPerLot) throw PropietariosValidationException(tr("Un lote admite hasta {0} archivos.", MaxFilesPerLot))
             tenant.query(
                 """
                 UPDATE propietarios_attachments SET lot_id = ?

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -7,11 +9,11 @@ import java.util.UUID
 
 /** Estados fijos de un lote: los filtros, los totales y los agentes dependen de estos codigos. */
 enum class LotStatus(val code: String, val label: String) {
-    Disponible("disponible", "Disponible"),
-    Reservado("reservado", "Reservado"),
-    Vendido("vendido", "Vendido"),
-    EnConstruccion("en_construccion", "En construcción"),
-    Construido("construido", "Construido");
+    Disponible("disponible", msg("Disponible")),
+    Reservado("reservado", msg("Reservado")),
+    Vendido("vendido", msg("Vendido")),
+    EnConstruccion("en_construccion", msg("En construcción")),
+    Construido("construido", msg("Construido"));
 
     companion object {
         fun fromCode(code: String?): LotStatus? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }
@@ -115,11 +117,11 @@ data class DevelopmentInput(
     val notes: String = "",
 ) {
     fun validate(): List<String> = buildList {
-        if (name.isBlank()) add("El nombre del desarrollo es obligatorio.")
-        if (name.trim().length > PropietariosRules.MaxName) add("El nombre del desarrollo admite hasta ${PropietariosRules.MaxName} caracteres.")
-        if (location.trim().length > PropietariosRules.MaxLocation) add("La ubicación admite hasta ${PropietariosRules.MaxLocation} caracteres.")
+        if (name.isBlank()) add(tr("El nombre del desarrollo es obligatorio."))
+        if (name.trim().length > PropietariosRules.MaxName) add(tr("El nombre del desarrollo admite hasta {0} caracteres.", PropietariosRules.MaxName))
+        if (location.trim().length > PropietariosRules.MaxLocation) add(tr("La ubicación admite hasta {0} caracteres.", PropietariosRules.MaxLocation))
         addAll(PropietariosRules.validateMap(mapUrl, latitude, longitude))
-        if (notes.length > PropietariosRules.MaxNotes) add("Las notas admiten hasta ${PropietariosRules.MaxNotes} caracteres.")
+        if (notes.length > PropietariosRules.MaxNotes) add(tr("Las notas admiten hasta {0} caracteres.", PropietariosRules.MaxNotes))
     }
 }
 
@@ -137,14 +139,14 @@ data class LotInput(
     val notes: String = "",
 ) {
     fun validate(): List<String> = buildList {
-        if (lotNumber.isBlank()) add("El número de lote es obligatorio.")
-        if (lotNumber.trim().length > PropietariosRules.MaxLotNumber) add("El número de lote admite hasta ${PropietariosRules.MaxLotNumber} caracteres.")
-        if (registerNumber.trim().length > PropietariosRules.MaxRegister) add("El número de registro admite hasta ${PropietariosRules.MaxRegister} caracteres.")
-        if (propertyName.trim().length > PropietariosRules.MaxName) add("El nombre de la propiedad admite hasta ${PropietariosRules.MaxName} caracteres.")
-        if (propertyType.trim().length > PropietariosRules.MaxPropertyType) add("El tipo de propiedad admite hasta ${PropietariosRules.MaxPropertyType} caracteres.")
-        if (areaM2 != null && (areaM2.signum() < 0 || areaM2.compareTo(PropietariosRules.MaxArea) > 0)) add("El área debe estar entre 0 y ${PropietariosRules.MaxArea.toPlainString()} m².")
+        if (lotNumber.isBlank()) add(tr("El número de lote es obligatorio."))
+        if (lotNumber.trim().length > PropietariosRules.MaxLotNumber) add(tr("El número de lote admite hasta {0} caracteres.", PropietariosRules.MaxLotNumber))
+        if (registerNumber.trim().length > PropietariosRules.MaxRegister) add(tr("El número de registro admite hasta {0} caracteres.", PropietariosRules.MaxRegister))
+        if (propertyName.trim().length > PropietariosRules.MaxName) add(tr("El nombre de la propiedad admite hasta {0} caracteres.", PropietariosRules.MaxName))
+        if (propertyType.trim().length > PropietariosRules.MaxPropertyType) add(tr("El tipo de propiedad admite hasta {0} caracteres.", PropietariosRules.MaxPropertyType))
+        if (areaM2 != null && (areaM2.signum() < 0 || areaM2.compareTo(PropietariosRules.MaxArea) > 0)) add(tr("El área debe estar entre 0 y {0} m².", PropietariosRules.MaxArea.toPlainString()))
         addAll(PropietariosRules.validateMap(mapUrl, latitude, longitude))
-        if (notes.length > PropietariosRules.MaxNotes) add("Las notas admiten hasta ${PropietariosRules.MaxNotes} caracteres.")
+        if (notes.length > PropietariosRules.MaxNotes) add(tr("Las notas admiten hasta {0} caracteres.", PropietariosRules.MaxNotes))
     }
 }
 
@@ -186,20 +188,20 @@ object PropietariosRules {
     fun checkShares(shares: List<BigDecimal?>, alreadyAssigned: BigDecimal = BigDecimal.ZERO) {
         val given = shares.filterNotNull()
         given.forEach { share ->
-            if (!validShare(share)) throw PropietariosValidationException("Cada porcentaje debe ser mayor que 0 y de 100 como máximo, con hasta dos decimales.")
+            if (!validShare(share)) throw PropietariosValidationException(tr("Cada porcentaje debe ser mayor que 0 y de 100 como máximo, con hasta dos decimales."))
         }
         val total = given.fold(alreadyAssigned) { sum, share -> sum + share }
-        if (total.compareTo(Hundred) > 0) throw PropietariosValidationException("Los porcentajes de los titulares suman más de 100 % (${total.stripTrailingZeros().toPlainString()} %).")
+        if (total.compareTo(Hundred) > 0) throw PropietariosValidationException(tr("Los porcentajes de los titulares suman más de 100 % ({0} %).", total.stripTrailingZeros().toPlainString()))
     }
 
     /** Problemas del enlace de mapa y de las coordenadas (lista vacia si todo esta bien). */
     fun validateMap(mapUrl: String, latitude: BigDecimal?, longitude: BigDecimal?): List<String> = buildList {
         val url = mapUrl.trim()
-        if (url.length > MaxMapUrl) add("El enlace del mapa admite hasta $MaxMapUrl caracteres.")
-        if (url.isNotEmpty() && !isHttps(url)) add("El enlace del mapa debe empezar por https://.")
-        if (latitude != null && (latitude.abs().compareTo(BigDecimal(90)) > 0)) add("La latitud debe estar entre -90 y 90.")
-        if (longitude != null && (longitude.abs().compareTo(BigDecimal(180)) > 0)) add("La longitud debe estar entre -180 y 180.")
-        if ((latitude == null) != (longitude == null)) add("Escribe la latitud y la longitud juntas, o ninguna.")
+        if (url.length > MaxMapUrl) add(tr("El enlace del mapa admite hasta {0} caracteres.", MaxMapUrl))
+        if (url.isNotEmpty() && !isHttps(url)) add(tr("El enlace del mapa debe empezar por https://."))
+        if (latitude != null && (latitude.abs().compareTo(BigDecimal(90)) > 0)) add(tr("La latitud debe estar entre -90 y 90."))
+        if (longitude != null && (longitude.abs().compareTo(BigDecimal(180)) > 0)) add(tr("La longitud debe estar entre -180 y 180."))
+        if ((latitude == null) != (longitude == null)) add(tr("Escribe la latitud y la longitud juntas, o ninguna."))
     }
 
     private fun isHttps(url: String): Boolean = url.length > 8 && url.startsWith("https://", ignoreCase = true) && url.none { it.isWhitespace() }
@@ -231,15 +233,15 @@ object PropietariosRules {
         visibleCustomers: Set<UUID>,
         currentStatus: LotStatus,
     ): TransferPlan {
-        if (newOwners.size > MaxNewOwners) throw PropietariosValidationException("Un cambio admite hasta $MaxNewOwners titulares nuevos.")
-        if (newOwners.map { it.customerId }.toSet().size != newOwners.size) throw PropietariosValidationException("Un titular no puede repetirse en el mismo cambio.")
+        if (newOwners.size > MaxNewOwners) throw PropietariosValidationException(tr("Un cambio admite hasta {0} titulares nuevos.", MaxNewOwners))
+        if (newOwners.map { it.customerId }.toSet().size != newOwners.size) throw PropietariosValidationException(tr("Un titular no puede repetirse en el mismo cambio."))
         newOwners.forEach { owner ->
-            if (owner.customerId !in visibleCustomers) throw PropietariosValidationException("Uno de los titulares ya no está disponible en Clientes.")
+            if (owner.customerId !in visibleCustomers) throw PropietariosValidationException(tr("Uno de los titulares ya no está disponible en Clientes."))
         }
         checkShares(newOwners.map { it.sharePercent })
-        if (newOwners.isEmpty() && open.isEmpty()) throw PropietariosValidationException("El lote no tiene titulares vigentes que dar de baja.")
+        if (newOwners.isEmpty() && open.isEmpty()) throw PropietariosValidationException(tr("El lote no tiene titulares vigentes que dar de baja."))
         open.firstOrNull { it.startsOn != null && it.startsOn.isAfter(date) }?.let { blocked ->
-            throw PropietariosValidationException("La fecha del cambio es anterior al inicio de la titularidad de ${blocked.customerName} (${blocked.startsOn}).")
+            throw PropietariosValidationException(tr("La fecha del cambio es anterior al inicio de la titularidad de {0} ({1}).", blocked.customerName, blocked.startsOn))
         }
         return if (newOwners.isEmpty()) {
             TransferPlan(open.map { it.id }, currentStatus, "baja")
