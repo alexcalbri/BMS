@@ -22,6 +22,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import io.ktor.http.ContentDisposition
 import io.ktor.http.ContentType
@@ -58,7 +59,7 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
         module = "crm",
         displayName = "WordPress (Real Estate 7)",
         description = "Conecta el sitio WordPress (Real Estate 7) con el plugin BMS Connector: formularios y consultas crean leads, y las propiedades se buscan y se vinculan a ellos.",
-        version = "1.0.0",
+        version = "1.1.0",
         minModuleVersion = "0.27.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -158,9 +159,9 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
         val tenant = context.tenant
         val properties = CrmExtensions.count(tenant, "SELECT count(*) FROM crm_lead_items WHERE source = ?", CrmWordPress.Source)
         return listOf(
-            CrmExtensions.item(null, "Conexion con el sitio y secreto del plugin (se borran)", CrmExtensions.count(tenant, "SELECT count(*) FROM ${WordPressSettingsStore.SettingsTable} WHERE enabled OR coalesce(secret, '') <> '' OR coalesce(site_url, '') <> ''"), "delete"),
-            CrmExtensions.item(null, "Agentes del sitio y su vinculo con usuarios", CrmExtensions.count(tenant, "SELECT count(*) FROM ${WordPressSettingsStore.AgentsTable}"), "delete"),
-            CrmExtensions.item(LinkedPropertiesOption, "Propiedades del sitio vinculadas a los leads", properties, UninstallDefault.Keep),
+            CrmExtensions.item(null, tr("Conexion con el sitio y secreto del plugin (se borran)"), CrmExtensions.count(tenant, "SELECT count(*) FROM ${WordPressSettingsStore.SettingsTable} WHERE enabled OR coalesce(secret, '') <> '' OR coalesce(site_url, '') <> ''"), "delete"),
+            CrmExtensions.item(null, tr("Agentes del sitio y su vinculo con usuarios"), CrmExtensions.count(tenant, "SELECT count(*) FROM ${WordPressSettingsStore.AgentsTable}"), "delete"),
+            CrmExtensions.item(LinkedPropertiesOption, tr("Propiedades del sitio vinculadas a los leads"), properties, UninstallDefault.Keep),
         )
     }
 

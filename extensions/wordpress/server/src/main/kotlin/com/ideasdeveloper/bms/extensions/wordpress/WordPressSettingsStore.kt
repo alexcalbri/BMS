@@ -7,6 +7,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmValidationException
 import com.ideasdeveloper.bms.modules.crm.CrmWordPressException
 import com.ideasdeveloper.bms.modules.crm.CrmWordPressSettings
 import com.ideasdeveloper.bms.modules.crm.WpAgent
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.security.SecureRandom
 import java.sql.Connection
 import java.util.UUID
@@ -39,7 +40,7 @@ object WordPressSettingsStore {
     fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>) {
         val url = values["siteUrl"].orEmpty().trim().trimEnd('/').ifEmpty { null }
         if (url != null && !url.matches(Regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$"))) {
-            throw CrmValidationException("Escribe la direccion del sitio con https://, por ejemplo https://mi-inmobiliaria.com.")
+            throw CrmValidationException(tr("Escribe la direccion del sitio con https://, por ejemplo https://mi-inmobiliaria.com."))
         }
         host.extensionInactiveReason(tenant, CrmExtensionIds.WordPress)?.let { throw CrmValidationException(it) }
         if (url != null) {
@@ -51,7 +52,7 @@ object WordPressSettingsStore {
         }
         val enabled = values["enabled"] == "true"
         val secret = load(host, tenant).secret
-        if (enabled && (url == null || secret == null)) throw CrmValidationException("Para activar WordPress escribe la direccion del sitio y genera el secreto.")
+        if (enabled && (url == null || secret == null)) throw CrmValidationException(tr("Para activar WordPress escribe la direccion del sitio y genera el secreto."))
         tenant.prepareStatement(
             """
             INSERT INTO $SettingsTable (id, enabled, site_url, updated_at) VALUES (1, ?, ?, CURRENT_TIMESTAMP)
