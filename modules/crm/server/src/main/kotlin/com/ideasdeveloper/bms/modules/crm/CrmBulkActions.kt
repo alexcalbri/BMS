@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
 import java.util.UUID
@@ -22,7 +24,7 @@ object CrmBulkActions {
     }
 
     /** Why a lead seen only through a mention is left out of any bulk action. */
-    const val ReadOnlyReason = "solo los ves por una mencion (lectura y notas)"
+    val ReadOnlyReason = msg("solo los ves por una mencion (lectura y notas)")
 
     /**
      * Splits [leads] into the ones the user may act on (inside their scope) and the ones they only see through a mention,
@@ -33,7 +35,7 @@ object CrmBulkActions {
 
     /** The user [value] names to add or remove; an empty, unknown or "Sin asignar" value is an error, never a silent change. */
     fun userFor(users: List<CrmUser>, value: String): UUID =
-        users.firstOrNull { it.name == value }?.id ?: throw CrmActionNotice("Elige el usuario.")
+        users.firstOrNull { it.name == value }?.id ?: throw CrmActionNotice(tr("Elige el usuario."))
 
     /** The assigned users of [leads] that no longer have access to the CRM, named "<usuario> (sin acceso)". */
     fun legacyOf(context: CrmScreens.Context, leads: List<CrmLead>): List<CrmUser> =
@@ -47,7 +49,7 @@ object CrmBulkActions {
         val omitted = skipped.values.sum()
         if (omitted == 0) return "$done $doneText"
         val reasons = skipped.entries.joinToString("; ") { "${it.key} (${it.value})" }
-        val text = "$done actualizados, $omitted omitidos: $reasons."
+        val text = tr("{0} actualizados, {1} omitidos: {2}.", done, omitted, reasons)
         if (done == 0) throw CrmActionNotice(text, warning = true)
         return "$done $doneText $text"
     }
@@ -61,14 +63,14 @@ object CrmBulkActions {
         context: CrmScreens.Context, requested: List<CrmLead>, mode: CrmAssignees.Mode, ids: List<UUID>, actor: CrmActor, notifier: ModuleNotifier? = null,
         origin: String = OutboundOrigin.User,
     ): String {
-        if (!context.canAssign) throw CrmActionNotice("No tienes permiso para asignar leads.")
-        if (requested.isEmpty()) throw CrmActionNotice("Marca al menos un lead.", warning = true)
-        if (mode != CrmAssignees.Mode.Replace && ids.isEmpty()) throw CrmActionNotice("Elige el usuario.")
+        if (!context.canAssign) throw CrmActionNotice(tr("No tienes permiso para asignar leads."))
+        if (requested.isEmpty()) throw CrmActionNotice(tr("Marca al menos un lead."), warning = true)
+        if (mode != CrmAssignees.Mode.Replace && ids.isEmpty()) throw CrmActionNotice(tr("Elige el usuario."))
         // Users without access can be taken out but never added.
-        if (!CrmAssignees.canApply(mode, ids, context.users.map { it.id })) throw CrmActionNotice("Ese usuario no tiene acceso al CRM.")
+        if (!CrmAssignees.canApply(mode, ids, context.users.map { it.id })) throw CrmActionNotice(tr("Ese usuario no tiene acceso al CRM."))
         val (leads, readOnly) = writable(context.scope, requested)
         val skipped = linkedMapOf<String, Int>()
-        if (readOnly.isNotEmpty()) skipped[ReadOnlyReason] = readOnly.size
+        if (readOnly.isNotEmpty()) skipped[tr(ReadOnlyReason)] = readOnly.size
         var done = 0
         leads.forEach { lead ->
             // "Sin asignar" takes everybody out; a replacement keeps the assigned users that can no longer be chosen.
@@ -76,9 +78,9 @@ object CrmBulkActions {
             else CrmAssignees.combineKeepingInactive(lead.ownerUserIds, mode, ids, context.users.map { it.id })
             if (!changesAssignees(lead.ownerUserIds, target)) {
                 val reason = when (mode) {
-                    CrmAssignees.Mode.Add -> "ya lo tenian asignado"
-                    CrmAssignees.Mode.Remove -> "no lo tenian asignado"
-                    CrmAssignees.Mode.Replace -> if (ids.isEmpty()) "ya estaban sin asignar" else "ya tenian esos asignados"
+                    CrmAssignees.Mode.Add -> tr("ya lo tenian asignado")
+                    CrmAssignees.Mode.Remove -> tr("no lo tenian asignado")
+                    CrmAssignees.Mode.Replace -> if (ids.isEmpty()) tr("ya estaban sin asignar") else tr("ya tenian esos asignados")
                 }
                 skipped[reason] = (skipped[reason] ?: 0) + 1
                 return@forEach
@@ -89,15 +91,15 @@ object CrmBulkActions {
                 CrmNotify.assigned(context.tenant, notifier, lead.id, change.added, actor.userId)
                 done++
             } catch (failure: CrmValidationException) {
-                val reason = failure.message.orEmpty().ifBlank { "no se pudieron asignar" }
+                val reason = failure.message.orEmpty().ifBlank { tr("no se pudieron asignar") }
                 skipped[reason] = (skipped[reason] ?: 0) + 1
             }
         }
         val who = CrmAssignees.names(context.names, ids)
         val doneText = when (mode) {
-            CrmAssignees.Mode.Add -> "lead(s) con $who anadido a los asignados."
-            CrmAssignees.Mode.Remove -> "lead(s) sin $who entre los asignados."
-            CrmAssignees.Mode.Replace -> if (ids.isEmpty()) "lead(s) sin asignados." else "lead(s) asignados a $who."
+            CrmAssignees.Mode.Add -> tr("lead(s) con {0} anadido a los asignados.", who)
+            CrmAssignees.Mode.Remove -> tr("lead(s) sin {0} entre los asignados.", who)
+            CrmAssignees.Mode.Replace -> if (ids.isEmpty()) tr("lead(s) sin asignados.") else tr("lead(s) asignados a {0}.", who)
         }
         return summary(done, doneText, skipped)
     }
@@ -113,31 +115,31 @@ object CrmBulkActions {
         origin: String = OutboundOrigin.User,
     ): String {
         val tenant = context.tenant
-        if (requested.isEmpty()) throw CrmActionNotice("Marca al menos un lead.", warning = true)
+        if (requested.isEmpty()) throw CrmActionNotice(tr("Marca al menos un lead."), warning = true)
         // Leads seen only through a mention are read-only: they never reach an action (not even delete).
         val (leads, readOnly) = writable(context.scope, requested)
         val skipped = linkedMapOf<String, Int>()
-        if (readOnly.isNotEmpty()) skipped[ReadOnlyReason] = readOnly.size
+        if (readOnly.isNotEmpty()) skipped[tr(ReadOnlyReason)] = readOnly.size
         // Nothing left to act on: the message says why (they were all read-only).
         if (leads.isEmpty()) return summary(0, "", skipped)
         fun skip(reason: String, count: Int = 1) { skipped[reason] = (skipped[reason] ?: 0) + count }
         return when (action) {
             CrmImportScreens.ActionStage -> {
-                val stage = context.stages.firstOrNull { it.name == value } ?: throw CrmActionNotice("Elige la etapa.")
+                val stage = context.stages.firstOrNull { it.name == value } ?: throw CrmActionNotice(tr("Elige la etapa."))
                 var done = 0
                 leads.forEach { lead ->
                     if (CrmRepository.wonNeedsReservation(tenant, lead.id, stage)) {
-                        skip("tienen habitaciones elegidas sin reserva: confirma la reserva desde su ficha")
+                        skip(tr("tienen habitaciones elegidas sin reserva: confirma la reserva desde su ficha"))
                         return@forEach
                     }
                     try {
                         CrmRepository.moveLead(tenant, lead, stage, context.stages, actor, origin)
                         done++
                     } catch (failure: CrmValidationException) {
-                        skip(failure.message.orEmpty().ifBlank { "no se pudieron mover" })
+                        skip(failure.message.orEmpty().ifBlank { tr("no se pudieron mover") })
                     }
                 }
-                summary(done, "lead(s) movidos a ${stage.name}.", skipped)
+                summary(done, tr("lead(s) movidos a {0}.", stage.name), skipped)
             }
             CrmImportScreens.ActionAddOwner, CrmImportScreens.ActionRemoveOwner ->
                 assign(
@@ -149,20 +151,20 @@ object CrmBulkActions {
             CrmImportScreens.ActionClearOwners -> assign(context, leads, CrmAssignees.Mode.Replace, emptyList(), actor, notifier, origin)
             CrmImportScreens.ActionArchive -> {
                 val archived = leads.count { CrmRepository.archiveLead(tenant, it.id, actor) }
-                if (archived < leads.size) skip("ya estaban archivados", leads.size - archived)
-                summary(archived, "lead(s) archivados.", skipped)
+                if (archived < leads.size) skip(tr("ya estaban archivados"), leads.size - archived)
+                summary(archived, tr("lead(s) archivados."), skipped)
             }
             CrmImportScreens.ActionRestore -> {
                 val restored = leads.count { CrmRepository.restoreLead(tenant, it.id, actor) }
-                if (restored < leads.size) skip("ya estaban abiertos", leads.size - restored)
-                summary(restored, "lead(s) restaurados.", skipped)
+                if (restored < leads.size) skip(tr("ya estaban abiertos"), leads.size - restored)
+                summary(restored, tr("lead(s) restaurados."), skipped)
             }
             CrmImportScreens.ActionDelete -> {
-                if (!context.permissions.has(CrmScreens.Delete)) throw CrmActionNotice("No tienes permiso para eliminar leads.")
+                if (!context.permissions.has(CrmScreens.Delete)) throw CrmActionNotice(tr("No tienes permiso para eliminar leads."))
                 leads.forEach { CrmRepository.deleteLead(tenant, it.id) }
-                summary(leads.size, "lead(s) eliminados (los clientes quedan en Clientes).", skipped)
+                summary(leads.size, tr("lead(s) eliminados (los clientes quedan en Clientes)."), skipped)
             }
-            else -> throw CrmActionNotice("Elige la accion.")
+            else -> throw CrmActionNotice(tr("Elige la accion."))
         }
     }
 }

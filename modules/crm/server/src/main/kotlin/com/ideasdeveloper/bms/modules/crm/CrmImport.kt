@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -77,35 +78,35 @@ object CrmImport {
         var current = url.trim()
         repeat(4) {
             val uri = runCatching { URI.create(current) }.getOrNull()
-            if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw CrmImportException("Usa una direccion https:// publica.")
+            if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw CrmImportException(tr("Usa una direccion https:// publica."))
             // Una sola resolucion por salto: se valida y la conexion va a esa misma IP (anti DNS rebinding).
             val validated = try {
                 PinnedHost.resolveValidated(uri.host)
             } catch (failure: PinnedHostException) {
-                throw CrmImportException(if (failure.message.orEmpty().startsWith("No se encontro")) "No se encontro ${uri.host}." else "Esa direccion apunta a una red privada.")
+                throw CrmImportException(if (failure.message.orEmpty().startsWith("No se encontro")) tr("No se encontro {0}.", uri.host) else tr("Esa direccion apunta a una red privada."))
             }
             // Todo dentro de use: el socket se cierra aunque algo falle entre abrir y leer.
             val (location, bytes) = try {
                 PinnedHost.openPinnedHttps(uri, validated, uri.host, timeoutMillis = 30_000, totalMillis = 120_000, maxBodyBytes = MaxBytes + 1L).use { response ->
                     when {
                         response.status in 300..399 -> response.header("Location").orEmpty() to null
-                        response.status !in 200..299 -> throw CrmImportException("La descarga respondio HTTP ${response.status}.")
+                        response.status !in 200..299 -> throw CrmImportException(tr("La descarga respondio HTTP {0}.", response.status))
                         else -> null to response.body.readNBytes(MaxBytes + 1)
                     }
                 }
             } catch (failure: CrmImportException) {
                 throw failure
             } catch (failure: Exception) {
-                throw CrmImportException("No se pudo descargar el archivo.")
+                throw CrmImportException(tr("No se pudo descargar el archivo."))
             }
             if (bytes == null) {
-                current = runCatching { uri.resolve(location.orEmpty()).toString() }.getOrElse { throw CrmImportException("Usa una direccion https:// publica.") }
+                current = runCatching { uri.resolve(location.orEmpty()).toString() }.getOrElse { throw CrmImportException(tr("Usa una direccion https:// publica.")) }
                 return@repeat
             }
-            if (bytes.size > MaxBytes) throw CrmImportException("El archivo supera los 20 MB.")
+            if (bytes.size > MaxBytes) throw CrmImportException(tr("El archivo supera los 20 MB."))
             return if (bytes.size > 1 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) CrmImportParse.xlsx(bytes) else CrmImportParse.csv(bytes.decodeToString())
         }
-        throw CrmImportException("Demasiadas redirecciones.")
+        throw CrmImportException(tr("Demasiadas redirecciones."))
     }
 
     /** Notes of a row as the JSON stored in [NotesColumn]. */
@@ -140,7 +141,7 @@ object CrmImport {
 
     /** Stores the rows of a source and guesses the mapping. */
     fun create(tenant: Connection, source: String, name: String, table: CrmTable, userId: UUID?): UUID {
-        if (table.rows.isEmpty()) throw CrmImportException("No hay filas para importar.")
+        if (table.rows.isEmpty()) throw CrmImportException(tr("No hay filas para importar."))
         val id = UUID.randomUUID()
         transaction(tenant) {
             insertJob(tenant, id, source, name, "mapping", emptyList(), userId)

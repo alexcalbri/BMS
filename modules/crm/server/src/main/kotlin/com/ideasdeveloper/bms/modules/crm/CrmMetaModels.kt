@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.time.Instant
 
 /**
@@ -93,5 +94,5 @@ data class MetaSetup(val settings: CrmMetaSettings, val done: List<String>, val 
 }
 
 data class MetaNameFill(val reviewed: Int, val filled: Int, val missing: Int) {
-    override fun toString() = "$reviewed contactos sin nombre revisados, $filled completados, $missing sin respuesta de Meta"
+    override fun toString() = tr("{0} contactos sin nombre revisados, {1} completados, {2} sin respuesta de Meta", reviewed, filled, missing)
 }

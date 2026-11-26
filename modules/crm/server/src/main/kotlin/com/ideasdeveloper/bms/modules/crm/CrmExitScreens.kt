@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiCard
 import com.ideasdeveloper.bms.ui.UiField
@@ -21,24 +22,24 @@ object CrmExitScreens {
     fun card(context: CrmScreens.Context, submitted: Map<String, String>?): UiNode {
         val config = CrmExit.load(context.tenant)
         val cloudbeds = CrmHost.cloudbedsSettings(context.tenant)
-        val section = "Etapas de origen"
+        val section = tr("Etapas de origen")
         // Leads the automation would archive right now, per stage: shown before turning it on.
         val overdue = CrmExit.dueByStage(context.tenant, config, context.stages.map { it.id }, Instant.now())
         val overdueOfChosen = config.stageIds.sumOf { overdue[it] ?: 0 }
         // Asked again after a first save attempt that would archive leads (see "settings:exitSave").
         val asksConfirmation = submitted?.containsKey("exitConfirm") == true
         val fields = listOf(
-            UiField("exitEnabled", "Archivar los leads al hacer check-out", type = "boolean"),
-            UiField("exitHour", "Hora (0-23)", type = "number", help = "Sin Cloudbeds, a esta hora del dia del check-out se archivan los leads."),
+            UiField("exitEnabled", tr("Archivar los leads al hacer check-out"), type = "boolean"),
+            UiField("exitHour", tr("Hora (0-23)"), type = "number", help = tr("Sin Cloudbeds, a esta hora del dia del check-out se archivan los leads.")),
             UiField(
-                "exitTimeZone", "Zona horaria", placeholder = ZoneId.systemDefault().id,
-                help = "Nombre de zona como America/Panama. Vacio usa la del servidor (${ZoneId.systemDefault().id}).",
+                "exitTimeZone", tr("Zona horaria"), placeholder = ZoneId.systemDefault().id,
+                help = tr("Nombre de zona como America/Panama. Vacio usa la del servidor ({0}).", ZoneId.systemDefault().id),
             ),
         ) + context.stages.map {
             val count = overdue[it.id] ?: 0
-            UiField(StagePrefix + it.id, if (count > 0) "${it.name} ($count con salida vencida)" else it.name, type = "boolean", section = section)
+            UiField(StagePrefix + it.id, if (count > 0) tr("{0} ({1} con salida vencida)", it.name, count) else it.name, type = "boolean", section = section)
         } + listOfNotNull(
-            UiField("exitConfirm", "Confirmo archivar de una vez los leads con salida vencida", type = "boolean").takeIf { asksConfirmation },
+            UiField("exitConfirm", tr("Confirmo archivar de una vez los leads con salida vencida"), type = "boolean").takeIf { asksConfirmation },
         )
         val values = mapOf(
             "exitEnabled" to config.enabled.toString(),
@@ -47,24 +48,23 @@ object CrmExitScreens {
         ) + context.stages.associate { (StagePrefix + it.id) to (it.id in config.stageIds).toString() }
         val how = when {
             !cloudbeds.ready ->
-                "Sin Cloudbeds, el lead se archiva cuando su fecha de fin ya paso, o es hoy y paso la hora elegida. Queda una nota en su historial."
+                tr("Sin Cloudbeds, el lead se archiva cuando su fecha de fin ya paso, o es hoy y paso la hora elegida. Queda una nota en su historial.")
             cloudbeds.archiveOnCheckout ->
-                "Cloudbeds esta activo: la hora no archiva. Se archivan los leads de estas etapas cuya reserva Cloudbeds marca como check-out " +
-                    "(tambien los que llegan a la etapa despues del check-out). Un lead sin reserva de Cloudbeds no se archiva."
+                tr("Cloudbeds esta activo: la hora no archiva. Se archivan los leads de estas etapas cuya reserva Cloudbeds marca como check-out (tambien los que llegan a la etapa despues del check-out). Un lead sin reserva de Cloudbeds no se archiva.")
             else ->
-                "Cloudbeds esta activo pero \"archivar al hacer check-out\" esta apagado en Integraciones: no se archiva nada hasta que lo enciendas."
+                tr("Cloudbeds esta activo pero \"archivar al hacer check-out\" esta apagado en Integraciones: no se archiva nada hasta que lo enciendas.")
         }
-        val warning = if (!config.enabled && overdueOfChosen > 0) " Al activar se archivaran $overdueOfChosen leads con salida vencida." else ""
+        val warning = if (!config.enabled && overdueOfChosen > 0) tr(" Al activar se archivaran {0} leads con salida vencida.", overdueOfChosen) else ""
         return UiCard(
             listOf(
-                UiText("Solo se archivan los leads que esten en las etapas de origen elegidas. $how$warning", UiTextStyle.Caption),
+                UiText(tr("Solo se archivan los leads que esten en las etapas de origen elegidas. {0}{1}", how, warning), UiTextStyle.Caption),
                 UiForm(
                     "exit", fields, values + submitted.orEmpty().filterKeys { it in values.keys || it == "exitConfirm" },
-                    submit = UiButton("Guardar", UiRequest(CrmScreens.UiRoute + "/settings", params = mapOf("op" to "exitSave"), formId = "exit")),
+                    submit = UiButton(tr("Guardar"), UiRequest(CrmScreens.UiRoute + "/settings", params = mapOf("op" to "exitSave"), formId = "exit")),
                     minFieldWidth = 200,
                 ),
             ),
-            title = "Automatizacion de salida",
+            title = tr("Automatizacion de salida"),
             collapsible = true,
             // Open only after this card's own failed or pending save, not after another form's.
             expanded = submitted?.keys?.any { it.startsWith("exit") } == true,

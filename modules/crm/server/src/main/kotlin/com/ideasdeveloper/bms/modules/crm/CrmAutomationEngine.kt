@@ -1,8 +1,11 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
 import com.ideasdeveloper.bms.server.modules.NotificationTarget
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.time.Instant
@@ -77,16 +80,29 @@ object CrmAutomationNotices {
     private fun seeAll(tenant: Connection): List<UUID> = CrmRepository.users(tenant).filter { CrmNotify.userScope(tenant, it.id).seesAll }.map { it.id }
 
     /** Tells [userIds]: notice in the app (it opens the lead) and, when they have an email, an email. Never fails the caller. Returns how many users. */
-    fun deliver(tenant: Connection, notifier: ModuleNotifier?, lead: CrmLead, userIds: List<UUID>, title: String, text: String): Int {
+    fun deliver(tenant: Connection, notifier: ModuleNotifier?, lead: CrmLead, userIds: List<UUID>, title: String, text: String): Int =
+        deliver(tenant, notifier, lead, userIds) { title to text }
+
+    /**
+     * [deliver] with the texts built by [texts] once per recipient, under the recipient's language (the notice and the email of
+     * each user are written in their own language; what the rule's author typed is shown as typed).
+     */
+    fun deliver(tenant: Connection, notifier: ModuleNotifier?, lead: CrmLead, userIds: List<UUID>, texts: () -> Pair<String, String>): Int {
         if (userIds.isEmpty()) return 0
         val settings = runCatching { CrmNotify.userSettings(tenant) }.getOrDefault(emptyMap())
         userIds.forEach { userId ->
             runCatching {
-                notifier?.notify(tenant, userId, title, text, NotificationTarget("lead", mapOf("id" to lead.id.toString())))
+                notifier?.notify(tenant, userId, NotificationTarget("lead", mapOf("id" to lead.id.toString()))) {
+                    val (title, text) = texts()
+                    NotificationText(title, text)
+                }
             }.onFailure { log.warn("No se pudo crear el aviso de una automatizacion ({}).", it.javaClass.simpleName) }
             runCatching {
                 settings[userId]?.email?.trim()?.takeIf { it.isNotEmpty() }?.let { to ->
-                    CrmNotify.enqueue(tenant, OutboxKind, to, CrmMail.plain(title, "$text\n\nLead: ${lead.name}"), lead.id)
+                    CrmNotify.forRecipient(tenant, userId) {
+                        val (title, text) = texts()
+                        CrmNotify.enqueue(tenant, OutboxKind, to, CrmMail.plain(title, tr("{0}\n\nLead: {1}", text, lead.name)), lead.id)
+                    }
                 }
             }.onFailure { log.warn("No se pudo preparar el correo de una automatizacion ({}).", it.javaClass.simpleName) }
         }
@@ -95,11 +111,11 @@ object CrmAutomationNotices {
 
     /** Title and text of "faltan datos": what is missing, in which lead and when the rule runs (or why it did not run). */
     fun missingTexts(automation: CrmAutomation, lead: CrmLead, missing: List<String>, whenText: String?, ran: Boolean): Pair<String, String> {
-        val title = "Faltan datos: ${automation.name}"
-        val what = "Al lead ${lead.name} le falta ${CrmAutomationRequirements.sentence(missing)}."
+        val title = tr("Faltan datos: {0}", automation.name)
+        val what = tr("Al lead {0} le falta {1}.", lead.name, CrmAutomationRequirements.sentence(missing))
         val tail = when {
-            whenText != null && !ran -> " La automatizacion se ejecuta $whenText: completalo antes."
-            ran -> " La automatizacion no se ejecuto."
+            whenText != null && !ran -> tr(" La automatizacion se ejecuta {0}: completalo antes.", whenText)
+            ran -> tr(" La automatizacion no se ejecuto.")
             else -> ""
         }
         return title to what + tail
@@ -157,6 +173,12 @@ object CrmAutomationEngine {
         http: CrmHttp = CrmJavaHttp,
         now: Instant = Instant.now(),
         refs: CrmAutomationRefs? = null,
+    ): CrmRunOutcome = I18n.withLanguage(I18n.Source) { runIn(tenant, automation, lead, runKey, actor, notifier, http, now, refs) }
+
+    // What a run writes (record, activity, errors) is stored: it stays in Spanish whatever the language of who pressed the button.
+    private fun runIn(
+        tenant: Connection, automation: CrmAutomation, lead: CrmLead, runKey: String, actor: CrmActor?,
+        notifier: ModuleNotifier?, http: CrmHttp, now: Instant, refs: CrmAutomationRefs?,
     ): CrmRunOutcome {
         // Conditions first: nothing heavy is read for a lead that does not qualify.
         CrmAutomationConditions.failing(automation.conditions, lead)?.let { failing ->
@@ -175,6 +197,11 @@ object CrmAutomationEngine {
     fun runClaimed(
         tenant: Connection, automation: CrmAutomation, lead: CrmLead, runKey: String, actor: CrmActor?,
         notifier: ModuleNotifier?, http: CrmHttp, now: Instant = Instant.now(), refs: CrmAutomationRefs? = null,
+    ): CrmRunOutcome = I18n.withLanguage(I18n.Source) { runClaimedIn(tenant, automation, lead, runKey, actor, notifier, http, now, refs) }
+
+    private fun runClaimedIn(
+        tenant: Connection, automation: CrmAutomation, lead: CrmLead, runKey: String, actor: CrmActor?,
+        notifier: ModuleNotifier?, http: CrmHttp, now: Instant, refs: CrmAutomationRefs?,
     ): CrmRunOutcome {
         val outcome = try {
             execute(tenant, automation, lead, runKey, actor, notifier, http, refs ?: loadRefs(tenant), now)
@@ -207,7 +234,6 @@ object CrmAutomationEngine {
         val stay = CrmStay.effective(CrmStay.load(tenant), refs.fields)
         val missing = CrmAutomationRequirements.missing(automation.actions, facts(tenant, lead, automation.actions, refs), stayLabels(refs, stay), stay)
         if (missing.isNotEmpty()) {
-            val (title, text) = CrmAutomationNotices.missingTexts(automation, lead, missing, null, ran = true)
             val detail = "Faltan datos: ${CrmAutomationRequirements.sentence(missing)}. No se ejecuto."
             record(tenant, lead, automation, detail, doer)
             // A button answers to the person who pressed it. Date rules tell once per date (their key); event rules once per day, not per event.
@@ -221,7 +247,7 @@ object CrmAutomationEngine {
                     first
                 }
             }
-            if (tell) CrmAutomationNotices.deliver(tenant, notifier, lead, CrmAutomationNotices.missingRecipients(tenant, automation, lead), title, text)
+            if (tell) CrmAutomationNotices.deliver(tenant, notifier, lead, CrmAutomationNotices.missingRecipients(tenant, automation, lead)) { CrmAutomationNotices.missingTexts(automation, lead, missing, null, ran = true) }
             return CrmRunOutcome(CrmRunOutcome.MissingData, detail)
         }
         val results = mutableListOf<String>()
@@ -309,14 +335,15 @@ object CrmAutomationEngine {
         CrmActionKind.SetField -> setField(tenant, lead, action.field, action.value, refs, actor)
         CrmActionKind.Notify -> {
             val who = CrmAutomationNotices.recipients(tenant, action.who, action.userIds, lead)
-            val title = action.title.ifEmpty { "Aviso: ${automation.name}" }
-            val text = action.text.ifEmpty { "Automatizacion ${automation.name}." }
-            val told = CrmAutomationNotices.deliver(tenant, notifier, lead, who, title, "${lead.name}: $text")
+            // Typed titles and texts go as written; the default ones are written for each recipient in their language.
+            val told = CrmAutomationNotices.deliver(tenant, notifier, lead, who) {
+                action.title.ifEmpty { tr("Aviso: {0}", automation.name) } to "${lead.name}: ${action.text.ifEmpty { tr("Automatizacion {0}.", automation.name) }}"
+            }
             if (told == 0) "Aviso sin destinatarios (nadie asignado o elegido)." else "Aviso enviado a $told usuario(s)."
         }
         CrmActionKind.CloudbedsReserve, CrmActionKind.CloudbedsCheckIn -> {
             val provider = CrmModuleExtensions.providerFor(action.kind.id)
-                ?: throw CrmValidationException(CrmCloudbedsMissing)
+                ?: throw CrmValidationException(tr(CrmCloudbedsMissing))
             provider.execute(action.kind.id, CrmActionContext(tenant, lead.id, lead, refs.stages, actor)).message
         }
     }
@@ -421,10 +448,11 @@ object CrmAutomationEngine {
         val key = CrmAutomationKeys.warn(value)
         if (!CrmAutomationStore.claim(tenant, automation.id, lead.id, key)) return false
         val runAt = CrmAutomationSchedule.runAt(value, automation.trigger, zone)
-        val (title, text) = CrmAutomationNotices.missingTexts(automation, lead, missing, CrmAutomationSchedule.whenText(runAt), ran = false)
         val detail = "Aviso: falta ${CrmAutomationRequirements.sentence(missing)}. Se ejecuta ${CrmAutomationSchedule.whenText(runAt)}."
         CrmAutomationStore.finish(tenant, automation.id, lead.id, key, CrmRunOutcome.Warned, detail)
-        CrmAutomationNotices.deliver(tenant, notifier, lead, CrmAutomationNotices.missingRecipients(tenant, automation, lead), title, text)
+        CrmAutomationNotices.deliver(tenant, notifier, lead, CrmAutomationNotices.missingRecipients(tenant, automation, lead)) {
+            CrmAutomationNotices.missingTexts(automation, lead, missing, CrmAutomationSchedule.whenText(runAt), ran = false)
+        }
         return true
     }
 }

@@ -1,9 +1,13 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.MailException
 import com.ideasdeveloper.bms.server.modules.MailSender
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.server.modules.NotificationTarget
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import com.ideasdeveloper.bms.server.modules.SmtpSettings
 import org.slf4j.LoggerFactory
 import java.sql.Connection
@@ -43,7 +47,7 @@ object CrmNotify {
         }
 
     fun saveUserSettings(tenant: Connection, settings: CrmUserSettings) {
-        if (settings.email.isNotEmpty() && !CrmContacts.isEmail(settings.email)) throw CrmValidationException("Escribe un correo valido o dejalo vacio.")
+        if (settings.email.isNotEmpty() && !CrmContacts.isEmail(settings.email)) throw CrmValidationException(tr("Escribe un correo valido o dejalo vacio."))
         tenant.prepareStatement(
             """
             INSERT INTO crm_user_settings (user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned, notify_new_message, notify_followup)
@@ -65,8 +69,15 @@ object CrmNotify {
         }
     }
 
-    const val NewMessageTitlePrefix = "Nuevo mensaje de "
-    const val FollowUpTitlePrefix = "Seguimiento pendiente: "
+    // Staff emails and notices are written in the language of each recipient (user, else company, else Spanish).
+    internal fun <T> forRecipient(tenant: Connection, userId: UUID, block: () -> T): T {
+        val language = try {
+            CrmCustomerEvents.access?.recipientLanguage(tenant, userId)
+        } catch (_: Exception) {
+            null
+        }
+        return if (language == null) block() else I18n.withLanguage(language, block)
+    }
 
     /** Email of "Nuevo mensaje": the one the user wrote in Equipo, only when they did not turn it off. Null: no email. */
     fun newMessageEmailTarget(settings: CrmUserSettings?): String? =
@@ -89,12 +100,14 @@ object CrmNotify {
             val text = excerpt(message)
             lead.ownerUserIds.distinct().forEach { userId ->
                 runCatching {
-                    notifier?.notify(tenant, userId, NewMessageTitlePrefix + lead.name, text, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                    notifier?.notify(tenant, userId, NotificationTarget("lead", mapOf("id" to leadId.toString()))) { NotificationText(tr("Nuevo mensaje de {0}", lead.name), text) }
                 }.onFailure { log.warn("No se pudo crear el aviso de mensaje nuevo ({}).", it.javaClass.simpleName) }
                 runCatching {
                     newMessageEmailTarget(settings[userId])?.let { to ->
-                        val intro = "Escribio ${lead.name} por ${CrmInbox.label(channel)}.\n\nMensaje:\n${message.trim().take(1000)}"
-                        enqueue(tenant, "new_message", to, leadEmail("Nuevo mensaje de ${lead.name}", intro, tenant, lead), lead.id)
+                        forRecipient(tenant, userId) {
+                            val intro = tr("Escribio {0} por {1}.\n\nMensaje:\n{2}", lead.name, CrmInbox.shownLabel(channel), message.trim().take(1000))
+                            enqueue(tenant, "new_message", to, leadEmail(tr("Nuevo mensaje de {0}", lead.name), intro, tenant, lead), lead.id)
+                        }
                     }
                 }.onFailure { log.warn("No se pudo preparar el correo de mensaje nuevo ({}).", it.javaClass.simpleName) }
             }
@@ -138,14 +151,16 @@ object CrmNotify {
         due.forEach { leadId ->
             runCatching {
                 val lead = CrmRepository.lead(tenant, leadId) ?: return@runCatching
-                val since = lead.followUpOn?.let { if (it.isBefore(gate.today)) "Venció el $it." else "Es para hoy." }.orEmpty()
+                fun since() = lead.followUpOn?.let { if (it.isBefore(gate.today)) tr("Venció el {0}.", it) else tr("Es para hoy.") }.orEmpty()
                 lead.ownerUserIds.distinct().forEach { userId ->
                     runCatching {
-                        notifier?.notify(tenant, userId, FollowUpTitlePrefix + lead.name, since, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                        notifier?.notify(tenant, userId, NotificationTarget("lead", mapOf("id" to leadId.toString()))) { NotificationText(tr("Seguimiento pendiente: {0}", lead.name), since()) }
                     }.onFailure { log.warn("No se pudo crear el aviso de seguimiento ({}).", it.javaClass.simpleName) }
                     runCatching {
                         followUpEmailTarget(settings[userId])?.let { to ->
-                            enqueue(tenant, "follow_up", to, leadEmail("Seguimiento pendiente: ${lead.name}", "Tienes un seguimiento pendiente. $since", tenant, lead), lead.id)
+                            forRecipient(tenant, userId) {
+                                enqueue(tenant, "follow_up", to, leadEmail(tr("Seguimiento pendiente: {0}", lead.name), tr("Tienes un seguimiento pendiente. {0}", since()), tenant, lead), lead.id)
+                            }
                         }
                     }.onFailure { log.warn("No se pudo preparar el correo de seguimiento ({}).", it.javaClass.simpleName) }
                 }
@@ -192,7 +207,9 @@ object CrmNotify {
         userSettings(tenant).values.filter { it.notifyNewLeads && it.email.isNotEmpty() }.forEach { user ->
             val scope = userScope(tenant, user.userId)
             if (!scope.seesAll || !scope.canSee(lead.interestId, lead.ownerUserIds)) return@forEach
-            enqueue(tenant, "new_lead", user.email, leadEmail("Lead nuevo: ${lead.name}", "Entro un lead nuevo en el CRM.", tenant, lead), lead.id)
+            forRecipient(tenant, user.userId) {
+                enqueue(tenant, "new_lead", user.email, leadEmail(tr("Lead nuevo: {0}", lead.name), tr("Entro un lead nuevo en el CRM."), tenant, lead), lead.id)
+            }
         }
     }
 
@@ -210,9 +227,9 @@ object CrmNotify {
             val settings = userSettings(tenant)
             targets.forEach { userId ->
                 runCatching {
-                    notifier?.notify(tenant, userId, AssignedTitle, lead.name, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                    notifier?.notify(tenant, userId, NotificationTarget("lead", mapOf("id" to leadId.toString()))) { NotificationText(tr(AssignedTitle), lead.name) }
                 }.onFailure { log.warn("No se pudo crear el aviso de asignacion de un lead ({}).", it.javaClass.simpleName) }
-                runCatching { assignedEmail(tenant, lead, settings[userId]) }
+                runCatching { forRecipient(tenant, userId) { assignedEmail(tenant, lead, settings[userId]) } }
                     .onFailure { log.warn("No se pudo preparar el correo de asignacion de un lead ({}).", it.javaClass.simpleName) }
             }
         }.onFailure { log.warn("No se pudieron avisar las asignaciones de un lead ({}).", it.javaClass.simpleName) }
@@ -220,7 +237,7 @@ object CrmNotify {
 
     private val log = LoggerFactory.getLogger(CrmNotify::class.java)
 
-    const val AssignedTitle = "Te asignaron un lead"
+    val AssignedTitle = msg("Te asignaron un lead")
 
     /** Whom to tell about an assignment: the added users, each once, never the one who did it (self-assignment). */
     fun notifyTargets(added: Collection<UUID>, byUserId: UUID?): List<UUID> = added.distinct().filter { it != byUserId }
@@ -228,10 +245,10 @@ object CrmNotify {
     // Email of "Te asignaron un lead", only for users that asked for it and have an email.
     private fun assignedEmail(tenant: Connection, lead: CrmLead, settings: CrmUserSettings?) {
         val user = settings?.takeIf { it.notifyAssigned && it.email.isNotEmpty() } ?: return
-        enqueue(tenant, "assigned", user.email, leadEmail("Te asignaron a ${lead.name}", "Te asignaron este lead en el CRM.", tenant, lead), lead.id)
+        enqueue(tenant, "assigned", user.email, leadEmail(tr("Te asignaron a {0}", lead.name), tr("Te asignaron este lead en el CRM."), tenant, lead), lead.id)
     }
 
-    const val MentionedTitle = "Te mencionaron en un lead"
+    val MentionedTitle = msg("Te mencionaron en un lead")
     private const val MentionExcerpt = 140
 
     /** The note as the notice shows it: one line, cut to [max] characters. */
@@ -264,12 +281,14 @@ object CrmNotify {
             val text = mentionText(lead.name, by.name, body)
             mentioned.distinctBy { it.id }.forEach { user ->
                 runCatching {
-                    notifier?.notify(tenant, user.id, MentionedTitle, text, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                    notifier?.notify(tenant, user.id, NotificationTarget("lead", mapOf("id" to leadId.toString()))) { NotificationText(tr(MentionedTitle), text) }
                 }.onFailure { log.warn("No se pudo crear el aviso de mencion en un lead ({}).", it.javaClass.simpleName) }
                 runCatching {
                     mentionEmailTarget(user, settings[user.id])?.let { to ->
-                        val intro = "${by.name} te menciono en una nota de este lead.\n\nNota:\n${body.trim().take(1000)}"
-                        enqueue(tenant, "mentioned", to, leadEmail("Te mencionaron en ${lead.name}", intro, tenant, lead), lead.id)
+                        forRecipient(tenant, user.id) {
+                            val intro = tr("{0} te menciono en una nota de este lead.\n\nNota:\n{1}", by.name, body.trim().take(1000))
+                            enqueue(tenant, "mentioned", to, leadEmail(tr("Te mencionaron en {0}", lead.name), intro, tenant, lead), lead.id)
+                        }
                     }
                 }.onFailure { log.warn("No se pudo preparar el correo de mencion en un lead ({}).", it.javaClass.simpleName) }
             }
@@ -281,12 +300,12 @@ object CrmNotify {
         val lines = listOfNotNull(
             intro,
             "",
-            "Nombre: ${lead.name}",
-            lead.email.takeIf { it.isNotEmpty() }?.let { "Correo: $it" },
-            lead.phone.takeIf { it.isNotEmpty() }?.let { "Telefono: $it" },
-            interest?.let { "Interes: $it" },
-            lead.source.takeIf { it.isNotEmpty() }?.let { "Origen: $it" },
-            lead.message.takeIf { it.isNotBlank() }?.let { "\nMensaje:\n${it.take(1000)}" },
+            tr("Nombre: {0}", lead.name),
+            lead.email.takeIf { it.isNotEmpty() }?.let { tr("Correo: {0}", it) },
+            lead.phone.takeIf { it.isNotEmpty() }?.let { tr("Telefono: {0}", it) },
+            interest?.let { tr("Interes: {0}", it) },
+            lead.source.takeIf { it.isNotEmpty() }?.let { tr("Origen: {0}", it) },
+            lead.message.takeIf { it.isNotBlank() }?.let { tr("\nMensaje:\n{0}", it.take(1000)) },
         )
         return CrmMail.plain(subject, lines.joinToString("\n"))
     }
@@ -308,21 +327,23 @@ object CrmNotify {
             val due = CrmRepository.followUps(tenant, scope, CrmLeadFilter(ownerUserId = user.userId), today, 50)
             val unassigned = if (scope.seesAll) CrmRepository.count(tenant, scope, CrmLeadFilter(unassigned = true, openOnly = true)) else 0
             if (due.isEmpty() && unassigned == 0) return@forEach
+            forRecipient(tenant, user.userId) {
             val lines = buildList {
-                add("Resumen de tus leads, ${today}.")
+                add(tr("Resumen de tus leads, {0}.", today))
                 add("")
-                if (due.isEmpty()) add("No tienes seguimientos vencidos ni para hoy.") else {
-                    add("Seguimientos (${due.size}):")
-                    due.forEach { add("- ${it.name} - ${it.followUpOn}${if (it.followUpOn!!.isBefore(today)) " (vencido)" else ""}") }
+                if (due.isEmpty()) add(tr("No tienes seguimientos vencidos ni para hoy.")) else {
+                    add(tr("Seguimientos ({0}):", due.size))
+                    due.forEach { add("- ${it.name} - ${it.followUpOn}${if (it.followUpOn!!.isBefore(today)) tr(" (vencido)") else ""}") }
                 }
                 if (unassigned > 0) {
                     add("")
-                    add("Leads abiertos sin asignados: $unassigned.")
+                    add(tr("Leads abiertos sin asignados: {0}.", unassigned))
                 }
                 add("")
-                add("Usuario: ${names.user(user.userId)}")
+                add(tr("Usuario: {0}", names.user(user.userId)))
             }
-            enqueue(tenant, "digest", user.email, CrmMail.plain("Tus leads de hoy", lines.joinToString("\n")))
+            enqueue(tenant, "digest", user.email, CrmMail.plain(tr("Tus leads de hoy"), lines.joinToString("\n")))
+            }
         }
         tenant.prepareStatement("UPDATE crm_settings SET digest_sent_on = ? WHERE id = 1").use { it.setObject(1, today); it.executeUpdate() }
     }

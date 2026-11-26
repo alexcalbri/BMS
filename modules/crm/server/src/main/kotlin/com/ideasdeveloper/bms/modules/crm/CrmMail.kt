@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CompanyMail
 import com.ideasdeveloper.bms.server.modules.CompanyMailResult
 import com.ideasdeveloper.bms.server.modules.MailException
@@ -48,18 +50,18 @@ object CrmMail {
 
     // Placeholders every template can use; modules of the CRM (reservations...) add their own values.
     val placeholders = linkedMapOf(
-        "nombre" to "Nombre del cliente",
-        "correo" to "Correo del cliente",
-        "telefono" to "Telefono del cliente",
-        "codigo_cliente" to "Codigo del cliente (acceso al WiFi por codigo)",
-        "responsable" to "Usuarios asignados al lead (todos, separados por coma)",
-        "etapa" to "Etapa actual",
-        "interes" to "Interes",
-        "checkin" to "Fecha de ingreso (la de Fechas de estadia)",
-        "checkout" to "Fecha de salida (la de Fechas de estadia)",
-        "valor" to "Valor estimado",
-        "habitaciones" to "Habitaciones reservadas",
-        "reserva" to "Numero de reserva",
+        "nombre" to msg("Nombre del cliente"),
+        "correo" to msg("Correo del cliente"),
+        "telefono" to msg("Telefono del cliente"),
+        "codigo_cliente" to msg("Codigo del cliente (acceso al WiFi por codigo)"),
+        "responsable" to msg("Usuarios asignados al lead (todos, separados por coma)"),
+        "etapa" to msg("Etapa actual"),
+        "interes" to msg("Interes"),
+        "checkin" to msg("Fecha de ingreso (la de Fechas de estadia)"),
+        "checkout" to msg("Fecha de salida (la de Fechas de estadia)"),
+        "valor" to msg("Valor estimado"),
+        "habitaciones" to msg("Habitaciones reservadas"),
+        "reserva" to msg("Numero de reserva"),
     )
 
     // ---- Envio (SMTP de la empresa) ----
@@ -143,11 +145,11 @@ object CrmMail {
         fun text(key: String) = values[key]?.trim()?.takeIf { it.isNotEmpty() }
         fun secret(key: String, saved: String?) = values[key]?.takeIf { it.isNotBlank() && !CrmSecrets.isPlaceholder(it) } ?: saved
         fun port(key: String, label: String) = values[key].orEmpty().trim().toIntOrNull()?.takeIf { it in 1..65535 }
-            ?: throw CrmValidationException("$label debe ser un numero entre 1 y 65535.")
+            ?: throw CrmValidationException(tr("{0} debe ser un numero entre 1 y 65535.", label))
         val merged = current.copy(
             imapEnabled = values["imapEnabled"] == "true",
             imapHost = text("imapHost"),
-            imapPort = port("imapPort", "El puerto IMAP"),
+            imapPort = port("imapPort", tr("El puerto IMAP")),
             imapUsername = text("imapUsername"),
             imapPassword = secret("imapPassword", current.imapPassword),
             imapFolder = text("imapFolder") ?: "INBOX",
@@ -156,7 +158,7 @@ object CrmMail {
         // El servidor de correo lo escribe el usuario: puerto de correo y host publico (evita SSRF hacia la red interna).
         if (merged.imapEnabled) checkMailHost(merged.imapHost, merged.imapPort)
         if (merged.imapEnabled && (merged.imapHost == null || merged.imapUsername == null || merged.imapPassword.isNullOrBlank())) {
-            throw CrmValidationException("Para leer el correo escribe el servidor IMAP, el usuario y la contrasena.")
+            throw CrmValidationException(tr("Para leer el correo escribe el servidor IMAP, el usuario y la contrasena."))
         }
         // Another mailbox starts from its newest message instead of importing the whole inbox.
         val sameMailbox = merged.imapHost == current.imapHost && merged.imapUsername == current.imapUsername && merged.imapFolder == current.imapFolder
@@ -206,16 +208,16 @@ object CrmMail {
         val name = values["name"].orEmpty().trim()
         val subject = values["subject"].orEmpty().trim()
         val body = values["body"].orEmpty()
-        if (name.isEmpty() || name.length > 80) throw CrmValidationException("El nombre de la plantilla debe tener entre 1 y 80 caracteres.")
-        if (subject.isEmpty() || subject.length > 300) throw CrmValidationException("El asunto debe tener entre 1 y 300 caracteres.")
-        if (body.isBlank() || body.length > 50000) throw CrmValidationException("Escribe el contenido del correo (hasta 50000 caracteres).")
+        if (name.isEmpty() || name.length > 80) throw CrmValidationException(tr("El nombre de la plantilla debe tener entre 1 y 80 caracteres."))
+        if (subject.isEmpty() || subject.length > 300) throw CrmValidationException(tr("El asunto debe tener entre 1 y 300 caracteres."))
+        if (body.isBlank() || body.length > 50000) throw CrmValidationException(tr("Escribe el contenido del correo (hasta 50000 caracteres)."))
         val baseLanguage = values["baseLanguage"]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
-        if (baseLanguage != null && !CrmTranslate.isLanguageCode(baseLanguage)) throw CrmValidationException("El idioma base debe ser un codigo como es o en.")
+        if (baseLanguage != null && !CrmTranslate.isLanguageCode(baseLanguage)) throw CrmValidationException(tr("El idioma base debe ser un codigo como es o en."))
         unknownPlaceholders(subject + body, CrmFields.all(tenant).map { it.key }.toSet(), CrmImportTargets.customerFields(tenant).map { it.key }.toSet()).takeIf { it.isNotEmpty() }?.let {
-            throw CrmValidationException("Variables desconocidas: ${it.joinToString { name -> "{$name}" }}.")
+            throw CrmValidationException(tr("Variables desconocidas: {0}.", it.joinToString { name -> "{$name}" }))
         }
         val existing = templates(tenant)
-        if (existing.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw CrmValidationException("Ya existe la plantilla $name.")
+        if (existing.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw CrmValidationException(tr("Ya existe la plantilla {0}.", name))
         val current = existing.firstOrNull { it.id == id }
         val language = baseLanguage ?: current?.baseLanguage ?: "es"
         val translate = values["translate"]?.let { it == "true" } ?: current?.translate ?: false
@@ -232,7 +234,7 @@ object CrmMail {
             statement.setString(4, language)
             statement.setBoolean(5, translate)
             statement.setObject(6, savedId)
-            if (statement.executeUpdate() != 1) throw CrmValidationException("Esa plantilla ya no existe.")
+            if (statement.executeUpdate() != 1) throw CrmValidationException(tr("Esa plantilla ya no existe."))
         }
         // Editing the template makes its cached translations useless.
         CrmTranslate.clearCache(tenant, savedId)

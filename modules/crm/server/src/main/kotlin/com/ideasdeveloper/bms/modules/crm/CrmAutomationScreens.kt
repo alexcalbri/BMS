@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiCard
@@ -27,9 +29,9 @@ import kotlin.math.roundToInt
  */
 object CrmAutomationForm {
     const val None = "(ninguna)"
-    const val WhenBefore = "Antes de la fecha"
-    const val WhenOn = "El dia de la fecha"
-    const val WhenAfter = "Despues de la fecha"
+    val WhenBefore = msg("Antes de la fecha")
+    val WhenOn = msg("El dia de la fecha")
+    val WhenAfter = msg("Despues de la fecha")
 
     /** Slots shown for a rule: its own plus one to add, at least [MinSlots]. The agents can save more than the form shows. */
     const val MinSlots = 3
@@ -42,16 +44,16 @@ object CrmAutomationForm {
     private fun names(values: Map<String, String>, key: String) = UiFieldValues.options(values[key].orEmpty()).map { it.trim() }.filter { it.isNotEmpty() }
 
     private fun wholeNumber(raw: String, what: String, default: Int): Int =
-        raw.ifEmpty { default.toString() }.toIntOrNull() ?: throw CrmValidationException("$what debe ser un numero entero.")
+        raw.ifEmpty { default.toString() }.toIntOrNull() ?: throw CrmValidationException(tr("{0} debe ser un numero entero.", what))
 
     /** Reads the form. Throws [CrmValidationException] (Spanish) for anything the person must fix; ids are checked afterwards by [CrmAutomationRules.validate]. */
     fun parse(values: Map<String, String>, refs: CrmAutomationRefs, id: UUID, position: Int): CrmAutomation {
-        val type = CrmTriggerType.byLabel(text(values, "triggerType")) ?: throw CrmValidationException("Elige el disparador de la automatizacion.")
+        val type = CrmTriggerType.byLabel(text(values, "triggerType")) ?: throw CrmValidationException(tr("Elige el disparador de la automatizacion."))
         val trigger = when (type) {
-            CrmTriggerType.StageChanged -> CrmTrigger(type, stageId = refs.stage(text(values, "triggerStage")) ?: throw CrmValidationException("Elige la etapa del disparador."))
-            CrmTriggerType.FieldChanged -> CrmTrigger(type, field = refs.field(text(values, "changedField")) ?: throw CrmValidationException("Elige el campo del disparador."))
+            CrmTriggerType.StageChanged -> CrmTrigger(type, stageId = refs.stage(text(values, "triggerStage")) ?: throw CrmValidationException(tr("Elige la etapa del disparador.")))
+            CrmTriggerType.FieldChanged -> CrmTrigger(type, field = refs.field(text(values, "changedField")) ?: throw CrmValidationException(tr("Elige el campo del disparador.")))
             CrmTriggerType.Date -> {
-                val days = wholeNumber(text(values, "dateDays"), "Los dias", 0)
+                val days = wholeNumber(text(values, "dateDays"), tr("Los dias"), 0)
                 val offset = when (text(values, "dateWhen")) {
                     WhenBefore -> -days
                     WhenAfter -> days
@@ -59,16 +61,16 @@ object CrmAutomationForm {
                 }
                 CrmTrigger(
                     type,
-                    field = refs.field(text(values, "dateField")) ?: throw CrmValidationException("Elige el campo de fecha del disparador."),
+                    field = refs.field(text(values, "dateField")) ?: throw CrmValidationException(tr("Elige el campo de fecha del disparador.")),
                     offsetDays = offset,
-                    hour = wholeNumber(text(values, "dateHour"), "La hora", 9),
+                    hour = wholeNumber(text(values, "dateHour"), tr("La hora"), 9),
                 )
             }
             else -> CrmTrigger(type)
         }
         val conditions = (1..MaxSlots).mapNotNull { slot -> condition(values, refs, slot) }
         val actions = (1..MaxSlots).mapNotNull { slot -> action(values, refs, slot) }
-        val warnHours = text(values, "warnHours").ifEmpty { "0" }.replace(',', '.').toDoubleOrNull()?.takeIf { it >= 0 } ?: throw CrmValidationException("El aviso anticipado son horas: un numero de 0 en adelante.")
+        val warnHours = text(values, "warnHours").ifEmpty { "0" }.replace(',', '.').toDoubleOrNull()?.takeIf { it >= 0 } ?: throw CrmValidationException(tr("El aviso anticipado son horas: un numero de 0 en adelante."))
         return CrmAutomation(
             id = id,
             name = text(values, "name"),
@@ -77,7 +79,7 @@ object CrmAutomationForm {
             conditions = conditions,
             actions = actions,
             warnBeforeMinutes = if (type == CrmTriggerType.Date) (warnHours * 60).roundToInt() else 0,
-            notifyUserIds = names(values, "notifyUsers").map { refs.user(it) ?: throw CrmValidationException("El usuario $it ya no tiene acceso al CRM.") },
+            notifyUserIds = names(values, "notifyUsers").map { refs.user(it) ?: throw CrmValidationException(tr("El usuario {0} ya no tiene acceso al CRM.", it)) },
             position = position,
         ).normalized()
     }
@@ -85,20 +87,20 @@ object CrmAutomationForm {
     private fun condition(values: Map<String, String>, refs: CrmAutomationRefs, slot: Int): CrmCondition? {
         val label = text(values, "cond${slot}_kind")
         if (label.isEmpty() || label == None) return null
-        val kind = CrmConditionKind.byLabel(label) ?: throw CrmValidationException("Condicion $slot: elige una condicion de la lista.")
+        val kind = CrmConditionKind.byLabel(label) ?: throw CrmValidationException(tr("Condicion {0}: elige una condicion de la lista.", slot))
         return when (kind) {
-            CrmConditionKind.StageIn -> CrmCondition(kind, stageIds = names(values, "cond${slot}_stages").map { refs.stage(it) ?: throw CrmValidationException("Condicion $slot: la etapa $it ya no existe.") })
+            CrmConditionKind.StageIn -> CrmCondition(kind, stageIds = names(values, "cond${slot}_stages").map { refs.stage(it) ?: throw CrmValidationException(tr("Condicion {0}: la etapa {1} ya no existe.", slot, it)) })
             CrmConditionKind.InterestIn -> {
                 val chosen = names(values, "cond${slot}_interests")
                 CrmCondition(
                     kind,
-                    interestIds = chosen.filter { it != CrmForms.NoInterest }.map { refs.interest(it) ?: throw CrmValidationException("Condicion $slot: el interes $it ya no existe.") },
+                    interestIds = chosen.filter { it != CrmForms.NoInterest }.map { refs.interest(it) ?: throw CrmValidationException(tr("Condicion {0}: el interes {1} ya no existe.", slot, it)) },
                     noInterest = CrmForms.NoInterest in chosen,
                 )
             }
             CrmConditionKind.FieldEquals, CrmConditionKind.FieldNotEquals, CrmConditionKind.FieldEmpty, CrmConditionKind.FieldFilled -> CrmCondition(
                 kind,
-                field = refs.field(text(values, "cond${slot}_field")) ?: throw CrmValidationException("Condicion $slot: elige el campo."),
+                field = refs.field(text(values, "cond${slot}_field")) ?: throw CrmValidationException(tr("Condicion {0}: elige el campo.", slot)),
                 value = if (kind.usesValue) text(values, "cond${slot}_value") else "",
             )
             else -> CrmCondition(kind)
@@ -108,19 +110,19 @@ object CrmAutomationForm {
     private fun action(values: Map<String, String>, refs: CrmAutomationRefs, slot: Int): CrmAction? {
         val label = text(values, "act${slot}_kind")
         if (label.isEmpty() || label == None) return null
-        val kind = CrmActionKind.byLabel(label) ?: throw CrmValidationException("Accion $slot: elige una accion de la lista.")
+        val kind = CrmActionKind.byLabel(label) ?: throw CrmValidationException(tr("Accion {0}: elige una accion de la lista.", slot))
         return when (kind) {
-            CrmActionKind.SendTemplate -> CrmAction(kind, templateId = refs.template(text(values, "act${slot}_template")) ?: throw CrmValidationException("Accion $slot: elige la plantilla."))
-            CrmActionKind.SetStage -> CrmAction(kind, stageId = refs.stage(text(values, "act${slot}_stage")) ?: throw CrmValidationException("Accion $slot: elige la etapa."))
+            CrmActionKind.SendTemplate -> CrmAction(kind, templateId = refs.template(text(values, "act${slot}_template")) ?: throw CrmValidationException(tr("Accion {0}: elige la plantilla.", slot)))
+            CrmActionKind.SetStage -> CrmAction(kind, stageId = refs.stage(text(values, "act${slot}_stage")) ?: throw CrmValidationException(tr("Accion {0}: elige la etapa.", slot)))
             CrmActionKind.SetField -> CrmAction(
                 kind,
-                field = refs.field(text(values, "act${slot}_field")) ?: throw CrmValidationException("Accion $slot: elige el campo."),
+                field = refs.field(text(values, "act${slot}_field")) ?: throw CrmValidationException(tr("Accion {0}: elige el campo.", slot)),
                 value = text(values, "act${slot}_value"),
             )
             CrmActionKind.Notify -> CrmAction(
                 kind,
                 who = CrmNotifyWho.byLabel(text(values, "act${slot}_who")) ?: CrmNotifyWho.Assigned,
-                userIds = names(values, "act${slot}_users").map { refs.user(it) ?: throw CrmValidationException("Accion $slot: el usuario $it ya no tiene acceso al CRM.") },
+                userIds = names(values, "act${slot}_users").map { refs.user(it) ?: throw CrmValidationException(tr("Accion {0}: el usuario {1} ya no tiene acceso al CRM.", slot, it)) },
                 title = text(values, "act${slot}_title"),
                 text = text(values, "act${slot}_text"),
             )
@@ -227,25 +229,25 @@ object CrmAutomationScreens {
         val refs = refsOf(context)
         val existing = CrmAutomationStore.all(tenant)
         val current = id?.let { wanted -> existing.firstOrNull { it.id == wanted } }
-        if (id != null && current == null) throw CrmValidationException("Esa automatizacion ya no existe.")
+        if (id != null && current == null) throw CrmValidationException(tr("Esa automatizacion ya no existe."))
         val automation = CrmAutomationForm.parse(values, refs, current?.id ?: UUID.randomUUID(), current?.position ?: CrmAutomationStore.nextPosition(tenant))
         CrmAutomationRules.validate(automation, refs, existing)
         CrmAutomationStore.save(tenant, automation, exists = current != null)
-        return saved(context, automation, "Automatizacion ${automation.name} guardada.")
+        return saved(context, automation, tr("Automatizacion {0} guardada.", automation.name))
     }
 
     /** Turns a rule on or off. Turning on checks it again: what it points to may be gone. */
     fun setEnabled(context: CrmScreens.Context, automation: CrmAutomation, enabled: Boolean): Saved {
         val changed = automation.copy(enabled = enabled)
         if (enabled) CrmAutomationRules.validate(changed, refsOf(context), CrmAutomationStore.all(context.tenant))
-        if (!CrmAutomationStore.setEnabled(context.tenant, automation.id, enabled)) throw CrmValidationException("Esa automatizacion ya no existe.")
-        return saved(context, changed, "Automatizacion ${automation.name} ${if (enabled) "activada" else "apagada"}.")
+        if (!CrmAutomationStore.setEnabled(context.tenant, automation.id, enabled)) throw CrmValidationException(tr("Esa automatizacion ya no existe."))
+        return saved(context, changed, tr("Automatizacion {0} {1}.", automation.name, if (enabled) "activada" else "apagada"))
     }
 
     private fun saved(context: CrmScreens.Context, automation: CrmAutomation, message: String): Saved {
         val duplicate = CrmAutomationRules.duplicatesCloudbedsWelcome(automation, stayKeys(context), welcomeActive(context))
         val warnings = listOfNotNull(
-            "${CrmAutomationRules.DuplicateWelcomeWarning} Puedes apagar la bienvenida de Cloudbeds en esta pantalla.".takeIf { duplicate },
+            tr("{0} Puedes apagar la bienvenida de Cloudbeds en esta pantalla.", tr(CrmAutomationRules.DuplicateWelcomeWarning)).takeIf { duplicate },
             CrmAutomationRules.messageReplyNotice(automation),
         )
         return if (warnings.isEmpty()) Saved(message, false) else Saved("$message ${warnings.joinToString(" ")}", true)
@@ -265,17 +267,17 @@ object CrmAutomationScreens {
         val zone = CrmZone.of(tenant)
         val duplicates = automations.any { CrmAutomationRules.duplicatesCloudbedsWelcome(it, stayKeys(context), welcomeActive(context)) }
         return listOfNotNull(
-            UiText("Cada regla tiene un disparador, condiciones opcionales y acciones en orden. Quedan registradas en Ejecuciones recientes y en la actividad del lead.", UiTextStyle.Caption),
+            UiText(tr("Cada regla tiene un disparador, condiciones opcionales y acciones en orden. Quedan registradas en Ejecuciones recientes y en la actividad del lead."), UiTextStyle.Caption),
             if (duplicates) UiCard(
                 listOf(
-                    UiText(CrmAutomationRules.DuplicateWelcomeWarning, tone = UiTone.Warning),
+                    UiText(tr(CrmAutomationRules.DuplicateWelcomeWarning), tone = UiTone.Warning),
                     UiButton(
-                        "Apagar la bienvenida de Cloudbeds",
-                        UiRequest(UiRoute + "/automations", params = mapOf("op" to "welcomeOff"), confirm = "Cloudbeds dejara de enviar su correo de bienvenida. Continuar?"),
+                        tr("Apagar la bienvenida de Cloudbeds"),
+                        UiRequest(UiRoute + "/automations", params = mapOf("op" to "welcomeOff"), confirm = tr("Cloudbeds dejara de enviar su correo de bienvenida. Continuar?")),
                         style = "secondary",
                     ),
                 ),
-                title = "Correos duplicados",
+                title = tr("Correos duplicados"),
             ) else null,
             listCard(automations, refs, byAutomation),
             formCard(context, refs, editing, submitted),
@@ -285,29 +287,29 @@ object CrmAutomationScreens {
 
     private fun listCard(automations: List<CrmAutomation>, refs: CrmAutomationRefs, runs: Map<UUID, List<CrmRunRow>>): UiNode {
         val rows: List<UiNode> = automations.map { automation ->
-            val last = runs[automation.id].orEmpty().take(3).joinToString(", ") { CrmAutomationStore.statusLabels[it.status] ?: it.status }
+            val last = runs[automation.id].orEmpty().take(3).joinToString(", ") { CrmAutomationStore.statusLabel(it.status) }
             val summary = CrmAutomationSummary.trigger(automation.trigger, refs) + ": " + automation.actions.joinToString(", ") { CrmAutomationSummary.action(it, refs) }
             UiRow(
                 listOf(
                     UiText("${automation.name} - $summary"),
-                    if (automation.enabled) UiStatus("Activa", UiTone.Success) else UiStatus("Apagada", UiTone.Neutral),
-                    UiText(if (last.isEmpty()) "Sin ejecuciones" else "Ultimas: $last", UiTextStyle.Caption),
+                    if (automation.enabled) UiStatus(tr("Activa"), UiTone.Success) else UiStatus(tr("Apagada"), UiTone.Neutral),
+                    UiText(if (last.isEmpty()) tr("Sin ejecuciones") else tr("Ultimas: {0}", last), UiTextStyle.Caption),
                     UiButton(
-                        if (automation.enabled) "Apagar" else "Activar",
+                        if (automation.enabled) tr("Apagar") else tr("Activar"),
                         UiRequest(UiRoute + "/automations", params = mapOf("op" to "toggle", "automation" to automation.id.toString(), "enabled" to (!automation.enabled).toString())),
                         style = "secondary",
                     ),
-                    UiButton("Editar", UiNavigate("automations", mapOf("automation" to automation.id.toString())), style = "secondary"),
-                    UiButton("Ejecuciones", UiNavigate("automations", mapOf("runs" to automation.id.toString())), style = "secondary"),
+                    UiButton(tr("Editar"), UiNavigate("automations", mapOf("automation" to automation.id.toString())), style = "secondary"),
+                    UiButton(tr("Ejecuciones"), UiNavigate("automations", mapOf("runs" to automation.id.toString())), style = "secondary"),
                     UiButton(
-                        "Eliminar",
-                        UiRequest(UiRoute + "/automations", params = mapOf("op" to "delete", "automation" to automation.id.toString()), confirm = "Eliminar la automatizacion ${automation.name} y su registro de ejecuciones?"),
+                        tr("Eliminar"),
+                        UiRequest(UiRoute + "/automations", params = mapOf("op" to "delete", "automation" to automation.id.toString()), confirm = tr("Eliminar la automatizacion {0} y su registro de ejecuciones?", automation.name)),
                         style = "danger",
                     ),
                 ),
             )
         }
-        return UiCard(rows.ifEmpty { listOf(UiText("Aun no hay automatizaciones.", tone = UiTone.Neutral)) }, title = "Automatizaciones")
+        return UiCard(rows.ifEmpty { listOf(UiText(tr("Aun no hay automatizaciones."), tone = UiTone.Neutral)) }, title = tr("Automatizaciones"))
     }
 
     private fun formCard(context: CrmScreens.Context, refs: CrmAutomationRefs, editing: CrmAutomation?, submitted: Map<String, String>?): UiNode {
@@ -315,6 +317,7 @@ object CrmAutomationScreens {
         val conditionSlots = CrmAutomationForm.slots(editing?.conditions?.size ?: 0)
         val actionSlots = CrmAutomationForm.slots(editing?.actions?.size ?: 0)
         val stageNames = refs.stages.map { it.name }
+        val stageLabels = context.optionLabels(stageNames)
         val userNames = refs.users.map { it.name }
         val valueFields = refs.fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }
         val dateFields = listOf(CrmAutomationRefs.FollowUpLabel) + refs.fields.filter { it.type == CrmFieldType.Date }.map { it.label }
@@ -325,82 +328,82 @@ object CrmAutomationScreens {
         fun on(key: String, vararg labels: String) = UiFieldCondition(key, labels.toList())
         val none = CrmAutomationForm.None
         val trigger = listOf(
-            UiField("name", "Nombre", required = true),
-            UiField("enabled", "Activa", type = "boolean", help = "Una regla apagada no se ejecuta. Las de fecha solo corren para las fechas de hoy en adelante."),
-            UiField("triggerType", "Disparador", type = "dropdown", required = true, options = CrmTriggerType.entries.map { it.label }, help = "Manual: solo se ejecuta desde un boton del lead (campo de tipo Boton)."),
-            UiField("triggerStage", "Etapa", type = "dropdown", options = stageNames, visibleWhen = on("triggerType", CrmTriggerType.StageChanged.label)),
-            UiField("changedField", "Campo que cambia", type = "dropdown", options = listOf(CrmAutomationRefs.FollowUpLabel) + valueFields.map { it.label }, visibleWhen = on("triggerType", CrmTriggerType.FieldChanged.label)),
-            UiField("dateField", "Fecha", type = "dropdown", options = dateFields, visibleWhen = on("triggerType", CrmTriggerType.Date.label), help = "Un campo de fecha de la ficha (ingreso, salida...) o la fecha de seguimiento."),
-            UiField("dateWhen", "Cuando", type = "dropdown", options = listOf(CrmAutomationForm.WhenBefore, CrmAutomationForm.WhenOn, CrmAutomationForm.WhenAfter), visibleWhen = on("triggerType", CrmTriggerType.Date.label)),
-            UiField("dateDays", "Dias (0 a 60)", type = "number", visibleWhen = on("dateWhen", CrmAutomationForm.WhenBefore, CrmAutomationForm.WhenAfter)),
-            UiField("dateHour", "Hora del dia (0 a 23, zona horaria de la empresa)", type = "number", visibleWhen = on("triggerType", CrmTriggerType.Date.label)),
+            UiField("name", tr("Nombre"), required = true),
+            UiField("enabled", tr("Activa"), type = "boolean", help = tr("Una regla apagada no se ejecuta. Las de fecha solo corren para las fechas de hoy en adelante.")),
+            UiField("triggerType", tr("Disparador"), type = "dropdown", required = true, options = CrmTriggerType.entries.map { it.label }, help = tr("Manual: solo se ejecuta desde un boton del lead (campo de tipo Boton).")),
+            UiField("triggerStage", tr("Etapa"), type = "dropdown", options = stageNames, optionLabels = stageLabels, visibleWhen = on("triggerType", CrmTriggerType.StageChanged.label)),
+            UiField("changedField", tr("Campo que cambia"), type = "dropdown", options = listOf(CrmAutomationRefs.FollowUpLabel) + valueFields.map { it.label }, visibleWhen = on("triggerType", CrmTriggerType.FieldChanged.label)),
+            UiField("dateField", tr("Fecha"), type = "dropdown", options = dateFields, visibleWhen = on("triggerType", CrmTriggerType.Date.label), help = tr("Un campo de fecha de la ficha (ingreso, salida...) o la fecha de seguimiento.")),
+            UiField("dateWhen", tr("Cuando"), type = "dropdown", options = listOf(CrmAutomationForm.WhenBefore, CrmAutomationForm.WhenOn, CrmAutomationForm.WhenAfter), visibleWhen = on("triggerType", CrmTriggerType.Date.label)),
+            UiField("dateDays", tr("Dias (0 a 60)"), type = "number", visibleWhen = on("dateWhen", CrmAutomationForm.WhenBefore, CrmAutomationForm.WhenAfter)),
+            UiField("dateHour", tr("Hora del dia (0 a 23, zona horaria de la empresa)"), type = "number", visibleWhen = on("triggerType", CrmTriggerType.Date.label)),
         )
         val notices = listOf(
             UiField(
-                "warnHours", "Avisar con anticipacion (horas; 0 no avisa)", type = "number", section = "Datos que faltan", visibleWhen = on("triggerType", CrmTriggerType.Date.label),
-                help = "Reglas de fecha: con esta anticipacion se revisa si al lead le falta algo para la ejecucion (48 = 2 dias antes) y se avisa que falta.",
+                "warnHours", tr("Avisar con anticipacion (horas; 0 no avisa)"), type = "number", section = tr("Datos que faltan"), visibleWhen = on("triggerType", CrmTriggerType.Date.label),
+                help = tr("Reglas de fecha: con esta anticipacion se revisa si al lead le falta algo para la ejecucion (48 = 2 dias antes) y se avisa que falta."),
             ),
             UiField(
-                "notifyUsers", "Avisar a", type = "dropdown", multiple = true, options = userNames, section = "Datos que faltan",
-                help = "Quienes reciben el aviso de datos que faltan. Vacio: los asignados del lead.",
+                "notifyUsers", tr("Avisar a"), type = "dropdown", multiple = true, options = userNames, section = tr("Datos que faltan"),
+                help = tr("Quienes reciben el aviso de datos que faltan. Vacio: los asignados del lead."),
             ),
         )
         val conditions = (1..conditionSlots).flatMap { slot ->
-            val section = "Condicion $slot"
+            val section = tr("Condicion {0}", slot)
             val kind = "cond${slot}_kind"
             listOf(
-                UiField(kind, "Condicion", type = "dropdown", options = listOf(none) + CrmConditionKind.entries.map { it.label }, section = section, help = if (slot == 1) "Todas las condiciones deben cumplirse. Sin condiciones, siempre corre." else ""),
-                UiField("cond${slot}_stages", "Etapas", type = "dropdown", multiple = true, options = stageNames, section = section, visibleWhen = on(kind, CrmConditionKind.StageIn.label)),
+                UiField(kind, tr("Condicion"), type = "dropdown", options = listOf(none) + CrmConditionKind.entries.map { it.label }, section = section, help = if (slot == 1) tr("Todas las condiciones deben cumplirse. Sin condiciones, siempre corre.") else ""),
+                UiField("cond${slot}_stages", tr("Etapas"), type = "dropdown", multiple = true, options = stageNames, optionLabels = stageLabels, section = section, visibleWhen = on(kind, CrmConditionKind.StageIn.label)),
                 UiField(
-                    "cond${slot}_interests", "Intereses", type = "dropdown", multiple = true, options = listOf(CrmForms.NoInterest) + refs.interests.map { it.name }, section = section,
+                    "cond${slot}_interests", tr("Intereses"), type = "dropdown", multiple = true, options = listOf(CrmForms.NoInterest) + refs.interests.map { it.name }, section = section,
                     visibleWhen = on(kind, CrmConditionKind.InterestIn.label),
                 ),
                 UiField(
-                    "cond${slot}_field", "Campo", type = "dropdown", options = valueFields.map { it.label }, section = section,
+                    "cond${slot}_field", tr("Campo"), type = "dropdown", options = valueFields.map { it.label }, section = section,
                     visibleWhen = on(kind, CrmConditionKind.FieldEquals.label, CrmConditionKind.FieldNotEquals.label, CrmConditionKind.FieldEmpty.label, CrmConditionKind.FieldFilled.label),
                 ),
                 UiField(
-                    "cond${slot}_value", "Valor", section = section, visibleWhen = on(kind, CrmConditionKind.FieldEquals.label, CrmConditionKind.FieldNotEquals.label),
-                    help = "En campos Si / No escribe Si o No.",
+                    "cond${slot}_value", tr("Valor"), section = section, visibleWhen = on(kind, CrmConditionKind.FieldEquals.label, CrmConditionKind.FieldNotEquals.label),
+                    help = tr("En campos Si / No escribe Si o No."),
                 ),
             )
         }
         val actions = (1..actionSlots).flatMap { slot ->
-            val section = "Accion $slot"
+            val section = tr("Accion {0}", slot)
             val kind = "act${slot}_kind"
             listOf(
-                UiField(kind, "Accion", type = "dropdown", options = listOf(none) + actionKinds.map { it.label }, section = section, help = if (slot == 1) "Se ejecutan en orden y se detienen en la primera que falle. Cloudbeds aparece con la integracion activa." else ""),
-                UiField("act${slot}_template", "Plantilla", type = "dropdown", options = refs.templates.map { it.name }, section = section, visibleWhen = on(kind, CrmActionKind.SendTemplate.label), help = "Se envia al correo del lead (traducida si la plantilla lo pide)."),
-                UiField("act${slot}_stage", "Etapa", type = "dropdown", options = stageNames, section = section, visibleWhen = on(kind, CrmActionKind.SetStage.label)),
-                UiField("act${slot}_field", "Campo", type = "dropdown", options = settableFields, section = section, visibleWhen = on(kind, CrmActionKind.SetField.label)),
+                UiField(kind, tr("Accion"), type = "dropdown", options = listOf(none) + actionKinds.map { it.label }, section = section, help = if (slot == 1) tr("Se ejecutan en orden y se detienen en la primera que falle. Cloudbeds aparece con la integracion activa.") else ""),
+                UiField("act${slot}_template", tr("Plantilla"), type = "dropdown", options = refs.templates.map { it.name }, section = section, visibleWhen = on(kind, CrmActionKind.SendTemplate.label), help = tr("Se envia al correo del lead (traducida si la plantilla lo pide).")),
+                UiField("act${slot}_stage", tr("Etapa"), type = "dropdown", options = stageNames, optionLabels = stageLabels, section = section, visibleWhen = on(kind, CrmActionKind.SetStage.label)),
+                UiField("act${slot}_field", tr("Campo"), type = "dropdown", options = settableFields, section = section, visibleWhen = on(kind, CrmActionKind.SetField.label)),
                 UiField(
-                    "act${slot}_value", "Valor", section = section, visibleWhen = on(kind, CrmActionKind.SetField.label),
-                    help = "Vacio borra el campo. Fechas AAAA-MM-DD; Si / No como true o false; listas con una opcion exacta.",
+                    "act${slot}_value", tr("Valor"), section = section, visibleWhen = on(kind, CrmActionKind.SetField.label),
+                    help = tr("Vacio borra el campo. Fechas AAAA-MM-DD; Si / No como true o false; listas con una opcion exacta."),
                 ),
-                UiField("act${slot}_who", "Avisar a", type = "dropdown", options = CrmNotifyWho.entries.map { it.label }, section = section, visibleWhen = on(kind, CrmActionKind.Notify.label)),
-                UiField("act${slot}_users", "Usuarios", type = "dropdown", multiple = true, options = userNames, section = section, visibleWhen = on("act${slot}_who", CrmNotifyWho.Users.label)),
-                UiField("act${slot}_title", "Titulo del aviso", section = section, visibleWhen = on(kind, CrmActionKind.Notify.label)),
-                UiField("act${slot}_text", "Texto del aviso", type = "textarea", section = section, visibleWhen = on(kind, CrmActionKind.Notify.label), help = "Llega a la app y al correo de cada usuario."),
+                UiField("act${slot}_who", tr("Avisar a"), type = "dropdown", options = CrmNotifyWho.entries.map { it.label }, section = section, visibleWhen = on(kind, CrmActionKind.Notify.label)),
+                UiField("act${slot}_users", tr("Usuarios"), type = "dropdown", multiple = true, options = userNames, section = section, visibleWhen = on("act${slot}_who", CrmNotifyWho.Users.label)),
+                UiField("act${slot}_title", tr("Titulo del aviso"), section = section, visibleWhen = on(kind, CrmActionKind.Notify.label)),
+                UiField("act${slot}_text", tr("Texto del aviso"), type = "textarea", section = section, visibleWhen = on(kind, CrmActionKind.Notify.label), help = tr("Llega a la app y al correo de cada usuario.")),
             )
         }
         val open = buildList {
-            if (values["warnHours"].orEmpty() != "0" || values["notifyUsers"].orEmpty().isNotEmpty()) add("Datos que faltan")
-            (1..conditionSlots).forEach { slot -> if (values["cond${slot}_kind"].orEmpty().let { it.isNotEmpty() && it != none }) add("Condicion $slot") }
-            (1..actionSlots).forEach { slot -> if (slot == 1 || values["act${slot}_kind"].orEmpty().let { it.isNotEmpty() && it != none }) add("Accion $slot") }
+            if (values["warnHours"].orEmpty() != "0" || values["notifyUsers"].orEmpty().isNotEmpty()) add(tr("Datos que faltan"))
+            (1..conditionSlots).forEach { slot -> if (values["cond${slot}_kind"].orEmpty().let { it.isNotEmpty() && it != none }) add(tr("Condicion {0}", slot)) }
+            (1..actionSlots).forEach { slot -> if (slot == 1 || values["act${slot}_kind"].orEmpty().let { it.isNotEmpty() && it != none }) add(tr("Accion {0}", slot)) }
         }
         val saveParams = mapOf("op" to "save") + listOfNotNull(editing?.let { "automation" to it.id.toString() })
         return UiCard(
             listOf(
                 UiForm(
                     "automation", trigger + notices + conditions + actions, values,
-                    submit = UiButton(if (editing == null) "Crear automatizacion" else "Guardar automatizacion", UiRequest(UiRoute + "/automations", params = saveParams, formId = "automation")),
+                    submit = UiButton(if (editing == null) tr("Crear automatizacion") else tr("Guardar automatizacion"), UiRequest(UiRoute + "/automations", params = saveParams, formId = "automation")),
                     minFieldWidth = 220,
                     collapsibleSections = true,
                     openSections = open,
                 ),
             ),
-            title = if (editing == null) "Nueva automatizacion" else "Editar ${editing.name}",
-            actions = listOfNotNull(editing?.let { UiButton("Nueva", UiNavigate("automations"), style = "secondary") }),
+            title = if (editing == null) tr("Nueva automatizacion") else tr("Editar {0}", editing.name),
+            actions = listOfNotNull(editing?.let { UiButton(tr("Nueva"), UiNavigate("automations"), style = "secondary") }),
         )
     }
 
@@ -410,14 +413,14 @@ object CrmAutomationScreens {
                 title = "${run.automationName} - ${run.leadName}",
                 subtitle = run.detail,
                 trailing = timeFormat.format(run.createdAt.atZone(zone)),
-                badges = listOf(UiBadge(CrmAutomationStore.statusLabels[run.status] ?: run.status, tone(run.status))),
+                badges = listOf(UiBadge(CrmAutomationStore.statusLabel(run.status), tone(run.status))),
                 action = UiNavigate("lead", mapOf("id" to run.leadId.toString())),
             )
         }
         return UiCard(
-            listOf<UiNode>(UiList(items, emptyText = "Aun no hay ejecuciones.")) +
-                listOfNotNull(UiButton("Ver todas", UiNavigate("automations", mapOf("runs" to "all")), style = "secondary").takeIf { automationName != null }),
-            title = if (automationName != null) "Ejecuciones recientes: $automationName" else "Ejecuciones recientes",
+            listOf<UiNode>(UiList(items, emptyText = tr("Aun no hay ejecuciones."))) +
+                listOfNotNull(UiButton(tr("Ver todas"), UiNavigate("automations", mapOf("runs" to "all")), style = "secondary").takeIf { automationName != null }),
+            title = if (automationName != null) tr("Ejecuciones recientes: {0}", automationName) else tr("Ejecuciones recientes"),
             collapsible = true,
             expanded = asked,
         )

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.util.UUID
 
@@ -111,7 +112,7 @@ object CrmAssignees {
 
     /** Text of the import report for people that had no user ("" when none). */
     fun unmatchedNote(unmatched: List<String>): String =
-        if (unmatched.isEmpty()) "" else "Sin usuario para asignar (omitidos): ${unmatched.joinToString(", ")}."
+        if (unmatched.isEmpty()) "" else tr("Sin usuario para asignar (omitidos): {0}.", unmatched.joinToString(", "))
 
     // ---- Database ----
 

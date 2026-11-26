@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.ui.UiNode
 import com.ideasdeveloper.bms.ui.UiNotice
@@ -127,7 +128,7 @@ object CrmScreenProviders {
             provider.leadPanel(context, lead)
         } catch (failure: Exception) {
             log.warn("Fallo el panel del lead de la extension {}.", provider.extensionId, failure)
-            listOf<UiNode>(UiText("No se pudo mostrar el bloque de ${CrmExtensions.displayName(provider.extensionId)}.", tone = UiTone.Warning))
+            listOf<UiNode>(UiText(tr("No se pudo mostrar el bloque de {0}.", CrmExtensions.displayName(provider.extensionId)), tone = UiTone.Warning))
         }
     }
 }

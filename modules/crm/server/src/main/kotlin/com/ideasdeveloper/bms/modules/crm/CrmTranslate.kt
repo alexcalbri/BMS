@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.TextTranslator
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -71,8 +74,8 @@ interface CrmTranslationCache {
 /** Automatic translation of email templates into the guest's language (settings, providers, token protection, cache). */
 object CrmTranslate {
     const val DefaultModel = "claude-haiku-5-5"
-    const val NoField = "(ninguno)"
-    val providerLabels = linkedMapOf("" to "Sin traduccion", "google" to "Google Cloud Translation", "anthropic" to "IA por API (Claude)")
+    val NoField = msg("(ninguno)")
+    val providerLabels = linkedMapOf("" to msg("Sin traduccion"), "google" to "Google Cloud Translation", "anthropic" to msg("IA por API (Claude)"))
 
     private val languageCode = Regex("^[a-z]{2}(-[A-Za-z]{2,4})?$")
     private val token = Regex("⟦(\\d+)⟧")
@@ -159,11 +162,11 @@ object CrmTranslate {
             val name = line.substringBefore('=', "").trim()
             val code = normalizeLanguage(line.substringAfter('=', ""))
             if (!line.contains('=') || name.isEmpty() || name.length > 80 || code == null) {
-                throw CrmValidationException("Cada linea de equivalencias va como Valor = codigo (por ejemplo Ingles = en). Revisa: $line")
+                throw CrmValidationException(tr("Cada linea de equivalencias va como Valor = codigo (por ejemplo Ingles = en). Revisa: {0}", line))
             }
             result[name] = code
         }
-        if (result.size > 100) throw CrmValidationException("Maximo 100 equivalencias de idioma.")
+        if (result.size > 100) throw CrmValidationException(tr("Maximo 100 equivalencias de idioma."))
         return result
     }
 
@@ -172,8 +175,8 @@ object CrmTranslate {
         val provider = providerLabels.entries.firstOrNull { it.value == values["provider"] }?.key ?: current.provider
         val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) } ?: current.apiKey
         val model = values["model"].orEmpty().trim().takeIf { it != DefaultModel }.orEmpty()
-        if (model.length > 100 || !model.all { it.isLetterOrDigit() || it in "-._:/" }) throw CrmValidationException("El modelo de IA no es valido.")
-        if (provider.isNotEmpty() && key.isBlank()) throw CrmValidationException("Escribe la clave de API del traductor.")
+        if (model.length > 100 || !model.all { it.isLetterOrDigit() || it in "-._:/" }) throw CrmValidationException(tr("El modelo de IA no es valido."))
+        if (provider.isNotEmpty() && key.isBlank()) throw CrmValidationException(tr("Escribe la clave de API del traductor."))
         val field = languageFields(fields).firstOrNull { it.label == values["languageField"] }?.key.orEmpty()
         return CrmTranslationSettings(provider, key, model, field, parseLanguageMap(values["languageMap"].orEmpty()))
     }
@@ -196,6 +199,28 @@ object CrmTranslate {
 
     fun coolingDown(settings: CrmTranslationSettings, now: Instant = Instant.now()): Boolean =
         failures[cooldownKey(settings)]?.let { now.isBefore(it.plus(Cooldown)) } ?: false
+
+    /**
+     * The provider of Core's dynamic translation (I18N.md §8) with this company's settings: stage names and staff notes, one text
+     * at a time, never lead data. Null without provider or key (Core shows the originals); a provider error is marked here (the
+     * same cooldown as the templates) and thrown, so Core logs it and rests.
+     */
+    fun textTranslator(http: CrmHttp = CrmJavaHttp, settingsOf: (Connection) -> CrmTranslationSettings = ::load): TextTranslator = TextTranslator { tenant, texts, source, target ->
+        val settings = settingsOf(tenant)
+        val translator = translator(settings, http)
+        if (translator == null || coolingDown(settings)) {
+            null
+        } else {
+            try {
+                texts.map { text ->
+                    translator.translate(".", text, false, source, target).second.trim().ifEmpty { text }
+                }.also { markWorking(settings) }
+            } catch (failure: CrmTranslateException) {
+                markFailed(settings)
+                throw failure
+            }
+        }
+    }
 
     fun translator(settings: CrmTranslationSettings, http: CrmHttp): CrmTranslator? = when {
         !settings.ready -> null

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.modules.SmtpSettings
 import com.ideasdeveloper.bms.ui.UiBadge
@@ -55,11 +57,11 @@ object CrmScreens {
     const val Settings = "crm.settings"
     const val Assign = "crm.assign"
 
-    const val MentionedBadge = "Mencionado"
+    val MentionedBadge = msg("Mencionado")
     private const val BoardPerStage = 30
     private const val PageSize = 50
-    private const val AllOption = "Todos"
-    private const val MineOption = "Mis leads"
+    private val AllOption = msg("Todos")
+    private val MineOption = msg("Mis leads")
     private val timeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
     // [alsoPermission] opens the section too (assigners reach the suggestions in "Sin calificar").
@@ -69,26 +71,26 @@ object CrmScreens {
 
     // The menu: Nuevo lead, Leads (pipeline and list), Sin calificar, Seguimientos and Configuracion (tabs).
     private val sections = listOf(
-        Section("new", "Nuevo lead", Manage),
-        Section("leads", "Leads", View),
+        Section("new", msg("Nuevo lead"), Manage),
+        Section("leads", msg("Leads"), View),
         // Id "reception" and the Reception permission stay: "Recepcion" is a role.
-        Section("reception", "Sin calificar", Reception, alsoPermission = Assign),
-        Section("followups", "Seguimientos", View),
-        Section("settings", "Configuracion", Settings),
+        Section("reception", msg("Sin calificar"), Reception, alsoPermission = Assign),
+        Section("followups", msg("Seguimientos"), View),
+        Section("settings", msg("Configuracion"), Settings),
     )
 
     /** A tab of "Configuracion": [screen] is the id that opens it (the old section ids), [permission] who sees the tab. */
     class SettingsTab(val screen: String, val label: String, val permission: String)
 
     private val settingsTabs = listOf(
-        SettingsTab("settings", "General", Settings),
-        SettingsTab("automations", "Automatizaciones", Settings),
-        SettingsTab("team", "Equipo", Settings),
-        SettingsTab("mail", "Correo", Settings),
-        SettingsTab("templates", "Plantillas", Settings),
-        SettingsTab("spam", "Anti-spam", Settings),
-        SettingsTab("integrations", "Integraciones", Settings),
-        SettingsTab("import", "Importar", Settings),
+        SettingsTab("settings", msg("General"), Settings),
+        SettingsTab("automations", msg("Automatizaciones"), Settings),
+        SettingsTab("team", msg("Equipo"), Settings),
+        SettingsTab("mail", msg("Correo"), Settings),
+        SettingsTab("templates", msg("Plantillas"), Settings),
+        SettingsTab("spam", msg("Anti-spam"), Settings),
+        SettingsTab("integrations", msg("Integraciones"), Settings),
+        SettingsTab("import", msg("Importar"), Settings),
     )
 
     // Screens outside the menu: the lead detail, the "pipeline" view of Leads, the other tabs of Configuracion
@@ -179,6 +181,18 @@ object CrmScreens {
         val interestsEnabled get() = scope.interestsEnabled
         fun stage(id: UUID) = stages.firstOrNull { it.id == id }
 
+        // Stage names as the viewer reads them (dynamic translation, I18N.md §8); the stored names stay the values. One call per request.
+        private val stageLabels: Map<String, String> by lazy {
+            val names = stages.map { it.name }
+            names.zip(CrmTexts.labels(tenant, permissions.companyCode, names)).toMap()
+        }
+
+        /** The name of a stage in the viewer's language (the name itself when there is no translation). */
+        fun stageLabel(name: String): String = stageLabels[name] ?: name
+
+        /** [UiField.optionLabels] for [options] that mix stage names and fixed texts (null when nothing changes). */
+        fun optionLabels(options: List<String>): List<String>? = options.map { stageLabels[it] ?: tr(it) }.takeIf { it != options }
+
         // Interests the user may see and assign (all of them with "see all").
         val usableInterests get() = interests.filter { scope.seesAll || it.id in scope.interests }
 
@@ -214,11 +228,11 @@ object CrmScreens {
     ): UiScreen {
         val screen = canonical(requested)
         val permission = permissionFor(screen)
-            ?: return frame(context, screen, "Lead", UiNotice("Esa pantalla no existe.", UiTone.Warning), emptyList())
+            ?: return frame(context, screen, tr("Lead"), UiNotice(tr("Esa pantalla no existe."), UiTone.Warning), emptyList())
         val section = sections.firstOrNull { it.id == screen }
         CrmScreenProviders.section(screen)?.let { (provider, extensionSection) ->
             if (!context.permissions.has(permission)) {
-                return frame(context, screen, extensionSection.label, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
+                return frame(context, screen, extensionSection.label, UiNotice(tr("No tienes permiso para ver esta seccion."), UiTone.Danger), emptyList())
             }
             if (!CrmScreenProviders.enabled(context.tenant, provider)) {
                 return frame(context, screen, extensionSection.label, UiNotice(CrmExtensions.inactiveMessage(provider.extensionId), UiTone.Warning), emptyList())
@@ -227,38 +241,38 @@ object CrmScreens {
                 frame(context, screen, extensionSection.label, notice, provider.screen(context, screen, params, submitted))
             } catch (failure: Exception) {
                 org.slf4j.LoggerFactory.getLogger("CrmScreenProviders").warn("Fallo la pantalla {} de la extension {}.", screen, provider.extensionId, failure)
-                frame(context, screen, extensionSection.label, UiNotice("No se pudo abrir esta pantalla de la extension.", UiTone.Danger), emptyList())
+                frame(context, screen, extensionSection.label, UiNotice(tr("No se pudo abrir esta pantalla de la extension."), UiTone.Danger), emptyList())
             }
         }
         val title = when {
-            section != null -> section.label
-            screen == "pipeline" -> "Leads"
-            settingsTabOf(screen) != null -> "Configuracion"
-            else -> "Lead"
+            section != null -> tr(section.label)
+            screen == "pipeline" -> tr("Leads")
+            settingsTabOf(screen) != null -> tr("Configuracion")
+            else -> tr("Lead")
         }
         val allowed = section?.allows(context.permissions) ?: context.permissions.has(permission)
         // Old routes: "pipeline" and "bulk" open their own view of Leads; the other screens ignore it.
         val forced = forcedView(requested)
         if (!allowed) {
-            return frame(context, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
+            return frame(context, screen, title, UiNotice(tr("No tienes permiso para ver esta seccion."), UiTone.Danger), emptyList())
         }
         if (screen == "rooms") {
             val lead = params["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
                 ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
-                ?: return frame(context, "leads", "Habitaciones", UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), emptyList())
-            return frame(context, "leads", "Habitaciones", notice, CrmCloudbedsScreens.rooms(context, lead, params), showTitle = false)
+                ?: return frame(context, "leads", tr("Habitaciones"), UiNotice(tr("Ese lead no existe o no tienes acceso."), UiTone.Warning), emptyList())
+            return frame(context, "leads", tr("Habitaciones"), notice, CrmCloudbedsScreens.rooms(context, lead, params), showTitle = false)
         }
         if (screen == "properties") {
             val lead = params["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
                 ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
-                ?: return frame(context, "leads", "Propiedades", UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), emptyList())
-            return frame(context, "leads", "Propiedades", notice, CrmWordPressScreens.properties(context, lead, params), showTitle = false)
+                ?: return frame(context, "leads", tr("Propiedades"), UiNotice(tr("Ese lead no existe o no tienes acceso."), UiTone.Warning), emptyList())
+            return frame(context, "leads", tr("Propiedades"), notice, CrmWordPressScreens.properties(context, lead, params), showTitle = false)
         }
         if (screen == "lead") {
             // Opening the lead also works through a mention (read-only, with notes): see CrmMentions.LeadAccess.
             val lead = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
                 ?.takeIf { context.readAccess(it).canRead }
-                ?: return frame(context, "leads", "Lead", notice ?: UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), leadViews(context, null, emptyMap()))
+                ?: return frame(context, "leads", tr("Lead"), notice ?: UiNotice(tr("Ese lead no existe o no tienes acceso."), UiTone.Warning), leadViews(context, null, emptyMap()))
             return frame(context, "leads", lead.name, notice, leadDetail(context, lead, submitted), showTitle = false)
         }
         val body = when (screen) {
@@ -293,7 +307,7 @@ object CrmScreens {
     // Menu items: the own sections, with the active extensions' sections (that the user may open) before "settings".
     private fun menuItems(context: Context): List<UiNavItem> {
         val own = menu(context.permissions, context.interestsEnabled)
-        val ownItems = sections.filter { it.id in own }.map { it.id to UiNavItem(it.id, it.label, UiNavigate(it.id)) }
+        val ownItems = sections.filter { it.id in own }.map { it.id to UiNavItem(it.id, tr(it.label), UiNavigate(it.id)) }
         val extra = CrmScreenProviders.active(context.tenant).flatMap { provider ->
             CrmScreenProviders.sections(provider).filter { it.inMenu && context.permissions.has(it.permission) }
                 .map { UiNavItem(it.id, it.label, UiNavigate(it.id)) }
@@ -306,9 +320,9 @@ object CrmScreens {
     private fun tabBar(context: Context, current: String): List<UiNode> {
         val selected = settingsTabOf(current)
         val tabs = settingsTabs.filter { context.permissions.has(it.permission) }
-        val buttons = tabs.map { UiButton(it.label, UiNavigate(it.screen), style = if (it.screen == selected) "primary" else "secondary") }
+        val buttons = tabs.map { UiButton(tr(it.label), UiNavigate(it.screen), style = if (it.screen == selected) "primary" else "secondary") }
         // Ultima pestana: abre la pantalla nativa de extensiones filtrada al CRM (apps viejas la ignoran).
-        val extensions = UiButton("Extensiones", UiOpenExtensions(CrmModule.id), style = "secondary").takeIf { context.permissions.has(Settings) }
+        val extensions = UiButton(tr("Extensiones"), UiOpenExtensions(CrmModule.id), style = "secondary").takeIf { context.permissions.has(Settings) }
         return listOf(UiRow(buttons + listOfNotNull(extensions)))
     }
 
@@ -335,6 +349,9 @@ object CrmScreens {
     // Request parameter with the assigned users (ids separated by comma) a lead form was drawn with.
     const val OwnersBeforeKey = "owners0"
 
+    // Fields of the stage editor with the manual translation of the name, one per language ("stageName_en").
+    const val StageTranslationPrefix = "stageName_"
+
     private const val ShowArchivedKey = "showArchived"
     private const val ArchivedColumn = "archived"
 
@@ -350,9 +367,9 @@ object CrmScreens {
         if (!context.permissions.has(Manage) || archived.isEmpty()) return null
         return UiCard(
             archived.map { lead ->
-                UiRow(listOf(UiText(lead.name), UiButton("Restaurar", restoreRequest(lead, from, keep), style = "secondary")))
+                UiRow(listOf(UiText(lead.name), UiButton(tr("Restaurar"), restoreRequest(lead, from, keep), style = "secondary")))
             },
-            title = "Restaurar archivados (${archived.size})",
+            title = tr("Restaurar archivados ({0})", archived.size),
             collapsible = true,
             expanded = false,
         )
@@ -388,15 +405,18 @@ object CrmScreens {
         submitParams: Map<String, String> = emptyMap(),
     ): UiNode {
         val fields = buildList {
-            if (withSearch) add(UiField("q", "Buscar", placeholder = "Nombre, correo, telefono, origen o mensaje"))
+            if (withSearch) add(UiField("q", tr("Buscar"), placeholder = tr("Nombre, correo, telefono, origen o mensaje")))
             if (context.interestsEnabled) {
                 val options = listOf(AllOption) + context.usableInterests.map { it.name } + listOfNotNull(CrmForms.NoInterest.takeIf { context.scope.seesAll || context.scope.reception })
-                add(UiField("fInterest", "Interes", type = "dropdown", options = options))
+                add(UiField("fInterest", tr("Interes"), type = "dropdown", options = options))
             }
             val owners = listOf(AllOption) + listOfNotNull(MineOption.takeIf { context.scope.userId != null }) + CrmForms.Unassigned + context.users.map { it.name }
-            add(UiField("fOwner", "Asignado", type = "dropdown", options = owners))
-            if (withStage) add(UiField("fStage", "Etapa", type = "dropdown", options = listOf(AllOption) + context.stages.map { it.name }))
-            if (archivedShown != null) add(UiField(ShowArchivedKey, "Mostrar archivados", type = "boolean"))
+            add(UiField("fOwner", tr("Asignado"), type = "dropdown", options = owners))
+            if (withStage) {
+                val stageOptions = listOf(AllOption) + context.stages.map { it.name }
+                add(UiField("fStage", tr("Etapa"), type = "dropdown", options = stageOptions, optionLabels = context.optionLabels(stageOptions)))
+            }
+            if (archivedShown != null) add(UiField(ShowArchivedKey, tr("Mostrar archivados"), type = "boolean"))
         }
         val values = fields.associate {
             it.key to when {
@@ -408,7 +428,7 @@ object CrmScreens {
             listOf(
                 UiForm(
                     "filters", fields, values,
-                    submit = UiButton("Filtrar", UiNavigate(screen, submitParams, formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate(screen, submitParams, formId = "filters"), style = "secondary"),
                     minFieldWidth = 200,
                 ),
             ),
@@ -429,9 +449,9 @@ object CrmScreens {
         val selector = UiRow(
             listOfNotNull(
                 // The filter form travels with the switch, so both views show the same filters.
-                UiButton("Pipeline", UiNavigate("leads", mapOf(ViewKey to ViewPipeline), formId = "filters"), style = if (view == ViewPipeline) "primary" else "secondary"),
-                UiButton("Lista", UiNavigate("leads", mapOf(ViewKey to ViewList), formId = "filters"), style = if (view == ViewList) "primary" else "secondary"),
-                UiButton("Nuevo lead", UiNavigate("new")).takeIf { canManage },
+                UiButton(tr("Pipeline"), UiNavigate("leads", mapOf(ViewKey to ViewPipeline), formId = "filters"), style = if (view == ViewPipeline) "primary" else "secondary"),
+                UiButton(tr("Lista"), UiNavigate("leads", mapOf(ViewKey to ViewList), formId = "filters"), style = if (view == ViewList) "primary" else "secondary"),
+                UiButton(tr("Nuevo lead"), UiNavigate("new")).takeIf { canManage },
             ),
         )
         val filters = filterForm(context, "leads", params, withStage = view == ViewList, withSearch = true, archivedShown = showArchived, submitParams = mapOf(ViewKey to view))
@@ -467,11 +487,11 @@ object CrmScreens {
             val total = totals[stage.id] ?: 0
             UiBoardColumn(
                 id = stage.id.toString(),
-                title = stage.name,
+                title = context.stageLabel(stage.name),
                 tone = stage.tone.id,
-                caption = if (total > cards.size) "Mostrando ${cards.size} de $total" else "",
+                caption = if (total > cards.size) tr("Mostrando {0} de {1}", cards.size, total) else "",
                 cards = cards.map { card(context, it, stage) },
-                footer = if (total > cards.size) UiButton("Ver todos", UiNavigate("bulk", keep + ("fStage" to stage.name)), style = "secondary") else null,
+                footer = if (total > cards.size) UiButton(tr("Ver todos"), UiNavigate("bulk", keep + ("fStage" to stage.name)), style = "secondary") else null,
             )
         }
         // After the last stage: leads archived (they are left out of the stage columns above).
@@ -484,11 +504,11 @@ object CrmScreens {
             listOf(
                 UiBoardColumn(
                     id = ArchivedColumn,
-                    title = "Archivados",
+                    title = tr("Archivados"),
                     tone = StageTone.Neutral.id,
-                    caption = if (archivedTotal > archived.size) "Mostrando ${archived.size} de $archivedTotal" else "",
+                    caption = if (archivedTotal > archived.size) tr("Mostrando {0} de {1}", archived.size, archivedTotal) else "",
                     cards = archived.map { card(context, it, context.stage(it.stageId)) },
-                    footer = if (archivedTotal > archived.size) UiButton("Ver todos", UiNavigate("bulk", keep), style = "secondary") else null,
+                    footer = if (archivedTotal > archived.size) UiButton(tr("Ver todos"), UiNavigate("bulk", keep), style = "secondary") else null,
                 ),
             )
         } else {
@@ -498,7 +518,7 @@ object CrmScreens {
             UiBoard(
                 columns = stageColumns + archivedColumn,
                 move = if (canMove) UiRequest(UiRoute + "/pipeline", params = keep + ("op" to "move")) else null,
-                emptyText = "Crea etapas en Configuracion.",
+                emptyText = tr("Crea etapas en Configuracion."),
                 actions = CrmBoardActions.declared(context, keep, archivedColumn = showArchived),
             ),
             restoreCard(context, archivedShownLeads.filter { context.readAccess(it).canWrite }, "pipeline", keep),
@@ -509,14 +529,14 @@ object CrmScreens {
         val summary = CrmRepository.summary(context.tenant, context.scope, context.today.minusDays(29), context.today)
         return UiGrid(
             listOf(
-                UiCard(listOf(UiMetric("Leads abiertos", summary.open.toString()))),
-                UiCard(listOf(UiMetric("Nuevos (30 dias)", summary.createdSince.toString()))),
-                UiCard(listOf(UiMetric("Ganados (30 dias)", summary.wonSince.toString(), captionTone = UiTone.Success))),
+                UiCard(listOf(UiMetric(tr("Leads abiertos"), summary.open.toString()))),
+                UiCard(listOf(UiMetric(tr("Nuevos (30 dias)"), summary.createdSince.toString()))),
+                UiCard(listOf(UiMetric(tr("Ganados (30 dias)"), summary.wonSince.toString(), captionTone = UiTone.Success))),
                 UiCard(
                     listOf(
                         UiMetric(
-                            "Seguimientos vencidos", summary.overdue.toString(),
-                            caption = if (summary.overdue > 0) "Revisa Seguimientos" else "Al dia",
+                            tr("Seguimientos vencidos"), summary.overdue.toString(),
+                            caption = if (summary.overdue > 0) tr("Revisa Seguimientos") else tr("Al dia"),
                             captionTone = if (summary.overdue > 0) UiTone.Danger else UiTone.Success,
                         ),
                     ),
@@ -528,14 +548,14 @@ object CrmScreens {
 
     private fun badges(context: Context, lead: CrmLead, stage: CrmStage?): List<UiBadge> = buildList {
         if (context.interestsEnabled) {
-            add(if (lead.interestId == null) UiBadge(CrmForms.NoInterest, UiTone.Warning) else UiBadge(context.names.interest(lead.interestId), UiTone.Info))
+            add(if (lead.interestId == null) UiBadge(tr(CrmForms.NoInterest), UiTone.Warning) else UiBadge(context.names.interest(lead.interestId), UiTone.Info))
         }
         if (stage?.kind == StageKind.Open) followUpState(lead.followUpOn, context.today)?.let { (label, tone) -> add(UiBadge(label, tone)) }
-        lead.suggestedOwnerUserId?.let { add(UiBadge("Sugerido: ${context.names.user(it)}", UiTone.Info)) }
-        if (lead.reviewReason.isNotEmpty()) add(UiBadge("Por revisar", UiTone.Danger))
-        if (lead.archivedAt != null) add(UiBadge("Archivado", UiTone.Neutral))
+        lead.suggestedOwnerUserId?.let { add(UiBadge(tr("Sugerido: {0}", context.names.user(it)), UiTone.Info)) }
+        if (lead.reviewReason.isNotEmpty()) add(UiBadge(tr("Por revisar"), UiTone.Danger))
+        if (lead.archivedAt != null) add(UiBadge(tr("Archivado"), UiTone.Neutral))
         // Seen only because of a mention (not inside the user's scope): read and notes.
-        if (context.readAccess(lead) == CrmMentions.LeadAccess.ReadNotes) add(UiBadge(MentionedBadge, UiTone.Info))
+        if (context.readAccess(lead) == CrmMentions.LeadAccess.ReadNotes) add(UiBadge(tr(MentionedBadge), UiTone.Info))
     }
 
     private fun card(context: Context, lead: CrmLead, stage: CrmStage?) = UiBoardCard(
@@ -544,10 +564,10 @@ object CrmScreens {
         subtitle = lead.message.ifBlank { lead.source }.replace('\n', ' ').let { if (it.length > 90) it.take(87) + "..." else it },
         details = listOfNotNull(
             // Initials of everybody assigned; the names are in the lead.
-            lead.ownerUserIds.takeIf { it.isNotEmpty() }?.let { "Asignados: ${CrmAssignees.initialsLabels(context.names, it).joinToString(", ")}" },
+            lead.ownerUserIds.takeIf { it.isNotEmpty() }?.let { tr("Asignados: {0}", CrmAssignees.initialsLabels(context.names, it).joinToString(", ")) },
             // Archived leads sit outside the stages: say where they were.
-            stage?.takeIf { lead.archivedAt != null }?.let { "Etapa: ${it.name}" },
-            lead.estimatedValue?.let { "Valor: ${it.toPlainString()}" },
+            stage?.takeIf { lead.archivedAt != null }?.let { tr("Etapa: {0}", context.stageLabel(it.name)) },
+            lead.estimatedValue?.let { tr("Valor: {0}", it.toPlainString()) },
         ) + CrmStay.cardLines(lead, CrmStay.effective(context.stay, context.fields), context.fields),
         badges = badges(context, lead, stage),
         action = UiNavigate("lead", mapOf("id" to lead.id.toString())),
@@ -558,9 +578,9 @@ object CrmScreens {
     private fun listItem(context: Context, lead: CrmLead, suggestion: Boolean = false) = UiListItem(
         title = lead.name,
         subtitle = listOf(
-            context.stage(lead.stageId)?.name.orEmpty(), lead.email, lead.phone,
+            context.stage(lead.stageId)?.name?.let { context.stageLabel(it) }.orEmpty(), lead.email, lead.phone,
             lead.ownerUserIds.takeIf { it.isNotEmpty() }?.let { CrmAssignees.initialsLabels(context.names, it).joinToString(", ") }.orEmpty(),
-            lead.suggestedOwnerUserId.takeIf { suggestion }?.let { "Sugerido: ${context.names.user(it)}" }.orEmpty(),
+            lead.suggestedOwnerUserId.takeIf { suggestion }?.let { tr("Sugerido: {0}", context.names.user(it)) }.orEmpty(),
         ).filter { it.isNotBlank() }.joinToString(" - "),
         trailing = lead.createdAt.atZone(ZoneId.systemDefault()).toLocalDate().toString(),
         badges = badges(context, lead, context.stage(lead.stageId)),
@@ -573,9 +593,9 @@ object CrmScreens {
         val keep = filterParams(params) + extra
         return UiRow(
             listOfNotNull(
-                UiButton("Anterior", UiNavigate(screen, keep + ("page" to (page - 1).toString())), style = "secondary").takeIf { page > 1 },
-                UiText("Pagina $page de $pages", UiTextStyle.Caption),
-                UiButton("Siguiente", UiNavigate(screen, keep + ("page" to (page + 1).toString())), style = "secondary").takeIf { page < pages },
+                UiButton(tr("Anterior"), UiNavigate(screen, keep + ("page" to (page - 1).toString())), style = "secondary").takeIf { page > 1 },
+                UiText(tr("Pagina {0} de {1}", page, pages), UiTextStyle.Caption),
+                UiButton(tr("Siguiente"), UiNavigate(screen, keep + ("page" to (page + 1).toString())), style = "secondary").takeIf { page < pages },
             ),
         )
     }
@@ -604,10 +624,10 @@ object CrmScreens {
         return listOfNotNull(
             UiCard(
                 listOfNotNull(
-                    UiList(leads.map { listItem(context, it) }, emptyText = "No hay leads con estos filtros."),
+                    UiList(leads.map { listItem(context, it) }, emptyText = tr("No hay leads con estos filtros.")),
                     pager("leads", params, page, total, mapOf(ViewKey to ViewList)),
                 ),
-                title = "$total lead(s)",
+                title = tr("{0} lead(s)", total),
             ),
             // Only with crm.leads.manage: one checkbox per lead of this page and the action.
             CrmImportScreens.bulkCard(context, writable, page, total, keep - "page" + (ViewKey to ViewList)),
@@ -627,20 +647,20 @@ object CrmScreens {
                 val id = mapOf("id" to lead.id.toString(), "from" to "reception")
                 UiRow(
                     listOfNotNull(
-                        UiText("${lead.name} - Sugerido: ${context.names.user(lead.suggestedOwnerUserId)}"),
-                        UiButton("Aprobar", UiRequest(UiRoute + "/lead", params = id + ("op" to "approve"))),
-                        UiButton("Descartar", UiRequest(UiRoute + "/lead", params = id + ("op" to "discard")), style = "secondary"),
+                        UiText(tr("{0} - Sugerido: {1}", lead.name, context.names.user(lead.suggestedOwnerUserId))),
+                        UiButton(tr("Aprobar"), UiRequest(UiRoute + "/lead", params = id + ("op" to "approve"))),
+                        UiButton(tr("Descartar"), UiRequest(UiRoute + "/lead", params = id + ("op" to "discard")), style = "secondary"),
                     ),
                 )
             },
-            title = "Sugerencias de asignado (${suggested.size})",
+            title = tr("Sugerencias de asignado ({0})", suggested.size),
         ).takeIf { suggested.isNotEmpty() }
         return listOfNotNull(
-            UiText("Leads sin usuarios asignados y sin interes. Abre cada uno y dale un interes o asignalo a alguien: saldra de esta lista en cuanto tenga al menos uno de los dos. El usuario que sugiere el origen del lead se aprueba (se anade a los asignados) o se descarta aqui."),
+            UiText(tr("Leads sin usuarios asignados y sin interes. Abre cada uno y dale un interes o asignalo a alguien: saldra de esta lista en cuanto tenga al menos uno de los dos. El usuario que sugiere el origen del lead se aprueba (se anade a los asignados) o se descarta aqui.")),
             suggestions,
             UiCard(
-                listOfNotNull(UiList(leads.map { listItem(context, it, suggestion = context.canAssign) }, emptyText = "No hay leads por calificar."), pager("reception", params, page, total)),
-                title = "$total sin calificar",
+                listOfNotNull(UiList(leads.map { listItem(context, it, suggestion = context.canAssign) }, emptyText = tr("No hay leads por calificar.")), pager("reception", params, page, total)),
+                title = tr("{0} sin calificar", total),
             ),
         )
     }
@@ -657,9 +677,9 @@ object CrmScreens {
         )
         return listOf(
             filterForm(context, "followups", params, withStage = false, withSearch = false),
-            group("Vencidos", overdue, "Sin seguimientos vencidos."),
-            group("Hoy", today, "Nada para hoy."),
-            group("Proximos 7 dias", upcoming, "Sin seguimientos en la proxima semana."),
+            group(tr("Vencidos"), overdue, tr("Sin seguimientos vencidos.")),
+            group(tr("Hoy"), today, tr("Nada para hoy.")),
+            group(tr("Proximos 7 dias"), upcoming, tr("Sin seguimientos en la proxima semana.")),
         )
     }
 
@@ -681,51 +701,51 @@ object CrmScreens {
         showCustomerCode: Boolean = false,
     ): List<UiField> {
         val suggest = UiSuggest(CustomerSuggestRoute).takeIf { suggestCustomers }
-        val customer = CrmFieldSections.system.first { it.first == CrmFieldSections.Customer }.second
-        val followup = CrmFieldSections.system.first { it.first == CrmFieldSections.Followup }.second
-        val message = CrmFieldSections.system.first { it.first == CrmFieldSections.Message }.second
+        val customer = tr(CrmFieldSections.system.first { it.first == CrmFieldSections.Customer }.second)
+        val followup = tr(CrmFieldSections.system.first { it.first == CrmFieldSections.Followup }.second)
+        val message = tr(CrmFieldSections.system.first { it.first == CrmFieldSections.Message }.second)
         // The built-in fields of each built-in section.
         val builtIn: Map<String, List<UiField>> = mapOf(
             CrmFieldSections.Customer to buildList {
-                add(UiField("name", "Nombre", required = true, readOnly = readOnly, section = customer, suggest = suggest))
+                add(UiField("name", tr("Nombre"), required = true, readOnly = readOnly, section = customer, suggest = suggest))
                 add(
                     UiField(
-                        "email", "Correo", type = "email", readOnly = readOnly, section = customer, suggest = suggest?.copy(minLength = 3),
-                        help = if (suggestCustomers) "Si ya hay un cliente con este correo o telefono, el lead se le asigna." else "",
+                        "email", tr("Correo"), type = "email", readOnly = readOnly, section = customer, suggest = suggest?.copy(minLength = 3),
+                        help = if (suggestCustomers) tr("Si ya hay un cliente con este correo o telefono, el lead se le asigna.") else "",
                     ),
                 )
-                add(UiField("phone", "Telefono", type = "phone", readOnly = readOnly, section = customer, suggest = suggest?.copy(minLength = 3)))
-                if (showCustomerCode) add(UiField("customerCode", "Codigo del cliente", readOnly = true, section = customer))
-                add(UiField("language", "Idioma", readOnly = readOnly, section = customer))
+                add(UiField("phone", tr("Telefono"), type = "phone", readOnly = readOnly, section = customer, suggest = suggest?.copy(minLength = 3)))
+                if (showCustomerCode) add(UiField("customerCode", tr("Codigo del cliente"), readOnly = true, section = customer))
+                add(UiField("language", tr("Idioma"), readOnly = readOnly, section = customer))
             },
             CrmFieldSections.Followup to buildList {
-                add(UiField("stage", "Etapa", type = "dropdown", required = true, readOnly = readOnly, options = context.stages.map { it.name }, section = followup))
+                add(UiField("stage", tr("Etapa"), type = "dropdown", required = true, readOnly = readOnly, options = context.stages.map { it.name }, optionLabels = context.optionLabels(context.stages.map { it.name }), section = followup))
                 if (context.interestsEnabled) {
                     val usable = context.usableInterests.map { it.name }
                     val current = currentInterest?.let { context.names.interest(it) }
                     val options = listOfNotNull(CrmForms.NoInterest.takeIf { context.scope.seesAll || context.scope.reception || currentInterest == null }) +
                         (usable + listOfNotNull(current)).distinct()
-                    add(UiField("interest", "Interes", type = "dropdown", readOnly = readOnly, options = options, section = followup))
+                    add(UiField("interest", tr("Interes"), type = "dropdown", readOnly = readOnly, options = options, section = followup))
                 }
                 add(
                     UiField(
-                        "owner", "Asignado", type = "dropdown", multiple = true, readOnly = readOnly || !context.canAssign,
+                        "owner", tr("Asignado"), type = "dropdown", multiple = true, readOnly = readOnly || !context.canAssign,
                         options = (context.users + legacyOwners).map { it.name }, section = followup,
-                        help = "Pueden ser varias personas; todas ven el lead y reciben sus seguimientos.",
+                        help = tr("Pueden ser varias personas; todas ven el lead y reciben sus seguimientos."),
                     ),
                 )
-                add(UiField("followUpOn", "Proximo seguimiento", type = "date", readOnly = readOnly, section = followup))
-                add(UiField("source", "Origen", readOnly = readOnly, placeholder = "Sitio web, WhatsApp, referido...", section = followup))
-                add(UiField("estimatedValue", "Valor estimado", type = "number", readOnly = readOnly, section = followup))
+                add(UiField("followUpOn", tr("Proximo seguimiento"), type = "date", readOnly = readOnly, section = followup))
+                add(UiField("source", tr("Origen"), readOnly = readOnly, placeholder = tr("Sitio web, WhatsApp, referido..."), section = followup))
+                add(UiField("estimatedValue", tr("Valor estimado"), type = "number", readOnly = readOnly, section = followup))
             },
             CrmFieldSections.Message to listOf(
-                UiField("message", "Mensaje del lead", type = "textarea", readOnly = readOnly, section = message),
-                UiField("details", "Detalles", type = "textarea", readOnly = readOnly, help = "Cotizacion, personas y lo propio de esta oportunidad. Gustos y preferencias que valen siempre van en Notas del cliente.", section = message),
+                UiField("message", tr("Mensaje del lead"), type = "textarea", readOnly = readOnly, section = message),
+                UiField("details", tr("Detalles"), type = "textarea", readOnly = readOnly, help = tr("Cotizacion, personas y lo propio de esta oportunidad. Gustos y preferencias que valen siempre van en Notas del cliente."), section = message),
             ),
             CrmFieldSections.Documents to listOf(
                 UiField(
-                    CrmFields.Documents, CrmFields.DocumentsLabel, type = "files", readOnly = readOnly, files = Files, section = CrmFields.DocumentsLabel,
-                    help = "Adjunta documentos o carpetas completas. Se guardan al guardar el lead.",
+                    CrmFields.Documents, tr(CrmFields.DocumentsLabel), type = "files", readOnly = readOnly, files = Files, section = tr(CrmFields.DocumentsLabel),
+                    help = tr("Adjunta documentos o carpetas completas. Se guardan al guardar el lead."),
                 ),
             ),
         )
@@ -735,18 +755,18 @@ object CrmScreens {
             sections.forEach { section ->
                 section.systemKey?.let { builtIn[it] }?.let { addAll(it) }
                 context.fields.filter { it.sectionId == section.id && it.type != CrmFieldType.Button }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
-                    .forEach { add(customField(it, readOnly, section.name)) }
+                    .forEach { add(customField(it, readOnly, tr(section.name))) }
             }
             // The fields without section (or whose section is gone) go last, in "Campos personalizados".
             val placed = sections.map { it.id }.toSet()
             context.fields.filter { (it.sectionId == null || it.sectionId !in placed) && it.type != CrmFieldType.Button }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
-                .forEach { add(customField(it, readOnly, CrmFields.Section)) }
+                .forEach { add(customField(it, readOnly, tr(CrmFields.Section))) }
         }
     }
 
     // Sections of the lead form that start open: the ones used every time, and the custom fields when one is required.
     private fun openLeadSections(context: Context): List<String> =
-        listOf(CrmFieldSections.system[0].second, CrmFieldSections.system[1].second) + context.fields.filter { it.required }.map { CrmFieldSections.title(it, context.sections) }.distinct()
+        listOf(CrmFieldSections.system[0].second, CrmFieldSections.system[1].second).map { tr(it) } + context.fields.filter { it.required }.map { tr(CrmFieldSections.title(it, context.sections)) }.distinct()
 
     // Where the app uploads and downloads the files of the lead form (see CrmServerModule).
     const val FilesRoute = "$UiRoute/files"
@@ -768,12 +788,12 @@ object CrmScreens {
     fun customerSuggestions(customers: List<CrmRepository.CustomerSuggestion>): UiSuggestions {
         val exact = customers.any { it.exact }
         return UiSuggestions(
-            heading = if (exact) "Ya existe un cliente con este correo o telefono: el lead se le asignara." else "Clientes existentes",
+            heading = if (exact) tr("Ya existe un cliente con este correo o telefono: el lead se le asignara.") else tr("Clientes existentes"),
             items = customers.map { customer ->
                 val leads = when (customer.openLeads) {
                     0 -> ""
-                    1 -> "1 lead abierto"
-                    else -> "${customer.openLeads} leads abiertos"
+                    1 -> tr("1 lead abierto")
+                    else -> tr("{0} leads abiertos", customer.openLeads)
                 }
                 UiSuggestion(
                     title = customer.name.ifBlank { customer.email.ifBlank { customer.phone } },
@@ -808,7 +828,7 @@ object CrmScreens {
     }
 
     private fun newLead(context: Context, submitted: Map<String, String>?): List<UiNode> {
-        if (context.stages.isEmpty()) return listOf(UiText("Crea al menos una etapa en Configuracion.", tone = UiTone.Warning))
+        if (context.stages.isEmpty()) return listOf(UiText(tr("Crea al menos una etapa en Configuracion."), tone = UiTone.Warning))
         val defaults = mapOf(
             "stage" to context.stages.first().name,
             "interest" to if (context.interestsEnabled && !context.scope.seesAll && !context.scope.reception) context.usableInterests.firstOrNull()?.name.orEmpty() else CrmForms.NoInterest,
@@ -816,12 +836,12 @@ object CrmScreens {
             // Every custom field is sent even if left untouched, so required ones are checked.
         ) + context.fields.filter { it.type != CrmFieldType.Button }.associate { it.key to "" } + (CrmFields.Documents to "")
         return listOf(
-            UiText("Correo y telefono son opcionales. Mientras escribes se sugieren los clientes existentes; si ya hay uno con ese correo o telefono, el lead se le asigna en lugar de crear otro."),
+            UiText(tr("Correo y telefono son opcionales. Mientras escribes se sugieren los clientes existentes; si ya hay uno con ese correo o telefono, el lead se le asigna en lugar de crear otro.")),
             UiCard(
                 listOf(
                     UiForm(
                         "lead", leadFields(context, readOnly = false, currentInterest = null, suggestCustomers = true), defaults + submitted.orEmpty(),
-                        submit = UiButton("Crear lead", UiRequest(UiRoute + "/new", params = mapOf("op" to "create"), formId = "lead")),
+                        submit = UiButton(tr("Crear lead"), UiRequest(UiRoute + "/new", params = mapOf("op" to "create"), formId = "lead")),
                         collapsibleSections = true,
                         openSections = openLeadSections(context),
                     ),
@@ -840,18 +860,18 @@ object CrmScreens {
         val header = UiRow(
             listOfNotNull(
                 UiText(lead.name, UiTextStyle.Title),
-                stage?.let { UiStatus(it.name, it.tone.id) },
-                lead.archivedAt?.let { UiStatus("Archivado", UiTone.Neutral) },
-                UiText("Creado ${lead.createdAt.atZone(ZoneId.systemDefault()).toLocalDate()}", UiTextStyle.Caption),
+                stage?.let { UiStatus(context.stageLabel(it.name), it.tone.id) },
+                lead.archivedAt?.let { UiStatus(tr("Archivado"), UiTone.Neutral) },
+                UiText(tr("Creado {0}", lead.createdAt.atZone(ZoneId.systemDefault()).toLocalDate()), UiTextStyle.Caption),
             ),
         )
         val actions = UiRow(
             listOfNotNull(
                 // An archived lead does not move: it comes back first, to the stage it had.
-                UiButton("Restaurar", restoreRequest(lead, null)).takeIf { lead.archivedAt != null && canEdit },
-                UiButton("Volver a Leads", UiNavigate("leads"), style = "secondary"),
+                UiButton(tr("Restaurar"), restoreRequest(lead, null)).takeIf { lead.archivedAt != null && canEdit },
+                UiButton(tr("Volver a Leads"), UiNavigate("leads"), style = "secondary"),
                 UiButton(
-                    "Eliminar lead", UiRequest(UiRoute + "/lead", params = id + ("op" to "delete"), confirm = "Se elimina el lead y su actividad; el cliente queda en Clientes. Continuar?"),
+                    tr("Eliminar lead"), UiRequest(UiRoute + "/lead", params = id + ("op" to "delete"), confirm = tr("Se elimina el lead y su actividad; el cliente queda en Clientes. Continuar?")),
                     style = "danger",
                 ).takeIf { context.permissions.has(Delete) && access.canWrite },
             ),
@@ -866,12 +886,12 @@ object CrmScreens {
                     leadValues(context, lead, legacyOwners).let { if (context.scope.seesAll) it else it - "customerCode" } + submitted.orEmpty() +
                         (if (context.scope.seesAll) mapOf("customerCode" to lead.customerCode) else emptyMap()),
                     // owners0: the assigned users the form was drawn with; saving applies only the difference to them.
-                    submit = if (canEdit) UiButton("Guardar cambios", UiRequest(UiRoute + "/lead", params = id + ("op" to "save") + (OwnersBeforeKey to lead.ownerUserIds.joinToString(",")), formId = "lead")) else null,
+                    submit = if (canEdit) UiButton(tr("Guardar cambios"), UiRequest(UiRoute + "/lead", params = id + ("op" to "save") + (OwnersBeforeKey to lead.ownerUserIds.joinToString(",")), formId = "lead")) else null,
                     collapsibleSections = true,
                     openSections = openLeadSections(context),
                 ),
             ),
-            title = "Datos del lead",
+            title = tr("Datos del lead"),
         )
         // "Mencionar a" next to the note; the text also recognizes @Nombre and @correo, and the app suggests users while "@" is typed.
         val mentionOptions = context.mentionable.filter { it.id != context.scope.userId }.map { it.name }
@@ -881,19 +901,19 @@ object CrmScreens {
                     "note",
                     listOfNotNull(
                         UiField(
-                            "note", "Nota del lead", type = "textarea", required = true, placeholder = "Llamada, respuesta enviada, acuerdos... Escribe @ para mencionar a alguien.",
+                            "note", tr("Nota del lead"), type = "textarea", required = true, placeholder = tr("Llamada, respuesta enviada, acuerdos... Escribe @ para mencionar a alguien."),
                             // The lead goes in the route: the app only adds q and field (and the form values).
                             suggest = UiSuggest(MentionSuggestRoute + "?lead=" + lead.id, minLength = 0, trigger = "@"),
                         ),
                         UiField(
-                            "mentions", "Mencionar a", type = "dropdown", multiple = true, options = mentionOptions,
-                            help = "Pueden leer este lead y responder con notas, aunque no sea suyo. Reciben un aviso.",
+                            "mentions", tr("Mencionar a"), type = "dropdown", multiple = true, options = mentionOptions,
+                            help = tr("Pueden leer este lead y responder con notas, aunque no sea suyo. Reciben un aviso."),
                         ).takeIf { mentionOptions.isNotEmpty() },
                     ),
-                    submit = UiButton("Agregar nota", UiRequest(UiRoute + "/lead", params = id + ("op" to "note"), formId = "note")),
+                    submit = UiButton(tr("Agregar nota"), UiRequest(UiRoute + "/lead", params = id + ("op" to "note"), formId = "note")),
                 ),
             ),
-            title = "Notas del lead",
+            title = tr("Notas del lead"),
         )
         val mentions = mentionsCard(context, lead, id, CrmMentions.canRevoke(access, context.permissions.has(Manage)))
         // Tastes and preferences of the customer (Clientes), so whoever attends the lead does not ask them again.
@@ -909,39 +929,43 @@ object CrmScreens {
                                     .filter { it.isNotBlank() }.joinToString(" - "),
                             )
                         },
-                        emptyText = "Sin notas del cliente. Anota en su ficha sus gustos y preferencias para no preguntarlos en cada lead.",
+                        emptyText = tr("Sin notas del cliente. Anota en su ficha sus gustos y preferencias para no preguntarlos en cada lead."),
                     ),
                 ),
-                title = "Notas del cliente",
-                actions = listOf(UiButton("Abrir ficha", UiOpenModule("clientes", "customer", mapOf("id" to lead.customerId.toString())), style = "secondary")),
+                title = tr("Notas del cliente"),
+                actions = listOf(UiButton(tr("Abrir ficha"), UiOpenModule("clientes", "customer", mapOf("id" to lead.customerId.toString())), style = "secondary")),
             )
         }
         val noteMentions = CrmMentions.byNote(context.tenant, lead.id)
+        val activities = CrmRepository.activity(context.tenant, lead.id, 100)
+        // The notes written by the staff are shown with their translation under them (one provider call for all of them); nothing else is sent.
+        val noted = activities.filter { it.kind == "note" && it.body.isNotBlank() }
+        val noteTexts = noted.map { it.id }.zip(CrmTexts.notes(context.tenant, context.permissions.companyCode, noted.map { it.body })).toMap()
         val timeline = UiCard(
             listOf(
                 UiTimeline(
-                    CrmRepository.activity(context.tenant, lead.id, 100).map { activity ->
+                    activities.map { activity ->
                         val mentioned = activity.id?.let { noteMentions[it] }.orEmpty().map { user -> CrmRepository.displayNames(context.tenant, context.names, listOf(user)) }
-                        entry(activity, mentioned)
+                        entry(activity, mentioned, noteTexts[activity.id])
                     },
                 ),
             ),
-            title = "Actividad",
+            title = tr("Actividad"),
         )
         val review = lead.reviewReason.takeIf { it.isNotEmpty() && access.canWrite }?.let { reason ->
             UiCard(
                 listOf(UiText(reason, tone = UiTone.Danger)),
-                title = "Por revisar",
-                actions = listOfNotNull(UiButton("Marcar revisado", UiRequest(UiRoute + "/lead", params = id + ("op" to "reviewed")), style = "secondary").takeIf { canEdit }),
+                title = tr("Por revisar"),
+                actions = listOfNotNull(UiButton(tr("Marcar revisado"), UiRequest(UiRoute + "/lead", params = id + ("op" to "reviewed")), style = "secondary").takeIf { canEdit }),
             )
         }
         val suggestion = lead.suggestedOwnerUserId?.takeIf { access.canWrite }?.let { suggested ->
             UiCard(
-                listOf(UiText("El origen del lead sugiere asignar a ${context.names.user(suggested)}. Al aprobar se anade a los asignados.")),
-                title = "Asignado sugerido",
+                listOf(UiText(tr("El origen del lead sugiere asignar a {0}. Al aprobar se anade a los asignados.", context.names.user(suggested)))),
+                title = tr("Asignado sugerido"),
                 actions = if (context.canAssign && access.canWrite) listOf(
-                    UiButton("Aprobar", UiRequest(UiRoute + "/lead", params = id + ("op" to "approve"))),
-                    UiButton("Descartar", UiRequest(UiRoute + "/lead", params = id + ("op" to "discard")), style = "secondary"),
+                    UiButton(tr("Aprobar"), UiRequest(UiRoute + "/lead", params = id + ("op" to "approve"))),
+                    UiButton(tr("Descartar"), UiRequest(UiRoute + "/lead", params = id + ("op" to "discard")), style = "secondary"),
                 ) else emptyList(),
             )
         }
@@ -964,7 +988,7 @@ object CrmScreens {
         val ordered = CrmFieldSections.ordered(buttons, context.sections)
         val children = mutableListOf<UiNode>()
         ordered.groupBy { CrmFieldSections.title(it, context.sections) }.forEach { (section, group) ->
-            children += UiText(section, UiTextStyle.Caption)
+            children += UiText(tr(section), UiTextStyle.Caption)
             children += UiRow(
                 group.map { field ->
                     UiButton(
@@ -975,7 +999,7 @@ object CrmScreens {
                 },
             )
         }
-        return UiCard(children, title = "Acciones")
+        return UiCard(children, title = tr("Acciones"))
     }
 
     /**
@@ -987,36 +1011,36 @@ object CrmScreens {
         if (active.isEmpty()) return null
         return UiCard(
             listOf<UiNode>(
-                UiText("Pueden leer este lead y responder con notas mientras este abierto. No pueden moverlo, editarlo ni asignarlo.", UiTextStyle.Caption),
+                UiText(tr("Pueden leer este lead y responder con notas mientras este abierto. No pueden moverlo, editarlo ni asignarlo."), UiTextStyle.Caption),
             ) + active.map { mention ->
                 UiRow(
                     listOfNotNull(
                         UiText(CrmRepository.displayNames(context.tenant, context.names, listOf(mention.userId))),
-                        UiText(listOf(mention.byName.takeIf { it.isNotBlank() }?.let { "por $it" }.orEmpty(), time(mention.at)).filter { it.isNotBlank() }.joinToString(" - "), UiTextStyle.Caption),
+                        UiText(listOf(mention.byName.takeIf { it.isNotBlank() }?.let { tr("por {0}", it) }.orEmpty(), time(mention.at)).filter { it.isNotBlank() }.joinToString(" - "), UiTextStyle.Caption),
                         UiButton(
-                            "Quitar acceso", UiRequest(UiRoute + "/lead", params = id + ("op" to "unmention") + ("user" to mention.userId.toString()), confirm = "Deja de poder leer este lead, salvo que lo mencionen de nuevo. Continuar?"),
+                            tr("Quitar acceso"), UiRequest(UiRoute + "/lead", params = id + ("op" to "unmention") + ("user" to mention.userId.toString()), confirm = tr("Deja de poder leer este lead, salvo que lo mencionen de nuevo. Continuar?")),
                             style = "secondary",
                         ).takeIf { canRevoke },
                     ),
                 )
             },
-            title = "Mencionados (${active.size})",
+            title = tr("Mencionados ({0})", active.size),
         )
     }
 
     // [mentioned]: names of the users the note mentions; the entry is highlighted (the app has no inline styles) and says who.
-    private fun entry(activity: CrmActivity, mentioned: List<String> = emptyList()): UiTimelineEntry {
+    private fun entry(activity: CrmActivity, mentioned: List<String> = emptyList(), translation: String? = null): UiTimelineEntry {
         val (title, tone) = when (activity.kind) {
-            "created" -> "Lead creado" to UiTone.Info
-            "note" -> if (mentioned.isEmpty()) "Nota del lead" to UiTone.Neutral else "Nota del lead - menciona a ${CrmMentions.label(mentioned)}" to UiTone.Info
-            "stage" -> "Cambio de etapa" to UiTone.Success
-            "owner" -> "Asignados" to UiTone.Warning
-            "interest" -> "Interes" to UiTone.Info
-            "files" -> "Archivos" to UiTone.Info
-            else -> "Actualizado" to UiTone.Neutral
+            "created" -> tr("Lead creado") to UiTone.Info
+            "note" -> if (mentioned.isEmpty()) tr("Nota del lead") to UiTone.Neutral else tr("Nota del lead - menciona a {0}", CrmMentions.label(mentioned)) to UiTone.Info
+            "stage" -> tr("Cambio de etapa") to UiTone.Success
+            "owner" -> tr("Asignados") to UiTone.Warning
+            "interest" -> tr("Interes") to UiTone.Info
+            "files" -> tr("Archivos") to UiTone.Info
+            else -> tr("Actualizado") to UiTone.Neutral
         }
         val body = if (activity.kind == "stage" && activity.fromStage != null && activity.toStage != null) "${activity.fromStage} -> ${activity.toStage}" else activity.body
-        return UiTimelineEntry(title, body, "${activity.author} - ${time(activity.createdAt)}", tone)
+        return UiTimelineEntry(title, body, "${activity.author} - ${time(activity.createdAt)}", tone, translation)
     }
 
     private fun time(instant: Instant) = timeFormat.format(instant.atZone(ZoneId.systemDefault()))
@@ -1032,62 +1056,65 @@ object CrmScreens {
         val mapped = CrmStay.effective(context.stay, context.fields)
         val rows = CrmFieldSections.ordered(context.fields, context.sections).map { field ->
             val detail = buildList {
-                add(field.type.label)
-                add(CrmFieldSections.title(field, context.sections))
-                if (field.type == CrmFieldType.Dropdown) add(if (field.multiple) "varias opciones" else "una opcion")
+                add(tr(field.type.label))
+                add(tr(CrmFieldSections.title(field, context.sections)))
+                if (field.type == CrmFieldType.Dropdown) add(if (field.multiple) tr("varias opciones") else tr("una opcion"))
                 if (field.type == CrmFieldType.Button) add(CrmButtons.describe(field.config, templates, automations))
-                if (field.required) add("obligatorio")
-                if (field.key == mapped.startKey) add("ingreso de la estadia")
-                if (field.key == mapped.endKey) add("salida de la estadia")
+                if (field.required) add(tr("obligatorio"))
+                if (field.key == mapped.startKey) add(tr("ingreso de la estadia"))
+                if (field.key == mapped.endKey) add(tr("salida de la estadia"))
             }.joinToString(", ")
             UiRow(
                 listOfNotNull(
-                    UiText("${field.position}. ${field.label} ($detail)"),
-                    UiButton("Editar", UiNavigate("settings", mapOf("field" to field.id.toString())), style = "secondary"),
+                    UiText(tr("{0}. {1} ({2})", field.position, field.label, detail)),
+                    UiButton(tr("Editar"), UiNavigate("settings", mapOf("field" to field.id.toString())), style = "secondary"),
                     UiButton(
-                        "Eliminar",
+                        tr("Eliminar"),
                         UiRequest(
                             UiRoute + "/settings", params = mapOf("op" to "fieldDelete", "id" to field.id.toString()),
-                            confirm = "Se elimina el campo ${field.label} y lo que tenga en todos los leads." +
-                                (if (CrmStay.isMapped(mapped, field.key)) " Es una fecha de estadia: ${CrmStay.ConfirmClear.removeSuffix(" Continuar?")}" else "") + " Continuar?",
+                            confirm = if (CrmStay.isMapped(mapped, field.key)) {
+                                tr("Se elimina el campo {0} y lo que tenga en todos los leads. Es una fecha de estadia: Cambiar el mapeo puede borrar las fechas de estadia que usan Cloudbeds, el hotspot y la salida automatica. Continuar?", field.label)
+                            } else {
+                                tr("Se elimina el campo {0} y lo que tenga en todos los leads. Continuar?", field.label)
+                            },
                         ),
                         style = "danger",
                     ),
                 ),
             )
         }
-        val section = if (editing == null) "Nuevo campo" else "Editar ${editing.label}"
+        val section = if (editing == null) tr("Nuevo campo") else tr("Editar {0}", editing.label)
         val dropdown = UiFieldCondition("type", listOf(CrmFieldType.Dropdown.label))
         val isButton = UiFieldCondition("type", listOf(CrmFieldType.Button.label))
         // The "Obligatorio" checkbox makes no sense in a button: shown for every other type.
         val notButton = UiFieldCondition("type", CrmFieldType.entries.filter { it != CrmFieldType.Button }.map { it.label })
         val formFields = listOf(
-            UiField("label", "Nombre", required = true, section = section),
+            UiField("label", tr("Nombre"), required = true, section = section),
             UiField(
-                "type", "Tipo", type = "dropdown", required = true, readOnly = editing != null, options = CrmFieldType.entries.map { it.label }, section = section,
-                help = if (editing != null) "El tipo no cambia despues de crear el campo." else "",
+                "type", tr("Tipo"), type = "dropdown", required = true, readOnly = editing != null, options = CrmFieldType.entries.map { it.label }, section = section,
+                help = if (editing != null) tr("El tipo no cambia despues de crear el campo.") else "",
             ),
             UiField(
-                "section", "Seccion de la ficha", type = "dropdown", options = listOf(CrmFields.Section) + CrmFieldSections.sorted(context.sections).filter { s -> context.sections.any { it.id == s.id } }.map { it.name }, section = section,
-                help = "Los campos sin seccion van en ${CrmFields.Section}.",
+                "section", tr("Seccion de la ficha"), type = "dropdown", options = listOf(CrmFields.Section) + CrmFieldSections.sorted(context.sections).filter { s -> context.sections.any { it.id == s.id } }.map { it.name }, section = section,
+                help = tr("Los campos sin seccion van en {0}.", tr(CrmFields.Section)),
             ),
             UiField(
-                "options", "Opciones de la lista", type = "textarea", required = true, section = section, visibleWhen = dropdown,
-                help = "Una opcion por linea. Quitar una opcion no borra lo que ya tengan los leads, pero ya no se podra elegir.",
+                "options", tr("Opciones de la lista"), type = "textarea", required = true, section = section, visibleWhen = dropdown,
+                help = tr("Una opcion por linea. Quitar una opcion no borra lo que ya tengan los leads, pero ya no se podra elegir."),
             ),
-            UiField("multiple", "Permitir elegir varias opciones", type = "boolean", section = section, visibleWhen = dropdown),
+            UiField("multiple", tr("Permitir elegir varias opciones"), type = "boolean", section = section, visibleWhen = dropdown),
             UiField(
-                "buttonAction", "Que hace el boton", type = "dropdown", options = listOf(CrmButtons.ActionTemplate, CrmButtons.ActionAutomations), section = section, visibleWhen = isButton,
-                help = "El boton aparece en la ficha del lead (no en el formulario), pide confirmacion y muestra el resultado.",
+                "buttonAction", tr("Que hace el boton"), type = "dropdown", options = listOf(CrmButtons.ActionTemplate, CrmButtons.ActionAutomations), section = section, visibleWhen = isButton,
+                help = tr("El boton aparece en la ficha del lead (no en el formulario), pide confirmacion y muestra el resultado."),
             ),
-            UiField("buttonTemplate", "Plantilla", type = "dropdown", options = templates.map { it.name }, section = section, visibleWhen = UiFieldCondition("buttonAction", listOf(CrmButtons.ActionTemplate))),
+            UiField("buttonTemplate", tr("Plantilla"), type = "dropdown", options = templates.map { it.name }, section = section, visibleWhen = UiFieldCondition("buttonAction", listOf(CrmButtons.ActionTemplate))),
             UiField(
-                "buttonAutomations", "Automatizaciones manuales", type = "dropdown", multiple = true, options = manual.map { it.name }, section = section,
+                "buttonAutomations", tr("Automatizaciones manuales"), type = "dropdown", multiple = true, options = manual.map { it.name }, section = section,
                 visibleWhen = UiFieldCondition("buttonAction", listOf(CrmButtons.ActionAutomations)),
-                help = "Se ejecutan en el orden elegido y se detienen en la primera que no termine. Se crean en Automatizaciones con el disparador Manual.",
+                help = tr("Se ejecutan en el orden elegido y se detienen en la primera que no termine. Se crean en Automatizaciones con el disparador Manual."),
             ),
-            UiField("required", "Obligatorio", type = "boolean", section = section, visibleWhen = notButton),
-            UiField("position", "Posicion", type = "number", help = "Orden dentro de su seccion en la ficha del lead.", section = section),
+            UiField("required", tr("Obligatorio"), type = "boolean", section = section, visibleWhen = notButton),
+            UiField("position", tr("Posicion"), type = "number", help = tr("Orden dentro de su seccion en la ficha del lead."), section = section),
         )
         val values = editing?.let {
             mapOf(
@@ -1097,53 +1124,53 @@ object CrmScreens {
         } ?: mapOf("type" to CrmFieldType.Text.label, "section" to CrmFields.Section, "position" to ((context.fields.maxOfOrNull { it.position } ?: -1) + 1).toString())
         val saveParams = mapOf("op" to "fieldSave") + listOfNotNull(editing?.let { "id" to it.id.toString() })
         val fieldsCard = UiCard(
-            listOf(UiText("Campos propios de la empresa que aparecen en la ficha de cada lead, en la seccion que elijas (sin seccion: ${CrmFields.Section}). Las fechas de la estadia se eligen en Integraciones.")) +
-                rows.ifEmpty { listOf(UiText("Aun no hay campos personalizados.", tone = UiTone.Neutral)) } +
-                listOfNotNull(UiButton("Nuevo campo", UiNavigate("settings"), style = "secondary").takeIf { editing != null }) +
+            listOf(UiText(tr("Campos propios de la empresa que aparecen en la ficha de cada lead, en la seccion que elijas (sin seccion: {0}). Las fechas de la estadia se eligen en Integraciones.", tr(CrmFields.Section)))) +
+                rows.ifEmpty { listOf(UiText(tr("Aun no hay campos personalizados."), tone = UiTone.Neutral)) } +
+                listOfNotNull(UiButton(tr("Nuevo campo"), UiNavigate("settings"), style = "secondary").takeIf { editing != null }) +
                 UiForm(
                     "customField", formFields,
                     values + submitted.orEmpty().filterKeys { it in setOf("label", "type", "section", "options", "multiple", "required", "position", "buttonAction", "buttonTemplate", "buttonAutomations") },
-                    submit = UiButton(if (editing == null) "Agregar campo" else "Guardar campo", UiRequest(UiRoute + "/settings", params = saveParams, formId = "customField")),
+                    submit = UiButton(if (editing == null) tr("Agregar campo") else tr("Guardar campo"), UiRequest(UiRoute + "/settings", params = saveParams, formId = "customField")),
                     minFieldWidth = 220,
                 ),
-            title = "Campos personalizados",
+            title = tr("Campos personalizados"),
         )
         val ordered = CrmFieldSections.sorted(context.sections)
         val sectionRows = ordered.mapIndexed { index, item ->
             val move = { direction: String -> UiRequest(UiRoute + "/settings", params = mapOf("op" to "sectionMove", "id" to item.id.toString(), "dir" to direction)) }
             UiRow(
                 listOfNotNull(
-                    UiText("${index + 1}. ${item.name}${if (item.isSystem) " (fija)" else ""} (${context.fields.count { it.sectionId == item.id }} campos propios)"),
+                    UiText(tr("{0}. {1}{2} ({3} campos propios)", index + 1, tr(item.name), if (item.isSystem) tr(" (fija)") else "", context.fields.count { it.sectionId == item.id })),
                     // "Datos del cliente" is always first: it never moves and nothing goes before it.
-                    UiButton("Subir", move("up"), style = "secondary").takeIf { index > 1 },
-                    UiButton("Bajar", move("down"), style = "secondary").takeIf { index > 0 && index < ordered.lastIndex },
-                    UiButton("Renombrar", UiNavigate("settings", mapOf("section" to item.id.toString())), style = "secondary").takeIf { !item.isSystem },
+                    UiButton(tr("Subir"), move("up"), style = "secondary").takeIf { index > 1 },
+                    UiButton(tr("Bajar"), move("down"), style = "secondary").takeIf { index > 0 && index < ordered.lastIndex },
+                    UiButton(tr("Renombrar"), UiNavigate("settings", mapOf("section" to item.id.toString())), style = "secondary").takeIf { !item.isSystem },
                     UiButton(
-                        "Eliminar",
+                        tr("Eliminar"),
                         UiRequest(
                             UiRoute + "/settings", params = mapOf("op" to "sectionDelete", "id" to item.id.toString()),
-                            confirm = "Se elimina la seccion ${item.name}; sus campos quedan en ${CrmFields.Section}, sin borrarlos. Continuar?",
+                            confirm = tr("Se elimina la seccion {0}; sus campos quedan en {1}, sin borrarlos. Continuar?", item.name, tr(CrmFields.Section)),
                         ),
                         style = "danger",
                     ).takeIf { !item.isSystem },
                 ),
             )
         }
-        val sectionTitle = if (editingSection == null) "Nueva seccion" else "Renombrar ${editingSection.name}"
+        val sectionTitle = if (editingSection == null) tr("Nueva seccion") else tr("Renombrar {0}", editingSection.name)
         val sectionValues = editingSection?.let { mapOf("sectionName" to it.name) }.orEmpty()
         val sectionParams = mapOf("op" to "sectionSave") + listOfNotNull(editingSection?.let { "id" to it.id.toString() })
         val sectionsCard = UiCard(
-            listOf(UiText("La ficha del lead se arma con estas secciones, en este orden. Las fijas (Datos del cliente, Seguimiento, Mensaje y detalles, Documentos) no se borran ni se renombran; puedes poner campos propios en cualquiera de ellas o en las que crees. Datos del cliente siempre va primero. Los campos sin seccion van al final, en ${CrmFields.Section}.")) +
+            listOf(UiText(tr("La ficha del lead se arma con estas secciones, en este orden. Las fijas (Datos del cliente, Seguimiento, Mensaje y detalles, Documentos) no se borran ni se renombran; puedes poner campos propios en cualquiera de ellas o en las que crees. Datos del cliente siempre va primero. Los campos sin seccion van al final, en {0}.", tr(CrmFields.Section)))) +
                 sectionRows +
-                listOfNotNull(UiButton("Nueva seccion", UiNavigate("settings"), style = "secondary").takeIf { editingSection != null }) +
+                listOfNotNull(UiButton(tr("Nueva seccion"), UiNavigate("settings"), style = "secondary").takeIf { editingSection != null }) +
                 UiForm(
                     "fieldSection",
-                    listOf(UiField("sectionName", "Nombre", required = true, section = sectionTitle)),
+                    listOf(UiField("sectionName", tr("Nombre"), required = true, section = sectionTitle)),
                     sectionValues + submitted.orEmpty().filterKeys { it == "sectionName" },
-                    submit = UiButton(if (editingSection == null) "Agregar seccion (al final)" else "Guardar nombre", UiRequest(UiRoute + "/settings", params = sectionParams, formId = "fieldSection")),
+                    submit = UiButton(if (editingSection == null) tr("Agregar seccion (al final)") else tr("Guardar nombre"), UiRequest(UiRoute + "/settings", params = sectionParams, formId = "fieldSection")),
                     minFieldWidth = 220,
                 ),
-            title = "Secciones de la ficha",
+            title = tr("Secciones de la ficha"),
         )
         return listOf(sectionsCard, fieldsCard)
     }
@@ -1156,18 +1183,16 @@ object CrmScreens {
         nodes += UiCard(
             listOf(
                 UiText(
-                    "Activa los intereses si los leads se reparten por linea de negocio (surf, yoga, eventos...) o por tipo de propiedad. " +
-                        "Cada usuario vera solo los leads de los intereses que le asignes; quien tenga \"Ver todos los leads\" ve todo y los leads " +
-                        "sin interes esperan en Recepcion.",
+                    tr("Activa los intereses si los leads se reparten por linea de negocio (surf, yoga, eventos...) o por tipo de propiedad. Cada usuario vera solo los leads de los intereses que le asignes; quien tenga \"Ver todos los leads\" ve todo y los leads sin interes esperan en Recepcion."),
                 ),
                 UiForm(
                     "interestsToggle",
-                    listOf(UiField("enabled", "Clasificar leads por interes", type = "boolean")),
+                    listOf(UiField("enabled", tr("Clasificar leads por interes"), type = "boolean")),
                     mapOf("enabled" to context.interestsEnabled.toString()),
-                    submit = UiButton("Guardar", UiRequest(UiRoute + "/settings", params = mapOf("op" to "interests"), formId = "interestsToggle"), style = "secondary"),
+                    submit = UiButton(tr("Guardar"), UiRequest(UiRoute + "/settings", params = mapOf("op" to "interests"), formId = "interestsToggle"), style = "secondary"),
                 ),
             ),
-            title = "Intereses",
+            title = tr("Intereses"),
         )
 
         if (context.interestsEnabled) {
@@ -1175,10 +1200,10 @@ object CrmScreens {
                 UiRow(
                     listOf(
                         UiText(interest.name),
-                        UiButton("Renombrar", UiNavigate("settings", mapOf("interest" to interest.id.toString())), style = "secondary"),
+                        UiButton(tr("Renombrar"), UiNavigate("settings", mapOf("interest" to interest.id.toString())), style = "secondary"),
                         UiButton(
-                            "Eliminar",
-                            UiRequest(UiRoute + "/settings", params = mapOf("op" to "interestDelete", "id" to interest.id.toString()), confirm = "Sus leads volveran a Recepcion. Continuar?"),
+                            tr("Eliminar"),
+                            UiRequest(UiRoute + "/settings", params = mapOf("op" to "interestDelete", "id" to interest.id.toString()), confirm = tr("Sus leads volveran a Recepcion. Continuar?")),
                             style = "danger",
                         ),
                     ),
@@ -1186,13 +1211,13 @@ object CrmScreens {
             }
             val interestParams = mapOf("op" to "interestSave") + listOfNotNull(editingInterest?.let { "id" to it.id.toString() })
             nodes += UiCard(
-                rows.ifEmpty { listOf(UiText("Aun no hay intereses.", tone = UiTone.Warning)) } + UiForm(
+                rows.ifEmpty { listOf(UiText(tr("Aun no hay intereses."), tone = UiTone.Warning)) } + UiForm(
                     "interest",
-                    listOf(UiField("name", if (editingInterest == null) "Nuevo interes" else "Nuevo nombre de ${editingInterest.name}", required = true)),
+                    listOf(UiField("name", if (editingInterest == null) tr("Nuevo interes") else tr("Nuevo nombre de {0}", editingInterest.name), required = true)),
                     mapOf("name" to (submitted?.get("name") ?: editingInterest?.name.orEmpty())),
-                    submit = UiButton(if (editingInterest == null) "Agregar interes" else "Guardar nombre", UiRequest(UiRoute + "/settings", params = interestParams, formId = "interest")),
+                    submit = UiButton(if (editingInterest == null) tr("Agregar interes") else tr("Guardar nombre"), UiRequest(UiRoute + "/settings", params = interestParams, formId = "interest")),
                 ),
-                title = "Catalogo de intereses",
+                title = tr("Catalogo de intereses"),
             )
 
             if (context.interests.isNotEmpty()) {
@@ -1205,7 +1230,7 @@ object CrmScreens {
                                 formId,
                                 context.interests.map { UiField(it.id.toString(), it.name, type = "boolean") },
                                 context.interests.associate { it.id.toString() to (it.id in assigned[user.id].orEmpty()).toString() },
-                                submit = UiButton("Guardar", UiRequest(UiRoute + "/settings", params = mapOf("op" to "userInterests", "user" to user.id.toString()), formId = formId), style = "secondary"),
+                                submit = UiButton(tr("Guardar"), UiRequest(UiRoute + "/settings", params = mapOf("op" to "userInterests", "user" to user.id.toString()), formId = formId), style = "secondary"),
                                 minFieldWidth = 160,
                             ),
                         ),
@@ -1213,9 +1238,9 @@ object CrmScreens {
                     )
                 }
                 nodes += UiCard(
-                    listOf(UiText("Marca los intereses de cada usuario. Los usuarios con \"Ver todos los leads\" y el dueno de la empresa ven todo.")) +
-                        userForms.ifEmpty { listOf(UiText("Ningun usuario tiene permisos del CRM todavia.", tone = UiTone.Warning)) },
-                    title = "Intereses por usuario",
+                    listOf(UiText(tr("Marca los intereses de cada usuario. Los usuarios con \"Ver todos los leads\" y el dueno de la empresa ven todo."))) +
+                        userForms.ifEmpty { listOf(UiText(tr("Ningun usuario tiene permisos del CRM todavia."), tone = UiTone.Warning)) },
+                    title = tr("Intereses por usuario"),
                     // One form per user: closed so the stages below stay at hand.
                     collapsible = true,
                     expanded = false,
@@ -1229,53 +1254,64 @@ object CrmScreens {
         val stageRows = context.stages.map { stage ->
             UiRow(
                 listOf(
-                    UiStatus("${stage.position}. ${stage.name} (${stage.kind.label})", stage.tone.id),
-                    UiButton("Editar", UiNavigate("settings", mapOf("stage" to stage.id.toString())), style = "secondary"),
+                    UiStatus(tr("{0}. {1} ({2})", stage.position, stage.name, tr(stage.kind.label)), stage.tone.id),
+                    UiButton(tr("Editar"), UiNavigate("settings", mapOf("stage" to stage.id.toString())), style = "secondary"),
                     UiButton(
-                        "Eliminar",
-                        UiRequest(UiRoute + "/settings", params = mapOf("op" to "stageDelete", "id" to stage.id.toString()), confirm = "Eliminar la etapa ${stage.name}?"),
+                        tr("Eliminar"),
+                        UiRequest(UiRoute + "/settings", params = mapOf("op" to "stageDelete", "id" to stage.id.toString()), confirm = tr("Eliminar la etapa {0}?", stage.name)),
                         style = "danger",
                     ),
                 ),
             )
         }
-        val stageValues = editingStage?.let { mapOf("name" to it.name, "kind" to it.kind.label, "tone" to it.tone.label, "position" to it.position.toString()) }
+        // The name of a stage is shown translated to who uses another language than the company's (I18N.md §8): the provider of the CRM
+        // translates it unless a manual translation is written here, one per language.
+        val translationLanguages = CrmTexts.otherLanguages(context.permissions.companyCode)
+        val manualNames = editingStage?.let { stage -> translationLanguages.associateWith { CrmTexts.manual(context.tenant, listOf(stage.name), it)[stage.name].orEmpty() } }.orEmpty()
+        val translationKeys = translationLanguages.map { "$StageTranslationPrefix$it" }
+        val stageValues = editingStage?.let { mapOf("name" to it.name, "kind" to it.kind.label, "tone" to it.tone.label, "position" to it.position.toString()) + manualNames.mapKeys { "$StageTranslationPrefix${it.key}" } }
             ?: mapOf("kind" to StageKind.Open.label, "tone" to StageTone.Neutral.label, "position" to ((context.stages.maxOfOrNull { it.position } ?: -1) + 1).toString())
         val stageParams = mapOf("op" to "stageSave") + listOfNotNull(editingStage?.let { "id" to it.id.toString() })
         nodes += UiCard(
             stageRows + UiForm(
                 "stage",
                 listOf(
-                    UiField("name", "Nombre", required = true, section = if (editingStage == null) "Nueva etapa" else "Editar ${editingStage.name}"),
-                    UiField("kind", "Tipo", type = "dropdown", options = StageKind.entries.map { it.label }, help = "Ganada y Perdida cierran el lead.", section = if (editingStage == null) "Nueva etapa" else "Editar ${editingStage.name}"),
-                    UiField("tone", "Color", type = "dropdown", options = StageTone.entries.map { it.label }, section = if (editingStage == null) "Nueva etapa" else "Editar ${editingStage.name}"),
-                    UiField("position", "Posicion", type = "number", help = "Orden en el pipeline, de izquierda a derecha.", section = if (editingStage == null) "Nueva etapa" else "Editar ${editingStage.name}"),
-                ),
-                stageValues + submitted.orEmpty().filterKeys { it in setOf("name", "kind", "tone", "position") },
-                submit = UiButton(if (editingStage == null) "Agregar etapa" else "Guardar etapa", UiRequest(UiRoute + "/settings", params = stageParams, formId = "stage")),
+                    UiField("name", tr("Nombre"), required = true, section = if (editingStage == null) tr("Nueva etapa") else tr("Editar {0}", editingStage.name)),
+                    UiField("kind", tr("Tipo"), type = "dropdown", options = StageKind.entries.map { it.label }, help = tr("Ganada y Perdida cierran el lead."), section = if (editingStage == null) tr("Nueva etapa") else tr("Editar {0}", editingStage.name)),
+                    UiField("tone", tr("Color"), type = "dropdown", options = StageTone.entries.map { it.label }, section = if (editingStage == null) tr("Nueva etapa") else tr("Editar {0}", editingStage.name)),
+                    UiField("position", tr("Posicion"), type = "number", help = tr("Orden en el pipeline, de izquierda a derecha."), section = if (editingStage == null) tr("Nueva etapa") else tr("Editar {0}", editingStage.name)),
+                ) + translationLanguages.map { language ->
+                    UiField(
+                        "$StageTranslationPrefix$language", tr("Nombre en {0} (opcional)", CrmTexts.languageName(language)),
+                        help = tr("Se muestra a quien usa la app en ese idioma. Vacio: se traduce solo, si la empresa tiene un traductor configurado."),
+                        section = if (editingStage == null) tr("Nueva etapa") else tr("Editar {0}", editingStage.name),
+                    )
+                },
+                stageValues + submitted.orEmpty().filterKeys { it in setOf("name", "kind", "tone", "position") + translationKeys },
+                submit = UiButton(if (editingStage == null) tr("Agregar etapa") else tr("Guardar etapa"), UiRequest(UiRoute + "/settings", params = stageParams, formId = "stage")),
                 minFieldWidth = 200,
             ),
-            title = "Etapas del pipeline",
+            title = tr("Etapas del pipeline"),
         )
 
         if (CrmRepository.leadCount(context.tenant) == 0) {
             nodes += UiCard(
                 listOf(
-                    UiText("Mientras no haya leads puedes reemplazar las etapas por una plantilla."),
+                    UiText(tr("Mientras no haya leads puedes reemplazar las etapas por una plantilla.")),
                     UiRow(
                         CrmTemplates.all.map { template ->
                             UiButton(
-                                template.label,
+                                tr(template.label),
                                 UiRequest(
                                     UiRoute + "/settings", params = mapOf("op" to "template", "template" to template.id),
-                                    confirm = "Se reemplazan las etapas actuales por: ${template.stages.joinToString { it.name }}. Continuar?",
+                                    confirm = tr("Se reemplazan las etapas actuales por: {0}. Continuar?", template.stages.joinToString { it.name }),
                                 ),
                                 style = "secondary",
                             )
                         },
                     ),
                 ),
-                title = "Plantillas de etapas",
+                title = tr("Plantillas de etapas"),
             )
         }
         return nodes

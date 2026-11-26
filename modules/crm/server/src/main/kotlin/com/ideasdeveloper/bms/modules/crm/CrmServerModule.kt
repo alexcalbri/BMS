@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
@@ -255,8 +257,8 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.29.1",
-        minCoreVersion = "0.8.0",
+        version = "0.30.0",
+        minCoreVersion = "0.10.0",
         minAppVersion = "0.7.0",
         supportsExtensions = true,
         permissions = listOf(
@@ -274,6 +276,8 @@ object CrmServerModule : ServerModule {
 
     override fun routes(route: Route, access: ModuleAccessService) {
         CrmCustomerEvents.access = access
+        // The dynamic translation of Core (stage names, notes) asks the provider configured in the CRM settings of each company.
+        access.registerTextTranslator(CrmModule.id, CrmTranslate.textTranslator())
         CrmLeadEvents.access = access
         // Secrets of the integrations are sealed with the key of each company database (CrmSecrets).
         CrmSecrets.box = access.secrets
@@ -285,18 +289,18 @@ object CrmServerModule : ServerModule {
             post("/files") {
                 val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@post
                 if (!permissions.has(CrmScreens.Manage)) {
-                    return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val length = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
                 if (length != null && length > CrmAttachments.MaxFileBytes) {
-                    return@post call.respond(HttpStatusCode.PayloadTooLarge, CrmErrorResponse("too_large", "El archivo supera el maximo de ${CrmAttachments.MaxFileBytes / (1024 * 1024)} MB."))
+                    return@post call.respond(HttpStatusCode.PayloadTooLarge, CrmErrorResponse("too_large", tr("El archivo supera el maximo de {0} MB.", CrmAttachments.MaxFileBytes / (1024 * 1024))))
                 }
                 fun header(name: String) = call.request.headers[name]?.let { runCatching { URLDecoder.decode(it, Charsets.UTF_8) }.getOrNull() }.orEmpty()
                 val name = header("X-File-Name")
                 val path = header("X-File-Path")
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
-                    ?: return@post call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 // The body goes straight to the file storage; it is never held in memory whole.
                 val body = call.receiveChannel().toInputStream()
                 val result = withContext(Dispatchers.IO) {
@@ -306,12 +310,12 @@ object CrmServerModule : ServerModule {
                             CrmAttachments.upload(tenant, access.files(companyCode, CrmModule.id), name, path, contentType, body, actor.name)
                         }
                     }
-                } ?: return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+                } ?: return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
                 result.fold(
                     onSuccess = { ref -> call.respondText(UiJson.encodeToString(UiFileRef.serializer(), ref), ContentType.Application.Json) },
                     onFailure = { failure ->
                         if (failure is CrmValidationException) call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("invalid_file", failure.message.orEmpty()))
-                        else call.respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", "No se pudo guardar el archivo."))
+                        else call.respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))
                     },
                 )
             }
@@ -322,7 +326,7 @@ object CrmServerModule : ServerModule {
                 val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@get call.respond(HttpStatusCode.NotFound)
                 val companyCode = access.companyCode(call)
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 val file = withContext(Dispatchers.IO) {
                     access.tenantConnectionForCompany(companyCode)?.use { tenant ->
                         CrmAttachments.file(tenant, access.files(companyCode, CrmModule.id), id)?.takeIf { stored ->
@@ -332,14 +336,14 @@ object CrmServerModule : ServerModule {
                             CrmMentions.access(tenant, CrmRepository.scope(tenant, permissions), lead).canRead
                         }
                     }
-                } ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("not_found", "Ese archivo ya no esta disponible."))
+                } ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("not_found", tr("Ese archivo ya no esta disponible.")))
                 call.response.header(
                     HttpHeaders.ContentDisposition,
                     ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.ref.name).toString(),
                 )
                 val type = runCatching { ContentType.parse(file.contentType) }.getOrDefault(ContentType.Application.OctetStream)
                 val content = withContext(Dispatchers.IO) { file.open() }
-                    ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("missing_content", "El archivo ya no esta en el almacenamiento del servidor."))
+                    ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("missing_content", tr("El archivo ya no esta en el almacenamiento del servidor.")))
                 call.respondOutputStream(type) { content.use { it.copyTo(this) } }
             }
 
@@ -347,7 +351,7 @@ object CrmServerModule : ServerModule {
             get("/suggest/customers") {
                 val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@get
                 if (!permissions.has(CrmScreens.Manage)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@get call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val query = call.request.queryParameters
                 call.respondTenant(access, UiSuggestions.serializer()) { tenant ->
@@ -409,7 +413,7 @@ object CrmServerModule : ServerModule {
                     else -> CrmScreenProviders.section(screen)?.second?.permission ?: CrmScreens.Manage
                 }
                 if (required != null && !permissions.has(required)) {
-                    return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values, access.userIdentity(tenant, permissions), access.notificationsFor(CrmModule.id)) }
             }
@@ -458,13 +462,13 @@ object CrmServerModule : ServerModule {
                     throw e
                 } catch (e: Exception) {
                     org.slf4j.LoggerFactory.getLogger("CrmScreenProviders").warn("Fallo una accion de la extension {}.", provider.extensionId, e)
-                    return show(screen, UiNotice("No se pudo completar la accion.", UiTone.Danger), emptyMap())
+                    return show(screen, UiNotice(tr("No se pudo completar la accion."), UiTone.Danger), emptyMap())
                 }
                 // Si la extension manda a una pantalla que el usuario no puede abrir, se queda en la de la accion con el aviso.
                 if (!CrmScreens.canOpen(result.screen, permissions)) {
-                    return show(screen, result.notice ?: UiNotice("Listo.", UiTone.Success), params - "op")
+                    return show(screen, result.notice ?: UiNotice(tr("Listo."), UiTone.Success), params - "op")
                 }
-                return show(result.screen, result.notice ?: UiNotice("Listo.", UiTone.Success), result.params, result.submitted)
+                return show(result.screen, result.notice ?: UiNotice(tr("Listo."), UiTone.Success), result.params, result.submitted)
             }
             // Las acciones propias de las fuentes externas de importacion (las trae su extension) las atiende la fuente.
             if (screen == "import") {
@@ -477,22 +481,22 @@ object CrmServerModule : ServerModule {
                     val lead = visibleLead("card") ?: return show(
                         "pipeline",
                         UiNotice(
-                            if (readableLead("card") != null) "Ves ese lead porque te mencionaron: puedes leerlo y responder con notas, no moverlo." else "Ese lead ya no esta disponible.",
+                            if (readableLead("card") != null) tr("Ves ese lead porque te mencionaron: puedes leerlo y responder con notas, no moverlo.") else tr("Ese lead ya no esta disponible."),
                             UiTone.Warning,
                         ),
                         params - setOf("op", "card", "column"),
                     )
                     // The "Archivados" column is not a stage: archived leads stay put.
                     if (lead.archivedAt != null || params["column"] == "archived") {
-                        return show("pipeline", UiNotice("${lead.name} esta archivado: no se mueve entre etapas.", UiTone.Warning), params - setOf("op", "card", "column"))
+                        return show("pipeline", UiNotice(tr("{0} esta archivado: no se mueve entre etapas.", lead.name), UiTone.Warning), params - setOf("op", "card", "column"))
                     }
-                    val stage = uuid("column")?.let { context.stage(it) } ?: return show("pipeline", UiNotice("Esa etapa ya no existe.", UiTone.Warning), params - setOf("op", "card", "column"))
+                    val stage = uuid("column")?.let { context.stage(it) } ?: return show("pipeline", UiNotice(tr("Esa etapa ya no existe."), UiTone.Warning), params - setOf("op", "card", "column"))
                     // With rooms chosen in Cloudbeds the lead is won by confirming the reservation, not by dragging it.
                     if (CrmRepository.wonNeedsReservation(tenant, lead.id, stage)) {
-                        return show("pipeline", UiNotice("${lead.name} tiene habitaciones asignadas: confirma la reserva desde su ficha.", UiTone.Warning), params - setOf("op", "card", "column"))
+                        return show("pipeline", UiNotice(tr("{0} tiene habitaciones asignadas: confirma la reserva desde su ficha.", lead.name), UiTone.Warning), params - setOf("op", "card", "column"))
                     }
                     CrmRepository.moveLead(tenant, lead, stage, context.stages, actor)
-                    show("pipeline", UiNotice("${lead.name} paso a ${stage.name}.", UiTone.Success), params - setOf("op", "card", "column"))
+                    show("pipeline", UiNotice(tr("{0} paso a {1}.", lead.name, stage.name), UiTone.Success), params - setOf("op", "card", "column"))
                 }
                 "pipeline:action" -> {
                     val back = params - setOf("op", "action", "cards", "value")
@@ -505,7 +509,7 @@ object CrmServerModule : ServerModule {
                             canDelete = permissions.has(CrmScreens.Delete), isUser = context.users.any { it.id == context.scope.userId },
                             archivedColumn = true,
                         )
-                        if (actionId !in offered) throw CrmActionNotice("Elige la accion.")
+                        if (actionId !in offered) throw CrmActionNotice(tr("Elige la accion."))
                         val cards = CrmBoardActions.parseCards(params["cards"])
                         val value = CrmBoardActions.checkValue(
                             actionId, params["value"],
@@ -527,7 +531,7 @@ object CrmServerModule : ServerModule {
                         } else {
                             CrmBulkActions.apply(context, requested, CrmBoardActions.bulkAction(actionId)!!, value, actor, notifier)
                         }
-                        val extra = if (rejected > 0) " $rejected rechazados (no disponibles para esta accion)." else ""
+                        val extra = if (rejected > 0) tr(" {0} rechazados (no disponibles para esta accion).", rejected) else ""
                         notice("$message$extra", UiTone.Success)
                     } catch (failure: CrmActionNotice) {
                         notice(failure.message.orEmpty(), if (failure.warning) UiTone.Warning else UiTone.Danger)
@@ -540,7 +544,7 @@ object CrmServerModule : ServerModule {
                         return show("new", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
                     if (!context.scope.canUseInterest(input.interestId)) {
-                        return show("new", UiNotice("No puedes crear leads de ese interes.", UiTone.Danger), emptyMap(), values)
+                        return show("new", UiNotice(tr("No puedes crear leads de ese interes."), UiTone.Danger), emptyMap(), values)
                     }
                     val stage = context.stage(input.stageId)!!
                     // Without the assign permission the assigned user stays as the form defaulted it (the user).
@@ -548,15 +552,15 @@ object CrmServerModule : ServerModule {
                     val chosen = values["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     // A customer picked by id must pass the same filter as the suggestions (otherwise it is "not found").
                     if (chosen != null && !CrmRepository.customerInScope(tenant, context.scope, chosen)) {
-                        return show("new", UiNotice("Ese cliente ya no esta disponible.", UiTone.Warning), emptyMap(), values)
+                        return show("new", UiNotice(tr("Ese cliente ya no esta disponible."), UiTone.Warning), emptyMap(), values)
                     }
                     val id = CrmRepository.createLead(tenant, owned, stage, actor, chosen, context.fields, context.scope)
                     CrmNotify.newLead(tenant, id)
                     CrmNotify.assigned(tenant, notifier, id, owned.ownerUserIds.orEmpty(), context.scope.userId)
-                    show("lead", UiNotice("Lead creado.", UiTone.Success), mapOf("id" to id.toString()))
+                    show("lead", UiNotice(tr("Lead creado."), UiTone.Success), mapOf("id" to id.toString()))
                 }
                 "lead:save" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val parsed = try {
                         // Assigned users without access can be unchecked in the form (their labels end in "(sin acceso)"), never added.
                         CrmForms.parseLead(
@@ -571,7 +575,7 @@ object CrmServerModule : ServerModule {
                     // The list the form was drawn with: only the difference with the new one is applied.
                     val before = params[CrmScreens.OwnersBeforeKey]?.let { raw -> raw.split(',').mapNotNull { runCatching { UUID.fromString(it.trim()) }.getOrNull() } }
                     if (input.interestId != lead.interestId && !context.scope.canUseInterest(input.interestId)) {
-                        return show("lead", UiNotice("No puedes asignar ese interes.", UiTone.Danger), submitted = values)
+                        return show("lead", UiNotice(tr("No puedes asignar ese interes."), UiTone.Danger), submitted = values)
                     }
                     val change = try {
                         CrmRepository.updateLead(tenant, lead, input, context.stages, context.names, actor, context.fields, before)
@@ -582,13 +586,13 @@ object CrmServerModule : ServerModule {
                     CrmNotify.assigned(tenant, notifier, lead.id, change.added, context.scope.userId)
                     val owners = CrmAssignees.of(tenant, lead.id)
                     if (context.scope.canSee(input.interestId, owners)) {
-                        show("lead", UiNotice("Cambios guardados.", UiTone.Success))
+                        show("lead", UiNotice(tr("Cambios guardados."), UiTone.Success))
                     } else {
-                        show("leads", UiNotice("Cambios guardados. El lead paso a un interes que no ves.", UiTone.Success), emptyMap())
+                        show("leads", UiNotice(tr("Cambios guardados. El lead paso a un interes que no ves."), UiTone.Success), emptyMap())
                     }
                 }
                 "lead:restore" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val check = restoreCheck(lead.archivedAt != null, permissions.has(CrmScreens.Manage))
                     // Back to the view the button was in; "lead" (the detail) when it came from there.
                     val back = params["from"]?.takeIf { it == "pipeline" || it == "leads" || it == "list" }
@@ -598,42 +602,42 @@ object CrmServerModule : ServerModule {
                         CrmRestoreCheck.Restore ->
                             // False: someone restored it between the check and the update.
                             if (CrmRepository.restoreLead(tenant, lead.id, actor)) {
-                                after(UiNotice("${lead.name} se restauro en ${context.stage(lead.stageId)?.name ?: "su etapa"}.", UiTone.Success))
+                                after(UiNotice(tr("{0} se restauro en {1}.", lead.name, context.stage(lead.stageId)?.name ?: tr("su etapa")), UiTone.Success))
                             } else {
-                                after(UiNotice("${lead.name} ya estaba abierto.", UiTone.Warning))
+                                after(UiNotice(tr("{0} ya estaba abierto.", lead.name), UiTone.Warning))
                             }
-                        CrmRestoreCheck.AlreadyOpen -> after(UiNotice("${lead.name} ya estaba abierto.", UiTone.Warning))
-                        CrmRestoreCheck.NoPermission -> after(UiNotice("No tienes permiso para restaurar leads.", UiTone.Danger))
+                        CrmRestoreCheck.AlreadyOpen -> after(UiNotice(tr("{0} ya estaba abierto.", lead.name), UiTone.Warning))
+                        CrmRestoreCheck.NoPermission -> after(UiNotice(tr("No tienes permiso para restaurar leads."), UiTone.Danger))
                     }
                 }
                 "lead:note" -> {
                     // The one write a mention allows. Scope: needs crm.leads.manage like before; mention: only the active mention.
-                    val lead = readableLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = readableLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     if (!permissions.has(CrmScreens.View) || !CrmMentions.canAddNote(context.readAccess(lead), permissions.has(CrmScreens.Manage))) {
-                        return show("lead", UiNotice("No tienes permiso para agregar notas a este lead.", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                        return show("lead", UiNotice(tr("No tienes permiso para agregar notas a este lead."), UiTone.Danger), mapOf("id" to lead.id.toString()))
                     }
                     val body = CrmForms.note(values)
                     val chosen = CrmForms.mentionNames(values)
                     val unmatched = CrmAssignees.match(chosen, context.mentionable).unmatched
                     if (unmatched.isNotEmpty()) {
-                        return show("lead", UiNotice("Ya no se puede mencionar a: ${unmatched.joinToString()}.", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                        return show("lead", UiNotice(tr("Ya no se puede mencionar a: {0}.", unmatched.joinToString()), UiTone.Danger), mapOf("id" to lead.id.toString()))
                     }
                     val result = CrmMentions.addNote(tenant, lead.id, body, chosen, context.mentionable, actor, CrmMentions.canGrant(context.readAccess(lead)))
                     CrmNotify.mentioned(tenant, notifier, lead.id, body, actor, result.mentioned)
-                    val told = if (result.mentioned.isEmpty()) "" else " Se aviso a ${result.mentioned.joinToString { it.name }}."
-                    val plain = if (result.granted) "" else " Tus @ quedan como texto: solo quien gestiona el lead puede dar acceso al mencionar."
-                    val unknown = if (result.unknown.isEmpty()) "" else " No se reconocio: ${result.unknown.joinToString { "@$it" }}."
-                    show("lead", UiNotice("Nota agregada.$told$unknown$plain", if (result.unknown.isEmpty()) UiTone.Success else UiTone.Warning), mapOf("id" to lead.id.toString()))
+                    val told = if (result.mentioned.isEmpty()) "" else tr(" Se aviso a {0}.", result.mentioned.joinToString { it.name })
+                    val plain = if (result.granted) "" else tr(" Tus @ quedan como texto: solo quien gestiona el lead puede dar acceso al mencionar.")
+                    val unknown = if (result.unknown.isEmpty()) "" else tr(" No se reconocio: {0}.", result.unknown.joinToString { "@$it" })
+                    show("lead", UiNotice(tr("Nota agregada.{0}{1}{2}", told, unknown, plain), if (result.unknown.isEmpty()) UiTone.Success else UiTone.Warning), mapOf("id" to lead.id.toString()))
                 }
                 "lead:unmention" -> {
                     // Whoever manages the lead (permission + lead inside their scope) takes a mention's access away.
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
-                    val user = uuid("user") ?: return show("lead", UiNotice("Usuario invalido.", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
+                    val user = uuid("user") ?: return show("lead", UiNotice(tr("Usuario invalido."), UiTone.Danger), mapOf("id" to lead.id.toString()))
                     val revoked = CrmMentions.revoke(tenant, lead.id, user, context.names, actor)
-                    show("lead", UiNotice(if (revoked) "Acceso quitado." else "Ese usuario ya no tenia acceso por mencion.", if (revoked) UiTone.Success else UiTone.Warning), mapOf("id" to lead.id.toString()))
+                    show("lead", UiNotice(if (revoked) tr("Acceso quitado.") else tr("Ese usuario ya no tenia acceso por mencion."), if (revoked) UiTone.Success else UiTone.Warning), mapOf("id" to lead.id.toString()))
                 }
                 "lead:send" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val translationNotes = mutableListOf<String>()
                     val (channel, email) = try {
                         CrmAdminScreens.composeReply(context, lead, values, translationNotes)
@@ -646,33 +650,33 @@ object CrmServerModule : ServerModule {
                     try {
                         val externalId = channel.send(CrmChannelContext(tenant, serverMail), lead, email)
                         CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, externalId, "sent", "", actor.userId, actor.name)
-                        show("lead", UiNotice("Mensaje enviado por ${channel.label}.", UiTone.Success))
+                        show("lead", UiNotice(tr("Mensaje enviado por {0}.", channel.label), UiTone.Success))
                     } catch (failure: CrmChannelException) {
                         CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, null, "failed", failure.message.orEmpty(), actor.userId, actor.name)
                         show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
                     }
                 }
                 "lead:approve", "lead:discard" -> {
-                    if (!context.canAssign) return show("lead", UiNotice("No tienes permiso para asignar leads.", UiTone.Danger))
-                    val lead = visibleLead("id") ?: return show("reception", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    if (!context.canAssign) return show("lead", UiNotice(tr("No tienes permiso para asignar leads."), UiTone.Danger))
+                    val lead = visibleLead("id") ?: return show("reception", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val approve = params["op"] == "approve"
                     val resolved = CrmRepository.resolveSuggestion(tenant, lead, approve, context.names, actor)
                     CrmNotify.assigned(tenant, notifier, lead.id, listOfNotNull(resolved.added), context.scope.userId)
                     val notice = when {
-                        resolved.noAccess -> UiNotice("El usuario sugerido ya no tiene acceso: se descarto la sugerencia y no se asigno a nadie.", UiTone.Warning)
-                        approve -> UiNotice("Asignado: se anadio a los asignados del lead.", UiTone.Success)
-                        else -> UiNotice("Sugerencia descartada.", UiTone.Success)
+                        resolved.noAccess -> UiNotice(tr("El usuario sugerido ya no tiene acceso: se descarto la sugerencia y no se asigno a nadie."), UiTone.Warning)
+                        approve -> UiNotice(tr("Asignado: se anadio a los asignados del lead."), UiTone.Success)
+                        else -> UiNotice(tr("Sugerencia descartada."), UiTone.Success)
                     }
                     // From "Sin calificar" the user goes back to the list; from the lead, stays on it.
                     if (params["from"] == "reception" && CrmScreens.canOpen("reception", permissions)) show("reception", notice, emptyMap()) else show("lead", notice)
                 }
                 "lead:button" -> {
                     // A button field of the lead detail: its template or manual automations run as the user who pressed it.
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val back = mapOf("id" to lead.id.toString())
                     val field = context.fields.firstOrNull { it.key == params["field"] && it.type == CrmFieldType.Button }
-                        ?: return show("lead", UiNotice("Ese boton ya no existe.", UiTone.Warning), back)
-                    if (!context.readAccess(lead).canWrite) return show("lead", UiNotice("No tienes permiso para ejecutar este boton en este lead.", UiTone.Danger), back)
+                        ?: return show("lead", UiNotice(tr("Ese boton ya no existe."), UiTone.Warning), back)
+                    if (!context.readAccess(lead).canWrite) return show("lead", UiNotice(tr("No tienes permiso para ejecutar este boton en este lead."), UiTone.Danger), back)
                     val result = CrmButtons.press(tenant, lead, field, actor, notifier)
                     show("lead", UiNotice(result.text, result.tone), back)
                 }
@@ -686,7 +690,7 @@ object CrmServerModule : ServerModule {
                 }
                 "automations:toggle" -> {
                     val automation = uuid("automation")?.let { CrmAutomationStore.find(tenant, it) }
-                        ?: return show("automations", UiNotice("Esa automatizacion ya no existe.", UiTone.Warning), emptyMap())
+                        ?: return show("automations", UiNotice(tr("Esa automatizacion ya no existe."), UiTone.Warning), emptyMap())
                     val saved = try {
                         CrmAutomationScreens.setEnabled(context, automation, params["enabled"] == "true")
                     } catch (failure: CrmValidationException) {
@@ -696,16 +700,16 @@ object CrmServerModule : ServerModule {
                 }
                 "automations:delete" -> {
                     val deleted = uuid("automation")?.let { CrmAutomationStore.delete(tenant, it) } == true
-                    show("automations", UiNotice(if (deleted) "Automatizacion eliminada." else "Esa automatizacion ya no existe.", if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
+                    show("automations", UiNotice(if (deleted) tr("Automatizacion eliminada.") else tr("Esa automatizacion ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "automations:welcomeOff" -> {
                     CrmHost.setWelcomeEnabled(tenant, false)
-                    show("automations", UiNotice("Bienvenida de Cloudbeds apagada: solo saldra el correo de tus automatizaciones.", UiTone.Success), emptyMap())
+                    show("automations", UiNotice(tr("Bienvenida de Cloudbeds apagada: solo saldra el correo de tus automatizaciones."), UiTone.Success), emptyMap())
                 }
                 "lead:reviewed" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     CrmRepository.clearReview(tenant, lead, actor)
-                    show("lead", UiNotice("Lead marcado como revisado.", UiTone.Success))
+                    show("lead", UiNotice(tr("Lead marcado como revisado."), UiTone.Success))
                 }
                 "mail:save" -> {
                     val merged = try {
@@ -714,7 +718,7 @@ object CrmServerModule : ServerModule {
                         return show("mail", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
                     CrmMail.save(tenant, merged)
-                    show("mail", UiNotice("Correo guardado.", UiTone.Success), emptyMap())
+                    show("mail", UiNotice(tr("Correo guardado."), UiTone.Success), emptyMap())
                 }
                 "templates:save" -> {
                     val name = try {
@@ -722,21 +726,21 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("templates", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
-                    show("templates", UiNotice("Plantilla $name guardada.", UiTone.Success), emptyMap())
+                    show("templates", UiNotice(tr("Plantilla {0} guardada.", name), UiTone.Success), emptyMap())
                 }
                 "templates:preview" -> {
                     // Preview of a template for a lead the user can see (translated when the template asks for it).
                     val template = uuid("id")?.let { id -> CrmMail.templates(tenant).firstOrNull { it.id == id } }
-                        ?: return show("templates", UiNotice("Esa plantilla ya no existe.", UiTone.Warning), emptyMap())
+                        ?: return show("templates", UiNotice(tr("Esa plantilla ya no existe."), UiTone.Warning), emptyMap())
                     val back = mapOf("template" to template.id.toString())
                     val lead = CrmAdminScreens.previewLead(context, values["previewLead"].orEmpty())
-                        ?: return show("templates", UiNotice("Elige un lead para la vista previa.", UiTone.Warning), back, values)
+                        ?: return show("templates", UiNotice(tr("Elige un lead para la vista previa."), UiTone.Warning), back, values)
                     val mail = CrmTemplateMailer.renderFor(tenant, template, lead)
                     show("templates", UiNotice(CrmAdminScreens.previewText(template, lead, mail), if (mail.note == null) UiTone.Success else UiTone.Warning), back, values)
                 }
                 "templates:delete" -> {
                     val deleted = uuid("id")?.let { CrmMail.deleteTemplate(tenant, it) } == true
-                    show("templates", UiNotice(if (deleted) "Plantilla eliminada." else "Esa plantilla ya no existe.", if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
+                    show("templates", UiNotice(if (deleted) tr("Plantilla eliminada.") else tr("Esa plantilla ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "spam:save" -> {
                     val settings = try {
@@ -745,11 +749,11 @@ object CrmServerModule : ServerModule {
                         return show("spam", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
                     CrmSpam.save(tenant, settings)
-                    show("spam", UiNotice("Reglas anti-spam guardadas.", UiTone.Success), emptyMap())
+                    show("spam", UiNotice(tr("Reglas anti-spam guardadas."), UiTone.Success), emptyMap())
                 }
                 "team:user" -> {
                     val user = uuid("user")?.let { id -> context.users.firstOrNull { it.id == id } }
-                        ?: return show("team", UiNotice("Ese usuario ya no tiene acceso al CRM.", UiTone.Warning), emptyMap())
+                        ?: return show("team", UiNotice(tr("Ese usuario ya no tiene acceso al CRM."), UiTone.Warning), emptyMap())
                     CrmNotify.saveUserSettings(
                         tenant,
                         CrmUserSettings(
@@ -761,13 +765,13 @@ object CrmServerModule : ServerModule {
                             notifyFollowUp = values["notifyFollowUp"]?.let { it == "true" } ?: CrmNotify.userSettings(tenant)[user.id]?.notifyFollowUp ?: true,
                         ),
                     )
-                    show("team", UiNotice("Avisos de ${user.name} guardados.", UiTone.Success), emptyMap())
+                    show("team", UiNotice(tr("Avisos de {0} guardados.", user.name), UiTone.Success), emptyMap())
                 }
                 "settings:digest", "team:digest" -> {
                     val hour = values["digestHour"].orEmpty().trim().toIntOrNull()?.takeIf { it in 0..23 }
-                        ?: return show("settings", UiNotice("La hora debe ser un numero entre 0 y 23.", UiTone.Danger), emptyMap())
+                        ?: return show("settings", UiNotice(tr("La hora debe ser un numero entre 0 y 23."), UiTone.Danger), emptyMap())
                     tenant.prepareStatement("UPDATE crm_settings SET digest_hour = ? WHERE id = 1").use { it.setInt(1, hour); it.executeUpdate() }
-                    show("settings", UiNotice("El resumen diario se enviara a las $hour:00.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("El resumen diario se enviara a las {0}:00.", hour), UiTone.Success), emptyMap())
                 }
                 "settings:exitSave" -> {
                     val config = try {
@@ -780,12 +784,12 @@ object CrmServerModule : ServerModule {
                     if (pending > 0 && values["exitConfirm"] != "true") {
                         return show(
                             "automations",
-                            UiNotice("Al activar se archivaran $pending leads con salida vencida. Marca la confirmacion y guarda de nuevo.", UiTone.Warning),
+                            UiNotice(tr("Al activar se archivaran {0} leads con salida vencida. Marca la confirmacion y guarda de nuevo.", pending), UiTone.Warning),
                             params - "op", values + ("exitConfirm" to "false"),
                         )
                     }
                     CrmExit.save(tenant, config)
-                    show("automations", UiNotice(if (config.enabled) "Automatizacion de salida guardada." else "Automatizacion de salida desactivada.", UiTone.Success), emptyMap())
+                    show("automations", UiNotice(if (config.enabled) tr("Automatizacion de salida guardada.") else tr("Automatizacion de salida desactivada."), UiTone.Success), emptyMap())
                 }
                 "integrations:metaSave" -> {
                     val merged = try {
@@ -795,18 +799,18 @@ object CrmServerModule : ServerModule {
                     }
                     CrmHost.saveMeta(tenant, merged)
                     // Saving connects everything at once: page token and Instagram, and the WhatsApp account.
-                    if (!merged.enabled || merged.systemToken == null) return show("integrations", UiNotice("Meta guardado.", UiTone.Success), emptyMap())
+                    if (!merged.enabled || merged.systemToken == null) return show("integrations", UiNotice(tr("Meta guardado."), UiTone.Success), emptyMap())
                     val setup = CrmHost.metaSetup(tenant, merged)
                     show(
                         "integrations",
-                        UiNotice("Meta guardado. ${setup.notice}".trim(), if (setup.problems.isEmpty()) UiTone.Success else UiTone.Warning),
+                        UiNotice(tr("Meta guardado. {0}", setup.notice).trim(), if (setup.problems.isEmpty()) UiTone.Success else UiTone.Warning),
                         metaNumbers(setup),
                     )
                 }
                 "integrations:metaServerApp" -> {
                     // Only the server owner, from the server workspace, configures the server app.
                     if (!permissions.serverOwner || CrmHost.metaServerWorkspace() != permissions.companyCode) {
-                        return show("integrations", UiNotice("Solo el dueno del servidor configura la app de Meta del servidor, desde el espacio del servidor.", UiTone.Danger), emptyMap())
+                        return show("integrations", UiNotice(tr("Solo el dueno del servidor configura la app de Meta del servidor, desde el espacio del servidor."), UiTone.Danger), emptyMap())
                     }
                     val app = try {
                         CrmHost.metaMergeApp(CrmHost.metaLoadApp(tenant), values)
@@ -814,14 +818,14 @@ object CrmServerModule : ServerModule {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
                     CrmHost.metaSaveApp(tenant, app)
-                    show("integrations", UiNotice(if (app.enabled) "App de Meta del servidor guardada: las empresas ya pueden conectarse." else "App de Meta del servidor guardada (desactivada).", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(if (app.enabled) tr("App de Meta del servidor guardada: las empresas ya pueden conectarse.") else tr("App de Meta del servidor guardada (desactivada)."), UiTone.Success), emptyMap())
                 }
                 "integrations:metaMode" -> {
                     val mode = params["mode"].takeIf { it == OwnMode || it == ServerMode }
-                        ?: return show("integrations", UiNotice("Modo invalido.", UiTone.Danger), emptyMap())
+                        ?: return show("integrations", UiNotice(tr("Modo invalido."), UiTone.Danger), emptyMap())
                     val current = CrmHost.metaSettings(tenant)
                     if (mode == ServerMode && CrmHost.metaServerApp()?.ready != true) {
-                        return show("integrations", UiNotice("El servidor no tiene una app de Meta activa.", UiTone.Warning), emptyMap())
+                        return show("integrations", UiNotice(tr("El servidor no tiene una app de Meta activa."), UiTone.Warning), emptyMap())
                     }
                     if (mode != current.connectionMode) {
                         // Tokens of one mode are useless in the other: the company connects again.
@@ -837,24 +841,24 @@ object CrmServerModule : ServerModule {
                         )
                         CrmHost.metaLog(tenant, "modo", if (mode == ServerMode) "app del servidor" else "app propia")
                     }
-                    show("integrations", UiNotice(if (mode == ServerMode) "Ahora conecta la empresa con Meta." else "Configura la app propia de la empresa.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(if (mode == ServerMode) tr("Ahora conecta la empresa con Meta.") else tr("Configura la app propia de la empresa."), UiTone.Success), emptyMap())
                 }
                 "integrations:metaLink" -> {
-                    if (CrmHost.metaServerApp()?.ready != true) return show("integrations", UiNotice("El servidor no tiene una app de Meta activa.", UiTone.Warning), emptyMap())
+                    if (CrmHost.metaServerApp()?.ready != true) return show("integrations", UiNotice(tr("El servidor no tiene una app de Meta activa."), UiTone.Warning), emptyMap())
                     val ticket = CrmHost.metaNewTicket(tenant, actor.name)
                     show(
                         "integrations",
-                        UiNotice("Abre la ventana de Meta, inicia sesion y elige la pagina y el numero. El enlace vence en 30 minutos.", UiTone.Info),
+                        UiNotice(tr("Abre la ventana de Meta, inicia sesion y elige la pagina y el numero. El enlace vence en 30 minutos."), UiTone.Info),
                         mapOf("link" to CrmHost.metaConnectUrl(publicBase, permissions.companyCode, ticket)),
                     )
                 }
                 "integrations:metaDisconnect" -> {
                     CrmHost.metaDisconnect(tenant, permissions.companyCode)
-                    show("integrations", UiNotice("Meta desconectado: ya no se reciben ni se envian mensajes por WhatsApp, Messenger ni Instagram.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Meta desconectado: ya no se reciben ni se envian mensajes por WhatsApp, Messenger ni Instagram."), UiTone.Success), emptyMap())
                 }
                 "integrations:metaServerOptions" -> {
                     CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(recordEchoes = values["recordEchoes"] == "true"))
-                    show("integrations", UiNotice("Opciones de Meta guardadas.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Opciones de Meta guardadas."), UiTone.Success), emptyMap())
                 }
                 "integrations:e24Save" -> {
                     try {
@@ -862,16 +866,16 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    show("integrations", UiNotice("Encuentra24 guardado.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Encuentra24 guardado."), UiTone.Success), emptyMap())
                 }
                 "integrations:e24Sync" -> {
                     val from = values["fromDate"].orEmpty().trim().ifEmpty { null }?.let {
                         runCatching { java.time.LocalDate.parse(it) }.getOrNull()
-                            ?: return show("integrations", UiNotice("La fecha debe tener el formato AAAA-MM-DD.", UiTone.Danger), emptyMap())
+                            ?: return show("integrations", UiNotice(tr("La fecha debe tener el formato AAAA-MM-DD."), UiTone.Danger), emptyMap())
                     }
                     val notice = try {
                         val result = CrmHost.encuentra24Sync(tenant, from)
-                        UiNotice("Encuentra24: $result.", UiTone.Success)
+                        UiNotice(tr("Encuentra24: {0}.", result), UiTone.Success)
                     } catch (failure: CrmEncuentra24Exception) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
@@ -883,7 +887,7 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
-                    show("integrations", UiNotice("WordPress guardado.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("WordPress guardado."), UiTone.Success), emptyMap())
                 }
                 "integrations:wpSecret" -> {
                     val secret = try {
@@ -891,11 +895,11 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
-                    show("integrations", UiNotice("Secreto nuevo generado; pegalo en el plugin.", UiTone.Success), mapOf("secret" to secret))
+                    show("integrations", UiNotice(tr("Secreto nuevo generado; pegalo en el plugin."), UiTone.Success), mapOf("secret" to secret))
                 }
                 "integrations:wpPing" -> {
                     val notice = try {
-                        UiNotice("Conexion correcta: ${CrmHost.wordpressPing(tenant)}.", UiTone.Success)
+                        UiNotice(tr("Conexion correcta: {0}.", CrmHost.wordpressPing(tenant)), UiTone.Success)
                     } catch (failure: CrmWordPressException) {
                         CrmHost.recordWordPressError(tenant, failure.message.orEmpty())
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
@@ -905,7 +909,7 @@ object CrmServerModule : ServerModule {
                 "integrations:wpAgentsSync" -> {
                     val notice = try {
                         val emails = CrmNotify.userSettings(tenant).mapValues { it.value.email }
-                        UiNotice("${CrmHost.wordpressSyncAgents(tenant, context.users, emails)} agente(s) del sitio sincronizados.", UiTone.Success)
+                        UiNotice(tr("{0} agente(s) del sitio sincronizados.", CrmHost.wordpressSyncAgents(tenant, context.users, emails)), UiTone.Success)
                     } catch (failure: CrmWordPressException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
@@ -916,36 +920,36 @@ object CrmServerModule : ServerModule {
                         val chosen = values["agent_${agent.wpUserId}"] ?: return@forEach
                         CrmHost.wordpressMapAgent(tenant, agent.wpUserId, context.users.firstOrNull { it.name == chosen }?.id)
                     }
-                    show("integrations", UiNotice("Agentes guardados.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Agentes guardados."), UiTone.Success), emptyMap())
                 }
                 "properties:link" -> {
-                    val lead = visibleLead("lead") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
-                    val listingId = params["listing"]?.toLongOrNull() ?: return show("properties", UiNotice("Propiedad invalida.", UiTone.Danger), params - setOf("op", "listing"))
+                    val lead = visibleLead("lead") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
+                    val listingId = params["listing"]?.toLongOrNull() ?: return show("properties", UiNotice(tr("Propiedad invalida."), UiTone.Danger), params - setOf("op", "listing"))
                     val notice = try {
                         val listing = CrmHost.wordpressListing(tenant, listingId)
                         CrmHost.wordpressLinkListing(tenant, lead.id, listing, "Propiedad vinculada por ${actor.name}: ${listing.title}.")
-                        UiNotice("${listing.title} vinculada a ${lead.name}.", UiTone.Success)
+                        UiNotice(tr("{0} vinculada a {1}.", listing.title, lead.name), UiTone.Success)
                     } catch (failure: CrmWordPressException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
                     show("properties", notice, params - setOf("op", "listing"))
                 }
                 "lead:itemStatus", "lead:itemRemove", "lead:itemSold" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
-                    val item = uuid("item")?.let { CrmItems.find(tenant, lead.id, it) } ?: return show("lead", UiNotice("Ese interes ya no existe.", UiTone.Warning), mapOf("id" to lead.id.toString()))
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
+                    val item = uuid("item")?.let { CrmItems.find(tenant, lead.id, it) } ?: return show("lead", UiNotice(tr("Ese interes ya no existe."), UiTone.Warning), mapOf("id" to lead.id.toString()))
                     val back = mapOf("id" to lead.id.toString())
                     when (params["op"]) {
                         "itemRemove" -> {
                             CrmItems.remove(tenant, item)
                             CrmRepository.addActivity(tenant, lead.id, "item", "Quitado: ${item.title}.", actor)
-                            show("lead", UiNotice("${item.title} quitado.", UiTone.Success), back)
+                            show("lead", UiNotice(tr("{0} quitado.", item.title), UiTone.Success), back)
                         }
                         "itemStatus" -> {
                             val status = params["status"].orEmpty().takeIf { it in setOf("offered", "chosen", "discarded", "interested") }
-                                ?: return show("lead", UiNotice("Estado invalido.", UiTone.Danger), back)
+                                ?: return show("lead", UiNotice(tr("Estado invalido."), UiTone.Danger), back)
                             CrmItems.setStatus(tenant, item, status)
                             CrmRepository.addActivity(tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor)
-                            show("lead", UiNotice("${item.title}: ${CrmItems.statusLabels[status]}.", UiTone.Success), back)
+                            show("lead", UiNotice(tr("{0}: {1}.", item.title, tr(CrmItems.statusLabels.getValue(status))), UiTone.Success), back)
                         }
                         else -> try {
                             show("lead", UiNotice(CrmLeadItemActions.markSold(context, lead, item, values, actor), UiTone.Success), back)
@@ -955,7 +959,7 @@ object CrmServerModule : ServerModule {
                     }
                 }
                 "rooms:assign" -> {
-                    val lead = visibleLead("lead") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("lead") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val keep = params - setOf("op", "room", "type", "roomName", "typeName", "total", "max")
                     try {
                         show("rooms", UiNotice(CrmLeadItemActions.assignRoom(context, lead, params, actor), UiTone.Success), keep)
@@ -964,7 +968,7 @@ object CrmServerModule : ServerModule {
                     }
                 }
                 "lead:reserve" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val back = mapOf("id" to lead.id.toString())
                     try {
                         val reservation = CrmLeadItemActions.reserve(context, lead, values, actor)
@@ -984,7 +988,7 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
-                    show("integrations", UiNotice("Fechas de estadia guardadas.${CrmStay.lostNote(lost)}", if (lost > 0) UiTone.Warning else UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Fechas de estadia guardadas.{0}", CrmStay.lostNote(lost)), if (lost > 0) UiTone.Warning else UiTone.Success), emptyMap())
                 }
                 "integrations:translationSave" -> {
                     try {
@@ -992,23 +996,23 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    show("integrations", UiNotice("Traduccion guardada.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Traduccion guardada."), UiTone.Success), emptyMap())
                 }
                 "integrations:cbSave" -> {
                     val provider = CrmModuleExtensions.cloudbeds()
-                        ?: return show("integrations", UiNotice(CrmCloudbedsMissing, UiTone.Danger), emptyMap())
+                        ?: return show("integrations", UiNotice(tr(CrmCloudbedsMissing), UiTone.Danger), emptyMap())
                     try {
                         provider.saveSettings(CrmHost, tenant, values, CrmMail.templates(tenant))
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
-                    show("integrations", UiNotice("Cloudbeds guardado.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Cloudbeds guardado."), UiTone.Success), emptyMap())
                 }
                 "integrations:cbTest" -> {
                     val provider = CrmModuleExtensions.cloudbeds()
-                        ?: return show("integrations", UiNotice(CrmCloudbedsMissing, UiTone.Danger), emptyMap())
+                        ?: return show("integrations", UiNotice(tr(CrmCloudbedsMissing), UiTone.Danger), emptyMap())
                     val notice = try {
-                        UiNotice("Conexion correcta con Cloudbeds: ${provider.test(CrmHost, tenant)}.", UiTone.Success)
+                        UiNotice(tr("Conexion correcta con Cloudbeds: {0}.", provider.test(CrmHost, tenant)), UiTone.Success)
                     } catch (failure: CrmCloudbedsException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
@@ -1017,50 +1021,50 @@ object CrmServerModule : ServerModule {
                 "import:text", "import:url" -> {
                     val (source, name, table) = try {
                         when (params["op"]) {
-                            "text" -> Triple("file", values["name"].orEmpty().trim().ifEmpty { "CSV pegado ${context.today}" }, CrmImportParse.csv(values["csv"].orEmpty()))
+                            "text" -> Triple("file", values["name"].orEmpty().trim().ifEmpty { tr("CSV pegado {0}", context.today) }, CrmImportParse.csv(values["csv"].orEmpty()))
                             "url" -> values["url"].orEmpty().trim().let { url -> Triple("file", url.substringAfterLast('/').take(80).ifEmpty { "Archivo" }, CrmImport.fromUrl(url)) }
-                            else -> return show("import", UiNotice("Operacion de importacion desconocida.", UiTone.Danger), emptyMap())
+                            else -> return show("import", UiNotice(tr("Operacion de importacion desconocida."), UiTone.Danger), emptyMap())
                         }
                     } catch (failure: CrmImportException) {
                         return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
                     val job = CrmImport.create(tenant, source, name, table, actor.userId)
-                    show("importjob", UiNotice("${table.rows.size} filas leidas. Revisa el mapeo.", UiTone.Success), mapOf("job" to job.toString()))
+                    show("importjob", UiNotice(tr("{0} filas leidas. Revisa el mapeo.", table.rows.size), UiTone.Success), mapOf("job" to job.toString()))
                 }
                 "importjob:map", "importjob:preset", "importjob:start", "importjob:cancel" -> {
-                    val job = uuid("job")?.let { CrmImport.job(tenant, it) } ?: return show("import", UiNotice("Esa importacion ya no existe.", UiTone.Warning), emptyMap())
+                    val job = uuid("job")?.let { CrmImport.job(tenant, it) } ?: return show("import", UiNotice(tr("Esa importacion ya no existe."), UiTone.Warning), emptyMap())
                     val back = mapOf("job" to job.id.toString())
                     when (params["op"]) {
                         "map", "preset" -> {
-                            if (job.status != "mapping") return show("importjob", UiNotice("Esa importacion ya empezo.", UiTone.Warning), back)
+                            if (job.status != "mapping") return show("importjob", UiNotice(tr("Esa importacion ya empezo."), UiTone.Warning), back)
                             val mapping = if (params["op"] == "preset") {
-                                CrmImport.presets(tenant)[values["preset"]] ?: return show("importjob", UiNotice("Ese mapeo ya no existe.", UiTone.Warning), back)
+                                CrmImport.presets(tenant)[values["preset"]] ?: return show("importjob", UiNotice(tr("Ese mapeo ya no existe."), UiTone.Warning), back)
                             } else CrmImportScreens.mapping(context, job, values)
                             // Columns marked "Crear campo..." become fields of the CRM or of the customer first.
                             val created = CrmImport.saveMappingCreatingFields(tenant, job, mapping)
                             val saved = CrmImport.job(tenant, job.id)!!
                             values["presetName"]?.trim()?.takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(tenant, it, saved.mapping) }
                             val preview = CrmImport.preview(tenant, saved, CrmImport.Context(context.stages, context.interests, context.users, context.today, saved.source))
-                            val missing = if ("name" !in mapping.columns.values && "email" !in mapping.columns.values && "phone" !in mapping.columns.values) " Ninguna columna es nombre, correo o telefono." else ""
+                            val missing = if ("name" !in mapping.columns.values && "email" !in mapping.columns.values && "phone" !in mapping.columns.values) tr(" Ninguna columna es nombre, correo o telefono.") else ""
                             show(
                                 "importjob",
                                 UiNotice(
-                                    (if (created.isEmpty()) "" else "Campos creados: ${created.joinToString()}. ") +
-                                        "Vista previa: ${preview.created} nuevos, ${preview.updated} actualizados, ${preview.conflicts} por revisar, ${preview.skipped} omitidos.$missing",
+                                    (if (created.isEmpty()) "" else tr("Campos creados: {0}. ", created.joinToString())) +
+                                        tr("Vista previa: {0} nuevos, {1} actualizados, {2} por revisar, {3} omitidos.{4}", preview.created, preview.updated, preview.conflicts, preview.skipped, missing),
                                     if (missing.isEmpty()) UiTone.Success else UiTone.Warning,
                                 ),
                                 back,
                             )
                         }
                         "start" -> {
-                            if (job.status != "mapping") return show("importjob", UiNotice("Esa importacion ya empezo.", UiTone.Warning), back)
-                            if (job.mapping.columns.values.none { it in setOf("name", "email", "phone") }) return show("importjob", UiNotice("Mapea al menos el nombre, el correo o el telefono.", UiTone.Danger), back)
+                            if (job.status != "mapping") return show("importjob", UiNotice(tr("Esa importacion ya empezo."), UiTone.Warning), back)
+                            if (job.mapping.columns.values.none { it in setOf("name", "email", "phone") }) return show("importjob", UiNotice(tr("Mapea al menos el nombre, el correo o el telefono."), UiTone.Danger), back)
                             CrmImport.setStatus(tenant, job, "running")
-                            show("importjob", UiNotice("Importacion en marcha: se aplican 300 filas por minuto.", UiTone.Success), back)
+                            show("importjob", UiNotice(tr("Importacion en marcha: se aplican 300 filas por minuto."), UiTone.Success), back)
                         }
                         else -> {
                             CrmImport.setStatus(tenant, job, "canceled")
-                            show("import", UiNotice("Importacion ${job.name} cancelada.", UiTone.Success), emptyMap())
+                            show("import", UiNotice(tr("Importacion {0} cancelada.", job.name), UiTone.Success), emptyMap())
                         }
                     }
                 }
@@ -1081,28 +1085,28 @@ object CrmServerModule : ServerModule {
                     }
                 }
                 "lead:itemManual" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val title = values["title"].orEmpty().trim()
-                    if (title.isEmpty() || title.length > 300) return show("lead", UiNotice("Escribe el nombre del interes (hasta 300 caracteres).", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                    if (title.isEmpty() || title.length > 300) return show("lead", UiNotice(tr("Escribe el nombre del interes (hasta 300 caracteres)."), UiTone.Danger), mapOf("id" to lead.id.toString()))
                     CrmItems.link(tenant, lead.id, "manual", UUID.randomUUID().toString(), title, values["subtitle"].orEmpty().trim().take(500))
                     CrmRepository.addActivity(tenant, lead.id, "item", "Interes agregado: $title.", actor)
-                    show("lead", UiNotice("$title agregado.", UiTone.Success), mapOf("id" to lead.id.toString()))
+                    show("lead", UiNotice(tr("{0} agregado.", title), UiTone.Success), mapOf("id" to lead.id.toString()))
                 }
                 "integrations:metaNumber" -> {
                     val id = params["id"].orEmpty().takeIf { it.matches(Regex("^[0-9]{1,64}$")) }
-                        ?: return show("integrations", UiNotice("Numero invalido.", UiTone.Danger), emptyMap())
+                        ?: return show("integrations", UiNotice(tr("Numero invalido."), UiTone.Danger), emptyMap())
                     CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(phoneNumberId = id))
-                    show("integrations", UiNotice("Numero de WhatsApp guardado.", UiTone.Success), emptyMap())
+                    show("integrations", UiNotice(tr("Numero de WhatsApp guardado."), UiTone.Success), emptyMap())
                 }
                 "lead:delete" -> {
-                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     CrmRepository.deleteLead(tenant, lead.id)
-                    show("leads", UiNotice("Lead ${lead.name} eliminado.", UiTone.Success), emptyMap())
+                    show("leads", UiNotice(tr("Lead {0} eliminado.", lead.name), UiTone.Success), emptyMap())
                 }
                 "settings:interests" -> {
                     val enabled = values["enabled"] == "true"
                     CrmRepository.setInterestsEnabled(tenant, enabled)
-                    show("settings", UiNotice(if (enabled) "Intereses activados." else "Intereses desactivados: todos los usuarios del CRM ven todos los leads.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(if (enabled) tr("Intereses activados.") else tr("Intereses desactivados: todos los usuarios del CRM ven todos los leads."), UiTone.Success), emptyMap())
                 }
                 "settings:interestSave" -> {
                     val name = try {
@@ -1111,21 +1115,21 @@ object CrmServerModule : ServerModule {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
                     if (context.interests.any { it.name.equals(name, ignoreCase = true) && it.id != uuid("id") }) {
-                        return show("settings", UiNotice("Ya existe el interes $name.", UiTone.Danger), params - "op", values)
+                        return show("settings", UiNotice(tr("Ya existe el interes {0}.", name), UiTone.Danger), params - "op", values)
                     }
                     CrmRepository.saveInterest(tenant, uuid("id"), name)
-                    show("settings", UiNotice("Interes $name guardado.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("Interes {0} guardado.", name), UiTone.Success), emptyMap())
                 }
                 "settings:interestDelete" -> {
                     val deleted = uuid("id")?.let { CrmRepository.deleteInterest(tenant, it) } == true
-                    show("settings", UiNotice(if (deleted) "Interes eliminado; sus leads estan en Recepcion." else "Ese interes ya no existe.", if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
+                    show("settings", UiNotice(if (deleted) tr("Interes eliminado; sus leads estan en Recepcion.") else tr("Ese interes ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "settings:userInterests" -> {
                     val user = uuid("user")?.let { id -> context.users.firstOrNull { it.id == id } }
-                        ?: return show("settings", UiNotice("Ese usuario ya no tiene acceso al CRM.", UiTone.Warning), emptyMap())
+                        ?: return show("settings", UiNotice(tr("Ese usuario ya no tiene acceso al CRM."), UiTone.Warning), emptyMap())
                     val chosen = context.interests.filter { values[it.id.toString()] == "true" }.map { it.id }.toSet()
                     CrmRepository.setUserInterests(tenant, user.id, chosen)
-                    show("settings", UiNotice("Intereses de ${user.name} guardados.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("Intereses de {0} guardados.", user.name), UiTone.Success), emptyMap())
                 }
                 "settings:stageSave" -> {
                     val input = try {
@@ -1134,14 +1138,18 @@ object CrmServerModule : ServerModule {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
                     if (context.stages.any { it.name.equals(input.name, ignoreCase = true) && it.id != uuid("id") }) {
-                        return show("settings", UiNotice("Ya existe la etapa ${input.name}.", UiTone.Danger), params - "op", values)
+                        return show("settings", UiNotice(tr("Ya existe la etapa {0}.", input.name), UiTone.Danger), params - "op", values)
                     }
                     CrmRepository.saveStage(tenant, uuid("id"), input)
-                    show("settings", UiNotice("Etapa ${input.name} guardada.", UiTone.Success), emptyMap())
+                    // Manual translations of the name: written ones win over the provider; an emptied one goes back to automatic.
+                    CrmTexts.otherLanguages(permissions.companyCode).forEach { language ->
+                        CrmTexts.saveManual(tenant, input.name, language, values["${CrmScreens.StageTranslationPrefix}$language"].orEmpty())
+                    }
+                    show("settings", UiNotice(tr("Etapa {0} guardada.", input.name), UiTone.Success), emptyMap())
                 }
                 "settings:fieldSave" -> {
                     val editing = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }
-                    if (uuid("id") != null && editing == null) return show("settings", UiNotice("Ese campo ya no existe.", UiTone.Warning), emptyMap())
+                    if (uuid("id") != null && editing == null) return show("settings", UiNotice(tr("Ese campo ya no existe."), UiTone.Warning), emptyMap())
                     val field = try {
                         CrmFields.save(
                             tenant, editing?.id,
@@ -1154,7 +1162,7 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
-                    show("settings", UiNotice("Campo ${field.label} guardado.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("Campo {0} guardado.", field.label), UiTone.Success), emptyMap())
                 }
                 "settings:sectionSave" -> {
                     val id = uuid("id")
@@ -1163,40 +1171,40 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
-                    show("settings", UiNotice("Seccion ${section.name} guardada.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("Seccion {0} guardada.", section.name), UiTone.Success), emptyMap())
                 }
                 "settings:sectionDelete" -> {
                     val section = uuid("id")?.let { id -> context.sections.firstOrNull { it.id == id } }
-                        ?: return show("settings", UiNotice("Esa seccion ya no existe.", UiTone.Warning), emptyMap())
+                        ?: return show("settings", UiNotice(tr("Esa seccion ya no existe."), UiTone.Warning), emptyMap())
                     try {
                         CrmFieldSections.delete(tenant, section)
                     } catch (failure: CrmValidationException) {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
-                    show("settings", UiNotice("Seccion ${section.name} eliminada; sus campos quedaron en ${CrmFields.Section}.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("Seccion {0} eliminada; sus campos quedaron en {1}.", section.name, tr(CrmFields.Section)), UiTone.Success), emptyMap())
                 }
                 "settings:sectionMove" -> {
                     val moved = uuid("id")?.let { CrmFieldSections.move(tenant, context.sections, it, params["dir"] == "up") } == true
-                    show("settings", UiNotice(if (moved) "Orden de las secciones guardado." else "Esa seccion no se puede mover ahi (Datos del cliente va siempre primero).", if (moved) UiTone.Success else UiTone.Warning), emptyMap())
+                    show("settings", UiNotice(if (moved) tr("Orden de las secciones guardado.") else tr("Esa seccion no se puede mover ahi (Datos del cliente va siempre primero)."), if (moved) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "settings:fieldDelete" -> {
                     val field = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }
-                        ?: return show("settings", UiNotice("Ese campo ya no existe.", UiTone.Warning), emptyMap())
+                        ?: return show("settings", UiNotice(tr("Ese campo ya no existe."), UiTone.Warning), emptyMap())
                     val lost = CrmFields.delete(tenant, field)
-                    show("settings", UiNotice("Campo ${field.label} eliminado.${CrmStay.lostNote(lost)}", if (lost > 0) UiTone.Warning else UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("Campo {0} eliminado.{1}", field.label, CrmStay.lostNote(lost)), if (lost > 0) UiTone.Warning else UiTone.Success), emptyMap())
                 }
                 "settings:stageDelete" -> {
-                    val id = uuid("id") ?: return show("settings", UiNotice("Etapa invalida.", UiTone.Danger), emptyMap())
-                    if (context.stages.size <= 1) return show("settings", UiNotice("El pipeline necesita al menos una etapa.", UiTone.Warning), emptyMap())
+                    val id = uuid("id") ?: return show("settings", UiNotice(tr("Etapa invalida."), UiTone.Danger), emptyMap())
+                    if (context.stages.size <= 1) return show("settings", UiNotice(tr("El pipeline necesita al menos una etapa."), UiTone.Warning), emptyMap())
                     val deleted = CrmRepository.deleteStage(tenant, id)
-                    show("settings", UiNotice(if (deleted) "Etapa eliminada." else "Esa etapa ya no existe.", if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
+                    show("settings", UiNotice(if (deleted) tr("Etapa eliminada.") else tr("Esa etapa ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "settings:template" -> {
-                    val template = CrmTemplates.find(params["template"].orEmpty()) ?: return show("settings", UiNotice("Plantilla desconocida.", UiTone.Danger), emptyMap())
+                    val template = CrmTemplates.find(params["template"].orEmpty()) ?: return show("settings", UiNotice(tr("Plantilla desconocida."), UiTone.Danger), emptyMap())
                     CrmRepository.applyTemplate(tenant, template)
-                    show("settings", UiNotice("Etapas de ${template.label} aplicadas.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice(tr("Etapas de {0} aplicadas.", template.label), UiTone.Success), emptyMap())
                 }
-                else -> show(screen, UiNotice("Accion desconocida.", UiTone.Danger))
+                else -> show(screen, UiNotice(tr("Accion desconocida."), UiTone.Danger))
             }
         } catch (failure: CrmValidationException) {
             show(screen, UiNotice(failure.message.orEmpty(), UiTone.Danger))
@@ -1218,7 +1226,7 @@ object CrmServerModule : ServerModule {
     private suspend fun ApplicationCall.screenId(permissions: ModulePermissions, canonical: Boolean = true): String? {
         val requested = parameters["screen"].orEmpty()
         val screen = if (requested == "home") CrmScreens.home(permissions) else requested.takeIf { CrmScreens.isScreen(it) }?.let { if (canonical) CrmScreens.canonical(it) else it }
-        if (screen == null) respond(HttpStatusCode.NotFound, CrmErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada o sin permisos."))
+        if (screen == null) respond(HttpStatusCode.NotFound, CrmErrorResponse("UNKNOWN_SCREEN", tr("Seccion no encontrada o sin permisos.")))
         return screen
     }
 
@@ -1229,14 +1237,14 @@ object CrmServerModule : ServerModule {
     // Opens the tenant database of the authorized company, runs [block] and responds with its result as JSON.
     private suspend fun <T> ApplicationCall.respondTenant(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
         val companyCode = access.companyCode(this)
-            ?: return respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+            ?: return respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
         val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
-            ?: return respond(HttpStatusCode.Forbidden, CrmErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+            ?: return respond(HttpStatusCode.Forbidden, CrmErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
         try {
             val result = connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }
-            respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
+            respondText(UiJson.encodeToString(serializer, localizedPayload(result)), ContentType.Application.Json)
         } catch (failure: SQLException) {
-            respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+            respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
         }
     }
 }
