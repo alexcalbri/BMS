@@ -979,3 +979,23 @@ the IMAP password is typed (or generated) only in the app. No tool takes or retu
 (only "configured" flags); to save other settings the tools send the stored values back to the same
 save functions server side. `ModuleRegistryTest.noModuleToolTakesCredentials` fails if a tool of any
 module takes an argument named like a credential.
+
+## Languages (0.30.0, needs Core 0.10.0)
+
+Every text the CRM shows to its users (screens, notices, errors, confirmations, permissions, option labels, and the
+notices and emails sent to staff) is available in Spanish (source) and English: the code writes `tr("Texto en espanol")`
+and the English catalog is `server/src/main/resources/modules/crm/i18n/en.json`. Labels of the enums (field types,
+triggers, conditions, actions, stage kinds and tones, providers) are marked with `msg` and shown with `tr`; what the app
+posts back (options, `op`, ids, tabs) stays in Spanish and Core adds `optionLabels`. Notices, digests and emails to staff
+(assignments, mentions, new messages, follow-ups, daily summary, automation notices) are written in the language of each
+recipient (user, else company, else Spanish). Emails and templates sent to customers keep their own translation logic.
+
+- **Dynamic translation (I18N.md section 8).** The CRM registers its translation provider with Core
+  (`registerTextTranslator`), backed by the provider and key of Integrations > Traduccion; without them the originals are
+  shown. Stage names are shown translated as labels (board columns, filters, selects, badges) while the stored name stays
+  the value; the stage editor has a manual translation per language, which wins over the provider. The notes of a lead are
+  shown with their translation under the original (`UiTimelineEntry.translation`). Customer data (names, emails, phones,
+  custom field values, imported content, customer emails) is never sent to the provider.
+- **Not translated.** Activity and history rows, run records of the automations, import rows and errors, spam log, the
+  customer history events (written in Spanish when they happen), notes of the customer (Clientes), custom field labels,
+  interests, user and template names, and the MCP tools (names, descriptions and results).

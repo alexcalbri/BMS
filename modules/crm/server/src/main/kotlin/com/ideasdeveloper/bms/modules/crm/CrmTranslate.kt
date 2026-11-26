@@ -205,8 +205,8 @@ object CrmTranslate {
      * at a time, never lead data. Null without provider or key (Core shows the originals); a provider error is marked here (the
      * same cooldown as the templates) and thrown, so Core logs it and rests.
      */
-    fun textTranslator(http: CrmHttp = CrmJavaHttp): TextTranslator = TextTranslator { tenant, texts, source, target ->
-        val settings = load(tenant)
+    fun textTranslator(http: CrmHttp = CrmJavaHttp, settingsOf: (Connection) -> CrmTranslationSettings = ::load): TextTranslator = TextTranslator { tenant, texts, source, target ->
+        val settings = settingsOf(tenant)
         val translator = translator(settings, http)
         if (translator == null || coolingDown(settings)) {
             null

@@ -65,7 +65,7 @@ object CrmCustomerTimeline {
 
     private val reservationStatus = mapOf(
         "not_confirmed" to msg("sin confirmar"), "confirmed" to msg("confirmada"), "canceled" to msg("cancelada"),
-        "checked_in" to "en estancia", "checked_out" to msg("finalizada"), "no_show" to "no se presento",
+        "checked_in" to msg("en estancia"), "checked_out" to msg("finalizada"), "no_show" to msg("no se presento"),
     )
 
     // Reservations (Cloudbeds) of the leads, built later with the lead's label.
