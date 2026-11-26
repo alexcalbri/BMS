@@ -555,7 +555,7 @@ object CrmScreens {
         if (lead.reviewReason.isNotEmpty()) add(UiBadge(tr("Por revisar"), UiTone.Danger))
         if (lead.archivedAt != null) add(UiBadge(tr("Archivado"), UiTone.Neutral))
         // Seen only because of a mention (not inside the user's scope): read and notes.
-        if (context.readAccess(lead) == CrmMentions.LeadAccess.ReadNotes) add(UiBadge(MentionedBadge, UiTone.Info))
+        if (context.readAccess(lead) == CrmMentions.LeadAccess.ReadNotes) add(UiBadge(tr(MentionedBadge), UiTone.Info))
     }
 
     private fun card(context: Context, lead: CrmLead, stage: CrmStage?) = UiBoardCard(

@@ -247,7 +247,7 @@ object CrmAutomationScreens {
     private fun saved(context: CrmScreens.Context, automation: CrmAutomation, message: String): Saved {
         val duplicate = CrmAutomationRules.duplicatesCloudbedsWelcome(automation, stayKeys(context), welcomeActive(context))
         val warnings = listOfNotNull(
-            tr("{0} Puedes apagar la bienvenida de Cloudbeds en esta pantalla.", CrmAutomationRules.DuplicateWelcomeWarning).takeIf { duplicate },
+            tr("{0} Puedes apagar la bienvenida de Cloudbeds en esta pantalla.", tr(CrmAutomationRules.DuplicateWelcomeWarning)).takeIf { duplicate },
             CrmAutomationRules.messageReplyNotice(automation),
         )
         return if (warnings.isEmpty()) Saved(message, false) else Saved("$message ${warnings.joinToString(" ")}", true)
@@ -270,7 +270,7 @@ object CrmAutomationScreens {
             UiText(tr("Cada regla tiene un disparador, condiciones opcionales y acciones en orden. Quedan registradas en Ejecuciones recientes y en la actividad del lead."), UiTextStyle.Caption),
             if (duplicates) UiCard(
                 listOf(
-                    UiText(CrmAutomationRules.DuplicateWelcomeWarning, tone = UiTone.Warning),
+                    UiText(tr(CrmAutomationRules.DuplicateWelcomeWarning), tone = UiTone.Warning),
                     UiButton(
                         tr("Apagar la bienvenida de Cloudbeds"),
                         UiRequest(UiRoute + "/automations", params = mapOf("op" to "welcomeOff"), confirm = tr("Cloudbeds dejara de enviar su correo de bienvenida. Continuar?")),

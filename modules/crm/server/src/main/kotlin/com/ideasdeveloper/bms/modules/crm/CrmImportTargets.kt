@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import kotlinx.serialization.json.JsonArray
@@ -36,14 +37,23 @@ object CrmImportTargets {
     // ---- Options of the mapping ----
 
     /** Every target of a column, value -> label, for the mapping dropdowns (the fixed fields first). */
-    fun options(crmFields: List<CrmField>, customerFields: List<CustomerField>): LinkedHashMap<String, String> {
+    fun options(crmFields: List<CrmField>, customerFields: List<CustomerField>): LinkedHashMap<String, String> = options(crmFields, customerFields, shown = false)
+
+    /**
+     * [options] with the labels in the viewer's language when [shown]. The dropdown values are always the Spanish labels (what the
+     * server reads back); the screen shows these ones through [com.ideasdeveloper.bms.ui.UiField.optionLabels].
+     */
+    fun options(crmFields: List<CrmField>, customerFields: List<CustomerField>, shown: Boolean): LinkedHashMap<String, String> {
+        fun text(source: String, argument: String? = null): String =
+            if (shown) (if (argument == null) tr(source) else tr(source, argument)) else argument?.let { source.replace("{0}", it) } ?: source
         val options = LinkedHashMap(CrmImportParse.fields)
-        options[Files] = tr("Archivos del lead ({0})", CrmFields.DocumentsLabel)
+        if (shown) options.keys.toList().forEach { options[it] = tr(options.getValue(it)) }
+        options[Files] = text(msg("Archivos del lead ({0})"), if (shown) tr(CrmFields.DocumentsLabel) else CrmFields.DocumentsLabel)
         // A button holds no value: it is not a place to import into.
-        crmFields.filter { it.type != CrmFieldType.Button }.forEach { options[CrmPrefix + it.key] = tr("Campo del CRM: {0}", it.label) }
-        customerFields.forEach { options[CustomerPrefix + it.key] = tr("Campo del cliente: {0}", it.label) }
-        options[NewCrm] = tr("Crear campo en el CRM")
-        options[NewCustomer] = tr("Crear campo del cliente")
+        crmFields.filter { it.type != CrmFieldType.Button }.forEach { options[CrmPrefix + it.key] = text(msg("Campo del CRM: {0}"), it.label) }
+        customerFields.forEach { options[CustomerPrefix + it.key] = text(msg("Campo del cliente: {0}"), it.label) }
+        options[NewCrm] = text(msg("Crear campo en el CRM"))
+        options[NewCustomer] = text(msg("Crear campo del cliente"))
         return options
     }
 

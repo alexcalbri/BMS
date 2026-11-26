@@ -155,8 +155,11 @@ class CrmAutomationRefs(
         return fields.firstOrNull { it.key == clean || it.label.equals(clean, ignoreCase = true) }?.key
     }
 
+    /** [fieldLabel] in the viewer's language, for texts (the form values and options keep the Spanish one). */
+    fun fieldShown(key: String): String = if (key == FollowUpField) tr(FollowUpLabel) else fieldLabel(key)
+
     fun fieldLabel(key: String): String =
-        if (key == FollowUpField) tr(FollowUpLabel) else fields.firstOrNull { it.key == key }?.label ?: key
+        if (key == FollowUpField) FollowUpLabel else fields.firstOrNull { it.key == key }?.label ?: key
 
     fun stageName(id: UUID?): String = stages.firstOrNull { it.id == id }?.name ?: tr("etapa eliminada")
 }
@@ -477,10 +480,10 @@ object CrmAutomationConditions {
     fun label(condition: CrmCondition, refs: CrmAutomationRefs): String = when (condition.kind) {
         CrmConditionKind.StageIn -> tr("etapa en {0}", condition.stageIds.joinToString { refs.stageName(it) })
         CrmConditionKind.InterestIn -> tr("interes en {0}", (condition.interestIds.map { id -> refs.interests.firstOrNull { it.id == id }?.name ?: tr("interes eliminado") } + listOfNotNull(CrmForms.NoInterest.takeIf { condition.noInterest })).joinToString())
-        CrmConditionKind.FieldEquals -> "${refs.fieldLabel(condition.field)} = ${condition.value}"
-        CrmConditionKind.FieldNotEquals -> tr("{0} distinto de {1}", refs.fieldLabel(condition.field), condition.value)
-        CrmConditionKind.FieldEmpty -> tr("{0} vacio", refs.fieldLabel(condition.field))
-        CrmConditionKind.FieldFilled -> tr("{0} lleno", refs.fieldLabel(condition.field))
+        CrmConditionKind.FieldEquals -> "${refs.fieldShown(condition.field)} = ${condition.value}"
+        CrmConditionKind.FieldNotEquals -> tr("{0} distinto de {1}", refs.fieldShown(condition.field), condition.value)
+        CrmConditionKind.FieldEmpty -> tr("{0} vacio", refs.fieldShown(condition.field))
+        CrmConditionKind.FieldFilled -> tr("{0} lleno", refs.fieldShown(condition.field))
         CrmConditionKind.HasEmail -> tr("tiene correo")
         CrmConditionKind.HasPhone -> tr("tiene telefono")
     }
@@ -666,7 +669,7 @@ object CrmRunStates {
 object CrmAutomationSummary {
     fun trigger(trigger: CrmTrigger, refs: CrmAutomationRefs): String = when (trigger.type) {
         CrmTriggerType.StageChanged -> tr("Cuando un lead pasa a {0}", refs.stageName(trigger.stageId))
-        CrmTriggerType.FieldChanged -> tr("Cuando cambia {0}", refs.fieldLabel(trigger.field))
+        CrmTriggerType.FieldChanged -> tr("Cuando cambia {0}", refs.fieldShown(trigger.field))
         CrmTriggerType.Date -> {
             val days = trigger.offsetDays
             val offset = when {
@@ -674,7 +677,7 @@ object CrmAutomationSummary {
                 days < 0 -> tr("{0} dia(s) antes de", -days)
                 else -> tr("{0} dia(s) despues de", days)
             }
-            tr("{0} {1}, a las {2}:00", offset, refs.fieldLabel(trigger.field), trigger.hour.toString().padStart(2, '0'))
+            tr("{0} {1}, a las {2}:00", offset, refs.fieldShown(trigger.field), trigger.hour.toString().padStart(2, '0'))
         }
         else -> tr(trigger.type.label)
     }
@@ -682,7 +685,7 @@ object CrmAutomationSummary {
     fun action(action: CrmAction, refs: CrmAutomationRefs): String = when (action.kind) {
         CrmActionKind.SendTemplate -> tr("Enviar {0}", refs.templates.firstOrNull { it.id == action.templateId }?.name ?: tr("plantilla eliminada"))
         CrmActionKind.SetStage -> tr("Pasar a {0}", refs.stageName(action.stageId))
-        CrmActionKind.SetField -> tr("Fijar {0} = {1}", refs.fieldLabel(action.field), action.value.ifEmpty { tr("(vacio)") })
+        CrmActionKind.SetField -> tr("Fijar {0} = {1}", refs.fieldShown(action.field), action.value.ifEmpty { tr("(vacio)") })
         CrmActionKind.Notify -> tr("Avisar a {0}", tr(action.who.label).lowercase())
         else -> tr(action.kind.label)
     }

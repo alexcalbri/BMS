@@ -116,9 +116,11 @@ object CrmImportScreens {
             )
         }
         val fieldOptions = CrmImportTargets.options(context.fields, CrmImportTargets.customerFields(context.tenant))
+        // The values are the Spanish labels (read back by [mapping]); the app shows these ones.
+        val shownOptions = CrmImportTargets.options(context.fields, CrmImportTargets.customerFields(context.tenant), shown = true).values.toList()
         val columnFields = job.columns.map { column ->
             val type = job.columnTypes[column]?.takeIf { it.isNotEmpty() }?.let { CrmImportSources.of(job.source)?.columnLabel(it) }.orEmpty()
-            UiField("col:$column", column + type, type = "dropdown", options = fieldOptions.values.toList(), section = tr("Columnas"))
+            UiField("col:$column", column + type, type = "dropdown", options = fieldOptions.values.toList(), optionLabels = shownOptions, section = tr("Columnas"))
         }
         // Columns proposed as new fields: the user confirms them by saving the mapping.
         val toCreate = job.columns.filter { job.mapping.columns[it] in setOf(CrmImportTargets.NewCrm, CrmImportTargets.NewCustomer) }
