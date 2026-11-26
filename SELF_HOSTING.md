@@ -636,7 +636,7 @@ PostgreSQL will block any role deletion that still has dependencies.
 
 The installer asks for the public mode: `https` or `http`. `https` uses Let's
 Encrypt. `http` skips certificate issuance and serves the web app over plain
-HTTP while proxying `/auth/`, `/companies`, `/server`, `/modules` and `/.well-known/oauth-` to Ktor. Choosing
+HTTP while proxying `/auth/`, `/companies`, `/server`, `/modules`, `/notifications`, `/version` and `/.well-known/oauth-` to Ktor. Choosing
 `http` prints a credential/token warning and requires typing `HTTP` to confirm.
 Use HTTP only as a temporary recovery/testing mode; enable HTTPS before
 production use.
