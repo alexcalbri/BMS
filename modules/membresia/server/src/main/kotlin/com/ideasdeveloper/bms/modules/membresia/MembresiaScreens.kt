@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiBarChart
@@ -69,22 +71,22 @@ object MembresiaScreens {
     private data class Section(val id: String, val label: String, val allowed: (MembresiaAccess) -> Boolean)
 
     private val sections = listOf(
-        Section("recepcion", "Recepción") { it.view },
-        Section("miembros", "Miembros") { it.view },
-        Section("niveles", "Por nivel") { it.view },
-        Section("nueva", "Nueva membresía") { it.manage },
-        Section("planes", "Planes") { it.plans },
-        Section("ingresos", "Ingresos") { it.manage },
-        Section("ajustes", "Ajustes") { it.plans },
+        Section("recepcion", msg("Recepción")) { it.view },
+        Section("miembros", msg("Miembros")) { it.view },
+        Section("niveles", msg("Por nivel")) { it.view },
+        Section("nueva", msg("Nueva membresía")) { it.manage },
+        Section("planes", msg("Planes")) { it.plans },
+        Section("ingresos", msg("Ingresos")) { it.manage },
+        Section("ajustes", msg("Ajustes")) { it.plans },
     )
 
     // Pantallas a las que se llega desde otras (no son secciones del menu).
     private val inner = listOf(
-        Section("miembro", "Miembro") { it.view },
-        Section("visitas", "Visitas") { it.view },
-        Section("renovar", "Renovar") { it.manage },
-        Section("editar", "Editar") { it.manage },
-        Section("importar", "Importar") { it.import },
+        Section("miembro", tr("Miembro")) { it.view },
+        Section("visitas", tr("Visitas")) { it.view },
+        Section("renovar", tr("Renovar")) { it.manage },
+        Section("editar", tr("Editar")) { it.manage },
+        Section("importar", tr("Importar")) { it.import },
     )
 
     fun isScreen(id: String): Boolean = (sections + inner).any { it.id == id }
@@ -96,9 +98,9 @@ object MembresiaScreens {
     fun home(access: MembresiaAccess): String? = sections.firstOrNull { it.allowed(access) }?.id
 
     fun navigation(access: MembresiaAccess, selected: String): UiNavigation = UiNavigation(
-        title = MembresiaModule.DisplayName,
-        items = (sections + Section("importar", "Importar") { it.import && it.importEnabled })
-            .filter { it.allowed(access) }.map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },
+        title = tr(MembresiaModule.DisplayName),
+        items = (sections + Section("importar", msg("Importar")) { it.import && it.importEnabled })
+            .filter { it.allowed(access) }.map { UiNavItem(it.id, tr(it.label), UiNavigate(it.id)) },
         selected = selected,
     )
 
@@ -114,7 +116,7 @@ object MembresiaScreens {
     private fun screen(access: MembresiaAccess, selected: String, title: String, notice: UiNotice?, body: List<UiNode>) =
         UiScreen(title = title, navigation = navigation(access, selected), notice = notice, body = body)
 
-    private fun badge(status: DisplayStatus) = UiBadge(status.label, status.tone)
+    private fun badge(status: DisplayStatus) = UiBadge(tr(status.label), status.tone)
 
     private fun post(action: String, params: Map<String, String> = emptyMap(), confirm: String? = null, formId: String? = null) =
         UiRequest("${MembresiaModule.UiRoute}/$action", "POST", params, confirm, formId)
@@ -129,8 +131,8 @@ object MembresiaScreens {
         return UiListItem(
             title = member.customerName.ifBlank { member.email.ifBlank { member.phone } },
             subtitle = listOf(member.email, member.phone).filter { it.isNotBlank() }.joinToString(" · "),
-            trailing = member.current?.let { "${it.planName} · hasta ${it.endsOn}" }.orEmpty(),
-            badges = listOf(status?.let(::badge) ?: UiBadge("Sin membresía", UiTone.Neutral)),
+            trailing = member.current?.let { tr("{0} · hasta {1}", it.planName, it.endsOn) }.orEmpty(),
+            badges = listOf(status?.let(::badge) ?: UiBadge(tr("Sin membresía"), UiTone.Neutral)),
             action = openMember(member.customerId),
         )
     }
@@ -153,28 +155,28 @@ object MembresiaScreens {
                 UiForm(
                     id = "search",
                     fields = listOf(
-                        UiField("name", "Buscar miembro", placeholder = "Nombre, correo o teléfono", suggest = UiSuggest(MembersSuggestRoute, minLength = 2)),
+                        UiField("name", tr("Buscar miembro"), placeholder = tr("Nombre, correo o teléfono"), suggest = UiSuggest(MembersSuggestRoute, minLength = 2)),
                     ),
                     values = mapOf("name" to query),
-                    submit = UiButton("Buscar", UiNavigate("recepcion", formId = "search")),
+                    submit = UiButton(tr("Buscar"), UiNavigate("recepcion", formId = "search")),
                 ),
             )
             if (query.isNotBlank()) {
-                add(UiList(results.map { memberItem(it, today, expiringDays) }, emptyText = "No hay miembros con ese dato."))
+                add(UiList(results.map { memberItem(it, today, expiringDays) }, emptyText = tr("No hay miembros con ese dato.")))
             }
             add(
                 UiGrid(
                     listOf(
-                        UiMetric("Activas", (counts[DisplayStatus.ACTIVA] ?: 0).toString(), "Membresías vigentes", UiTone.Success),
-                        UiMetric("Por vencer", (counts[DisplayStatus.POR_VENCER] ?: 0).toString(), "Vencen pronto", UiTone.Warning),
-                        UiMetric("Visitas hoy", visitsToday.toString(), "Incluye invitados"),
+                        UiMetric(tr("Activas"), (counts[DisplayStatus.ACTIVA] ?: 0).toString(), tr("Membresías vigentes"), UiTone.Success),
+                        UiMetric(tr("Por vencer"), (counts[DisplayStatus.POR_VENCER] ?: 0).toString(), tr("Vencen pronto"), UiTone.Warning),
+                        UiMetric(tr("Visitas hoy"), visitsToday.toString(), tr("Incluye invitados")),
                     ),
                     minItemWidth = 160,
                 ),
             )
-            add(UiButton("Ver visitas de hoy", UiNavigate("visitas"), style = "secondary"))
+            add(UiButton(tr("Ver visitas de hoy"), UiNavigate("visitas"), style = "secondary"))
         }
-        return screen(access, "recepcion", "Recepción", notice, body)
+        return screen(access, "recepcion", tr("Recepción"), notice, body)
     }
 
     // ---------------------------------------------------------------- miembro
@@ -198,16 +200,16 @@ object MembresiaScreens {
         val customerId = member.customerId.toString()
         val shownNotice = notice ?: overrideReason?.let { UiNotice(it, UiTone.Warning) }
         val body = buildList<UiNode> {
-            add(UiStatus(status?.label ?: "Sin membresía", status?.tone ?: UiTone.Neutral))
+            add(UiStatus(status?.let { tr(it.label) } ?: tr("Sin membresía"), status?.tone ?: UiTone.Neutral))
             val contact = listOf(member.email, member.phone).filter { it.isNotBlank() }.joinToString(" · ")
             if (contact.isNotEmpty()) add(UiText(contact, UiTextStyle.Caption))
             // Unico lugar donde se muestra el codigo WiFi: solo lectura y solo para quien registra visitas o gestiona.
             if ((access.visits || access.manage) && !wifiCode.isNullOrBlank()) {
-                add(UiForm(id = "wifi", fields = listOf(UiField("wifiCode", "Código WiFi", readOnly = true)), values = mapOf("wifiCode" to wifiCode)))
+                add(UiForm(id = "wifi", fields = listOf(UiField("wifiCode", tr("Código WiFi"), readOnly = true)), values = mapOf("wifiCode" to wifiCode)))
             }
             if (current != null) {
-                add(UiText("${current.planName} · ${current.startsOn} a ${current.endsOn}", UiTextStyle.Subtitle))
-                val place = listOf(current.unit.takeIf { it.isNotBlank() }?.let { "Unidad: $it" }, current.hostName.takeIf { it.isNotBlank() }?.let { "Anfitrión: $it" })
+                add(UiText(tr("{0} · {1} a {2}", current.planName, current.startsOn, current.endsOn), UiTextStyle.Subtitle))
+                val place = listOf(current.unit.takeIf { it.isNotBlank() }?.let { tr("Unidad: {0}", it) }, current.hostName.takeIf { it.isNotBlank() }?.let { tr("Anfitrión: {0}", it) })
                     .filterNotNull().joinToString(" · ")
                 if (place.isNotEmpty()) add(UiText(place, UiTextStyle.Caption))
                 add(UiGrid(metrics(current, status, today), minItemWidth = 160))
@@ -215,21 +217,21 @@ object MembresiaScreens {
 
             val buttons = buildList<UiNode> {
                 if (access.visits && current != null) {
-                    add(UiButton("Registrar visita", post("checkin", mapOf("customer" to customerId))))
+                    add(UiButton(tr("Registrar visita"), post("checkin", mapOf("customer" to customerId))))
                     if (overrideReason != null) {
-                        add(UiButton("Registrar igual", post("checkin", mapOf("customer" to customerId, "override" to "true")), style = "danger"))
+                        add(UiButton(tr("Registrar igual"), post("checkin", mapOf("customer" to customerId, "override" to "true")), style = "danger"))
                     }
                 }
                 if (access.manage) {
                     if (current != null && current.status != StoredStatus.Cancelada) {
-                        add(UiButton("Renovar", UiNavigate("renovar", mapOf("id" to current.id.toString())), style = "secondary"))
-                        add(UiButton("Editar", UiNavigate("editar", mapOf("id" to current.id.toString())), style = "secondary"))
+                        add(UiButton(tr("Renovar"), UiNavigate("renovar", mapOf("id" to current.id.toString())), style = "secondary"))
+                        add(UiButton(tr("Editar"), UiNavigate("editar", mapOf("id" to current.id.toString())), style = "secondary"))
                     }
                     if (status?.current != true) {
-                        add(UiButton("Nueva membresía", UiNavigate("nueva", mapOf("customer" to customerId)), style = "secondary"))
+                        add(UiButton(tr("Nueva membresía"), UiNavigate("nueva", mapOf("customer" to customerId)), style = "secondary"))
                     }
                 }
-                add(UiButton("Abrir ficha del cliente", UiOpenModule("clientes", "customer", mapOf("id" to customerId)), style = "secondary"))
+                add(UiButton(tr("Abrir ficha del cliente"), UiOpenModule("clientes", "customer", mapOf("id" to customerId)), style = "secondary"))
             }
             add(UiRow(buttons, fill = true))
 
@@ -237,17 +239,17 @@ object MembresiaScreens {
                 val left = MembresiaRules.guestPassesLeft(current)
                 add(
                     UiCard(
-                        title = "Invitado ($left de ${current.guestPassesTotal} pases)",
+                        title = tr("Invitado ({0} de {1} pases)", left, current.guestPassesTotal),
                         children = if (left > 0) {
                             listOf(
                                 UiForm(
                                     id = "guest",
-                                    fields = listOf(UiField("guestName", "Nombre del invitado", required = true)),
-                                    submit = UiButton("Registrar invitado", post("guest", mapOf("customer" to customerId), formId = "guest")),
+                                    fields = listOf(UiField("guestName", tr("Nombre del invitado"), required = true)),
+                                    submit = UiButton(tr("Registrar invitado"), post("guest", mapOf("customer" to customerId), formId = "guest")),
                                 ),
                             )
                         } else {
-                            listOf(UiText("No quedan pases de invitado en este período.", UiTextStyle.Caption))
+                            listOf(UiText(tr("No quedan pases de invitado en este período."), UiTextStyle.Caption))
                         },
                     ),
                 )
@@ -256,15 +258,15 @@ object MembresiaScreens {
             if (access.manage && current != null && current.status != StoredStatus.Cancelada) {
                 add(
                     UiCard(
-                        title = "Cancelar membresía",
+                        title = tr("Cancelar membresía"),
                         collapsible = true,
                         expanded = false,
                         children = listOf(
                             UiForm(
                                 id = "cancel",
-                                fields = listOf(UiField("reason", "Motivo", type = "textarea")),
+                                fields = listOf(UiField("reason", tr("Motivo"), type = "textarea")),
                                 submit = UiButton(
-                                    "Cancelar membresía",
+                                    tr("Cancelar membresía"),
                                     post("cancelar", mapOf("id" to current.id.toString()), confirm = "¿Cancelar esta membresía? No se puede deshacer.", formId = "cancel"),
                                     style = "danger",
                                 ),
@@ -276,28 +278,28 @@ object MembresiaScreens {
 
             add(
                 UiCard(
-                    title = "Membresías",
+                    title = tr("Membresías"),
                     children = listOf(
                         UiTable(
                             columns = listOf(
-                                UiTableColumn("plan", "Plan"), UiTableColumn("starts", "Inicio"), UiTableColumn("ends", "Fin"),
-                                UiTableColumn("status", "Estado"), UiTableColumn("amount", "Monto"),
+                                UiTableColumn("plan", tr("Plan")), UiTableColumn("starts", tr("Inicio")), UiTableColumn("ends", tr("Fin")),
+                                UiTableColumn("status", tr("Estado")), UiTableColumn("amount", tr("Monto")),
                             ),
                             rows = detail.memberships.map {
                                 mapOf(
                                     "plan" to it.planName,
                                     "starts" to it.startsOn.toString(),
                                     "ends" to it.endsOn.toString(),
-                                    "status" to MembresiaRules.displayStatus(it, today, expiringDays).label,
+                                    "status" to tr(MembresiaRules.displayStatus(it, today, expiringDays).label),
                                     "amount" to money(it.amount, it.currency),
                                 )
                             },
-                            emptyText = "Sin membresías.",
+                            emptyText = tr("Sin membresías."),
                         ),
                     ),
                 ),
             )
-            add(UiCard(title = "Últimas visitas", children = listOf(visitsTable(detail.visits, withCustomer = false))))
+            add(UiCard(title = tr("Últimas visitas"), children = listOf(visitsTable(detail.visits, withCustomer = false))))
         }
         return screen(access, "recepcion", member.customerName, shownNotice, body)
     }
@@ -305,29 +307,29 @@ object MembresiaScreens {
     private fun metrics(current: Membership, status: DisplayStatus?, today: LocalDate): List<UiNode> {
         val days = MembresiaRules.daysLeft(current.endsOn, today)
         val daysCaption = when (status) {
-            DisplayStatus.PROGRAMADA -> "Empieza el ${current.startsOn}"
-            DisplayStatus.VENCIDA -> "Venció el ${current.endsOn}"
-            DisplayStatus.CANCELADA -> "Cancelada"
-            else -> "Hasta el ${current.endsOn}"
+            DisplayStatus.PROGRAMADA -> tr("Empieza el {0}", current.startsOn)
+            DisplayStatus.VENCIDA -> tr("Venció el {0}", current.endsOn)
+            DisplayStatus.CANCELADA -> tr("Cancelada")
+            else -> tr("Hasta el {0}", current.endsOn)
         }
         val visitsLeft = MembresiaRules.visitsLeft(current)
         return listOf(
-            UiMetric("Días restantes", days.coerceAtLeast(0).toString(), daysCaption, status?.tone ?: UiTone.Neutral),
+            UiMetric(tr("Días restantes"), days.coerceAtLeast(0).toString(), daysCaption, status?.tone ?: UiTone.Neutral),
             UiMetric(
-                "Visitas",
-                current.includedVisits?.let { "${current.visitsUsed} de $it" } ?: current.visitsUsed.toString(),
-                if (visitsLeft == null) "Ilimitadas" else "Quedan $visitsLeft",
+                tr("Visitas"),
+                current.includedVisits?.let { tr("{0} de {1}", current.visitsUsed, it) } ?: current.visitsUsed.toString(),
+                if (visitsLeft == null) tr("Ilimitadas") else tr("Quedan {0}", visitsLeft),
                 if (visitsLeft == 0) UiTone.Warning else UiTone.Neutral,
             ),
-            UiMetric("Pases de invitado", "${MembresiaRules.guestPassesLeft(current)} de ${current.guestPassesTotal}", "Disponibles"),
+            UiMetric(tr("Pases de invitado"), tr("{0} de {1}", MembresiaRules.guestPassesLeft(current), current.guestPassesTotal), tr("Disponibles")),
         )
     }
 
     private fun visitsTable(visits: List<Visit>, withCustomer: Boolean): UiTable {
         val columns = buildList {
-            add(UiTableColumn("when", "Fecha"))
-            if (withCustomer) add(UiTableColumn("customer", "Cliente"))
-            addAll(listOf(UiTableColumn("kind", "Tipo"), UiTableColumn("guest", "Invitado"), UiTableColumn("by", "Registró"), UiTableColumn("note", "Aviso")))
+            add(UiTableColumn("when", tr("Fecha")))
+            if (withCustomer) add(UiTableColumn("customer", tr("Cliente")))
+            addAll(listOf(UiTableColumn("kind", tr("Tipo")), UiTableColumn("guest", tr("Invitado")), UiTableColumn("by", tr("Registró")), UiTableColumn("note", tr("Aviso"))))
         }
         return UiTable(
             columns,
@@ -335,13 +337,13 @@ object MembresiaScreens {
                 buildMap {
                     put("when", timeFormat.format(visit.visitedAt))
                     put("customer", visit.customerName)
-                    put("kind", if (visit.kind == "invitado") "Invitado" else "Miembro")
+                    put("kind", if (visit.kind == "invitado") tr("Invitado") else tr("Miembro"))
                     put("guest", visit.guestName.orEmpty())
                     put("by", visit.recordedBy)
-                    put("note", if (visit.override) "Registrada igual" else visit.note)
+                    put("note", if (visit.override) tr("Registrada igual") else visit.note)
                 }
             },
-            emptyText = "Sin visitas.",
+            emptyText = tr("Sin visitas."),
         )
     }
 
@@ -362,23 +364,23 @@ object MembresiaScreens {
         notice: UiNotice? = null,
     ): UiScreen {
         val filters = buildList<UiNode> {
-            add(UiButton("Todas", UiNavigate("miembros"), style = if (status == null) "primary" else "secondary"))
+            add(UiButton(tr("Todas"), UiNavigate("miembros"), style = if (status == null) "primary" else "secondary"))
             listStatuses.forEach {
-                add(UiButton("${it.label} (${counts[it] ?: 0})", UiNavigate("miembros", mapOf("estado" to it.key)), style = if (status == it) "primary" else "secondary"))
+                add(UiButton(tr("{0} ({1})", tr(it.label), counts[it] ?: 0), UiNavigate("miembros", mapOf("estado" to it.key)), style = if (status == it) "primary" else "secondary"))
             }
         }
         val items = memberships.map { membership ->
             val shown = MembresiaRules.displayStatus(membership, today, expiringDays)
             UiListItem(
                 title = membership.customerName,
-                subtitle = "${membership.planName} · ${membership.startsOn} a ${membership.endsOn}",
+                subtitle = tr("{0} · {1} a {2}", membership.planName, membership.startsOn, membership.endsOn),
                 trailing = membership.endsOn.toString(),
                 badges = listOf(badge(shown)),
                 action = openMember(membership.customerId),
             )
         }
-        val body = listOf(UiRow(filters, spacing = 8), UiList(items, emptyText = "No hay membresías en este estado."))
-        return screen(access, "miembros", "Miembros", notice, body)
+        val body = listOf(UiRow(filters, spacing = 8), UiList(items, emptyText = tr("No hay membresías en este estado.")))
+        return screen(access, "miembros", tr("Miembros"), notice, body)
     }
 
     /** Membresias vigentes agrupadas por plan. */
@@ -390,17 +392,17 @@ object MembresiaScreens {
         notice: UiNotice? = null,
     ): UiScreen {
         val body: List<UiNode> = if (byPlan.isEmpty()) {
-            listOf(UiText("No hay membresías vigentes.", UiTextStyle.Caption))
+            listOf(UiText(tr("No hay membresías vigentes."), UiTextStyle.Caption))
         } else {
             byPlan.map { (plan, list) ->
                 UiCard(
-                    title = "$plan (${list.size} ${if (list.size == 1) "activa" else "activas"})",
+                    title = tr("{0} ({1} {2})", plan, list.size, if (list.size == 1) tr("activa") else tr("activas")),
                     children = listOf(
                         UiList(
                             list.map { membership ->
                                 UiListItem(
                                     title = membership.customerName,
-                                    subtitle = "Hasta ${membership.endsOn}",
+                                    subtitle = tr("Hasta {0}", membership.endsOn),
                                     badges = listOf(badge(MembresiaRules.displayStatus(membership, today, expiringDays))),
                                     action = openMember(membership.customerId),
                                 )
@@ -410,13 +412,13 @@ object MembresiaScreens {
                 )
             }
         }
-        return screen(access, "niveles", "Por nivel", notice, body)
+        return screen(access, "niveles", tr("Por nivel"), notice, body)
     }
 
     fun visitas(access: MembresiaAccess, date: LocalDate, visits: List<Visit>, notice: UiNotice? = null): UiScreen =
         screen(
-            access, "recepcion", "Visitas de hoy", notice,
-            listOf(UiText("$date · ${visits.size} ${if (visits.size == 1) "visita" else "visitas"}", UiTextStyle.Subtitle), visitsTable(visits, withCustomer = true)),
+            access, "recepcion", tr("Visitas de hoy"), notice,
+            listOf(UiText(tr("{0} · {1} {2}", date, visits.size, if (visits.size == 1) tr("visita") else tr("visitas")), UiTextStyle.Subtitle), visitsTable(visits, withCustomer = true)),
         )
 
     // ---------------------------------------------------------------- altas
@@ -442,35 +444,35 @@ object MembresiaScreens {
     ): UiScreen {
         val fields = listOf(
             UiField(
-                "name", "Cliente", required = true, section = "Cliente",
-                help = "Escribe para buscar un cliente; si no existe se crea con estos datos.",
+                "name", tr("Cliente"), required = true, section = tr("Cliente"),
+                help = tr("Escribe para buscar un cliente; si no existe se crea con estos datos."),
                 suggest = UiSuggest(CustomersSuggestRoute, minLength = 2),
             ),
-            UiField("email", "Correo", type = "email", section = "Cliente"),
-            UiField("phone", "Teléfono", type = "phone", section = "Cliente"),
-            UiField("plan", "Plan", type = "dropdown", required = true, options = plans.map { planLabel(it, settings.currency) }, section = "Membresía"),
-            UiField("startsOn", "Inicio", type = "date", section = "Membresía"),
-            UiField("amount", "Monto (${settings.currency})", placeholder = "Vacío = precio del plan", section = "Membresía"),
-        ) + detailFields(settings, hosts, section = "Detalles")
+            UiField("email", tr("Correo"), type = "email", section = tr("Cliente")),
+            UiField("phone", tr("Teléfono"), type = "phone", section = tr("Cliente")),
+            UiField("plan", tr("Plan"), type = "dropdown", required = true, options = plans.map { planLabel(it, settings.currency) }, section = tr("Membresía")),
+            UiField("startsOn", tr("Inicio"), type = "date", section = tr("Membresía")),
+            UiField("amount", tr("Monto ({0})", settings.currency), placeholder = tr("Vacío = precio del plan"), section = tr("Membresía")),
+        ) + detailFields(settings, hosts, section = tr("Detalles"))
         val form = UiForm(
             id = "nueva",
             fields = fields,
             values = values,
-            submit = UiButton("Crear membresía", post("crear", formId = "nueva")),
+            submit = UiButton(tr("Crear membresía"), post("crear", formId = "nueva")),
         )
         val body = if (plans.isEmpty()) {
-            listOf(UiText("No hay planes activos. Crea uno en Planes.", UiTextStyle.Caption), form)
+            listOf(UiText(tr("No hay planes activos. Crea uno en Planes."), UiTextStyle.Caption), form)
         } else {
             listOf(form)
         }
-        return screen(access, "nueva", "Nueva membresía", notice, body)
+        return screen(access, "nueva", tr("Nueva membresía"), notice, body)
     }
 
     private fun detailFields(settings: MembresiaSettings, hosts: List<HostCandidate>, section: String, currentSource: String = "", currentHost: String = ""): List<UiField> = listOf(
-        UiField("source", "Fuente", type = "dropdown", options = (settings.sources + currentSource).filter { it.isNotBlank() }.distinct(), section = section),
-        UiField("host", "Anfitrión", type = "dropdown", options = (hosts.map { it.name } + currentHost).filter { it.isNotBlank() }.distinct(), section = section),
-        UiField("unit", "Unidad", section = section, help = "Oficina, escritorio o espacio asignado."),
-        UiField("notes", "Notas", type = "textarea", section = section),
+        UiField("source", tr("Fuente"), type = "dropdown", options = (settings.sources + currentSource).filter { it.isNotBlank() }.distinct(), section = section),
+        UiField("host", tr("Anfitrión"), type = "dropdown", options = (hosts.map { it.name } + currentHost).filter { it.isNotBlank() }.distinct(), section = section),
+        UiField("unit", tr("Unidad"), section = section, help = tr("Oficina, escritorio o espacio asignado.")),
+        UiField("notes", tr("Notas"), type = "textarea", section = section),
     )
 
     fun renovar(
@@ -487,19 +489,19 @@ object MembresiaScreens {
         val form = UiForm(
             id = "renovar",
             fields = listOf(
-                UiField("plan", "Plan", type = "dropdown", required = true, options = plans.map { planLabel(it, settings.currency) }),
-                UiField("startsOn", "Inicio", type = "date", help = "Vacío = $defaultStart."),
-                UiField("amount", "Monto (${settings.currency})", placeholder = "Vacío = precio del plan"),
+                UiField("plan", tr("Plan"), type = "dropdown", required = true, options = plans.map { planLabel(it, settings.currency) }),
+                UiField("startsOn", tr("Inicio"), type = "date", help = tr("Vacío = {0}.", defaultStart)),
+                UiField("amount", tr("Monto ({0})", settings.currency), placeholder = tr("Vacío = precio del plan")),
             ),
             values = values ?: mapOf("plan" to planChosen, "startsOn" to defaultStart.toString()),
-            submit = UiButton("Renovar", post("renovar", mapOf("id" to membership.id.toString()), formId = "renovar")),
+            submit = UiButton(tr("Renovar"), post("renovar", mapOf("id" to membership.id.toString()), formId = "renovar")),
         )
         val body = listOf(
-            UiText("${membership.customerName} · ${membership.planName} · vence el ${membership.endsOn}", UiTextStyle.Subtitle),
+            UiText(tr("{0} · {1} · vence el {2}", membership.customerName, membership.planName, membership.endsOn), UiTextStyle.Subtitle),
             form,
-            UiButton("Volver", UiNavigate("miembro", mapOf("customer" to membership.customerId.toString())), style = "secondary"),
+            UiButton(tr("Volver"), UiNavigate("miembro", mapOf("customer" to membership.customerId.toString())), style = "secondary"),
         )
-        return screen(access, "recepcion", "Renovar membresía", notice, body)
+        return screen(access, "recepcion", tr("Renovar membresía"), notice, body)
     }
 
     fun editar(
@@ -513,9 +515,9 @@ object MembresiaScreens {
         val form = UiForm(
             id = "editar",
             fields = listOf(
-                UiField("endsOn", "Fin", type = "date", required = true),
-                UiField("amount", "Monto (${settings.currency})", required = true),
-            ) + detailFields(settings, hosts, section = "Detalles", currentSource = membership.source, currentHost = membership.hostName),
+                UiField("endsOn", tr("Fin"), type = "date", required = true),
+                UiField("amount", tr("Monto ({0})", settings.currency), required = true),
+            ) + detailFields(settings, hosts, section = tr("Detalles"), currentSource = membership.source, currentHost = membership.hostName),
             values = values ?: mapOf(
                 "endsOn" to membership.endsOn.toString(),
                 "amount" to membership.amount.setScale(2, RoundingMode.HALF_UP).toPlainString(),
@@ -524,14 +526,14 @@ object MembresiaScreens {
                 "unit" to membership.unit,
                 "notes" to membership.notes,
             ),
-            submit = UiButton("Guardar cambios", post("editar", mapOf("id" to membership.id.toString()), formId = "editar")),
+            submit = UiButton(tr("Guardar cambios"), post("editar", mapOf("id" to membership.id.toString()), formId = "editar")),
         )
         val body = listOf(
-            UiText("${membership.customerName} · ${membership.planName} · desde ${membership.startsOn}", UiTextStyle.Subtitle),
+            UiText(tr("{0} · {1} · desde {2}", membership.customerName, membership.planName, membership.startsOn), UiTextStyle.Subtitle),
             form,
-            UiButton("Volver", UiNavigate("miembro", mapOf("customer" to membership.customerId.toString())), style = "secondary"),
+            UiButton(tr("Volver"), UiNavigate("miembro", mapOf("customer" to membership.customerId.toString())), style = "secondary"),
         )
-        return screen(access, "recepcion", "Editar membresía", notice, body)
+        return screen(access, "recepcion", tr("Editar membresía"), notice, body)
     }
 
     // ---------------------------------------------------------------- planes, ingresos, ajustes
@@ -563,31 +565,31 @@ object MembresiaScreens {
             UiListItem(
                 title = plan.name,
                 subtitle = listOf(
-                    "${plan.durationDays} días",
-                    plan.includedVisits?.let { "$it visitas" } ?: "visitas ilimitadas",
-                    "${plan.guestPasses} invitados",
-                    if (plan.wifiAccess) "WiFi" else "sin WiFi",
+                    tr("{0} días", plan.durationDays),
+                    plan.includedVisits?.let { tr("{0} visitas", it) } ?: tr("visitas ilimitadas"),
+                    tr("{0} invitados", plan.guestPasses),
+                    if (plan.wifiAccess) tr("WiFi") else tr("sin WiFi"),
                 ).joinToString(" · "),
                 trailing = money(plan.price, currency),
-                badges = listOf(if (plan.active) UiBadge("Activo", UiTone.Success) else UiBadge("Inactivo", UiTone.Neutral)),
+                badges = listOf(if (plan.active) UiBadge(tr("Activo"), UiTone.Success) else UiBadge(tr("Inactivo"), UiTone.Neutral)),
                 action = UiNavigate("planes", mapOf("edit" to plan.id.toString())),
             )
         }
         val form = UiForm(
             id = "plan",
             fields = listOf(
-                UiField("name", "Nombre", required = true),
-                UiField("description", "Descripción", type = "textarea"),
-                UiField("price", "Precio ($currency)", required = true),
-                UiField("durationDays", "Duración (días)", type = "number", required = true),
-                UiField("includedVisits", "Visitas incluidas", type = "number", help = "Vacío = ilimitadas."),
-                UiField("guestPasses", "Pases de invitado", type = "number"),
-                UiField("wifi", "Incluye WiFi", type = "boolean"),
-                UiField("displayOrder", "Orden", type = "number"),
+                UiField("name", tr("Nombre"), required = true),
+                UiField("description", tr("Descripción"), type = "textarea"),
+                UiField("price", tr("Precio ({0})", currency), required = true),
+                UiField("durationDays", tr("Duración (días)"), type = "number", required = true),
+                UiField("includedVisits", tr("Visitas incluidas"), type = "number", help = tr("Vacío = ilimitadas.")),
+                UiField("guestPasses", tr("Pases de invitado"), type = "number"),
+                UiField("wifi", tr("Incluye WiFi"), type = "boolean"),
+                UiField("displayOrder", tr("Orden"), type = "number"),
             ),
             values = values,
             submit = UiButton(
-                if (editing == null) "Crear plan" else "Guardar plan",
+                if (editing == null) tr("Crear plan") else tr("Guardar plan"),
                 post("plan-guardar", editing?.let { mapOf("id" to it.id.toString()) }.orEmpty(), formId = "plan"),
             ),
         )
@@ -595,19 +597,19 @@ object MembresiaScreens {
             if (editing != null) {
                 add(
                     UiButton(
-                        if (editing.active) "Desactivar plan" else "Activar plan",
+                        if (editing.active) tr("Desactivar plan") else tr("Activar plan"),
                         post("plan-activo", mapOf("id" to editing.id.toString(), "active" to (!editing.active).toString()), confirm = if (editing.active) "¿Desactivar este plan? Las membresías vigentes siguen igual." else null),
                         style = if (editing.active) "danger" else "secondary",
                     ),
                 )
-                add(UiButton("Nuevo plan", UiNavigate("planes"), style = "secondary"))
+                add(UiButton(tr("Nuevo plan"), UiNavigate("planes"), style = "secondary"))
             }
         }
         val body = listOf(
-            UiList(items, emptyText = "Aún no hay planes."),
-            UiCard(title = if (editing == null) "Nuevo plan" else "Editar ${editing.name}", children = listOf<UiNode>(form) + editorActions),
+            UiList(items, emptyText = tr("Aún no hay planes.")),
+            UiCard(title = if (editing == null) tr("Nuevo plan") else tr("Editar {0}", editing.name), children = listOf<UiNode>(form) + editorActions),
         )
-        return screen(access, "planes", "Planes", notice, body)
+        return screen(access, "planes", tr("Planes"), notice, body)
     }
 
     fun ingresos(
@@ -620,15 +622,15 @@ object MembresiaScreens {
         val last = months.lastOrNull()
         val body = buildList<UiNode> {
             if (last != null) {
-                add(UiMetric("Ingresos de ${last.month}", money(last.amount, currency), "${last.count} ${if (last.count == 1) "membresía" else "membresías"}", UiTone.Success))
+                add(UiMetric(tr("Ingresos de {0}", last.month), money(last.amount, currency), tr("{0} {1}", last.count, if (last.count == 1) tr("membresía") else tr("membresías")), UiTone.Success))
             }
             add(UiBarChart(months.map { UiChartPoint(it.month.toString(), it.amount.toDouble()) }))
             add(
                 UiCard(
-                    title = "Por mes",
+                    title = tr("Por mes"),
                     children = listOf(
                         UiTable(
-                            listOf(UiTableColumn("month", "Mes"), UiTableColumn("count", "Membresías"), UiTableColumn("amount", "Ingresos")),
+                            listOf(UiTableColumn("month", tr("Mes")), UiTableColumn("count", tr("Membresías")), UiTableColumn("amount", tr("Ingresos"))),
                             months.asReversed().map { mapOf("month" to it.month.toString(), "count" to it.count.toString(), "amount" to money(it.amount, currency)) },
                         ),
                     ),
@@ -636,17 +638,17 @@ object MembresiaScreens {
             )
             add(
                 UiCard(
-                    title = "Por plan (últimos ${months.size} meses)",
+                    title = tr("Por plan (últimos {0} meses)", months.size),
                     children = listOf(
                         UiTable(
-                            listOf(UiTableColumn("plan", "Plan"), UiTableColumn("count", "Membresías"), UiTableColumn("amount", "Ingresos")),
+                            listOf(UiTableColumn("plan", tr("Plan")), UiTableColumn("count", tr("Membresías")), UiTableColumn("amount", tr("Ingresos"))),
                             byPlan.map { mapOf("plan" to it.planName, "count" to it.count.toString(), "amount" to money(it.amount, currency)) },
                         ),
                     ),
                 ),
             )
         }
-        return screen(access, "ingresos", "Ingresos", notice, body)
+        return screen(access, "ingresos", tr("Ingresos"), notice, body)
     }
 
     fun ajustesValues(settings: MembresiaSettings): Map<String, String> = mapOf(
@@ -659,14 +661,14 @@ object MembresiaScreens {
         val form = UiForm(
             id = "ajustes",
             fields = listOf(
-                UiField("currency", "Moneda", required = true, help = "Código de 3 letras, por ejemplo USD."),
-                UiField("expiringDays", "Días de aviso de vencimiento", type = "number", required = true, help = "El equipo recibe un aviso esos días antes de que venza."),
-                UiField("sources", "Fuentes", type = "textarea", help = "Una por línea."),
+                UiField("currency", tr("Moneda"), required = true, help = tr("Código de 3 letras, por ejemplo USD.")),
+                UiField("expiringDays", tr("Días de aviso de vencimiento"), type = "number", required = true, help = tr("El equipo recibe un aviso esos días antes de que venza.")),
+                UiField("sources", tr("Fuentes"), type = "textarea", help = tr("Una por línea.")),
             ),
             values = values,
-            submit = UiButton("Guardar ajustes", post("ajustes-guardar", formId = "ajustes")),
+            submit = UiButton(tr("Guardar ajustes"), post("ajustes-guardar", formId = "ajustes")),
         )
-        return screen(access, "ajustes", "Ajustes", notice, listOf(form))
+        return screen(access, "ajustes", tr("Ajustes"), notice, listOf(form))
     }
 
     // ---------------------------------------------------------------- importar
@@ -684,16 +686,16 @@ object MembresiaScreens {
     ): UiScreen {
         val body = buildList<UiNode> {
             if (sources.isEmpty()) {
-                add(UiText("No hay una fuente de importación activa. Instala una extensión de importación (por ejemplo, Monday) desde Extensiones.", UiTextStyle.Body))
+                add(UiText(tr("No hay una fuente de importación activa. Instala una extensión de importación (por ejemplo, Monday) desde Extensiones."), UiTextStyle.Body))
             } else {
                 if (sources.size > 1) {
                     add(UiRow(sources.map { (id, title) -> UiButton(title, UiNavigate("importar", mapOf("source" to id)), style = if (id == selectedId) "primary" else "secondary") }, spacing = 8))
-                    if (selectedId == null) add(UiText("Elige de dónde importar.", UiTextStyle.Caption))
+                    if (selectedId == null) add(UiText(tr("Elige de dónde importar."), UiTextStyle.Caption))
                 }
                 addAll(nodes)
             }
         }
-        return screen(access, "importar", "Importar", notice, body)
+        return screen(access, "importar", tr("Importar"), notice, body)
     }
 
     // ---------------------------------------------------------------- sugerencias
@@ -701,7 +703,7 @@ object MembresiaScreens {
     /** Sugerencias al escribir el cliente; al elegir una se llenan customerId, name, email y phone. */
     fun suggestions(members: List<MemberSummary>, today: LocalDate = LocalDate.now(), expiringDays: Int = 7): UiSuggestions = UiSuggestions(
         items = members.map { member ->
-            val status = statusOf(member, today, expiringDays)?.label ?: "Sin membresía"
+            val status = statusOf(member, today, expiringDays)?.label ?: tr("Sin membresía")
             UiSuggestion(
                 title = member.customerName.ifBlank { member.email.ifBlank { member.phone } },
                 subtitle = listOf(member.email, member.phone, status).filter { it.isNotBlank() }.joinToString(" · "),

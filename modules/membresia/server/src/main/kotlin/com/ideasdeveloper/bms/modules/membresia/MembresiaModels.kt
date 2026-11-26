@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.ui.UiTone
 import java.math.BigDecimal
 import java.time.Instant
@@ -18,11 +19,11 @@ object StoredStatus {
 
 /** Estado que ve el equipo: se calcula con las fechas, asi es correcto aunque el trabajo diario no haya corrido. */
 enum class DisplayStatus(val label: String, val tone: String, val key: String) {
-    PROGRAMADA("Programada", UiTone.Info, "programada"),
-    ACTIVA("Activa", UiTone.Success, "activa"),
-    POR_VENCER("Por vencer", UiTone.Warning, "por_vencer"),
-    VENCIDA("Vencida", UiTone.Danger, "vencida"),
-    CANCELADA("Cancelada", UiTone.Neutral, "cancelada");
+    PROGRAMADA(msg("Programada"), UiTone.Info, "programada"),
+    ACTIVA(msg("Activa"), UiTone.Success, "activa"),
+    POR_VENCER(msg("Por vencer"), UiTone.Warning, "por_vencer"),
+    VENCIDA(msg("Vencida"), UiTone.Danger, "vencida"),
+    CANCELADA(msg("Cancelada"), UiTone.Neutral, "cancelada");
 
     /** La membresia permite entrar hoy. */
     val current: Boolean get() = this == ACTIVA || this == POR_VENCER

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import java.sql.Connection
@@ -47,7 +48,7 @@ object MembresiaService {
         author: String,
         today: LocalDate,
     ): Membership {
-        val plan = MembresiaRepository.plan(tenant, input.planId) ?: throw MembresiaValidationException(listOf("El plan no existe."))
+        val plan = MembresiaRepository.plan(tenant, input.planId) ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
         // Una sola transaccion: valida, busca o crea el cliente y rechaza solapes; nada se crea antes de validar.
         val (membership, customerCreated) = MembresiaRepository.createMembershipWithCustomer(tenant, input, newCustomer, plan, today, author)
         // Ya hizo commit: ahora si se avisa a Clientes.
