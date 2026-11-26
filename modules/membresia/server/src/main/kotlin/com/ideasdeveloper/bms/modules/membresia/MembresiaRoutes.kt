@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.localizedPayload
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessErrorResponse
@@ -207,7 +208,7 @@ object MembresiaRoutes {
             }
             "importar" -> {
                 val selected = importSources.firstOrNull { it.sourceId == params["source"] } ?: importSources.singleOrNull()
-                val nodes = if (env != null && selected != null) selected.screen(env.context(tenant, today), params) else emptyList()
+                val nodes = if (env != null && selected != null) localizedFor(selected, selected.screen(env.context(tenant, today), params)) else emptyList()
                 MembresiaScreens.importar(rights, importSources.map { it.sourceId to it.title }, selected?.sourceId, nodes, notice)
             }
             "ajustes" -> MembresiaScreens.ajustes(rights, values ?: MembresiaScreens.ajustesValues(settings), notice)

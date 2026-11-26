@@ -13,6 +13,15 @@ import kotlin.coroutines.CoroutineContext
  * (`i18n/<lang>.json` of Core, of each module and of each extension) by the Spanish text; a missing
  * entry falls back to the source.
  *
+ * Every package owns its translations (I18N.md §2): the same Spanish word can mean different things in
+ * two packages ("Alta" is a sign-up in Core and a priority in tareas). A text is looked up in the
+ * catalog of a namespace first, then in Core's, and only as a last resort in any other catalog. [tr]
+ * and [translate] take the namespace of the calling class ([callerNamespace]): classes in
+ * `com.ideasdeveloper.bms.modules.<id>` belong to module `<id>`, classes in
+ * `com.ideasdeveloper.bms.extensions.<id>` to extension `<id>` ([extensionNamespace]) and everything else
+ * to Core. Core code that translates on behalf of a package uses [translateIn] with that package's
+ * namespace.
+ *
  * The language of the current request lives in a thread local carried by a coroutine context element,
  * so it survives `withContext(Dispatchers.IO)` and the thread hops of Ktor. Core installs it once per
  * request ([installI18n]); background work uses [withLanguage].
@@ -37,12 +46,25 @@ object I18n {
 
     private val current = ThreadLocal<Holder?>()
 
-    // namespace -> language -> entries, in registration order (Core is always looked up first).
-    private val namespaces = LinkedHashMap<String, Map<String, Map<String, String>>>()
+    /** Namespace of module [moduleId]'s catalog: the id itself. */
+    fun moduleNamespace(moduleId: String): String = moduleId
 
-    // language -> merged catalog (Core first, then namespaces in registration order); rebuilt on register.
+    /** Namespace of extension [extensionId]'s catalog: `extensions/<id>`. */
+    fun extensionNamespace(extensionId: String): String = "extensions/$extensionId"
+
+    /**
+     * The catalogs, replaced as a whole on every register so lookups need no lock: [byNamespace] is
+     * namespace -> language -> entries in registration order; [merged] is language -> every catalog
+     * merged (Core first, then registration order), the last-resort lookup.
+     */
+    private class Catalogs(
+        val byNamespace: Map<String, Map<String, Map<String, String>>>,
+        val merged: Map<String, Map<String, String>>,
+    )
+
     @Volatile
-    private var merged: Map<String, Map<String, String>> = emptyMap()
+    private var catalogs = Catalogs(emptyMap(), emptyMap())
+    private val registerLock = Any()
 
     /** "en-US,en;q=0.9" -> "en"; the first supported language of the list; unknown or blank -> null. */
     fun normalize(tag: String?): String? {
@@ -95,11 +117,10 @@ object I18n {
     /** Adds or replaces the entries of [namespace] for [language]. Blank translations are ignored. */
     fun register(namespace: String, language: String, entries: Map<String, String>) {
         val clean = entries.filter { (key, value) -> key.isNotEmpty() && value.isNotBlank() }
-        synchronized(namespaces) {
-            val byLanguage = namespaces[namespace].orEmpty().toMutableMap()
-            byLanguage[language] = clean
-            namespaces[namespace] = byLanguage
-            rebuild()
+        synchronized(registerLock) {
+            val byNamespace = LinkedHashMap(catalogs.byNamespace)
+            byNamespace[namespace] = byNamespace[namespace].orEmpty() + (language to clean)
+            catalogs = Catalogs(byNamespace, merge(byNamespace))
         }
     }
 
@@ -136,14 +157,75 @@ object I18n {
         }
     }
 
-    /** The text of [source] in [language], or [source] itself when it is the source language or has no entry. */
+    /**
+     * The text of [source] in [language] for the package of the calling class ([callerNamespace]), or
+     * [source] itself when it is the source language or no catalog has it.
+     */
     fun translate(source: String, language: String = language()): String {
         if (language == Source || source.isEmpty()) return source
-        return merged[language]?.get(source) ?: source
+        return lookup(callerNamespace(), source, language) ?: source
+    }
+
+    /**
+     * The text of [source] in [language] as package [namespace] translates it (see [moduleNamespace],
+     * [extensionNamespace], [CoreNamespace]): its catalog, then Core's, then any other; [source] when none
+     * has it. For Core code that translates on behalf of a package (definitions, manifests, option labels).
+     */
+    fun translateIn(namespace: String, source: String, language: String = language()): String {
+        if (language == Source || source.isEmpty()) return source
+        return lookup(namespace, source, language) ?: source
     }
 
     /** Whether some catalog has an entry for [source] in [language]. */
-    fun has(source: String, language: String): Boolean = merged[language]?.containsKey(source) == true
+    fun has(source: String, language: String): Boolean = catalogs.merged[language]?.containsKey(source) == true
+
+    /** Whether the catalog of [namespace] itself has an entry for [source] in [language]. */
+    fun hasIn(namespace: String, source: String, language: String): Boolean =
+        catalogs.byNamespace[namespace]?.get(language)?.containsKey(source) == true
+
+    private fun lookup(namespace: String, source: String, language: String): String? {
+        val current = catalogs
+        return current.byNamespace[namespace]?.get(language)?.get(source)
+            ?: current.byNamespace[CoreNamespace]?.get(language)?.get(source)
+            ?: current.merged[language]?.get(source)
+    }
+
+    /**
+     * Namespace of the first class on the call stack outside the i18n machinery (this object, `tr`,
+     * `localized`): [namespaceOf] that class. Lambdas and inlined code count as the class that declares
+     * them, so `tr` inside a module's lambda or helper resolves to that module.
+     */
+    fun callerNamespace(): String = walker.walk { frames ->
+        frames.map { frame -> namespaceByClass.get(frame.declaringClass) }.filter { it.isNotEmpty() }.findFirst().orElse(CoreNamespace)
+    }
+
+    /** Namespace of the package that declares [type]: a module, an extension or [CoreNamespace]. */
+    fun namespaceOf(type: Class<*>): String = namespaceByClass.get(type).ifEmpty { CoreNamespace }
+
+    /** Namespace of a class name: `…bms.modules.<id>…` -> `<id>`, `…bms.extensions.<id>…` -> `extensions/<id>`, else Core. */
+    internal fun namespaceOfClassName(name: String): String {
+        if (name.startsWith(ModulePackage)) return moduleNamespace(name.substring(ModulePackage.length).substringBefore('.'))
+        if (name.startsWith(ExtensionPackage)) return extensionNamespace(name.substring(ExtensionPackage.length).substringBefore('.'))
+        return CoreNamespace
+    }
+
+    private const val ModulePackage = "com.ideasdeveloper.bms.modules."
+    private const val ExtensionPackage = "com.ideasdeveloper.bms.extensions."
+
+    // Classes that translate on behalf of their caller and are skipped by callerNamespace.
+    private val Machinery = setOf(
+        "com.ideasdeveloper.bms.server.i18n.I18n",
+        "com.ideasdeveloper.bms.server.i18n.I18nKt",
+        "com.ideasdeveloper.bms.server.i18n.LocalizationKt",
+    )
+
+    private val walker: StackWalker = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE)
+
+    // Per class, computed once: "" for the i18n machinery (skipped), otherwise the namespace of its package.
+    private val namespaceByClass = object : ClassValue<String>() {
+        override fun computeValue(type: Class<*>): String =
+            if (type.name in Machinery || type.name.startsWith("com.ideasdeveloper.bms.server.i18n.I18n$")) "" else namespaceOfClassName(type.name)
+    }
 
     /**
      * Replaces {0}, {1}... in [text] by [args] (null is written "null", like a Kotlin string template, so
@@ -159,13 +241,13 @@ object I18n {
 
     internal val Placeholder = Regex("\\{(\\d+)\\}")
 
-    private fun rebuild() {
-        val languages = namespaces.values.flatMap { it.keys }.toSet()
-        val order = namespaces.keys.sortedBy { if (it == CoreNamespace) 0 else 1 }
-        merged = languages.associateWith { language ->
+    private fun merge(byNamespace: Map<String, Map<String, Map<String, String>>>): Map<String, Map<String, String>> {
+        val languages = byNamespace.values.flatMap { it.keys }.toSet()
+        val order = byNamespace.keys.sortedBy { if (it == CoreNamespace) 0 else 1 }
+        return languages.associateWith { language ->
             val result = HashMap<String, String>()
             order.forEach { namespace ->
-                namespaces[namespace]?.get(language)?.forEach { (key, value) -> result.putIfAbsent(key, value) }
+                byNamespace[namespace]?.get(language)?.forEach { (key, value) -> result.putIfAbsent(key, value) }
             }
             result
         }
@@ -181,8 +263,18 @@ object I18n {
     }
 }
 
-/** Translates a Spanish source text into the current language. Placeholders {0}, {1}… are replaced by args. */
-fun tr(source: String, vararg args: Any?): String = I18n.format(I18n.translate(source), args)
+/**
+ * Translates a Spanish source text into the current language, with the catalog of the calling class's
+ * package first (I18n.callerNamespace). Placeholders {0}, {1}… are replaced by args.
+ */
+fun tr(source: String, vararg args: Any?): String {
+    val language = I18n.language()
+    if (language == I18n.Source || source.isEmpty()) return I18n.format(source, args)
+    return I18n.format(I18n.translateIn(I18n.callerNamespace(), source, language), args)
+}
+
+/** [tr] with the catalog of [namespace] first (I18n.moduleNamespace, I18n.extensionNamespace, I18n.CoreNamespace). */
+fun trIn(namespace: String, source: String, vararg args: Any?): String = I18n.format(I18n.translateIn(namespace, source), args)
 
 /** Marks a literal for the catalog without translating it now (enum labels, vals). Returns it unchanged. */
 fun msg(source: String): String = source

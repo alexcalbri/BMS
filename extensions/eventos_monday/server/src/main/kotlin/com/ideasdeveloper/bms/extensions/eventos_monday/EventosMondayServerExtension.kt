@@ -41,7 +41,7 @@ object EventosMondayServerExtension : ServerExtension, EventosImportSource {
         displayName = "Importacion de eventos desde monday",
         description = "Importa un tablero de monday (por ejemplo Vista Mar Eventos) como eventos privados: lee el tablero con el token de la empresa, mapea sus columnas y crea el evento y su cliente por cada elemento.",
         version = "1.1.0",
-        minModuleVersion = "0.1.0",
+        minModuleVersion = "0.3.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/eventos_monday",

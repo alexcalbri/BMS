@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiButton
@@ -51,7 +52,7 @@ object CrmImportScreens {
             )
         }
         // Las fuentes externas ponen aqui sus tarjetas (o el aviso para instalar su extension).
-        val sourceCards: List<UiNode> = CrmImportSources.all.flatMap { it.importCards(context) }
+        val sourceCards: List<UiNode> = CrmImportSources.all.flatMap { localizedFor(it, it.importCards(context)) }
         return listOfNotNull(
             UiText(tr("Cada importacion pasa por mapeo de columnas, vista previa y luego se aplica por lotes. Se busca a cada persona por correo o telefono; si el correo y el telefono son de clientes distintos la fila queda por revisar. Importar de nuevo actualiza los leads ya importados.")),
             UiGrid(
@@ -80,7 +81,7 @@ object CrmImportScreens {
                 ),
                 minItemWidth = 300,
             ),
-            *CrmImportSources.all.mapNotNull { it.importExtras(context, params) }.toTypedArray(),
+            *CrmImportSources.all.mapNotNull { source -> source.importExtras(context, params)?.let { localizedFor(source, it) } }.toTypedArray(),
             UiCard(listOf(UiList(jobs, emptyText = tr("Sin importaciones."))), title = tr("Importaciones")),
         )
     }
@@ -103,7 +104,7 @@ object CrmImportScreens {
             ),
         )
         // Los estados de lectura en segundo plano (reading, failed) los pinta la fuente externa del job.
-        CrmImportSources.of(job.source)?.statusScreen(job, header.take(1))?.let { return it }
+        CrmImportSources.of(job.source)?.let { source -> source.statusScreen(job, header.take(1))?.let { return localizedFor(source, it) } }
         if (job.status == "failed") return header.take(1) + listOf(UiText(job.error.ifEmpty { tr("No se pudo leer el origen.") }, tone = UiTone.Danger))
         if (job.status != "mapping") {
             val problems = (CrmImport.rows(context.tenant, job, "conflict") + CrmImport.rows(context.tenant, job, "error")).take(50).map { (rowNo, row, message) ->
@@ -183,7 +184,7 @@ object CrmImportScreens {
                     title = tr("Campos que faltan"),
                 )
             },
-            *(CrmImportSources.of(job.source)?.mappingNotes(job).orEmpty()).toTypedArray(),
+            *(CrmImportSources.of(job.source)?.let { source -> localizedFor(source, source.mappingNotes(job)) }.orEmpty()).toTypedArray(),
             UiCard(
                 listOf(UiTable(sampleColumns.map { UiTableColumn(it, it) }, sample.map { (_, row, _) -> sampleColumns.associateWith { row[it].orEmpty().take(60) } })),
                 title = tr("Primeras filas"),

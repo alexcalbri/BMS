@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissionLookup
@@ -145,7 +146,7 @@ object PropietariosRoutes {
         }
         if (chosen == null) return screen(picker + UiText(tr("Elige desde dónde quieres importar."), UiTextStyle.Caption))
         val body = try {
-            chosen.screen(importContext(tenant, access, permissions), params)
+            localizedFor(chosen, chosen.screen(importContext(tenant, access, permissions), params))
         } catch (failure: PropietariosValidationException) {
             errorBody(failure.message.orEmpty())
         } catch (failure: CancellationException) {

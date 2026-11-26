@@ -306,7 +306,7 @@ class CrmI18nTest {
     fun aScreenWithoutPermissionAnswersInEnglish() {
         val viewOnly = context(CrmScreens.View)
         val english = english { CrmScreens.build("settings", viewOnly, emptyMap()) }
-        assertEquals("You do not have permission to see this section.", english.notice?.text)
+        assertEquals("You do not have permission to view this section.", english.notice?.text)
         assertEquals("Settings", english.title)
     }
 }

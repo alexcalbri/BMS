@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.modules.agentes
 
 import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.RegisteredMcpTool
 import com.ideasdeveloper.bms.server.modules.VerifiedUser
 import io.ktor.http.Parameters
@@ -49,7 +50,7 @@ object OAuthPages {
             }
             """
             <div class="module">
-              <label class="check"><input type="checkbox" name="m_${esc(id)}" value="true" checked> ${esc(tr(name))}</label>
+              <label class="check"><input type="checkbox" name="m_${esc(id)}" value="true" checked> ${esc(trIn(I18n.moduleNamespace(id), name))}</label>
               <ul>$items</ul>
             </div>
             """

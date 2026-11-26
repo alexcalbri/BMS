@@ -39,7 +39,7 @@ object EmpleadosMondayServerExtension : ServerExtension, EmpleadosImportSource {
         displayName = "Importacion de empleados desde monday",
         description = "Importa tableros de monday (por ejemplo un horario del equipo) como empleados, sedes y horarios habituales del modulo Empleados: lee el tablero con el token de la empresa y mapea sus columnas.",
         version = "1.1.0",
-        minModuleVersion = "0.1.0",
+        minModuleVersion = "0.2.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/empleados_monday",

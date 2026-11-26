@@ -46,7 +46,7 @@ object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider, CrmImpo
         displayName = "Inmobiliaria (corretaje)",
         description = "Convierte el CRM en una herramienta de corretaje: inventario de propiedades con enlaces por portal e historial de precios, captaciones, transacciones con partes y comisiones, y herramientas para agentes de IA.",
         version = "1.2.0",
-        minModuleVersion = "0.28.0",
+        minModuleVersion = "0.30.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/inmobiliaria",

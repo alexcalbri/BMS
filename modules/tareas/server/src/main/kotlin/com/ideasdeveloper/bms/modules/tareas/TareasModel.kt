@@ -1,6 +1,5 @@
 package com.ideasdeveloper.bms.modules.tareas
 
-import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -32,15 +31,12 @@ enum class TaskStatus(val code: String, val label: String) {
 
 enum class TaskPriority(val code: String, val label: String) {
     Urgent("urgent", msg("Urgente")),
-    High("high", "Alta"),
+    High("high", msg("Alta")),
     Medium("medium", msg("Media")),
     Low("low", msg("Baja"));
 
-    /**
-     * The label as shown to the viewer. "Alta" already means "New item" in Core's catalog (lookup is global), so High
-     * has its own key; the value that is posted back stays "Alta".
-     */
-    fun text(): String = if (this == High && I18n.language() != I18n.Source) tr("Prioridad alta") else tr(label)
+    /** The label as shown to the viewer (the module's own catalog: "Alta" is "High" here); the posted value stays [label]. */
+    fun text(): String = tr(label)
 
     companion object {
         fun fromCode(code: String?): TaskPriority? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }

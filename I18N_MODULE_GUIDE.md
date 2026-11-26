@@ -52,8 +52,10 @@ for f in glob.glob('modules/<id>/server/src/main/kotlin/**/*.kt',recursive=True)
 print("\n".join(json.dumps(x,ensure_ascii=False) for x in sorted(k)))
 EOF
 ```
-Keys already in Core's `server/src/main/resources/i18n/en.json` must be repeated with the SAME translation
-(the check demands every used key in your file; lookup uses Core first). Write the file with
+Every key your package uses goes in YOUR file, also when Core or another package has it (the check demands it).
+Your package owns its translations: lookup is your catalog first, then Core's, then any other (I18N.md §2), so
+translate for your context ("Alta" as a priority is "High", whatever Core says); reuse the existing wording of
+identical sentences ("Cancelled", "You do not have permission to view …"). Write the file with
 `json.dump(d, f, ensure_ascii=False, indent=2)` over `dict(sorted(d.items()))` + trailing newline.
 The definition texts (name, description, permission titles/descriptions, field labels/help, action titles) go in too.
 `tr(variable)` texts that no literal lists: `assertModule(id, definition, extraTexts = listOf(...))`.
@@ -86,7 +88,10 @@ Extensions: `extensions/<id>/extension.json` + version in the extension class, c
   `localizedPayload`. Your job is only `tr(...)` at the place each text is created (inside the request, so the language is the viewer's).
 - Manifest: bump `version` (minor) in BOTH `extension.json` and the `ExtensionManifest(version = ...)` in code (a test compares them; if an existing
   test asserts the old version string, change only that number). Extension manifests have NO `minCoreVersion` (only `minModuleVersion`): do not invent it;
-  say "needs Core 0.10.0" in the README ("Idiomas" section, like the module guide item 7).
+  set `minModuleVersion` (BOTH files) to the first bilingual release of the host module (the one with
+  `minCoreVersion` 0.10.0), and say "needs Core 0.10.0" in the README ("Idiomas" section, like the module guide item 7).
+- Your `tr` calls use your extension's catalog (namespace `extensions/<id>`, from your Kotlin package). The host
+  localizes the nodes you return with `localizedFor(yourSource, nodes)`, so select options are looked up in your catalog too.
 - Catalog must also list the manifest texts (displayName, description, settings label/help, uninstall option labels) with NO `tr` in code:
   `I18nCatalogCheck.assertExtension` adds them from `manifest`. Texts used in `uninstallPreview` items, section labels, MCP-free screens: `tr(...)`.
 - Test:

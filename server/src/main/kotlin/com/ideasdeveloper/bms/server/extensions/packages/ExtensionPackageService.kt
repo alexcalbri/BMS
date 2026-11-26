@@ -5,6 +5,8 @@ import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.ModuleVersion
 import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.trIn
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -145,8 +147,8 @@ class ExtensionPackageService(
             ExtensionPackageEntry(
                 id = manifest.id,
                 module = manifest.module,
-                displayName = tr(manifest.displayName),
-                description = tr(manifest.description),
+                displayName = trIn(I18n.extensionNamespace(manifest.id), manifest.displayName),
+                description = trIn(I18n.extensionNamespace(manifest.id), manifest.description),
                 version = manifest.version,
                 minModuleVersion = manifest.minModuleVersion,
                 permissions = manifest.permissions,

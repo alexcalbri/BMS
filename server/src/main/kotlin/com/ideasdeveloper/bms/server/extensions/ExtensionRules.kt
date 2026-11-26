@@ -2,6 +2,8 @@ package com.ideasdeveloper.bms.server.extensions
 
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ModuleVersion
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.ModuleAccessErrorResponse
 import io.ktor.http.HttpStatusCode
 
@@ -107,7 +109,8 @@ object UninstallChoices {
         return resolved
     }
 
-    fun views(options: List<ExtensionUninstallOption>): List<UninstallOptionView> = options.map { UninstallOptionView(it.id, tr(it.label), it.default) }
+    fun views(options: List<ExtensionUninstallOption>, namespace: String = I18n.CoreNamespace): List<UninstallOptionView> =
+        options.map { UninstallOptionView(it.id, trIn(namespace, it.label), it.default) }
 }
 
 object SettingsCopy {
