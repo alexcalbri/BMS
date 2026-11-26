@@ -2,7 +2,9 @@ package com.ideasdeveloper.bms.app.features.auth.data
 
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
+import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
+import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -41,6 +43,14 @@ private data class UpdateAccountProfileRequest(
     // "es", "en" o null (seguir al idioma de la empresa); sin valor por defecto para que null tambien se envie.
     val language: String?,
     // Solo se envia al cambiar el correo; nunca se guarda ni se registra.
+    val currentPassword: String? = null,
+)
+
+// Para servidores con Core anterior a 0.10.0, cuyo Json estricto rechaza el campo "language" desconocido.
+@Serializable
+private data class LegacyUpdateAccountProfileRequest(
+    val displayName: String,
+    val email: String,
     val currentPassword: String? = null,
 )
 
@@ -84,12 +94,27 @@ class AccountApi(serverUrl: String) {
         email: String,
         language: String?,
         currentPassword: String? = null,
-    ): AccountProfile = call {
-        client.put("$baseUrl/auth/profile") {
-            bearerAuth(accessToken)
-            companyCode?.let { header("X-Company-Code", it) }
-            contentType(ContentType.Application.Json)
-            setBody(UpdateAccountProfileRequest(displayName, email, language, currentPassword?.takeIf { it.isNotEmpty() }))
+    ): AccountProfile {
+        val password = currentPassword?.takeIf { it.isNotEmpty() }
+        // El idioma solo se envia si el servidor declara Core >= 0.10.0; con version desconocida se omite.
+        val versionApi = VersionApi(baseUrl)
+        val serverVersion = try {
+            versionApi.version()
+        } finally {
+            versionApi.close()
+        }
+        val sendLanguage = serverVersion?.coreVersion?.let { isCoreAtLeast(it, 0, 10, 0) } == true
+        return call {
+            client.put("$baseUrl/auth/profile") {
+                bearerAuth(accessToken)
+                companyCode?.let { header("X-Company-Code", it) }
+                contentType(ContentType.Application.Json)
+                if (sendLanguage) {
+                    setBody(UpdateAccountProfileRequest(displayName, email, language, password))
+                } else {
+                    setBody(LegacyUpdateAccountProfileRequest(displayName, email, password))
+                }
+            }
         }
     }
 
