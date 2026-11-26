@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
@@ -60,7 +61,7 @@ fun ServerLogsScreen(
         val url = serverUrl
         val token = session?.accessToken
         if (url == null || token == null) {
-            error = "No hay una sesion de server owner activa."
+            error = tr("No hay una sesion de server owner activa.")
             return
         }
         loading = true
@@ -87,8 +88,8 @@ fun ServerLogsScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Errores del servidor",
-                subtitle = "Ultimos errores registrados desde el inicio del servidor",
+                title = tr("Errores del servidor"),
+                subtitle = tr("Ultimos errores registrados desde el inicio del servidor"),
                 primaryColor = colors.accent,
                 onReturnToDashboard = onReturnToDashboard,
                 onSettings = onSettings,
@@ -108,7 +109,7 @@ fun ServerLogsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    "Se conservan hasta 100 errores en memoria; se pierden al reiniciar el servidor. Los valores que parezcan contrasenas o tokens se ocultan.",
+                    tr("Se conservan hasta 100 errores en memoria; se pierden al reiniciar el servidor. Los valores que parezcan contrasenas o tokens se ocultan."),
                     color = AppTheme.colors.muted,
                 )
                 Button(
@@ -116,11 +117,11 @@ fun ServerLogsScreen(
                     enabled = !loading,
                     colors = accentButtonColors(),
                 ) {
-                    Text(if (loading) "Cargando..." else "Actualizar")
+                    Text(if (loading) tr("Cargando...") else tr("Actualizar"))
                 }
                 error?.let { Text(it, color = colors.danger) }
                 if (!loading && error == null && errors.isEmpty()) {
-                    Text("No hay errores registrados desde el inicio del servidor.", color = colors.muted)
+                    Text(tr("No hay errores registrados desde el inicio del servidor."), color = colors.muted)
                 }
                 AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 480.dp, gap = 12.dp) {
                 errors.forEach { entry ->

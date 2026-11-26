@@ -46,3 +46,7 @@ Scope rules:
 Implemented screens and routes cover company provisioning for `server_owner`,
 company self-management and tenant users/permissions for `business_owner`, and
 server module administration for `server_owner`.
+
+## Languages
+
+Bilingual Spanish/English since 0.2.0 (needs Core 0.10.0). Its only texts are the module name and description; the English catalog is `server/src/main/resources/modules/empresa/i18n/en.json`.

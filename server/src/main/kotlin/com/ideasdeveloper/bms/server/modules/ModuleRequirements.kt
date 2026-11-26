@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ModuleVersion
 
 /** Versiones minimas de Core y app que un modulo necesita; nulo significa sin minimo. */
@@ -22,7 +23,7 @@ object ModuleRequirementGate {
         if (ModuleVersion.compare(coreVersion, minimum) >= 0) return null
         return ModuleRequirementProblem(
             NeedsCore,
-            "Este modulo necesita el Core $minimum o superior; el servidor tiene $coreVersion. Actualiza el servidor primero.",
+            tr("Este modulo necesita el Core {0} o superior; el servidor tiene {1}. Actualiza el servidor primero.", minimum, coreVersion),
         )
     }
 
@@ -33,14 +34,14 @@ object ModuleRequirementGate {
         if (ModuleVersion.compare(current, minimum) >= 0) return null
         return ModuleRequirementProblem(
             NeedsApp,
-            "Este modulo necesita la app $minimum o superior; tu app es $current. Actualizala antes de instalar.",
+            tr("Este modulo necesita la app {0} o superior; tu app es {1}. Actualizala antes de instalar.", minimum, current),
         )
     }
 
     /** Aviso cuando hay minimo de app pero quien instala no manda su version. */
     fun missingAppVersionWarning(minAppVersion: String?, appVersion: String?): String? =
         if (!minAppVersion.isNullOrBlank() && appVersion.isNullOrBlank()) {
-            "No se pudo comprobar la version de la app; este modulo necesita la app $minAppVersion o superior."
+            tr("No se pudo comprobar la version de la app; este modulo necesita la app {0} o superior.", minAppVersion)
         } else {
             null
         }

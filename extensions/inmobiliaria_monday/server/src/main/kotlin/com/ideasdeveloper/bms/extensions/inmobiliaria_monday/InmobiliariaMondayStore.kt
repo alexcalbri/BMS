@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.extensions.inmobiliaria_monday
 
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -108,13 +110,13 @@ object InmobiliariaMondayStore {
         }
 
     /** Mensaje cuando el indice unico de importaciones activas rechaza una segunda lectura o aplicacion del mismo tablero. */
-    const val AlreadyActive = "Ya hay una importacion leyendo o aplicando ese tablero; espera a que termine o cancelala."
+    val AlreadyActive = msg("Ya hay una importacion leyendo o aplicando ese tablero; espera a que termine o cancelala.")
 
     private fun <T> guardActive(block: () -> T): T = try {
         block()
     } catch (failure: SQLException) {
         // 23505 = violacion de unicidad (ext_inmobiliaria_monday__jobs_active_uq).
-        if (failure.sqlState == "23505") throw InmobiliariaMondayException(AlreadyActive)
+        if (failure.sqlState == "23505") throw InmobiliariaMondayException(tr(AlreadyActive))
         throw failure
     }
 
@@ -185,7 +187,7 @@ object InmobiliariaMondayStore {
             update.setObject(2, id)
             update.executeUpdate()
         }
-        if (updated == 0) throw InmobiliariaMondayException("La importacion cambio de estado; el mapeo solo se cambia antes de aplicar.")
+        if (updated == 0) throw InmobiliariaMondayException(tr("La importacion cambio de estado; el mapeo solo se cambia antes de aplicar."))
     }
 
     /** Pasa de lista a aplicando y guarda quien pulso Aplicar (es quien actua en Inmobiliaria); false si ya no estaba lista. */

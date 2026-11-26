@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import java.sql.Connection
@@ -17,27 +19,27 @@ import java.util.UUID
  * el dueno del servidor (un usuario central que no esta entre los usuarios de la empresa).
  */
 object EmpleadosService {
-    private const val EmployeeNotFound = "Empleado no encontrado."
-    private const val ShiftNotFound = "Turno no encontrado."
-    private const val AbsenceNotFound = "Ausencia no encontrada."
-    private const val NeedShifts = "No tienes permiso para gestionar turnos."
-    private const val NeedManage = "No tienes permiso para administrar fichas."
-    const val SelfApproval = "No puedes aprobar tus propias ausencias."
-    const val NoRecord = "Tu usuario no tiene ficha de empleado; pide a quien administra fichas que la enlace."
+    private val EmployeeNotFound = msg("Empleado no encontrado.")
+    private val ShiftNotFound = msg("Turno no encontrado.")
+    private val AbsenceNotFound = msg("Ausencia no encontrada.")
+    private val NeedShifts = msg("No tienes permiso para gestionar turnos.")
+    private val NeedManage = msg("No tienes permiso para administrar fichas.")
+    val SelfApproval = msg("No puedes aprobar tus propias ausencias.")
+    val NoRecord = msg("Tu usuario no tiene ficha de empleado; pide a quien administra fichas que la enlace.")
 
     fun scope(tenant: Connection, permissions: ModulePermissions): EmpleadosScope =
         EmpleadosScope.from(permissions, permissions.userId?.takeUnless { permissions.serverOwner }?.let { EmpleadosRepository.employeeIdForUser(tenant, it) })
 
     /** La ficha cuando el usuario la ve, con los campos que le corresponden. */
     fun visibleEmployee(tenant: Connection, scope: EmpleadosScope, id: UUID): Employee =
-        EmpleadosRepository.get(tenant, scope, id) ?: throw EmpleadosValidationException(EmployeeNotFound)
+        EmpleadosRepository.get(tenant, scope, id) ?: throw EmpleadosValidationException(tr(EmployeeNotFound))
 
     private fun requireShifts(scope: EmpleadosScope) {
-        if (!(scope.canShifts || scope.canManage)) throw EmpleadosValidationException(NeedShifts)
+        if (!(scope.canShifts || scope.canManage)) throw EmpleadosValidationException(tr(NeedShifts))
     }
 
     private fun requireManage(scope: EmpleadosScope) {
-        if (!scope.canManage) throw EmpleadosValidationException(NeedManage)
+        if (!scope.canManage) throw EmpleadosValidationException(tr(NeedManage))
     }
 
     private fun failIfAny(problems: List<String>) {
@@ -56,13 +58,13 @@ object EmpleadosService {
 
     private fun checkRefs(tenant: Connection, input: EmployeeInput, existing: Employee?) {
         input.departmentId?.takeIf { it != existing?.departmentId }?.let { id ->
-            EmpleadosRepository.getCatalog(tenant, Catalog.Departments, id)?.takeIf { !it.archived } ?: throw EmpleadosValidationException("Elige un departamento de la lista.")
+            EmpleadosRepository.getCatalog(tenant, Catalog.Departments, id)?.takeIf { !it.archived } ?: throw EmpleadosValidationException(tr("Elige un departamento de la lista."))
         }
         input.siteId?.takeIf { it != existing?.siteId }?.let { id ->
-            EmpleadosRepository.getCatalog(tenant, Catalog.Sites, id)?.takeIf { !it.archived } ?: throw EmpleadosValidationException("Elige una sede de la lista.")
+            EmpleadosRepository.getCatalog(tenant, Catalog.Sites, id)?.takeIf { !it.archived } ?: throw EmpleadosValidationException(tr("Elige una sede de la lista."))
         }
         input.userId?.takeIf { it != existing?.userId }?.let { id ->
-            if (!EmpleadosRepository.canLink(tenant, id, existing?.id)) throw EmpleadosValidationException("Ese usuario no está activo o ya tiene otra ficha.")
+            if (!EmpleadosRepository.canLink(tenant, id, existing?.id)) throw EmpleadosValidationException(tr("Ese usuario no está activo o ya tiene otra ficha."))
         }
     }
 
@@ -71,8 +73,8 @@ object EmpleadosService {
         failIfAny(input.validate(EmpleadosRepository.today()))
         checkRefs(tenant, input, null)
         var id: UUID? = null
-        uniqueGuard("Ese usuario ya tiene otra ficha.") { id = EmpleadosRepository.insertEmployee(tenant, input, scope.userId) }
-        return id ?: throw EmpleadosValidationException("No se pudo guardar la ficha.")
+        uniqueGuard(tr("Ese usuario ya tiene otra ficha.")) { id = EmpleadosRepository.insertEmployee(tenant, input, scope.userId) }
+        return id ?: throw EmpleadosValidationException(tr("No se pudo guardar la ficha."))
     }
 
     fun updateEmployee(tenant: Connection, scope: EmpleadosScope, id: UUID, input: EmployeeInput) {
@@ -80,8 +82,8 @@ object EmpleadosService {
         val existing = visibleEmployee(tenant, scope, id)
         failIfAny(input.validate(EmpleadosRepository.today()))
         checkRefs(tenant, input, existing)
-        uniqueGuard("Ese usuario ya tiene otra ficha.") {
-            if (!EmpleadosRepository.updateEmployee(tenant, id, input)) throw EmpleadosValidationException(EmployeeNotFound)
+        uniqueGuard(tr("Ese usuario ya tiene otra ficha.")) {
+            if (!EmpleadosRepository.updateEmployee(tenant, id, input)) throw EmpleadosValidationException(tr(EmployeeNotFound))
         }
     }
 
@@ -101,30 +103,30 @@ object EmpleadosService {
 
     fun renameCatalog(tenant: Connection, scope: EmpleadosScope, catalog: Catalog, id: UUID, name: String) {
         requireManage(scope)
-        if (!EmpleadosRepository.renameCatalog(tenant, catalog, id, name)) throw EmpleadosValidationException("No se encontró la ${catalog.singular}.")
+        if (!EmpleadosRepository.renameCatalog(tenant, catalog, id, name)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
     }
 
     fun moveCatalog(tenant: Connection, scope: EmpleadosScope, catalog: Catalog, id: UUID, up: Boolean) {
         requireManage(scope)
-        if (!EmpleadosRepository.moveCatalog(tenant, catalog, id, up)) throw EmpleadosValidationException("No se encontró la ${catalog.singular}.")
+        if (!EmpleadosRepository.moveCatalog(tenant, catalog, id, up)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
     }
 
     fun archiveCatalog(tenant: Connection, scope: EmpleadosScope, catalog: Catalog, id: UUID) {
         requireManage(scope)
-        if (!EmpleadosRepository.archiveCatalog(tenant, catalog, id)) throw EmpleadosValidationException("No se encontró la ${catalog.singular}.")
+        if (!EmpleadosRepository.archiveCatalog(tenant, catalog, id)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
     }
 
     // ---- horario habitual ----
 
     private fun activeSite(tenant: Connection, siteId: UUID?) {
         if (siteId == null) return
-        EmpleadosRepository.getCatalog(tenant, Catalog.Sites, siteId)?.takeIf { !it.archived } ?: throw EmpleadosValidationException("Elige una sede de la lista.")
+        EmpleadosRepository.getCatalog(tenant, Catalog.Sites, siteId)?.takeIf { !it.archived } ?: throw EmpleadosValidationException(tr("Elige una sede de la lista."))
     }
 
     /** Anade una franja al horario habitual: maximo 4 por dia, horas distintas y sin solapes. */
     fun addWeeklySlot(tenant: Connection, access: ModuleAccessService, scope: EmpleadosScope, employeeId: UUID, weekday: Int, start: LocalTime, end: LocalTime, siteId: UUID?) {
         requireShifts(scope)
-        if (weekday !in 1..7) throw EmpleadosValidationException("El día de la semana no es válido.")
+        if (weekday !in 1..7) throw EmpleadosValidationException(tr("El día de la semana no es válido."))
         EmpleadosRepository.transaction(tenant) {
             // El candado va primero: validar y escribir sin que otra peticion cambie las franjas del empleado en medio.
             EmpleadosRepository.lockEmployee(tenant, employeeId)
@@ -143,11 +145,11 @@ object EmpleadosService {
 
     fun removeWeeklySlot(tenant: Connection, access: ModuleAccessService, scope: EmpleadosScope, slotId: UUID) {
         requireShifts(scope)
-        val slot = EmpleadosRepository.getWeeklySlot(tenant, slotId) ?: throw EmpleadosValidationException("Franja no encontrada.")
+        val slot = EmpleadosRepository.getWeeklySlot(tenant, slotId) ?: throw EmpleadosValidationException(tr("Franja no encontrada."))
         EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, slot.employeeId)
             visibleEmployee(tenant, scope, slot.employeeId)
-            if (!EmpleadosRepository.deleteWeeklySlot(tenant, slotId)) throw EmpleadosValidationException("Franja no encontrada.")
+            if (!EmpleadosRepository.deleteWeeklySlot(tenant, slotId)) throw EmpleadosValidationException(tr("Franja no encontrada."))
         }
         EmpleadosNotify.weeklyChanged(tenant, access.notificationsFor(EmpleadosModule.id), slot.employeeId, scope.userId, EmpleadosRepository.today())
     }
@@ -156,7 +158,7 @@ object EmpleadosService {
 
     private fun activeEmployee(tenant: Connection, scope: EmpleadosScope, id: UUID): Employee {
         val employee = visibleEmployee(tenant, scope, id)
-        if (employee.status != EmployeeStatus.Active) throw EmpleadosValidationException("${employee.fullName} está de baja.")
+        if (employee.status != EmployeeStatus.Active) throw EmpleadosValidationException(tr("{0} está de baja.", employee.fullName))
         return employee
     }
 
@@ -202,7 +204,7 @@ object EmpleadosService {
 
     /** Quien gestiona turnos ve el turno aunque el empleado este de baja. */
     private fun visibleShift(tenant: Connection, scope: EmpleadosScope, id: UUID): Shift {
-        val shift = EmpleadosRepository.getShift(tenant, id) ?: throw EmpleadosValidationException(ShiftNotFound)
+        val shift = EmpleadosRepository.getShift(tenant, id) ?: throw EmpleadosValidationException(tr(ShiftNotFound))
         visibleEmployee(tenant, scope, shift.employeeId)
         return shift
     }
@@ -221,7 +223,7 @@ object EmpleadosService {
             // Candado del empleado primero; despues se vuelve a leer el turno (otra peticion pudo cambiarlo o borrarlo).
             EmpleadosRepository.lockEmployee(tenant, employeeId)
             val shift = visibleShift(tenant, scope, id)
-            if (shift.kind == ShiftKind.Off && (patch.start != null || patch.end != null)) throw EmpleadosValidationException("Un día libre no tiene horas.")
+            if (shift.kind == ShiftKind.Off && (patch.start != null || patch.end != null)) throw EmpleadosValidationException(tr("Un día libre no tiene horas."))
             val updated = shift.copy(
                 date = patch.date ?: shift.date,
                 start = if (shift.kind == ShiftKind.Work) patch.start ?: shift.start else null,
@@ -232,22 +234,22 @@ object EmpleadosService {
             val start = updated.start
             val end = updated.end
             val problems = buildList {
-                if (updated.date.isBefore(ShiftInput.MinDate) || updated.date.isAfter(ShiftInput.MaxDate)) add("La fecha debe estar entre ${ShiftInput.MinDate} y ${ShiftInput.MaxDate}.")
-                if (updated.note.length > ShiftInput.MaxNote) add("La nota admite hasta ${ShiftInput.MaxNote} caracteres.")
-                if (updated.kind == ShiftKind.Work && (start == null || end == null || start == end)) add("El turno necesita hora de inicio y de fin distintas (HH:mm).")
+                if (updated.date.isBefore(ShiftInput.MinDate) || updated.date.isAfter(ShiftInput.MaxDate)) add(tr("La fecha debe estar entre {0} y {1}.", ShiftInput.MinDate, ShiftInput.MaxDate))
+                if (updated.note.length > ShiftInput.MaxNote) add(tr("La nota admite hasta {0} caracteres.", ShiftInput.MaxNote))
+                if (updated.kind == ShiftKind.Work && (start == null || end == null || start == end)) add(tr("El turno necesita hora de inicio y de fin distintas (HH:mm)."))
             }
             failIfAny(problems)
             if (updated.siteId != shift.siteId) activeSite(tenant, updated.siteId)
             val others = EmpleadosRepository.shiftsOfDay(tenant, shift.employeeId, updated.date).filter { it.id != shift.id }
             if (updated.kind == ShiftKind.Off) {
-                if (others.isNotEmpty()) throw EmpleadosValidationException("Ese día ya tiene turnos.")
+                if (others.isNotEmpty()) throw EmpleadosValidationException(tr("Ese día ya tiene turnos."))
             } else if (start != null && end != null) {
                 val works = others.filter { it.kind == ShiftKind.Work }.mapNotNull { other -> other.start?.let { s -> other.end?.let { e -> s to e } } }
                 EmpleadosSchedule.slotsProblem(works + (start to end), ShiftInput.MaxShiftsPerDay)?.let { throw EmpleadosValidationException(it) }
                 crossDayCheck(tenant, shift.employeeId, updated.date, start, end, shift.id)
                 if (others.any { it.kind == ShiftKind.Off }) EmpleadosRepository.deleteOffShiftsOfDay(tenant, shift.employeeId, updated.date)
             }
-            if (!EmpleadosRepository.updateShift(tenant, updated)) throw EmpleadosValidationException(ShiftNotFound)
+            if (!EmpleadosRepository.updateShift(tenant, updated)) throw EmpleadosValidationException(tr(ShiftNotFound))
             changed = shift to updated
         }
         changed?.let { (shift, updated) ->
@@ -260,7 +262,7 @@ object EmpleadosService {
         val shift = visibleShift(tenant, scope, id)
         EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, shift.employeeId)
-            if (!EmpleadosRepository.deleteShift(tenant, id)) throw EmpleadosValidationException(ShiftNotFound)
+            if (!EmpleadosRepository.deleteShift(tenant, id)) throw EmpleadosValidationException(tr(ShiftNotFound))
         }
         EmpleadosNotify.shiftChanged(tenant, access.notificationsFor(EmpleadosModule.id), shift.employeeId, listOf(shift.date), scope.userId, EmpleadosRepository.today())
     }
@@ -269,13 +271,13 @@ object EmpleadosService {
 
     private fun checkNoOverlap(tenant: Connection, input: AbsenceInput) {
         if (EmpleadosRepository.hasOverlappingAbsence(tenant, input.employeeId, input.startDate, input.endDate)) {
-            throw EmpleadosValidationException("Ya hay una ausencia pendiente o aprobada que toca esas fechas.")
+            throw EmpleadosValidationException(tr("Ya hay una ausencia pendiente o aprobada que toca esas fechas."))
         }
     }
 
     /** El empleado con ficha enlazada pide una ausencia (queda pendiente) y se avisa a quien la decide. */
     fun requestAbsence(tenant: Connection, access: ModuleAccessService, scope: EmpleadosScope, kind: AbsenceKind, from: LocalDate, to: LocalDate, reason: String): UUID {
-        val employeeId = scope.myEmployeeId ?: throw EmpleadosValidationException(NoRecord)
+        val employeeId = scope.myEmployeeId ?: throw EmpleadosValidationException(tr(NoRecord))
         val input = AbsenceInput(employeeId, kind, from, to, reason)
         failIfAny(input.validate())
         var name = ""
@@ -291,16 +293,16 @@ object EmpleadosService {
 
     /** El empleado cancela su propia solicitud mientras sigue pendiente. */
     fun cancelAbsence(tenant: Connection, scope: EmpleadosScope, id: UUID) {
-        val absence = EmpleadosRepository.getAbsence(tenant, id)?.takeIf { it.employeeId == scope.myEmployeeId } ?: throw EmpleadosValidationException(AbsenceNotFound)
-        if (absence.status != AbsenceStatus.Pending) throw EmpleadosValidationException("Solo se pueden cancelar solicitudes pendientes.")
-        if (!EmpleadosRepository.cancelAbsence(tenant, id)) throw EmpleadosValidationException("Esa solicitud ya fue decidida.")
+        val absence = EmpleadosRepository.getAbsence(tenant, id)?.takeIf { it.employeeId == scope.myEmployeeId } ?: throw EmpleadosValidationException(tr(AbsenceNotFound))
+        if (absence.status != AbsenceStatus.Pending) throw EmpleadosValidationException(tr("Solo se pueden cancelar solicitudes pendientes."))
+        if (!EmpleadosRepository.cancelAbsence(tenant, id)) throw EmpleadosValidationException(tr("Esa solicitud ya fue decidida."))
     }
 
     /** Quien gestiona turnos registra una ausencia ya aprobada; se avisa al empleado. */
     fun registerAbsence(tenant: Connection, access: ModuleAccessService, scope: EmpleadosScope, input: AbsenceInput): UUID {
         requireShifts(scope)
         failIfAny(input.validate())
-        if (!scope.mayDecideAbsenceOf(input.employeeId)) throw EmpleadosValidationException(SelfApproval)
+        if (!scope.mayDecideAbsenceOf(input.employeeId)) throw EmpleadosValidationException(tr(SelfApproval))
         val id = EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, input.employeeId)
             activeEmployee(tenant, scope, input.employeeId)
@@ -315,17 +317,17 @@ object EmpleadosService {
     /** Aprueba o rechaza una solicitud pendiente y avisa al empleado. */
     fun decideAbsence(tenant: Connection, access: ModuleAccessService, scope: EmpleadosScope, id: UUID, approve: Boolean, note: String) {
         requireShifts(scope)
-        if (note.trim().length > AbsenceInput.MaxReason) throw EmpleadosValidationException("La nota admite hasta ${AbsenceInput.MaxReason} caracteres.")
-        val employeeId = (EmpleadosRepository.getAbsence(tenant, id) ?: throw EmpleadosValidationException(AbsenceNotFound)).employeeId
-        if (!scope.mayDecideAbsenceOf(employeeId)) throw EmpleadosValidationException(SelfApproval)
+        if (note.trim().length > AbsenceInput.MaxReason) throw EmpleadosValidationException(tr("La nota admite hasta {0} caracteres.", AbsenceInput.MaxReason))
+        val employeeId = (EmpleadosRepository.getAbsence(tenant, id) ?: throw EmpleadosValidationException(tr(AbsenceNotFound))).employeeId
+        if (!scope.mayDecideAbsenceOf(employeeId)) throw EmpleadosValidationException(tr(SelfApproval))
         var decided: Absence? = null
         EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, employeeId)
-            val absence = EmpleadosRepository.getAbsence(tenant, id) ?: throw EmpleadosValidationException(AbsenceNotFound)
+            val absence = EmpleadosRepository.getAbsence(tenant, id) ?: throw EmpleadosValidationException(tr(AbsenceNotFound))
             visibleEmployee(tenant, scope, absence.employeeId)
-            if (absence.status != AbsenceStatus.Pending) throw EmpleadosValidationException("Esa solicitud ya fue decidida.")
+            if (absence.status != AbsenceStatus.Pending) throw EmpleadosValidationException(tr("Esa solicitud ya fue decidida."))
             val status = if (approve) AbsenceStatus.Approved else AbsenceStatus.Rejected
-            if (!EmpleadosRepository.decideAbsence(tenant, id, status, scope.userId, note)) throw EmpleadosValidationException("Esa solicitud ya fue decidida.")
+            if (!EmpleadosRepository.decideAbsence(tenant, id, status, scope.userId, note)) throw EmpleadosValidationException(tr("Esa solicitud ya fue decidida."))
             decided = absence
         }
         val absence = decided ?: return

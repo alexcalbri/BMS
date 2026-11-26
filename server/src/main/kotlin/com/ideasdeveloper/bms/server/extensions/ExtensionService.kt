@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.server.extensions
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleRegistry
 import com.ideasdeveloper.bms.server.security.SecretBox
@@ -17,13 +21,43 @@ import org.slf4j.LoggerFactory
 /** Writes provisioning_audit_log (CompanyProvisioningService.insertAudit); details is a JSON object. */
 typealias ExtensionAuditor = (actorRole: String, action: String, companyCode: String?, moduleId: String?, details: String) -> Unit
 
-/** Tells a user about something in a company through the Core's notification center. */
-fun interface ExtensionNotifier {
+/**
+ * Tells a user about something in a company through the Core's notification center. Both overloads are
+ * abstract on purpose: the builder one must render in the recipient's language (I18N.md §7), which only
+ * the access-backed implementation ([from]) can resolve. `ExtensionNotifier { tenant, module, user, title, text -> }`
+ * still compiles (see the factory below) for tests and simple uses; there the builder runs in [I18n.Source]
+ * unless a `recipientLanguage` is given.
+ */
+interface ExtensionNotifier {
     fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String)
 
+    /** Like [notify], with title and text written by [build] in the recipient's language (I18N.md §7). */
+    fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText)
+
     companion object {
-        fun from(access: ModuleAccessService): ExtensionNotifier =
-            ExtensionNotifier { tenant, moduleId, userId, title, text -> access.notificationsFor(moduleId).notify(tenant, userId, title, text) }
+        fun from(access: ModuleAccessService): ExtensionNotifier = object : ExtensionNotifier {
+            override fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) {
+                access.notificationsFor(moduleId).notify(tenant, userId, title, text)
+            }
+
+            override fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText) {
+                access.notificationsFor(moduleId).notify(tenant, userId, build = build)
+            }
+        }
+    }
+}
+
+/** Source-compatible replacement of the former SAM constructor: a notifier from a plain `send` function. */
+fun ExtensionNotifier(
+    recipientLanguage: (Connection, UUID) -> String = { _, _ -> I18n.Source },
+    send: (tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) -> Unit,
+): ExtensionNotifier = object : ExtensionNotifier {
+    override fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) =
+        send(tenant, moduleId, userId, title, text)
+
+    override fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText) {
+        val written = I18n.withLanguage(recipientLanguage(tenant, userId)) { build() }
+        send(tenant, moduleId, userId, written.title, written.text)
     }
 }
 
@@ -72,13 +106,13 @@ class ExtensionService(
                 ExtensionSummary(
                     id = manifest.id,
                     module = manifest.module,
-                    displayName = manifest.displayName,
-                    description = manifest.description,
+                    displayName = trIn(I18n.extensionNamespace(manifest.id), manifest.displayName),
+                    description = trIn(I18n.extensionNamespace(manifest.id), manifest.description),
                     version = manifest.version,
                     minModuleVersion = manifest.minModuleVersion,
                     sourceType = manifest.source.type,
                     permissions = manifest.permissions,
-                    uninstallOptions = manifest.uninstall.options,
+                    uninstallOptions = manifest.uninstall.options.map { it.copy(label = trIn(I18n.extensionNamespace(manifest.id), it.label)) },
                     status = row?.status,
                     moduleInstalled = true,
                     moduleEnabled = manifest.module in enabledModules,
@@ -105,12 +139,12 @@ class ExtensionService(
         val manifest = extension.manifest
         val definitions = manifest.settings.associateBy { it.key }
         values.keys.firstOrNull { it !in definitions }?.let {
-            throw ExtensionException("unknown_setting", "El ajuste '$it' no existe en esta extension.", ExtensionException.Kind.BadRequest)
+            throw ExtensionException("unknown_setting", tr("El ajuste '{0}' no existe en esta extension.", it), ExtensionException.Kind.BadRequest)
         }
         // A secret sent back as the mask means "unchanged".
         val changes = values.filterNot { (key, value) -> definitions.getValue(key).secret && value == SecretBox.Mask }
         if (changes.any { (key, value) -> definitions.getValue(key).secret && value.isNotEmpty() } && !secretBox.available) {
-            throw ExtensionException("SECRETS_UNAVAILABLE", "El servidor no tiene BMS_MASTER_KEY configurada: no se pueden guardar secretos.", ExtensionException.Kind.Unavailable)
+            throw ExtensionException("SECRETS_UNAVAILABLE", tr("El servidor no tiene BMS_MASTER_KEY configurada: no se pueden guardar secretos."), ExtensionException.Kind.Unavailable)
         }
         withTenant(companyCode) { tenant ->
             try {
@@ -124,7 +158,7 @@ class ExtensionService(
                     extension.validateSettings(merged)?.let { throw ExtensionException("invalid_settings", it, ExtensionException.Kind.BadRequest) }
                     if (row.status == ExtensionStatus.Enabled) {
                         manifest.settings.firstOrNull { it.required && merged[it.key].isNullOrBlank() }?.let {
-                            throw ExtensionException("missing_required_settings", "El ajuste '${it.key}' es obligatorio mientras la extension esta activa.", ExtensionException.Kind.BadRequest)
+                            throw ExtensionException("missing_required_settings", tr("El ajuste '{0}' es obligatorio mientras la extension esta activa.", it.key), ExtensionException.Kind.BadRequest)
                         }
                     }
                     changes.forEach { (key, value) ->
@@ -133,7 +167,7 @@ class ExtensionService(
                     }
                 }
             } catch (_: SecretsUnavailableException) {
-                throw ExtensionException("SECRETS_UNAVAILABLE", "El servidor no tiene BMS_MASTER_KEY configurada: no se pueden guardar secretos.", ExtensionException.Kind.Unavailable)
+                throw ExtensionException("SECRETS_UNAVAILABLE", tr("El servidor no tiene BMS_MASTER_KEY configurada: no se pueden guardar secretos."), ExtensionException.Kind.Unavailable)
             }
         }
         // Only the names of the changed settings are recorded, never their values.
@@ -172,7 +206,7 @@ class ExtensionService(
         return withTenant(companyCode) { tenant ->
             requireInstalled(tenant, extensionId)
             tenant.isReadOnly = true
-            UninstallPreviewResponse(extensionId, companyCode, previewItems(tenant, companyCode, extension), UninstallChoices.views(extension.manifest.uninstall.options))
+            UninstallPreviewResponse(extensionId, companyCode, previewItems(tenant, companyCode, extension), UninstallChoices.views(extension.manifest.uninstall.options, I18n.extensionNamespace(extension.manifest.id)))
         }
     }
 
@@ -203,11 +237,12 @@ class ExtensionService(
                         if (row.status !in setOf(ExtensionStatus.Installed, ExtensionStatus.Enabled, ExtensionStatus.Disabled)) continue
                         setStatus(it, row.extensionId, ExtensionStatus.Incompatible)
                         changed++
-                        notifyBusinessOwner(
-                            it, moduleId,
-                            "Extension incompatible: ${extension.manifest.displayName}",
-                            "El modulo ahora es la version $newVersion y la extension necesita ${extension.manifest.minModuleVersion}. Esta desactivada hasta que se instale una version compatible.",
-                        )
+                        notifyBusinessOwner(it, moduleId) {
+                            NotificationText(
+                                tr("Extension incompatible: {0}", trIn(I18n.extensionNamespace(extension.manifest.id), extension.manifest.displayName)),
+                                tr("El modulo ahora es la version {0} y la extension necesita {1}. Esta desactivada hasta que se instale una version compatible.", newVersion, extension.manifest.minModuleVersion),
+                            )
+                        }
                         audit(SystemActor, "extension.incompatible", company, moduleId, details("extension" to row.extensionId, "moduleVersion" to newVersion))
                     }
                 }
@@ -231,13 +266,13 @@ class ExtensionService(
     /** Server owner: puts [companyCode] in the group of [targetCode]; both need the same business owner email. */
     fun linkGroup(companyCode: String, targetCode: String, actor: ExtensionActor): GroupResponse {
         requireServerOwner(actor)
-        if (companyCode == targetCode) throw ExtensionException("invalid_group", "Elige otra empresa para vincular.", ExtensionException.Kind.BadRequest)
+        if (companyCode == targetCode) throw ExtensionException("invalid_group", tr("Elige otra empresa para vincular."), ExtensionException.Kind.BadRequest)
         val (company, target) = connections.central().use { central -> companyRow(central, companyCode) to companyRow(central, targetCode) }
-        company?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", "Empresa no encontrada.", ExtensionException.Kind.NotFound)
-        target?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", "La empresa a vincular no existe.", ExtensionException.Kind.NotFound)
+        company?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("Empresa no encontrada."), ExtensionException.Kind.NotFound)
+        target?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("La empresa a vincular no existe."), ExtensionException.Kind.NotFound)
         val email = ownerEmailOf(companyCode)
         if (email.isNullOrBlank() || !email.equals(ownerEmailOf(targetCode), ignoreCase = true)) {
-            throw ExtensionException("different_business_owner", "Las empresas deben tener el mismo correo de business owner para vincularse.")
+            throw ExtensionException("different_business_owner", tr("Las empresas deben tener el mismo correo de business owner para vincularse."))
         }
         connections.central().use { central ->
             central.inTransaction {
@@ -264,7 +299,7 @@ class ExtensionService(
     fun unlinkGroup(companyCode: String, actor: ExtensionActor): GroupResponse {
         requireServerOwner(actor)
         connections.central().use { central ->
-            companyRow(central, companyCode)?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", "Empresa no encontrada.", ExtensionException.Kind.NotFound)
+            companyRow(central, companyCode)?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("Empresa no encontrada."), ExtensionException.Kind.NotFound)
             central.inTransaction {
                 central.prepareStatement("UPDATE companies SET owner_group = id, group_owner_email = NULL, group_suspended = FALSE WHERE code = ?").use { update ->
                     update.setString(1, companyCode)
@@ -280,9 +315,9 @@ class ExtensionService(
     fun reviewSuspension(companyCode: String, actor: ExtensionActor): GroupResponse {
         requireServerOwner(actor)
         val email = ownerEmailOf(companyCode)?.takeIf { it.isNotBlank() }
-            ?: throw ExtensionException("owner_email_missing", "El business owner de la empresa no tiene correo.")
+            ?: throw ExtensionException("owner_email_missing", tr("El business owner de la empresa no tiene correo."))
         connections.central().use { central ->
-            companyRow(central, companyCode)?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", "Empresa no encontrada.", ExtensionException.Kind.NotFound)
+            companyRow(central, companyCode)?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("Empresa no encontrada."), ExtensionException.Kind.NotFound)
             central.prepareStatement("UPDATE companies SET group_owner_email = ?, group_suspended = FALSE WHERE code = ?").use { update ->
                 update.setString(1, email.lowercase())
                 update.setString(2, companyCode)
@@ -352,13 +387,13 @@ class ExtensionService(
         val extension = requireExtension(extensionId)
         val header = operations.header(operationId)
         if (header == null || header.extensionId != extensionId || header.sourceCompany != sourceCompany) {
-            throw ExtensionException("operation_not_found", "La operacion no existe.", ExtensionException.Kind.NotFound)
+            throw ExtensionException("operation_not_found", tr("La operacion no existe."), ExtensionException.Kind.NotFound)
         }
         if (header.operation !in setOf(GroupOperationType.Apply, GroupOperationType.Uninstall)) {
-            throw ExtensionException("operation_not_retryable", "Solo se reintentan operaciones sobre un grupo.")
+            throw ExtensionException("operation_not_retryable", tr("Solo se reintentan operaciones sobre un grupo."))
         }
         if (!checkGroupOwner(sourceCompany)) {
-            throw ExtensionException("group_suspended", "La empresa de origen esta suspendida en su grupo.")
+            throw ExtensionException("group_suspended", tr("La empresa de origen esta suspendida en su grupo."))
         }
         val execute = executorFor(sourceCompany, extension, header.operation, request, actor)
         runner.retryFailed(operationId, validate = { code -> validateTarget(sourceCompany, extension, code) }, execute = execute)
@@ -374,7 +409,7 @@ class ExtensionService(
     fun recoverInterrupted(): Int = operations.failInterrupted()
 
     fun result(operationId: Long): GroupOperationResult {
-        val header = operations.header(operationId) ?: throw ExtensionException("operation_not_found", "La operacion no existe.", ExtensionException.Kind.NotFound)
+        val header = operations.header(operationId) ?: throw ExtensionException("operation_not_found", tr("La operacion no existe."), ExtensionException.Kind.NotFound)
         val targets = operations.targets(operationId)
         return GroupOperationResult(
             operationId, header.extensionId, header.operation, header.sourceCompany.orEmpty(), OperationStatus.of(targets),
@@ -387,14 +422,14 @@ class ExtensionService(
     private fun installOne(companyCode: String, extension: ServerExtension, actor: ExtensionActor?) {
         val manifest = extension.manifest
         if (!modules.isInstalled(manifest.module)) {
-            throw ExtensionException("module_not_installed", "El modulo ${manifest.module} no esta instalado en el servidor.")
+            throw ExtensionException("module_not_installed", tr("El modulo {0} no esta instalado en el servidor.", manifest.module))
         }
         if (!compatible(manifest)) {
-            throw ExtensionException("extension_incompatible", "La extension necesita el modulo ${manifest.module} ${manifest.minModuleVersion} o superior.")
+            throw ExtensionException("extension_incompatible", tr("La extension necesita el modulo {0} {1} o superior.", manifest.module, manifest.minModuleVersion))
         }
         withTenant(companyCode) { tenant ->
             if (manifest.module !in enabledModules(tenant)) {
-                throw ExtensionException("module_disabled", "El modulo ${manifest.module} no esta activo en la empresa.")
+                throw ExtensionException("module_disabled", tr("El modulo {0} no esta activo en la empresa.", manifest.module))
             }
             // Installing again is harmless: pending migrations still run, the state is kept.
             migrationRunner.run(companyCode, extension)
@@ -434,14 +469,14 @@ class ExtensionService(
                 if (row.status == ExtensionStatus.Enabled) return@inTransaction
                 ExtensionLifecycle.require(row.status, ExtensionStatus.Enabled)
                 if (!compatible(manifest)) {
-                    throw ExtensionException("extension_incompatible", "La extension necesita el modulo ${manifest.module} ${manifest.minModuleVersion} o superior.")
+                    throw ExtensionException("extension_incompatible", tr("La extension necesita el modulo {0} {1} o superior.", manifest.module, manifest.minModuleVersion))
                 }
                 if (manifest.module !in enabledModules(tenant)) {
-                    throw ExtensionException("module_disabled", "El modulo ${manifest.module} no esta activo en la empresa.")
+                    throw ExtensionException("module_disabled", tr("El modulo {0} no esta activo en la empresa.", manifest.module))
                 }
                 val missing = missingRequired(manifest, settingViews(tenant, manifest))
                 if (missing.isNotEmpty()) {
-                    throw ExtensionException("missing_required_settings", "Faltan ajustes obligatorios: ${missing.joinToString(", ")}.")
+                    throw ExtensionException("missing_required_settings", tr("Faltan ajustes obligatorios: {0}.", missing.joinToString(", ")))
                 }
                 extension.onEnable(ExtensionContext(companyCode, tenant, manifest.id, storage.settings(tenant, manifest.id)))
                 setStatus(tenant, manifest.id, ExtensionStatus.Enabled)
@@ -483,7 +518,7 @@ class ExtensionService(
         val manifest = extension.manifest
         val settings = storage.storedSettings(tenant, manifest.id).size
         val own = extension.uninstallPreview(ExtensionContext(companyCode, tenant, manifest.id, storage.settings(tenant, manifest.id)))
-        return listOf(UninstallItem(null, "Ajustes de la extension", settings, UninstallDefault.Delete)) + own
+        return listOf(UninstallItem(null, tr("Ajustes de la extension"), settings, UninstallDefault.Delete)) + own
     }
 
     // ---- Group planning ----
@@ -493,19 +528,19 @@ class ExtensionService(
     private fun planGroupOperation(sourceCompany: String, extension: ServerExtension, operation: String, request: GroupOperationRequest, persist: Boolean): GroupPlan {
         val manifest = extension.manifest
         val source = evaluateGroupOwner(sourceCompany, persist)
-        if (source.blocked) throw ExtensionException("group_suspended", "La empresa de origen esta suspendida en su grupo o no se pudo verificar su business owner.")
+        if (source.blocked) throw ExtensionException("group_suspended", tr("La empresa de origen esta suspendida en su grupo o no se pudo verificar su business owner."))
         withTenant(sourceCompany) { tenant ->
             val row = requireInstalled(tenant, manifest.id)
             if (operation == GroupOperationType.Apply && row.status in setOf(ExtensionStatus.Incompatible)) {
-                throw ExtensionException("extension_incompatible", "La extension de la empresa de origen es incompatible.")
+                throw ExtensionException("extension_incompatible", tr("La extension de la empresa de origen es incompatible."))
             }
         }
         if (operation == GroupOperationType.Uninstall) UninstallChoices.resolve(manifest.uninstall.options, request.choices)
         val targets = request.targets.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         if (targets.size > MaxGroupTargets) {
-            throw ExtensionException("too_many_targets", "Elige como maximo $MaxGroupTargets empresas por operacion.", ExtensionException.Kind.BadRequest)
+            throw ExtensionException("too_many_targets", tr("Elige como maximo {0} empresas por operacion.", MaxGroupTargets), ExtensionException.Kind.BadRequest)
         }
-        if (targets.isEmpty()) throw ExtensionException("no_targets", "Elige al menos una empresa de destino.", ExtensionException.Kind.BadRequest)
+        if (targets.isEmpty()) throw ExtensionException("no_targets", tr("Elige al menos una empresa de destino."), ExtensionException.Kind.BadRequest)
         val members = groupMembers(sourceCompany).associateBy { it.code }
         val problems = HashMap<String, String>()
         for (code in targets) {
@@ -545,14 +580,14 @@ class ExtensionService(
         val manifest = extension.manifest
         val row = runCatching { withTenant(code) { storage.row(it, manifest.id) } }.getOrNull()
         if (operation == GroupOperationType.Uninstall) {
-            return if (row == null || row.status == ExtensionStatus.Removed) listOf("La extension no esta instalada: no se hace nada")
-            else listOf("Desinstalar la extension (se borran sus ajustes)")
+            return if (row == null || row.status == ExtensionStatus.Removed) listOf(tr("La extension no esta instalada: no se hace nada"))
+            else listOf(tr("Desinstalar la extension (se borran sus ajustes)"))
         }
         return buildList {
-            if (row == null || row.status == ExtensionStatus.Removed) add("Instalar la extension")
-            if (manifest.migrations.isNotEmpty() || extension.migrationPaths.isNotEmpty()) add("Ejecutar las migraciones pendientes")
-            add("Copiar $copyableSettings ajustes de la aplicacion, cifrados de nuevo para la empresa; los ajustes de conexion no se copian")
-            if (row?.status != ExtensionStatus.Enabled) add("Activar la extension")
+            if (row == null || row.status == ExtensionStatus.Removed) add(tr("Instalar la extension"))
+            if (manifest.migrations.isNotEmpty() || extension.migrationPaths.isNotEmpty()) add(tr("Ejecutar las migraciones pendientes"))
+            add(tr("Copiar {0} ajustes de la aplicacion, cifrados de nuevo para la empresa; los ajustes de conexion no se copian", copyableSettings))
+            if (row?.status != ExtensionStatus.Enabled) add(tr("Activar la extension"))
         }
     }
 
@@ -657,11 +692,12 @@ class ExtensionService(
         ).use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getString(1)?.trim()?.lowercase() else null } }
     }
 
-    private fun notifyBusinessOwner(tenant: Connection, moduleId: String, title: String, text: String) {
+    // Each owner reads it in their own language.
+    private fun notifyBusinessOwner(tenant: Connection, moduleId: String, build: () -> NotificationText) {
         val owners = tenant.prepareStatement("SELECT user_id FROM business_owner").use { query ->
             query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
         }
-        owners.forEach { notifier.notify(tenant, moduleId, it, title, text) }
+        owners.forEach { notifier.notify(tenant, moduleId, it, build) }
     }
 
     // ---- Helpers ----
@@ -669,20 +705,20 @@ class ExtensionService(
     private fun authorize(actor: ExtensionActor, companyCode: String) {
         if (actor.serverOwner) return
         if (actor.companyCode == null || actor.companyCode != companyCode) {
-            throw ExtensionException("forbidden", "No puedes administrar las extensiones de esta empresa.", ExtensionException.Kind.Forbidden)
+            throw ExtensionException("forbidden", tr("No puedes administrar las extensiones de esta empresa."), ExtensionException.Kind.Forbidden)
         }
     }
 
     private fun requireServerOwner(actor: ExtensionActor) {
-        if (!actor.serverOwner) throw ExtensionException("server_owner_required", "Solo el dueno del servidor puede hacerlo.", ExtensionException.Kind.Forbidden)
+        if (!actor.serverOwner) throw ExtensionException("server_owner_required", tr("Solo el dueno del servidor puede hacerlo."), ExtensionException.Kind.Forbidden)
     }
 
     private fun requireExtension(extensionId: String): ServerExtension =
-        registry.get(extensionId) ?: throw ExtensionException("extension_not_found", "La extension no existe en este servidor.", ExtensionException.Kind.NotFound)
+        registry.get(extensionId) ?: throw ExtensionException("extension_not_found", tr("La extension no existe en este servidor."), ExtensionException.Kind.NotFound)
 
     private fun requireOperation(operation: String): String {
         if (operation != GroupOperationType.Apply && operation != GroupOperationType.Uninstall) {
-            throw ExtensionException("invalid_operation", "La operacion debe ser apply o uninstall.", ExtensionException.Kind.BadRequest)
+            throw ExtensionException("invalid_operation", tr("La operacion debe ser apply o uninstall."), ExtensionException.Kind.BadRequest)
         }
         return operation
     }
@@ -690,7 +726,7 @@ class ExtensionService(
     // Inside a transaction: the row of the extension, locked until commit.
     private fun requireLocked(tenant: Connection, extensionId: String): TenantExtensionRow =
         storage.rowForUpdate(tenant, extensionId)?.takeIf { it.status != ExtensionStatus.Removed }
-            ?: throw ExtensionException("extension_not_installed", "La extension no esta instalada en esta empresa.", ExtensionException.Kind.NotFound)
+            ?: throw ExtensionException("extension_not_installed", tr("La extension no esta instalada en esta empresa."), ExtensionException.Kind.NotFound)
 
     // The audit never changes the outcome of what already happened: a failure is logged, not thrown.
     private fun audit(actorRole: String, action: String, companyCode: String?, moduleId: String?, details: String) {
@@ -703,7 +739,7 @@ class ExtensionService(
 
     private fun requireInstalled(tenant: Connection, extensionId: String): TenantExtensionRow =
         storage.row(tenant, extensionId)?.takeIf { it.status != ExtensionStatus.Removed }
-            ?: throw ExtensionException("extension_not_installed", "La extension no esta instalada en esta empresa.", ExtensionException.Kind.NotFound)
+            ?: throw ExtensionException("extension_not_installed", tr("La extension no esta instalada en esta empresa."), ExtensionException.Kind.NotFound)
 
     private fun compatible(manifest: ExtensionManifest) = ExtensionLifecycle.isCompatible(manifest.minModuleVersion, modules.loadedVersion(manifest.module))
 
@@ -721,7 +757,7 @@ class ExtensionService(
                 definition.secret || value.secret -> SecretBox.mask(value.value)
                 else -> value.value
             }
-            ExtensionSettingView(definition.key, definition.label, definition.secret, definition.required, definition.help, definition.scope, shown, value != null && value.value.isNotEmpty())
+            ExtensionSettingView(definition.key, trIn(I18n.extensionNamespace(manifest.id), definition.label), definition.secret, definition.required, trIn(I18n.extensionNamespace(manifest.id), definition.help), definition.scope, shown, value != null && value.value.isNotEmpty())
         }
     }
 
@@ -731,8 +767,8 @@ class ExtensionService(
             val row = storage.row(tenant, manifest.id)?.takeIf { it.status != ExtensionStatus.Removed }
             val views = if (row != null) settingViews(tenant, manifest) else emptyList()
             ExtensionSummary(
-                manifest.id, manifest.module, manifest.displayName, manifest.description, manifest.version, manifest.minModuleVersion,
-                manifest.source.type, manifest.permissions, manifest.uninstall.options, row?.status, modules.isInstalled(manifest.module),
+                manifest.id, manifest.module, trIn(I18n.extensionNamespace(manifest.id), manifest.displayName), trIn(I18n.extensionNamespace(manifest.id), manifest.description), manifest.version, manifest.minModuleVersion,
+                manifest.source.type, manifest.permissions, manifest.uninstall.options.map { it.copy(label = trIn(I18n.extensionNamespace(manifest.id), it.label)) }, row?.status, modules.isInstalled(manifest.module),
                 manifest.module in enabledModules(tenant), compatible(manifest), views, if (row != null) missingRequired(manifest, views) else emptyList(),
             )
         }
@@ -764,7 +800,7 @@ class ExtensionService(
 
     private fun <T> withTenant(companyCode: String, block: (Connection) -> T): T {
         val tenant = connections.tenant(companyCode)
-            ?: throw ExtensionException("company_not_found", "La empresa no esta activa.", ExtensionException.Kind.NotFound)
+            ?: throw ExtensionException("company_not_found", tr("La empresa no esta activa."), ExtensionException.Kind.NotFound)
         return tenant.use(block)
     }
 

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessErrorResponse
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ServerModule
@@ -38,6 +39,8 @@ class ExtensionRegistry(extensions: List<ServerExtension>) {
             }
         }
         byId = accepted
+        // Texts of each extension in other languages (extensions/<id>/i18n, I18N.md §3).
+        accepted.values.forEach { com.ideasdeveloper.bms.server.i18n.loadExtensionCatalog(it) }
     }
 
     val all: List<ServerExtension> get() = byId.values.sortedBy { it.manifest.id }
@@ -76,7 +79,7 @@ class ExtensionRegistry(extensions: List<ServerExtension>) {
                         val decision = if (companyUnreadable) {
                             ExtensionGateDecision.Closed(
                                 HttpStatusCode.Forbidden,
-                                ModuleAccessErrorResponse("company_unreadable", "No se pudo determinar la empresa de la ruta."),
+                                ModuleAccessErrorResponse("company_unreadable", tr("No se pudo determinar la empresa de la ruta.")),
                             )
                         } else {
                             withContext(Dispatchers.IO) {
@@ -120,7 +123,7 @@ class ExtensionGate(
         if (!moduleInstalled(moduleId)) {
             return ExtensionGateDecision.Closed(
                 HttpStatusCode.Forbidden,
-                ModuleAccessErrorResponse("module_not_installed", "El modulo no esta instalado en el servidor."),
+                ModuleAccessErrorResponse("module_not_installed", tr("El modulo no esta instalado en el servidor.")),
             )
         }
         val path = pathCompany?.trim()?.takeIf { it.isNotEmpty() }
@@ -128,7 +131,7 @@ class ExtensionGate(
         if (path != null && header != null && path != header) {
             return ExtensionGateDecision.Closed(
                 HttpStatusCode.Forbidden,
-                ModuleAccessErrorResponse("company_mismatch", "La empresa de la ruta no coincide con la de la sesion."),
+                ModuleAccessErrorResponse("company_mismatch", tr("La empresa de la ruta no coincide con la de la sesion.")),
             )
         }
         val company = path ?: header ?: return ExtensionGateDecision.Open
@@ -138,7 +141,7 @@ class ExtensionGate(
         if (decision is ExtensionGateDecision.Open && !state.moduleEnabled) {
             return ExtensionGateDecision.Closed(
                 HttpStatusCode.Forbidden,
-                ModuleAccessErrorResponse("module_disabled", "El modulo no esta activo para esta empresa."),
+                ModuleAccessErrorResponse("module_disabled", tr("El modulo no esta activo para esta empresa.")),
             )
         }
         return decision

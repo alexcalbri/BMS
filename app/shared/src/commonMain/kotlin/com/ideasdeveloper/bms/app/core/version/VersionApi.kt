@@ -40,6 +40,17 @@ class VersionApi(serverUrl: String) {
     }
 }
 
+// Verdadero si [version] es un X.Y.Z valido mayor o igual que major.minor.patch; falso si no se puede interpretar.
+fun isCoreAtLeast(version: String, major: Int, minor: Int, patch: Int): Boolean {
+    val numbers = version.trim().split('.').map { it.toIntOrNull() ?: return false }
+    if (numbers.size != 3 || numbers.any { it < 0 }) return false
+    val required = listOf(major, minor, patch)
+    for (i in 0..2) {
+        if (numbers[i] != required[i]) return numbers[i] > required[i]
+    }
+    return true
+}
+
 @Serializable
 data class VersionResponse(
     val coreVersion: String = ClientVersion,

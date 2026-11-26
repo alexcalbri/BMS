@@ -18,6 +18,8 @@ import com.ideasdeveloper.bms.modules.crm.CrmImportSourceResult
 import com.ideasdeveloper.bms.modules.crm.CrmImportTargets
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
 import com.ideasdeveloper.bms.modules.crm.CrmTable
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.server.net.PinnedHost
@@ -72,7 +74,7 @@ object MondayImport : CrmImportSource {
 
     override val id = Source
     override val label = "monday"
-    override val readingLabel = "Leyendo monday"
+    override val readingLabel: String get() = tr("Leyendo monday")
     override val extensionId: String = CrmExtensionIds.MondayImport
 
     override fun fieldType(columnType: String?) = crmType(columnType)
@@ -88,32 +90,32 @@ object MondayImport : CrmImportSource {
             UiCard(
                 listOfNotNull(
                     UiText(
-                        if (shared) "Hay una conexion de monday compartida con las demas extensiones de la empresa."
-                        else "No hay conexion de monday compartida: este token solo lo usa esta extension.",
+                        if (shared) tr("Hay una conexion de monday compartida con las demas extensiones de la empresa.")
+                        else tr("No hay conexion de monday compartida: este token solo lo usa esta extension."),
                         UiTextStyle.Caption,
                     ),
                     UiForm(
                         "mondayToken",
                         listOf(
-                            UiField("token", "Token de la API de monday", type = "password", required = token == null,
-                                help = "monday > tu avatar > Developers > Mi token. Se guarda para la empresa."),
-                            UiField("share", "Usar este token en todas las extensiones de monday de la empresa", type = "boolean",
-                                help = "Lo guarda tambien como conexion compartida: las demas extensiones de monday lo usan si no tienen uno propio."),
+                            UiField("token", tr("Token de la API de monday"), type = "password", required = token == null,
+                                help = tr("monday > tu avatar > Developers > Mi token. Se guarda para la empresa.")),
+                            UiField("share", tr("Usar este token en todas las extensiones de monday de la empresa"), type = "boolean",
+                                help = tr("Lo guarda tambien como conexion compartida: las demas extensiones de monday lo usan si no tienen uno propio.")),
                         ),
                         mapOf("token" to CrmHost.maskSecret(token), "share" to "false"),
-                        submit = UiButton("Guardar y cargar tableros", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayToken"), formId = "mondayToken")),
+                        submit = UiButton(tr("Guardar y cargar tableros"), UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayToken"), formId = "mondayToken")),
                     ),
                     token?.let {
                         UiRow(
                             listOf(
-                                UiButton("Cargar tableros", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
-                                UiButton("Quitar token", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayForget"), confirm = "Se borra el token de monday guardado de esta extension (la conexion compartida no se toca). Continuar?"), style = "secondary"),
+                                UiButton(tr("Cargar tableros"), UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
+                                UiButton(tr("Quitar token"), UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayForget"), confirm = tr("Se borra el token de monday guardado de esta extension (la conexion compartida no se toca). Continuar?")), style = "secondary"),
                             ),
                         )
                     },
                     if (shared) UiButton(
-                        "Quitar conexion compartida",
-                        UiRequest(UiRoute + "/import", params = mapOf("op" to "mondaySharedForget"), confirm = "Se borra la conexion compartida: las demas extensiones de monday sin token propio dejaran de funcionar. Continuar?"),
+                        tr("Quitar conexion compartida"),
+                        UiRequest(UiRoute + "/import", params = mapOf("op" to "mondaySharedForget"), confirm = tr("Se borra la conexion compartida: las demas extensiones de monday sin token propio dejaran de funcionar. Continuar?")),
                         style = "secondary",
                     ) else null,
                 ),
@@ -132,17 +134,17 @@ object MondayImport : CrmImportSource {
         val id = mapOf("job" to job.id.toString())
         return when (job.status) {
             "reading" -> header + listOf(
-                UiText("Se estan leyendo ${job.boards.size} tablero(s) de monday con sus actualizaciones y subelementos. Un tablero grande tarda unos minutos; vuelve a abrir esta pantalla para seguir con el mapeo."),
+                UiText(tr("Se estan leyendo {0} tablero(s) de monday con sus actualizaciones y subelementos. Un tablero grande tarda unos minutos; vuelve a abrir esta pantalla para seguir con el mapeo.", job.boards.size)),
                 UiRow(
                     listOf(
-                        UiButton("Actualizar", UiNavigate("importjob", id), style = "secondary"),
-                        UiButton("Cancelar", UiRequest(UiRoute + "/importjob", params = id + ("op" to "cancel")), style = "danger"),
+                        UiButton(tr("Actualizar"), UiNavigate("importjob", id), style = "secondary"),
+                        UiButton(tr("Cancelar"), UiRequest(UiRoute + "/importjob", params = id + ("op" to "cancel")), style = "danger"),
                     ),
                 ),
             )
             "failed" -> header + listOf(
-                UiText(job.error.ifEmpty { "No se pudieron leer los tableros." }, tone = UiTone.Danger),
-                UiButton("Elegir tableros de nuevo", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
+                UiText(tr(job.error.ifEmpty { msg("No se pudieron leer los tableros.") }), tone = UiTone.Danger),
+                UiButton(tr("Elegir tableros de nuevo"), UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
             )
             else -> null
         }
@@ -150,8 +152,7 @@ object MondayImport : CrmImportSource {
 
     override fun mappingNotes(job: CrmImportJob): List<UiNode> = listOf(
         UiText(
-            "Los archivos de las columnas que mapees a \"Archivos del lead\" y los adjuntos de las actualizaciones se descargan de monday al importar " +
-                "(hasta ${CrmAttachments.MaxFileBytes / (1024 * 1024)} MB cada uno) y quedan en ${CrmFields.DocumentsLabel}. Las actualizaciones y sus respuestas se importan como notas.",
+            tr("Los archivos de las columnas que mapees a \"Archivos del lead\" y los adjuntos de las actualizaciones se descargan de monday al importar (hasta {0} MB cada uno) y quedan en {1}. Las actualizaciones y sus respuestas se importan como notas.", CrmAttachments.MaxFileBytes / (1024 * 1024), tr(CrmFields.DocumentsLabel)),
             UiTextStyle.Caption,
         ),
     )
@@ -167,39 +168,39 @@ object MondayImport : CrmImportSource {
             val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && !CrmHost.isSecretPlaceholder(it) }
             when {
                 inactive != null -> CrmImportSourceResult(inactive, UiTone.Warning)
-                typed == null && mondayToken(tenant) == null -> CrmImportSourceResult("Escribe el token de la API de monday.", UiTone.Danger)
+                typed == null && mondayToken(tenant) == null -> CrmImportSourceResult(tr("Escribe el token de la API de monday."), UiTone.Danger)
                 else -> {
                     typed?.let { saveMondayToken(tenant, it) }
                     // Compartir: guarda tambien el token sellado como conexion de la empresa (con el escrito o, si no se cambio, el guardado).
                     val share = values["share"].orEmpty().trim().equals("true", ignoreCase = true)
                     val shareError = if (share) shareToken(tenant, userId) else null
                     when {
-                        shareError != null -> CrmImportSourceResult("Token de monday guardado, pero no se pudo compartir: $shareError", UiTone.Warning, params = mapOf("monday" to "boards"))
-                        share -> CrmImportSourceResult("Token de monday guardado y compartido con las demas extensiones de monday.", UiTone.Success, params = mapOf("monday" to "boards"))
-                        else -> CrmImportSourceResult("Token de monday guardado.", UiTone.Success, params = mapOf("monday" to "boards"))
+                        shareError != null -> CrmImportSourceResult(tr("Token de monday guardado, pero no se pudo compartir: {0}", shareError), UiTone.Warning, params = mapOf("monday" to "boards"))
+                        share -> CrmImportSourceResult(tr("Token de monday guardado y compartido con las demas extensiones de monday."), UiTone.Success, params = mapOf("monday" to "boards"))
+                        else -> CrmImportSourceResult(tr("Token de monday guardado."), UiTone.Success, params = mapOf("monday" to "boards"))
                     }
                 }
             }
         }
         "mondayForget" -> {
             saveMondayToken(tenant, null)
-            CrmImportSourceResult("Token de monday borrado (la conexion compartida, si hay, sigue).", UiTone.Success)
+            CrmImportSourceResult(tr("Token de monday borrado (la conexion compartida, si hay, sigue)."), UiTone.Success)
         }
         "mondaySharedForget" -> {
             IntegrationConnections.save(tenant, MondayConnectionService, null, userId?.toString())
-            CrmImportSourceResult("Conexion compartida de monday borrada.", UiTone.Success)
+            CrmImportSourceResult(tr("Conexion compartida de monday borrada."), UiTone.Success)
         }
         "monday" -> {
             val inactive = CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.MondayImport)
             when {
                 inactive != null -> CrmImportSourceResult(inactive, UiTone.Warning)
                 // Leer un tablero tarda minutos, mas de lo que espera la app: lo lee el trabajo de importacion.
-                mondayToken(tenant) == null -> CrmImportSourceResult("Guarda primero el token de la API de monday.", UiTone.Danger)
+                mondayToken(tenant) == null -> CrmImportSourceResult(tr("Guarda primero el token de la API de monday."), UiTone.Danger)
                 else -> {
                     val boards = values.filter { it.key.startsWith("board:") && it.value == "true" }.keys.map { it.removePrefix("board:") }
                     try {
                         val job = queueMonday(tenant, boards, userId)
-                        CrmImportSourceResult("Se estan leyendo los tableros de monday.", UiTone.Success, "importjob", mapOf("job" to job.toString()))
+                        CrmImportSourceResult(tr("Se estan leyendo los tableros de monday."), UiTone.Success, "importjob", mapOf("job" to job.toString()))
                     } catch (failure: CrmImportException) {
                         CrmImportSourceResult(failure.message.orEmpty(), UiTone.Danger, params = mapOf("monday" to "boards"))
                     }
@@ -218,22 +219,22 @@ object MondayImport : CrmImportSource {
         val boards = try {
             mondayBoards(token)
         } catch (failure: CrmImportException) {
-            return UiCard(listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger)), title = "Tableros de monday")
+            return UiCard(listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger)), title = tr("Tableros de monday"))
         }
-        if (boards.isEmpty()) return UiCard(listOf(UiText("El token no tiene acceso a ningun tablero activo.", tone = UiTone.Warning)), title = "Tableros de monday")
+        if (boards.isEmpty()) return UiCard(listOf(UiText(tr("El token no tiene acceso a ningun tablero activo."), tone = UiTone.Warning)), title = tr("Tableros de monday"))
         val fields = boards.map { board ->
-            UiField("board:${board.id}", board.name + board.items?.let { " ($it elementos)" }.orEmpty(), type = "boolean", section = board.workspace)
+            UiField("board:${board.id}", board.name + board.items?.let { " (" + tr("{0} elementos", it) + ")" }.orEmpty(), type = "boolean", section = if (board.workspace == MainWorkspace) tr("Espacio principal") else board.workspace)
         }
         return UiCard(
             listOf(
-                UiText("Marca los tableros que quieres importar. Cada tablero queda como interes."),
+                UiText(tr("Marca los tableros que quieres importar. Cada tablero queda como interes.")),
                 UiForm(
                     "importMonday", fields,
-                    submit = UiButton("Importar tableros marcados", UiRequest(UiRoute + "/import", params = mapOf("op" to "monday", "monday" to "boards"), formId = "importMonday")),
+                    submit = UiButton(tr("Importar tableros marcados"), UiRequest(UiRoute + "/import", params = mapOf("op" to "monday", "monday" to "boards"), formId = "importMonday")),
                     minFieldWidth = 320,
                 ),
             ),
-            title = "Tableros de monday",
+            title = tr("Tableros de monday"),
         )
     }
 
@@ -244,7 +245,7 @@ object MondayImport : CrmImportSource {
      * (a single cell) followed by the header again; the group goes to [GroupColumn].
      */
     fun table(records: List<List<String>>): CrmTable {
-        if (records.isEmpty()) throw CrmImportException("El archivo no tiene filas.")
+        if (records.isEmpty()) throw CrmImportException(tr("El archivo no tiene filas."))
         val (headerIndex, names) = CrmImportParse.header(records)
         val header = records[headerIndex].map { it.trim() }
         var group = records.take(headerIndex).lastOrNull { it.count { cell -> cell.isNotBlank() } == 1 }?.first { it.isNotBlank() }?.trim().orEmpty()
@@ -314,8 +315,8 @@ object MondayImport : CrmImportSource {
      * subitems as notes, the files of file columns and of updates, and the item id as key.
      */
     fun fromMonday(token: String, boardIds: List<String>): CrmTable {
-        if (token.isBlank()) throw CrmImportException("Escribe el token de la API de monday.")
-        if (boardIds.isEmpty() || boardIds.any { !it.matches(idPattern) }) throw CrmImportException("Escribe los ID de los tableros (numeros separados por coma).")
+        if (token.isBlank()) throw CrmImportException(tr("Escribe el token de la API de monday."))
+        if (boardIds.isEmpty() || boardIds.any { !it.matches(idPattern) }) throw CrmImportException(tr("Escribe los ID de los tableros (numeros separados por coma)."))
         val itemFields = "id name created_at group { title } column_values { type text value column { title } } " +
             "updates(limit: 100) { text_body created_at creator { name } assets { id name } replies { text_body created_at creator { name } } } " +
             "subitems { name column_values { column { title } text } }"
@@ -324,7 +325,7 @@ object MondayImport : CrmImportSource {
         val rows = mutableListOf<Map<String, String>>()
         boardIds.forEach { boardId ->
             var data = monday(token, "query { boards(ids: [$boardId]) { name items_page(limit: 100) { cursor items { $itemFields } } } }")
-            val board = data["boards"].arr().firstOrNull().obj() ?: throw CrmImportException("monday no devolvio el tablero $boardId (revisa el ID y los permisos del token).")
+            val board = data["boards"].arr().firstOrNull().obj() ?: throw CrmImportException(tr("monday no devolvio el tablero {0} (revisa el ID y los permisos del token).", boardId))
             val boardName = board["name"].str()
             var page = board["items_page"].obj()
             while (page != null) {
@@ -363,7 +364,7 @@ object MondayImport : CrmImportSource {
                     row[CrmImport.NotesColumn] = CrmImport.notesJson(notes)
                     if (files.isNotEmpty()) row[MondayFiles.FilesColumn] = MondayFiles.encode(files)
                     rows += row
-                    if (rows.size > CrmImportParse.MaxRows) throw CrmImportException("Los tableros tienen mas de ${CrmImportParse.MaxRows} elementos.")
+                    if (rows.size > CrmImportParse.MaxRows) throw CrmImportException(tr("Los tableros tienen mas de {0} elementos.", CrmImportParse.MaxRows))
                 }
                 val cursor = page["cursor"].str()
                 if (cursor.isEmpty()) break
@@ -381,10 +382,10 @@ object MondayImport : CrmImportSource {
      * el valor sellado es el mismo de ext_monday__settings, asi que no se vuelve a sellar ni se muestra.
      */
     private fun shareToken(tenant: Connection, userId: UUID?): String? {
-        if (mondayToken(tenant) == null) return "no hay un token guardado."
+        if (mondayToken(tenant) == null) return tr("no hay un token guardado.")
         val sealed = tenant.prepareStatement("SELECT token FROM ${MondaySettingsStore.Table} WHERE id = 1").use { query ->
             query.executeQuery().use { rows -> if (rows.next()) rows.getString(1)?.takeIf { it.isNotBlank() } else null }
-        } ?: return "no hay un token guardado."
+        } ?: return tr("no hay un token guardado.")
         IntegrationConnections.save(tenant, MondayConnectionService, sealed, userId?.toString())
         return null
     }
@@ -397,7 +398,7 @@ object MondayImport : CrmImportSource {
 
     /** Active boards the token can read, by workspace and name (subitem boards and docs left out). */
     fun mondayBoards(token: String): List<MondayBoard> {
-        if (token.isBlank()) throw CrmImportException("Escribe el token de la API de monday.")
+        if (token.isBlank()) throw CrmImportException(tr("Escribe el token de la API de monday."))
         val boards = mutableListOf<MondayBoard>()
         for (page in 1..50) {
             val data = monday(token, "query { boards(limit: 100, page: $page, state: active) { id name type items_count workspace { name } } }")
@@ -427,12 +428,12 @@ object MondayImport : CrmImportSource {
                 payload, timeoutMillis = 30_000, totalMillis = 60_000, maxBodyBytes = MaxBytes + 1L,
             ).use { response -> response.status to response.body.readNBytes(MaxBytes + 1).decodeToString() }
         } catch (failure: Exception) {
-            throw CrmImportException("No se pudo contactar monday.")
+            throw CrmImportException(tr("No se pudo contactar monday."))
         }
         val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
-        if (status == 401 || status == 403) throw CrmImportException("monday rechazo el token.")
-        body?.get("errors").arr().firstOrNull()?.let { throw CrmImportException("monday: ${it.obj()?.get("message").str()}") }
-        return body?.get("data").obj() ?: throw CrmImportException("monday respondio HTTP $status.")
+        if (status == 401 || status == 403) throw CrmImportException(tr("monday rechazo el token."))
+        body?.get("errors").arr().firstOrNull()?.let { throw CrmImportException(tr("monday: {0}", it.obj()?.get("message").str())) }
+        return body?.get("data").obj() ?: throw CrmImportException(tr("monday respondio HTTP {0}.", status))
     }
 
     // ---- Job: cola, lectura y aplicacion ----
@@ -440,7 +441,7 @@ object MondayImport : CrmImportSource {
     /** Queues monday boards for the import job, which reads them and leaves the job ready to map. */
     fun queueMonday(tenant: Connection, boardIds: List<String>, userId: UUID?): UUID {
         CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
-        if (boardIds.isEmpty() || boardIds.any { !it.matches(idPattern) }) throw CrmImportException("Marca al menos un tablero.")
+        if (boardIds.isEmpty() || boardIds.any { !it.matches(idPattern) }) throw CrmImportException(tr("Marca al menos un tablero."))
         val id = UUID.randomUUID()
         CrmImport.insertJob(tenant, id, Source, "monday ${boardIds.joinToString()}", "reading", boardIds, userId)
         return id
@@ -451,11 +452,11 @@ object MondayImport : CrmImportSource {
         CrmImport.jobQuery(tenant, "WHERE status = 'reading' AND source = '$Source' ORDER BY created_at").forEach { job ->
             val table = try {
                 CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
-                val token = mondayToken(tenant) ?: throw CrmImportException("Se borro el token de monday; guardalo de nuevo.")
-                fromMonday(token, job.boards).also { if (it.rows.isEmpty()) throw CrmImportException("Los tableros marcados no tienen elementos.") }
+                val token = mondayToken(tenant) ?: throw CrmImportException(tr("Se borro el token de monday; guardalo de nuevo."))
+                fromMonday(token, job.boards).also { if (it.rows.isEmpty()) throw CrmImportException(tr("Los tableros marcados no tienen elementos.")) }
             } catch (failure: Exception) {
                 tenant.prepareStatement("UPDATE crm_import_jobs SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'reading'").use { update ->
-                    update.setString(1, (failure as? CrmImportException)?.message ?: "No se pudieron leer los tableros de monday.")
+                    update.setString(1, (failure as? CrmImportException)?.message ?: tr("No se pudieron leer los tableros de monday."))
                     update.setObject(2, job.id)
                     update.executeUpdate()
                 }

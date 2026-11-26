@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiAction
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiBoard
@@ -52,7 +54,7 @@ object MantenimientoScreens {
     const val HistoryLimit = 50
     const val ViewList = "list"
     const val ViewBoard = "board"
-    private val Views = listOf(ViewList to "Lista", ViewBoard to "Tablero")
+    private val Views = listOf(ViewList to msg("Lista"), ViewBoard to msg("Tablero"))
     private val StampFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
     /** Etiquetas de los usuarios asignables por id. */
@@ -105,24 +107,24 @@ object MantenimientoScreens {
     }
 
     fun orderBadges(order: Order, today: LocalDate, withStatus: Boolean = true): List<UiBadge> = buildList {
-        if (order.isOverdue(today)) add(UiBadge("Vencida", UiTone.Danger))
-        if (order.priority != OrderPriority.Medium) add(UiBadge(order.priority.label, priorityTone(order.priority)))
-        if (order.kind == OrderKind.Project) add(UiBadge(OrderKind.Project.label, UiTone.Neutral))
-        if (withStatus) add(UiBadge(order.status.label, statusTone(order.status)))
+        if (order.isOverdue(today)) add(UiBadge(tr("Vencida"), UiTone.Danger))
+        if (order.priority != OrderPriority.Medium) add(UiBadge(tr(order.priority.label), priorityTone(order.priority)))
+        if (order.kind == OrderKind.Project) add(UiBadge(tr(OrderKind.Project.label), UiTone.Neutral))
+        if (withStatus) add(UiBadge(tr(order.status.label), statusTone(order.status)))
     }
 
     // ---- navegación ----
 
     fun navigation(scope: MantenimientoScope, selected: String, import: Boolean = false): UiNavigation = UiNavigation(
-        title = MantenimientoModule.displayName,
+        title = tr(MantenimientoModule.displayName),
         items = listOfNotNull(
-            UiNavItem("upcoming", "Próximos", UiNavigate("upcoming")),
-            UiNavItem("mine", "Mis órdenes", UiNavigate("mine")),
-            UiNavItem("orders", "Órdenes", UiNavigate("orders")).takeIf { scope.seesAll },
-            UiNavItem("assets", "Activos", UiNavigate("assets")),
-            UiNavItem("plans", "Planes", UiNavigate("plans")),
-            UiNavItem("admin", "Ajustes", UiNavigate("admin")).takeIf { scope.canManage },
-            UiNavItem("importar", "Importar", UiNavigate("importar")).takeIf { import },
+            UiNavItem("upcoming", tr("Próximos"), UiNavigate("upcoming")),
+            UiNavItem("mine", tr("Mis órdenes"), UiNavigate("mine")),
+            UiNavItem("orders", tr("Órdenes"), UiNavigate("orders")).takeIf { scope.seesAll },
+            UiNavItem("assets", tr("Activos"), UiNavigate("assets")),
+            UiNavItem("plans", tr("Planes"), UiNavigate("plans")),
+            UiNavItem("admin", tr("Ajustes"), UiNavigate("admin")).takeIf { scope.canManage },
+            UiNavItem("importar", tr("Importar"), UiNavigate("importar")).takeIf { import },
         ),
         selected = selected,
     )
@@ -141,13 +143,13 @@ object MantenimientoScreens {
     /** Los botones para reportar una avería o solicitar un proyecto, a mano de todo el personal. */
     fun quickActions(): UiNode = UiRow(
         listOf(
-            UiButton("Reportar avería", UiNavigate("new-order", mapOf("kind" to OrderKind.Corrective.id))),
-            UiButton("Solicitar proyecto", UiNavigate("new-order", mapOf("kind" to OrderKind.Project.id)), style = "secondary"),
+            UiButton(tr("Reportar avería"), UiNavigate("new-order", mapOf("kind" to OrderKind.Corrective.id))),
+            UiButton(tr("Solicitar proyecto"), UiNavigate("new-order", mapOf("kind" to OrderKind.Project.id)), style = "secondary"),
         ),
     )
 
     private fun orderItem(context: Context, order: Order): UiListItem = UiListItem(
-        title = "${order.displayNumber} · ${order.title}",
+        title = tr("{0} · {1}", order.displayNumber, order.title),
         subtitle = listOfNotNull(
             order.propertyName?.takeIf { it.isNotBlank() },
             order.assetName?.takeIf { it.isNotBlank() },
@@ -159,7 +161,7 @@ object MantenimientoScreens {
     )
 
     private fun cutNotice(count: Int): UiNode? =
-        if (count > ListLimit) hint("Se muestran las primeras $ListLimit órdenes: usa los filtros para acotar.", UiTone.Warning) else null
+        if (count > ListLimit) hint(tr("Se muestran las primeras {0} órdenes: usa los filtros para acotar.", ListLimit), UiTone.Warning) else null
 
     // ---- Próximos ----
 
@@ -173,19 +175,19 @@ object MantenimientoScreens {
             return !due.isBefore(from) && !due.isAfter(to)
         }
         return listOf(
-            "Vencidas" to open.filter { it.isOverdue(today) },
-            "Próximos 7 días" to open.filter { dueBetween(it, today, week) },
-            "Próximos 30 días" to open.filter { dueBetween(it, week.plusDays(1), month) },
-            "Más adelante" to open.filter { it.dueDate?.isAfter(month) == true },
-            "Sin fecha" to open.filter { it.dueDate == null },
+            tr("Vencidas") to open.filter { it.isOverdue(today) },
+            tr("Próximos 7 días") to open.filter { dueBetween(it, today, week) },
+            tr("Próximos 30 días") to open.filter { dueBetween(it, week.plusDays(1), month) },
+            tr("Más adelante") to open.filter { it.dueDate?.isAfter(month) == true },
+            tr("Sin fecha") to open.filter { it.dueDate == null },
         ).filter { it.second.isNotEmpty() }
     }
 
     private fun planItem(plan: Plan): UiListItem = UiListItem(
         title = plan.title,
-        subtitle = listOfNotNull(plan.propertyName, plan.assetName, plan.frequency.label.takeIf { plan.frequency != PlanFrequency.EveryNDays } ?: "Cada ${plan.intervalDays} días").joinToString(" · "),
+        subtitle = listOfNotNull(plan.propertyName, plan.assetName, if (plan.frequency != PlanFrequency.EveryNDays) tr(plan.frequency.label) else tr("Cada {0} días", plan.intervalDays)).joinToString(" · "),
         trailing = plan.nextDue?.toString().orEmpty(),
-        badges = listOfNotNull(UiBadge("Inactivo", UiTone.Neutral).takeIf { !plan.active }),
+        badges = listOfNotNull(UiBadge(tr("Inactivo"), UiTone.Neutral).takeIf { !plan.active }),
         action = UiNavigate("plan", mapOf("id" to plan.id.toString())),
     )
 
@@ -202,9 +204,9 @@ object MantenimientoScreens {
             listOf(
                 UiForm(
                     "filters",
-                    listOf(UiField("property", "Propiedad", type = "dropdown", options = listOf(MantenimientoActions.AllOption) + context.properties.map { it.name })),
+                    listOf(UiField("property", tr("Propiedad"), type = "dropdown", options = listOf(MantenimientoActions.AllOption) + context.properties.map { it.name })),
                     mapOf("property" to (property?.name ?: MantenimientoActions.AllOption)),
-                    submit = UiButton("Filtrar", UiNavigate("upcoming", formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate("upcoming", formId = "filters"), style = "secondary"),
                     minFieldWidth = 220,
                 ),
             ),
@@ -215,18 +217,18 @@ object MantenimientoScreens {
             add(
                 UiGrid(
                     listOf(
-                        UiCard(listOf(UiMetric("Abiertas", metrics.open.toString()))),
+                        UiCard(listOf(UiMetric(tr("Abiertas"), metrics.open.toString()))),
                         UiCard(
                             listOf(
                                 UiMetric(
-                                    "Vencidas", metrics.overdue.toString(),
-                                    caption = if (metrics.overdue > 0) "Atiéndelas primero" else "Al día",
+                                    tr("Vencidas"), metrics.overdue.toString(),
+                                    caption = if (metrics.overdue > 0) tr("Atiéndelas primero") else tr("Al día"),
                                     captionTone = if (metrics.overdue > 0) UiTone.Danger else UiTone.Success,
                                 ),
                             ),
                         ),
-                        UiCard(listOf(UiMetric("Por aprobar", metrics.pendingApproval.toString(), captionTone = if (metrics.pendingApproval > 0) UiTone.Info else UiTone.Neutral))),
-                        UiCard(listOf(UiMetric("Completadas este mes", metrics.completedThisMonth.toString()))),
+                        UiCard(listOf(UiMetric(tr("Por aprobar"), metrics.pendingApproval.toString(), captionTone = if (metrics.pendingApproval > 0) UiTone.Info else UiTone.Neutral))),
+                        UiCard(listOf(UiMetric(tr("Completadas este mes"), metrics.completedThisMonth.toString()))),
                     ),
                     minItemWidth = 180,
                 ),
@@ -234,15 +236,15 @@ object MantenimientoScreens {
             cutNotice(orders.size)?.let { add(it) }
             val buckets = upcomingBuckets(shown, context.today)
             if (buckets.isEmpty()) {
-                add(UiCard(listOf(UiText("No hay órdenes abiertas."))))
+                add(UiCard(listOf(UiText(tr("No hay órdenes abiertas.")))))
             } else {
-                buckets.forEach { (title, group) -> add(UiCard(listOf(UiList(group.map { orderItem(context, it) })), title = "$title (${group.size})")) }
+                buckets.forEach { (title, group) -> add(UiCard(listOf(UiList(group.map { orderItem(context, it) })), title = tr("{0} ({1})", title, group.size))) }
             }
             if (plansSoon.isNotEmpty()) {
-                add(UiCard(listOf(UiList(plansSoon.map { planItem(it) })), title = "Planes que generan pronto (${plansSoon.size})"))
+                add(UiCard(listOf(UiList(plansSoon.map { planItem(it) })), title = tr("Planes que generan pronto ({0})", plansSoon.size)))
             }
         }
-        return screen(context, "Próximos", "upcoming", notice, body)
+        return screen(context, tr("Próximos"), "upcoming", notice, body)
     }
 
     // ---- Mis órdenes ----
@@ -256,12 +258,12 @@ object MantenimientoScreens {
             add(quickActions())
             cutNotice(orders.size)?.let { add(it) }
             if (assigned.isEmpty() && reported.isEmpty()) {
-                add(UiCard(listOf(UiText(if (me == null) "Esta cuenta no recibe órdenes: abre Órdenes para verlas." else "No tienes órdenes abiertas."))))
+                add(UiCard(listOf(UiText(if (me == null) tr("Esta cuenta no recibe órdenes: abre Órdenes para verlas.") else tr("No tienes órdenes abiertas.")))))
             }
-            if (assigned.isNotEmpty()) add(UiCard(listOf(UiList(assigned.map { orderItem(context, it) })), title = "Asignadas a mí (${assigned.size})"))
-            if (reported.isNotEmpty()) add(UiCard(listOf(UiList(reported.map { orderItem(context, it) })), title = "Reportadas por mí (${reported.size})"))
+            if (assigned.isNotEmpty()) add(UiCard(listOf(UiList(assigned.map { orderItem(context, it) })), title = tr("Asignadas a mí ({0})", assigned.size)))
+            if (reported.isNotEmpty()) add(UiCard(listOf(UiList(reported.map { orderItem(context, it) })), title = tr("Reportadas por mí ({0})", reported.size)))
         }
-        return screen(context, "Mis órdenes", "mine", notice, body)
+        return screen(context, tr("Mis órdenes"), "mine", notice, body)
     }
 
     // ---- Órdenes ----
@@ -271,11 +273,11 @@ object MantenimientoScreens {
     private fun filterForm(context: Context, view: String, params: Map<String, String>): UiNode {
         val all = MantenimientoActions.AllOption
         val fields = buildList {
-            add(UiField("q", "Buscar", placeholder = "Folio, título o descripción"))
-            if (view != ViewBoard) add(UiField("status", "Estado", type = "dropdown", options = listOf(all, MantenimientoActions.ClosedOption) + OrderStatus.entries.map { it.label }))
-            add(UiField("kind", "Tipo", type = "dropdown", options = listOf(all) + OrderKind.entries.map { it.label }))
-            add(UiField("property", "Propiedad", type = "dropdown", options = listOf(all) + context.properties.map { it.name }))
-            add(UiField("assignee", "Responsable", type = "dropdown", options = listOf(all) + context.users.map { it.label }))
+            add(UiField("q", tr("Buscar"), placeholder = tr("Folio, título o descripción")))
+            if (view != ViewBoard) add(UiField("status", tr("Estado"), type = "dropdown", options = listOf(all, MantenimientoActions.ClosedOption) + OrderStatus.entries.map { it.label }))
+            add(UiField("kind", tr("Tipo"), type = "dropdown", options = listOf(all) + OrderKind.entries.map { it.label }))
+            add(UiField("property", tr("Propiedad"), type = "dropdown", options = listOf(all) + context.properties.map { it.name }))
+            add(UiField("assignee", tr("Responsable"), type = "dropdown", options = listOf(all) + context.users.map { it.label }))
         }
         val values = fields.associate { field ->
             field.key to (params[field.key]?.takeIf { it.isNotBlank() } ?: if (field.type == "dropdown") all else "")
@@ -284,7 +286,7 @@ object MantenimientoScreens {
             listOf(
                 UiForm(
                     "filters", fields, values,
-                    submit = UiButton("Filtrar", UiNavigate("orders", mapOf("view" to view), formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate("orders", mapOf("view" to view), formId = "filters"), style = "secondary"),
                     minFieldWidth = 200,
                 ),
             ),
@@ -294,10 +296,10 @@ object MantenimientoScreens {
     fun orders(context: Context, data: OrdersData, params: Map<String, String>, notice: UiNotice? = null): UiScreen {
         val view = viewOf(params)
         val selector = UiRow(
-            Views.map { (id, label) -> UiButton(label, UiNavigate("orders", mapOf("view" to id), formId = "filters"), style = if (id == view) "primary" else "secondary") } +
+            Views.map { (id, label) -> UiButton(tr(label), UiNavigate("orders", mapOf("view" to id), formId = "filters"), style = if (id == view) "primary" else "secondary") } +
                 listOf(
-                    UiButton("Reportar avería", UiNavigate("new-order", mapOf("kind" to OrderKind.Corrective.id)), style = "secondary"),
-                    UiButton("Solicitar proyecto", UiNavigate("new-order", mapOf("kind" to OrderKind.Project.id)), style = "secondary"),
+                    UiButton(tr("Reportar avería"), UiNavigate("new-order", mapOf("kind" to OrderKind.Corrective.id)), style = "secondary"),
+                    UiButton(tr("Solicitar proyecto"), UiNavigate("new-order", mapOf("kind" to OrderKind.Project.id)), style = "secondary"),
                 ),
         )
         val body = buildList<UiNode> {
@@ -309,24 +311,24 @@ object MantenimientoScreens {
                 val mode = MantenimientoActions.listingMode(params)
                 when (mode) {
                     MantenimientoActions.ListingMode.Active ->
-                        add(hint("Se muestran solo las órdenes activas. Las cerradas son una vista aparte: elige «${MantenimientoActions.ClosedOption}» en Estado."))
+                        add(hint(tr("Se muestran solo las órdenes activas. Las cerradas son una vista aparte: elige «{0}» en Estado.", tr(MantenimientoActions.ClosedOption))))
                     MantenimientoActions.ListingMode.ClosedWindow ->
-                        add(hint("Órdenes cerradas (completadas, rechazadas o canceladas) en los últimos ${MantenimientoActions.ClosedWindowDays} días, la más reciente primero."))
+                        add(hint(tr("Órdenes cerradas (completadas, rechazadas o canceladas) en los últimos {0} días, la más reciente primero.", MantenimientoActions.ClosedWindowDays)))
                     MantenimientoActions.ListingMode.Search ->
-                        add(hint("La búsqueda incluye también las órdenes cerradas."))
+                        add(hint(tr("La búsqueda incluye también las órdenes cerradas.")))
                     MantenimientoActions.ListingMode.Explicit -> Unit
                 }
                 cutNotice(data.orders.size)?.let { add(it) }
                 val title = when (mode) {
-                    MantenimientoActions.ListingMode.Active -> "Órdenes activas"
-                    MantenimientoActions.ListingMode.ClosedWindow -> "Órdenes cerradas"
-                    MantenimientoActions.ListingMode.Search -> "Resultados de la búsqueda"
-                    MantenimientoActions.ListingMode.Explicit -> "Órdenes"
+                    MantenimientoActions.ListingMode.Active -> tr("Órdenes activas")
+                    MantenimientoActions.ListingMode.ClosedWindow -> tr("Órdenes cerradas")
+                    MantenimientoActions.ListingMode.Search -> tr("Resultados de la búsqueda")
+                    MantenimientoActions.ListingMode.Explicit -> tr("Órdenes")
                 }
-                add(UiCard(listOf(UiList(data.orders.take(ListLimit).map { orderItem(context, it) }, emptyText = "No hay órdenes con estos filtros.")), title = title))
+                add(UiCard(listOf(UiList(data.orders.take(ListLimit).map { orderItem(context, it) }, emptyText = tr("No hay órdenes con estos filtros."))), title = title))
             }
         }
-        return screen(context, "Órdenes", "orders", notice, body)
+        return screen(context, tr("Órdenes"), "orders", notice, body)
     }
 
     /** Estados que muestra el tablero: los de decisión y el rechazo solo aparecen si tienen tarjetas. */
@@ -341,22 +343,22 @@ object MantenimientoScreens {
             val orders = data.columns[status].orEmpty()
             UiBoardColumn(
                 id = status.id,
-                title = status.label,
+                title = tr(status.label),
                 tone = statusTone(status),
                 caption = when {
-                    orders.size > KanbanLimit -> "Mostrando $KanbanLimit: usa los filtros para ver el resto"
-                    !status.isActive -> "Cerradas en los últimos ${MantenimientoActions.ClosedWindowDays} días"
+                    orders.size > KanbanLimit -> tr("Mostrando {0}: usa los filtros para ver el resto", KanbanLimit)
+                    !status.isActive -> tr("Cerradas en los últimos {0} días", MantenimientoActions.ClosedWindowDays)
                     else -> ""
                 },
                 cards = orders.take(KanbanLimit).map { order ->
                     UiBoardCard(
                         id = order.id.toString(),
-                        title = "${order.displayNumber} · ${order.title}",
+                        title = tr("{0} · {1}", order.displayNumber, order.title),
                         subtitle = listOfNotNull(order.propertyName, order.assetName).joinToString(" · "),
                         details = listOfNotNull(
-                            order.assigneeId?.let { "Responsable: ${context.names.label(it)}" },
-                            order.dueDate?.let { "Vence: $it" },
-                            order.checklistTotal.takeIf { it > 0 }?.let { "Lista: ${order.checklistDone}/$it" },
+                            order.assigneeId?.let { tr("Responsable: {0}", context.names.label(it)) },
+                            order.dueDate?.let { tr("Vence: {0}", it) },
+                            order.checklistTotal.takeIf { it > 0 }?.let { tr("Lista: {0}/{1}", order.checklistDone, it) },
                         ),
                         badges = orderBadges(order, context.today, withStatus = false),
                         action = openOrder(order),
@@ -364,7 +366,7 @@ object MantenimientoScreens {
                 },
             )
         }
-        return listOf(UiBoard(columns, move = move, emptyText = "Sin órdenes."))
+        return listOf(UiBoard(columns, move = move, emptyText = tr("Sin órdenes.")))
     }
 
     // ---- Orden ----
@@ -372,7 +374,7 @@ object MantenimientoScreens {
     private fun fileRefs(attachments: List<Attachment>): List<UiFileRef> = attachments.map { UiFileRef(it.id.toString(), it.name, it.path, it.size) }
 
     private fun filesField(readOnly: Boolean) = UiField(
-        "files", "Adjuntos", type = "files", readOnly = readOnly,
+        "files", tr("Adjuntos"), type = "files", readOnly = readOnly,
         files = UiFiles(upload = "$Route/files", download = "$Route/files"),
     )
 
@@ -382,16 +384,16 @@ object MantenimientoScreens {
         return OrderTransitions.targets(order.kind, order.status, TransitionRole.of(scope, order)).mapNotNull { to ->
             when {
                 OrderTransitions.requiresReason(to) -> null
-                OrderTransitions.isApproval(order.kind, order.status, to) -> StatusAction("Aprobar", to)
-                to == OrderStatus.Quoting -> StatusAction("Pasar a cotización", to, "secondary")
-                to == OrderStatus.Requested -> StatusAction("Volver a pendiente", to, "secondary")
-                to == OrderStatus.InProgress && order.status == OrderStatus.Done -> StatusAction("Reabrir", to, "secondary")
-                to == OrderStatus.InProgress && order.status == OrderStatus.OnHold -> StatusAction("Reanudar", to)
-                to == OrderStatus.InProgress -> StatusAction("Empezar", to)
-                to == OrderStatus.OnHold -> StatusAction("Poner en espera", to, "secondary")
-                to == OrderStatus.Open -> StatusAction("Volver a abierta", to, "secondary")
-                to == OrderStatus.Done -> StatusAction("Completar", to)
-                to == OrderStatus.Cancelled -> StatusAction("Cancelar orden", to, "danger", "¿Cancelar esta orden?")
+                OrderTransitions.isApproval(order.kind, order.status, to) -> StatusAction(tr("Aprobar"), to)
+                to == OrderStatus.Quoting -> StatusAction(tr("Pasar a cotización"), to, "secondary")
+                to == OrderStatus.Requested -> StatusAction(tr("Volver a pendiente"), to, "secondary")
+                to == OrderStatus.InProgress && order.status == OrderStatus.Done -> StatusAction(tr("Reabrir"), to, "secondary")
+                to == OrderStatus.InProgress && order.status == OrderStatus.OnHold -> StatusAction(tr("Reanudar"), to)
+                to == OrderStatus.InProgress -> StatusAction(tr("Empezar"), to)
+                to == OrderStatus.OnHold -> StatusAction(tr("Poner en espera"), to, "secondary")
+                to == OrderStatus.Open -> StatusAction(tr("Volver a abierta"), to, "secondary")
+                to == OrderStatus.Done -> StatusAction(tr("Completar"), to)
+                to == OrderStatus.Cancelled -> StatusAction(tr("Cancelar orden"), to, "danger", "¿Cancelar esta orden?")
                 else -> null
             }
         }
@@ -408,11 +410,11 @@ object MantenimientoScreens {
     fun purchaseButtons(scope: MantenimientoScope, detail: OrderDetail): List<UiButton> {
         if (!detail.purchaseAvailable) return emptyList()
         val order = detail.order
-        MantenimientoPurchases.openRequestAction(order)?.let { return listOf(UiButton("Ver solicitud de compra", it, style = "secondary")) }
+        MantenimientoPurchases.openRequestAction(order)?.let { return listOf(UiButton(tr("Ver solicitud de compra"), it, style = "secondary")) }
         if (scope.canWork(order) && order.status.isActive) {
             return listOf(
                 UiButton(
-                    "Solicitar compra",
+                    tr("Solicitar compra"),
                     orderRequest("purchase", order, confirm = "¿Crear en Compras una solicitud borrador con los datos de esta orden?"),
                     style = "secondary",
                 ),
@@ -432,24 +434,24 @@ object MantenimientoScreens {
     /** Campos del formulario de la orden: [canEdit] (gestionar) abre los datos; [canWork] abre costo real y resolución. */
     fun orderFields(context: Context, detail: OrderDetail, canEdit: Boolean, canWork: Boolean, withFiles: Boolean): List<UiField> = buildList {
         val order = detail.order
-        add(UiField("title", "Título", required = true, readOnly = !canEdit, section = "Datos"))
-        add(UiField("description", "Descripción", type = "textarea", readOnly = !canEdit, section = "Datos"))
-        add(UiField("kind", "Tipo", readOnly = true, section = "Datos"))
-        add(UiField("priority", "Prioridad", type = "dropdown", options = OrderPriority.entries.map { it.label }, readOnly = !canEdit, section = "Datos"))
-        add(UiField("property", "Propiedad", type = "dropdown", options = propertyOptions(context, order), readOnly = !canEdit, section = "Datos"))
-        add(UiField("asset", "Activo", type = "dropdown", options = listOf(MantenimientoActions.NoAsset) + detail.assets.labels, readOnly = !canEdit, help = detail.assets.truncatedHelp, section = "Datos"))
-        add(UiField("due", "Fecha límite", type = "date", readOnly = !canEdit, section = "Datos"))
-        add(UiField("assignee", "Responsable", type = "dropdown", options = assigneeOptions(context, order), readOnly = !canEdit, section = "Datos"))
-        add(UiField("department", "Departamento", readOnly = !canEdit, section = "Datos"))
+        add(UiField("title", tr("Título"), required = true, readOnly = !canEdit, section = tr("Datos")))
+        add(UiField("description", tr("Descripción"), type = "textarea", readOnly = !canEdit, section = tr("Datos")))
+        add(UiField("kind", tr("Tipo"), readOnly = true, section = tr("Datos")))
+        add(UiField("priority", tr("Prioridad"), type = "dropdown", options = OrderPriority.entries.map { it.label }, readOnly = !canEdit, section = tr("Datos")))
+        add(UiField("property", tr("Propiedad"), type = "dropdown", options = propertyOptions(context, order), readOnly = !canEdit, section = tr("Datos")))
+        add(UiField("asset", tr("Activo"), type = "dropdown", options = listOf(MantenimientoActions.NoAsset) + detail.assets.labels, readOnly = !canEdit, help = detail.assets.truncatedHelp, section = tr("Datos")))
+        add(UiField("due", tr("Fecha límite"), type = "date", readOnly = !canEdit, section = tr("Datos")))
+        add(UiField("assignee", tr("Responsable"), type = "dropdown", options = assigneeOptions(context, order), readOnly = !canEdit, section = tr("Datos")))
+        add(UiField("department", tr("Departamento"), readOnly = !canEdit, section = tr("Datos")))
         if (order.kind == OrderKind.Project) {
-            add(UiField("quote", "Cotización", type = "number", readOnly = !canEdit, section = "Cotización"))
-            add(UiField("quote_currency", "Moneda de la cotización", readOnly = !canEdit, help = "Tres letras, por ejemplo USD.", section = "Cotización"))
-            add(UiField("quoted_by", "Cotizado por", readOnly = !canEdit, section = "Cotización"))
+            add(UiField("quote", tr("Cotización"), type = "number", readOnly = !canEdit, section = tr("Cotización")))
+            add(UiField("quote_currency", tr("Moneda de la cotización"), readOnly = !canEdit, help = tr("Tres letras, por ejemplo USD."), section = tr("Cotización")))
+            add(UiField("quoted_by", tr("Cotizado por"), readOnly = !canEdit, section = tr("Cotización")))
         }
         if (showsWork(order)) {
-            add(UiField("cost", "Costo real", type = "number", readOnly = !canWork, section = "Cierre"))
-            add(UiField("cost_currency", "Moneda del costo", readOnly = !canWork, help = "Tres letras, por ejemplo USD.", section = "Cierre"))
-            add(UiField("resolution", "Resolución", type = "textarea", readOnly = !canWork, help = "Al completar la orden se guardan el costo y la resolución escritos aquí.", section = "Cierre"))
+            add(UiField("cost", tr("Costo real"), type = "number", readOnly = !canWork, section = tr("Cierre")))
+            add(UiField("cost_currency", tr("Moneda del costo"), readOnly = !canWork, help = tr("Tres letras, por ejemplo USD."), section = tr("Cierre")))
+            add(UiField("resolution", tr("Resolución"), type = "textarea", readOnly = !canWork, help = tr("Al completar la orden se guardan el costo y la resolución escritos aquí."), section = tr("Cierre")))
         }
         if (withFiles) add(filesField(readOnly = !canEdit))
     }
@@ -461,7 +463,7 @@ object MantenimientoScreens {
         val order = detail.order
         put("title", order.title)
         put("description", order.description)
-        put("kind", order.kind.label)
+        put("kind", tr(order.kind.label))
         put("priority", order.priority.label)
         put("property", order.propertyName ?: MantenimientoActions.NoProperty)
         put("asset", detail.assets.label(order.assetId) ?: MantenimientoActions.NoAsset)
@@ -493,22 +495,22 @@ object MantenimientoScreens {
             )
         }
         val actions = UiRow(
-            statusButtons + listOfNotNull(UiButton("Tomar orden", orderRequest("take", order)).takeIf { scope.canTake(order) }) +
+            statusButtons + listOfNotNull(UiButton(tr("Tomar orden"), orderRequest("take", order)).takeIf { scope.canTake(order) }) +
                 purchaseButtons(scope, detail) +
-                listOf(UiButton("Volver", UiNavigate(if (scope.seesAll) "orders" else "mine"), style = "secondary")),
+                listOf(UiButton(tr("Volver"), UiNavigate(if (scope.seesAll) "orders" else "mine"), style = "secondary")),
         )
         val header = UiRow(
             listOfNotNull(
-                UiStatus(order.status.label, statusTone(order.status)),
-                UiStatus(order.priority.label, priorityTone(order.priority)),
-                UiStatus("Vencida", UiTone.Danger).takeIf { order.isOverdue(context.today) },
+                UiStatus(tr(order.status.label), statusTone(order.status)),
+                UiStatus(tr(order.priority.label), priorityTone(order.priority)),
+                UiStatus(tr("Vencida"), UiTone.Danger).takeIf { order.isOverdue(context.today) },
                 hint(
                     listOfNotNull(
                         order.displayNumber,
-                        order.kind.label,
-                        order.requestedByName.takeIf { it.isNotBlank() }?.let { "Solicitada por $it" },
-                        order.dueDate?.let { "Vence $it" },
-                        order.purchaseFolio.takeIf { it.isNotBlank() }?.let { "Compra $it" },
+                        tr(order.kind.label),
+                        order.requestedByName.takeIf { it.isNotBlank() }?.let { tr("Solicitada por {0}", it) },
+                        order.dueDate?.let { tr("Vence {0}", it) },
+                        order.purchaseFolio.takeIf { it.isNotBlank() }?.let { tr("Compra {0}", it) },
                     ).joinToString(" · "),
                 ),
             ),
@@ -520,14 +522,14 @@ object MantenimientoScreens {
             id = "order",
             fields = orderFields(context, detail, canEdit, canWork, withFiles = filesInMain),
             values = orderValues(context, detail, filesInMain) + submitted.orEmpty(),
-            submit = UiButton("Guardar", orderRequest("save", order, formId = "order")).takeIf { hasForm },
+            submit = UiButton(tr("Guardar"), orderRequest("save", order, formId = "order")).takeIf { hasForm },
         )
         val body = buildList<UiNode> {
             add(header)
-            if (order.status == OrderStatus.Rejected && order.rejectedReason.isNotBlank()) add(hint("Motivo del rechazo: ${order.rejectedReason}", UiTone.Warning))
+            if (order.status == OrderStatus.Rejected && order.rejectedReason.isNotBlank()) add(hint(tr("Motivo del rechazo: {0}", order.rejectedReason), UiTone.Warning))
             add(actions)
             if (canReject(scope, order)) add(decisionCard(order))
-            add(UiCard(listOf(form), title = "Detalles"))
+            add(UiCard(listOf(form), title = tr("Detalles")))
             if (!filesInMain) add(attachmentsCard(order, detail.attachments, canAttach))
             add(checklistCard(order, detail.checklist, MantenimientoActions.canWorkChecklist(scope, order), canEdit))
             add(notesCard(context, order, detail.notes, MantenimientoActions.canNote(scope, order)))
@@ -535,48 +537,48 @@ object MantenimientoScreens {
                 add(
                     UiCard(
                         listOf(
-                            hint("Esta orden la generó el plan \"${plan.title}\" (${plan.frequency.label.lowercase()})."),
-                            UiButton("Ver plan", UiNavigate("plan", mapOf("id" to plan.id.toString())), style = "secondary"),
+                            hint(tr("Esta orden la generó el plan \"{0}\" ({1}).", plan.title, tr(plan.frequency.label).lowercase())),
+                            UiButton(tr("Ver plan"), UiNavigate("plan", mapOf("id" to plan.id.toString())), style = "secondary"),
                         ),
-                        title = "Plan de origen",
+                        title = tr("Plan de origen"),
                     ),
                 )
             }
         }
-        return screen(context, "${order.displayNumber} · ${order.title}", if (scope.seesAll) "orders" else "mine", notice, body)
+        return screen(context, tr("{0} · {1}", order.displayNumber, order.title), if (scope.seesAll) "orders" else "mine", notice, body)
     }
 
     private fun decisionCard(order: Order): UiNode = UiCard(
         listOf(
             UiForm(
                 id = "decision",
-                fields = listOf(UiField("reason", "Motivo del rechazo", type = "textarea", help = "Obligatorio solo al rechazar.")),
+                fields = listOf(UiField("reason", tr("Motivo del rechazo"), type = "textarea", help = tr("Obligatorio solo al rechazar."))),
             ),
             UiRow(
                 listOf(
                     UiButton(
-                        "Rechazar proyecto",
+                        tr("Rechazar proyecto"),
                         orderRequest("status", order, mapOf("status" to OrderStatus.Rejected.id), confirm = "¿Rechazar esta solicitud?", formId = "decision"),
                         style = "danger",
                     ),
                 ),
             ),
         ),
-        title = "Decisión",
+        title = tr("Decisión"),
     )
 
     private fun attachmentsCard(order: Order, attachments: List<Attachment>, canAttach: Boolean): UiNode {
-        if (!canAttach && attachments.isEmpty()) return UiCard(listOf(hint("Sin adjuntos.")), title = "Adjuntos")
+        if (!canAttach && attachments.isEmpty()) return UiCard(listOf(hint(tr("Sin adjuntos."))), title = tr("Adjuntos"))
         return UiCard(
             listOf(
                 UiForm(
                     id = "attachments",
                     fields = listOf(filesField(readOnly = !canAttach)),
                     values = mapOf("files" to UiFieldValues.files(fileRefs(attachments))),
-                    submit = UiButton("Guardar adjuntos", orderRequest("files", order, formId = "attachments"), style = "secondary").takeIf { canAttach },
+                    submit = UiButton(tr("Guardar adjuntos"), orderRequest("files", order, formId = "attachments"), style = "secondary").takeIf { canAttach },
                 ),
             ),
-            title = "Adjuntos",
+            title = tr("Adjuntos"),
         )
     }
 
@@ -590,25 +592,25 @@ object MantenimientoScreens {
                         style = "secondary",
                         enabled = canWork,
                     ),
-                    UiButton("Quitar", orderRequest("check-remove", order, mapOf("item" to item.id.toString())), style = "danger").takeIf { canEdit },
+                    UiButton(tr("Quitar"), orderRequest("check-remove", order, mapOf("item" to item.id.toString())), style = "danger").takeIf { canEdit },
                 ),
                 spacing = 8,
             )
         }
         val children = buildList<UiNode> {
-            if (rows.isEmpty()) add(hint("Sin elementos."))
+            if (rows.isEmpty()) add(hint(tr("Sin elementos.")))
             addAll(rows)
             if (canWork) {
                 add(
                     UiForm(
                         id = "check",
-                        fields = listOf(UiField("text", "Nuevo elemento", required = true)),
-                        submit = UiButton("Añadir", orderRequest("check-add", order, formId = "check"), style = "secondary"),
+                        fields = listOf(UiField("text", tr("Nuevo elemento"), required = true)),
+                        submit = UiButton(tr("Añadir"), orderRequest("check-add", order, formId = "check"), style = "secondary"),
                     ),
                 )
             }
         }
-        val title = if (order.checklistTotal > 0) "Lista de comprobación (${order.checklistDone}/${order.checklistTotal})" else "Lista de comprobación"
+        val title = if (order.checklistTotal > 0) tr("Lista de comprobación ({0}/{1})", order.checklistDone, order.checklistTotal) else tr("Lista de comprobación")
         return UiCard(children, title = title)
     }
 
@@ -618,23 +620,23 @@ object MantenimientoScreens {
                 UiTimeline(
                     notes.map { note ->
                         val caption = listOf(note.authorName, stamp(note.createdAt, context.zone)).filter { it.isNotBlank() }.joinToString(" - ")
-                        if (note.kind == "note") UiTimelineEntry(note.authorName.ifBlank { "Nota" }, note.body, stamp(note.createdAt, context.zone))
+                        if (note.kind == "note") UiTimelineEntry(note.authorName.ifBlank { tr("Nota") }, note.body, stamp(note.createdAt, context.zone))
                         else UiTimelineEntry(note.body, caption = caption)
                     },
-                    emptyText = "Aún no hay notas.",
+                    emptyText = tr("Aún no hay notas."),
                 ),
             )
             if (canNote) {
                 add(
                     UiForm(
                         id = "note",
-                        fields = listOf(UiField("body", "Nota", type = "textarea", required = true)),
-                        submit = UiButton("Anotar", orderRequest("note", order, formId = "note"), style = "secondary"),
+                        fields = listOf(UiField("body", tr("Nota"), type = "textarea", required = true)),
+                        submit = UiButton(tr("Anotar"), orderRequest("note", order, formId = "note"), style = "secondary"),
                     ),
                 )
             }
         }
-        return UiCard(children, title = "Notas e historial (${notes.size})")
+        return UiCard(children, title = tr("Notas e historial ({0})", notes.size))
     }
 
     // ---- Nueva orden (avería o proyecto) ----
@@ -643,19 +645,19 @@ object MantenimientoScreens {
     fun creatableKind(text: String?): OrderKind = OrderKind.fromId(text)?.takeIf { it != OrderKind.Preventive } ?: OrderKind.Corrective
 
     fun newOrderFields(context: Context, kind: OrderKind, assets: AssetOptions): List<UiField> = buildList {
-        add(UiField("title", "Título", required = true))
-        add(UiField("description", "Descripción", type = "textarea"))
-        if (kind == OrderKind.Project) add(UiField("department", "Departamento"))
-        add(UiField("property", "Propiedad", type = "dropdown", options = propertyOptions(context, null)))
-        add(UiField("asset", "Activo", type = "dropdown", options = listOf(MantenimientoActions.NoAsset) + assets.labels, help = assets.truncatedHelp))
-        add(UiField("priority", "Prioridad", type = "dropdown", options = OrderPriority.entries.map { it.label }))
+        add(UiField("title", tr("Título"), required = true))
+        add(UiField("description", tr("Descripción"), type = "textarea"))
+        if (kind == OrderKind.Project) add(UiField("department", tr("Departamento")))
+        add(UiField("property", tr("Propiedad"), type = "dropdown", options = propertyOptions(context, null)))
+        add(UiField("asset", tr("Activo"), type = "dropdown", options = listOf(MantenimientoActions.NoAsset) + assets.labels, help = assets.truncatedHelp))
+        add(UiField("priority", tr("Prioridad"), type = "dropdown", options = OrderPriority.entries.map { it.label }))
         if (kind == OrderKind.Corrective && context.scope.canManage) {
-            add(UiField("assignee", "Responsable", type = "dropdown", options = assigneeOptions(context, null)))
-            add(UiField("due", "Fecha límite", type = "date"))
+            add(UiField("assignee", tr("Responsable"), type = "dropdown", options = assigneeOptions(context, null)))
+            add(UiField("due", tr("Fecha límite"), type = "date"))
         }
         if (kind == OrderKind.Project) {
-            add(UiField("quote", "Cotización (opcional)", type = "number"))
-            add(UiField("quote_currency", "Moneda de la cotización", help = "Tres letras, por ejemplo USD."))
+            add(UiField("quote", tr("Cotización (opcional)"), type = "number"))
+            add(UiField("quote_currency", tr("Moneda de la cotización"), help = tr("Tres letras, por ejemplo USD.")))
         }
         add(filesField(readOnly = false))
     }
@@ -668,26 +670,26 @@ object MantenimientoScreens {
             "assignee" to MantenimientoActions.NoAssignee,
             "quote_currency" to "USD",
         )
-        val title = if (kind == OrderKind.Project) "Solicitar proyecto" else "Reportar avería"
+        val title = if (kind == OrderKind.Project) tr("Solicitar proyecto") else tr("Reportar avería")
         val form = UiForm(
             id = "order",
             fields = newOrderFields(context, kind, assets),
             values = base + submitted.orEmpty(),
             submit = UiButton(
-                if (kind == OrderKind.Project) "Enviar solicitud" else "Reportar",
+                if (kind == OrderKind.Project) tr("Enviar solicitud") else tr("Reportar"),
                 UiRequest("$Route/new-order", params = mapOf("op" to "create", "kind" to kind.id), formId = "order"),
             ),
         )
         val body = listOf(
             UiRow(
                 listOf(
-                    UiButton("Reportar avería", UiNavigate("new-order", mapOf("kind" to OrderKind.Corrective.id)), style = if (kind == OrderKind.Corrective) "primary" else "secondary"),
-                    UiButton("Solicitar proyecto", UiNavigate("new-order", mapOf("kind" to OrderKind.Project.id)), style = if (kind == OrderKind.Project) "primary" else "secondary"),
+                    UiButton(tr("Reportar avería"), UiNavigate("new-order", mapOf("kind" to OrderKind.Corrective.id)), style = if (kind == OrderKind.Corrective) "primary" else "secondary"),
+                    UiButton(tr("Solicitar proyecto"), UiNavigate("new-order", mapOf("kind" to OrderKind.Project.id)), style = if (kind == OrderKind.Project) "primary" else "secondary"),
                 ),
             ),
-            if (kind == OrderKind.Project) hint("Un proyecto espera la aprobación de quien gestiona mantenimiento.") else hint("Cuenta qué falla y dónde: avisamos a quien gestiona mantenimiento."),
+            if (kind == OrderKind.Project) hint(tr("Un proyecto espera la aprobación de quien gestiona mantenimiento.")) else hint(tr("Cuenta qué falla y dónde: avisamos a quien gestiona mantenimiento.")),
             UiCard(listOf(form), title = title),
-            UiRow(listOf(UiButton("Cancelar", UiNavigate("mine"), style = "secondary"))),
+            UiRow(listOf(UiButton(tr("Cancelar"), UiNavigate("mine"), style = "secondary"))),
         )
         return screen(context, title, "upcoming", notice, body)
     }
@@ -700,11 +702,11 @@ object MantenimientoScreens {
                 UiForm(
                     "filters",
                     listOf(
-                        UiField("q", "Buscar", placeholder = "Nombre, categoría o ubicación"),
-                        UiField("property", "Propiedad", type = "dropdown", options = listOf(MantenimientoActions.AllOption) + context.properties.map { it.name }),
+                        UiField("q", tr("Buscar"), placeholder = tr("Nombre, categoría o ubicación")),
+                        UiField("property", tr("Propiedad"), type = "dropdown", options = listOf(MantenimientoActions.AllOption) + context.properties.map { it.name }),
                     ),
                     mapOf("q" to query, "property" to (property?.name ?: MantenimientoActions.AllOption)),
-                    submit = UiButton("Filtrar", UiNavigate("assets", formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate("assets", formId = "filters"), style = "secondary"),
                     minFieldWidth = 220,
                 ),
             ),
@@ -714,17 +716,17 @@ object MantenimientoScreens {
                 title = asset.name,
                 subtitle = listOf(asset.category, asset.location).filter { it.isNotBlank() }.joinToString(" · "),
                 trailing = asset.propertyName.orEmpty(),
-                badges = listOfNotNull(UiBadge("Archivado", UiTone.Neutral).takeIf { asset.archived }),
+                badges = listOfNotNull(UiBadge(tr("Archivado"), UiTone.Neutral).takeIf { asset.archived }),
                 action = UiNavigate("asset", mapOf("id" to asset.id.toString())),
             )
         }
         val body = buildList<UiNode> {
-            if (context.scope.canManage) add(UiRow(listOf(UiButton("Nuevo activo", UiNavigate("asset")))))
+            if (context.scope.canManage) add(UiRow(listOf(UiButton(tr("Nuevo activo"), UiNavigate("asset")))))
             add(filter)
-            if (assets.size > ListLimit) add(hint("Se muestran los primeros $ListLimit activos: usa los filtros para acotar.", UiTone.Warning))
-            add(UiCard(listOf(UiList(items, emptyText = "No hay activos con estos filtros.")), title = "Activos"))
+            if (assets.size > ListLimit) add(hint(tr("Se muestran los primeros {0} activos: usa los filtros para acotar.", ListLimit), UiTone.Warning))
+            add(UiCard(listOf(UiList(items, emptyText = tr("No hay activos con estos filtros."))), title = tr("Activos")))
         }
-        return screen(context, "Activos", "assets", notice, body)
+        return screen(context, tr("Activos"), "assets", notice, body)
     }
 
     /** [asset] es null para un activo nuevo. */
@@ -751,36 +753,36 @@ object MantenimientoScreens {
         val form = UiForm(
             id = "asset",
             fields = listOf(
-                UiField("name", "Nombre", required = true, readOnly = !canManage),
-                UiField("property", "Propiedad", type = "dropdown", options = propertyOptions, readOnly = !canManage),
-                UiField("category", "Categoría", readOnly = !canManage),
-                UiField("location", "Ubicación", readOnly = !canManage),
-                UiField("notes", "Notas", type = "textarea", readOnly = !canManage),
+                UiField("name", tr("Nombre"), required = true, readOnly = !canManage),
+                UiField("property", tr("Propiedad"), type = "dropdown", options = propertyOptions, readOnly = !canManage),
+                UiField("category", tr("Categoría"), readOnly = !canManage),
+                UiField("location", tr("Ubicación"), readOnly = !canManage),
+                UiField("notes", tr("Notas"), type = "textarea", readOnly = !canManage),
             ),
             values = values,
-            submit = UiButton(if (asset == null) "Crear activo" else "Guardar", request("save", formId = "asset")).takeIf { canManage },
+            submit = UiButton(if (asset == null) tr("Crear activo") else tr("Guardar"), request("save", formId = "asset")).takeIf { canManage },
         )
         val body = buildList<UiNode> {
-            if (asset?.archived == true) add(hint("Activo archivado.", UiTone.Warning))
-            add(UiCard(listOf(form), title = "Activo"))
+            if (asset?.archived == true) add(hint(tr("Activo archivado."), UiTone.Warning))
+            add(UiCard(listOf(form), title = tr("Activo")))
             if (asset != null) {
                 if (canManage) {
                     add(
                         UiRow(
                             listOf(
-                                if (asset.archived) UiButton("Restaurar activo", request("restore"), style = "secondary")
-                                else UiButton("Archivar activo", request("archive", confirm = "¿Archivar este activo? Deja de ofrecerse en los formularios."), style = "danger"),
+                                if (asset.archived) UiButton(tr("Restaurar activo"), request("restore"), style = "secondary")
+                                else UiButton(tr("Archivar activo"), request("archive", confirm = "¿Archivar este activo? Deja de ofrecerse en los formularios."), style = "danger"),
                             ),
                         ),
                     )
                 }
-                if (history.size > HistoryLimit) add(hint("Se muestran las últimas $HistoryLimit órdenes del activo.", UiTone.Warning))
-                add(UiCard(listOf(UiList(history.take(HistoryLimit).map { orderItem(context, it) }, emptyText = "Este activo no tiene órdenes.")), title = "Historial"))
-                add(UiCard(listOf(UiList(plans.map { planItem(it) }, emptyText = "Este activo no tiene planes.")), title = "Planes"))
+                if (history.size > HistoryLimit) add(hint(tr("Se muestran las últimas {0} órdenes del activo.", HistoryLimit), UiTone.Warning))
+                add(UiCard(listOf(UiList(history.take(HistoryLimit).map { orderItem(context, it) }, emptyText = tr("Este activo no tiene órdenes."))), title = tr("Historial")))
+                add(UiCard(listOf(UiList(plans.map { planItem(it) }, emptyText = tr("Este activo no tiene planes."))), title = tr("Planes")))
             }
-            add(UiRow(listOf(UiButton("Volver a activos", UiNavigate("assets"), style = "secondary"))))
+            add(UiRow(listOf(UiButton(tr("Volver a activos"), UiNavigate("assets"), style = "secondary"))))
         }
-        return screen(context, asset?.name ?: "Nuevo activo", "assets", notice, body)
+        return screen(context, asset?.name ?: tr("Nuevo activo"), "assets", notice, body)
     }
 
     // ---- Planes ----
@@ -789,11 +791,11 @@ object MantenimientoScreens {
         val active = plans.filter { it.active }
         val inactive = plans.filterNot { it.active }
         val body = buildList<UiNode> {
-            if (context.scope.canManage) add(UiRow(listOf(UiButton("Nuevo plan", UiNavigate("plan")))))
-            add(UiCard(listOf(UiList(active.map { planItem(it) }, emptyText = "Aún no hay planes preventivos.")), title = "Planes activos (${active.size})"))
-            if (inactive.isNotEmpty()) add(UiCard(listOf(UiList(inactive.map { planItem(it) })), title = "Planes inactivos (${inactive.size})", collapsible = true, expanded = false))
+            if (context.scope.canManage) add(UiRow(listOf(UiButton(tr("Nuevo plan"), UiNavigate("plan")))))
+            add(UiCard(listOf(UiList(active.map { planItem(it) }, emptyText = tr("Aún no hay planes preventivos."))), title = tr("Planes activos ({0})", active.size)))
+            if (inactive.isNotEmpty()) add(UiCard(listOf(UiList(inactive.map { planItem(it) })), title = tr("Planes inactivos ({0})", inactive.size), collapsible = true, expanded = false))
         }
-        return screen(context, "Planes", "plans", notice, body)
+        return screen(context, tr("Planes"), "plans", notice, body)
     }
 
     /** [plan] es null para un plan nuevo. [checklist] son los elementos actuales y [generated] las últimas órdenes que generó. */
@@ -829,53 +831,53 @@ object MantenimientoScreens {
         val form = UiForm(
             id = "plan",
             fields = listOf(
-                UiField("title", "Título", required = true, readOnly = !canManage),
-                UiField("description", "Descripción", type = "textarea", readOnly = !canManage),
-                UiField("property", "Propiedad", type = "dropdown", options = propertyOptions, readOnly = !canManage),
-                UiField("asset", "Activo", type = "dropdown", options = listOf(MantenimientoActions.NoAsset) + assets.labels, readOnly = !canManage, help = assets.truncatedHelp),
-                UiField("frequency", "Frecuencia", type = "dropdown", options = PlanFrequency.entries.map { it.label }, readOnly = !canManage),
+                UiField("title", tr("Título"), required = true, readOnly = !canManage),
+                UiField("description", tr("Descripción"), type = "textarea", readOnly = !canManage),
+                UiField("property", tr("Propiedad"), type = "dropdown", options = propertyOptions, readOnly = !canManage),
+                UiField("asset", tr("Activo"), type = "dropdown", options = listOf(MantenimientoActions.NoAsset) + assets.labels, readOnly = !canManage, help = assets.truncatedHelp),
+                UiField("frequency", tr("Frecuencia"), type = "dropdown", options = PlanFrequency.entries.map { it.label }, readOnly = !canManage),
                 UiField(
-                    "interval", "Cada cuántos días", type = "number", readOnly = !canManage,
+                    "interval", tr("Cada cuántos días"), type = "number", readOnly = !canManage,
                     visibleWhen = UiFieldCondition("frequency", listOf(PlanFrequency.EveryNDays.label)),
                 ),
                 UiField(
-                    "schedule_mode", "Calendario", type = "dropdown", options = ScheduleMode.entries.map { it.label }, readOnly = !canManage,
-                    help = "Calendario fijo: la fecha avanza sola. Desde el último cierre: la próxima fecha sale de completar la orden.",
+                    "schedule_mode", tr("Calendario"), type = "dropdown", options = ScheduleMode.entries.map { it.label }, readOnly = !canManage,
+                    help = tr("Calendario fijo: la fecha avanza sola. Desde el último cierre: la próxima fecha sale de completar la orden."),
                 ),
-                UiField("next_due", "Próxima fecha", type = "date", readOnly = !canManage),
-                UiField("lead_days", "Días de anticipación", type = "number", readOnly = !canManage, help = "La orden se crea tantos días antes de la fecha."),
-                UiField("assignee", "Responsable por defecto", type = "dropdown", options = assigneeOptions, readOnly = !canManage),
-                UiField("priority", "Prioridad", type = "dropdown", options = OrderPriority.entries.map { it.label }, readOnly = !canManage),
+                UiField("next_due", tr("Próxima fecha"), type = "date", readOnly = !canManage),
+                UiField("lead_days", tr("Días de anticipación"), type = "number", readOnly = !canManage, help = tr("La orden se crea tantos días antes de la fecha.")),
+                UiField("assignee", tr("Responsable por defecto"), type = "dropdown", options = assigneeOptions, readOnly = !canManage),
+                UiField("priority", tr("Prioridad"), type = "dropdown", options = OrderPriority.entries.map { it.label }, readOnly = !canManage),
             ),
             values = values,
-            submit = UiButton(if (plan == null) "Crear plan" else "Guardar", request("save", formId = "plan")).takeIf { canManage },
+            submit = UiButton(if (plan == null) tr("Crear plan") else tr("Guardar"), request("save", formId = "plan")).takeIf { canManage },
         )
         val body = buildList<UiNode> {
-            if (plan != null && !plan.active) add(hint("Plan inactivo: no genera órdenes.", UiTone.Warning))
+            if (plan != null && !plan.active) add(hint(tr("Plan inactivo: no genera órdenes."), UiTone.Warning))
             if (plan != null && plan.nextDue == null && plan.scheduleMode == ScheduleMode.Floating) {
-                add(hint("Espera a que se complete su orden abierta para calcular la próxima fecha."))
+                add(hint(tr("Espera a que se complete su orden abierta para calcular la próxima fecha.")))
             }
-            add(UiCard(listOf(form), title = "Plan"))
+            add(UiCard(listOf(form), title = tr("Plan")))
             if (plan != null && canManage) {
                 add(
                     UiRow(
                         listOf(
-                            if (plan.active) UiButton("Desactivar plan", request("active", mapOf("active" to "false"), confirm = "¿Desactivar este plan? Deja de generar órdenes."), style = "danger")
-                            else UiButton("Activar plan", request("active", mapOf("active" to "true")), style = "secondary"),
+                            if (plan.active) UiButton(tr("Desactivar plan"), request("active", mapOf("active" to "false"), confirm = "¿Desactivar este plan? Deja de generar órdenes."), style = "danger")
+                            else UiButton(tr("Activar plan"), request("active", mapOf("active" to "true")), style = "secondary"),
                         ),
                     ),
                 )
             }
             if (plan != null) {
                 add(planChecklistCard(checklist, canManage, ::request))
-                if (generated.size > HistoryLimit) add(hint("Se muestran las últimas $HistoryLimit órdenes del plan.", UiTone.Warning))
-                add(UiCard(listOf(UiList(generated.take(HistoryLimit).map { orderItem(context, it) }, emptyText = "Este plan aún no generó órdenes.")), title = "Órdenes generadas"))
+                if (generated.size > HistoryLimit) add(hint(tr("Se muestran las últimas {0} órdenes del plan.", HistoryLimit), UiTone.Warning))
+                add(UiCard(listOf(UiList(generated.take(HistoryLimit).map { orderItem(context, it) }, emptyText = tr("Este plan aún no generó órdenes."))), title = tr("Órdenes generadas")))
             } else {
-                add(hint("Guarda el plan para añadir su lista de comprobación."))
+                add(hint(tr("Guarda el plan para añadir su lista de comprobación.")))
             }
-            add(UiRow(listOf(UiButton("Volver a planes", UiNavigate("plans"), style = "secondary"))))
+            add(UiRow(listOf(UiButton(tr("Volver a planes"), UiNavigate("plans"), style = "secondary"))))
         }
-        return screen(context, plan?.title ?: "Nuevo plan", "plans", notice, body)
+        return screen(context, plan?.title ?: tr("Nuevo plan"), "plans", notice, body)
     }
 
     private fun planChecklistCard(
@@ -884,7 +886,7 @@ object MantenimientoScreens {
         request: (String, Map<String, String>, String?, String?) -> UiRequest,
     ): UiNode {
         val children = buildList<UiNode> {
-            if (items.isEmpty()) add(hint("Sin elementos: la orden se crea sin lista de comprobación."))
+            if (items.isEmpty()) add(hint(tr("Sin elementos: la orden se crea sin lista de comprobación.")))
             items.forEachIndexed { index, item ->
                 if (index > 0) add(UiDivider())
                 val params = mapOf("item" to item.id.toString())
@@ -892,9 +894,9 @@ object MantenimientoScreens {
                     UiRow(
                         listOfNotNull(
                             UiText(item.text),
-                            UiButton("Subir", request("plan-check-up", params, null, null), style = "secondary").takeIf { canManage && index > 0 },
-                            UiButton("Bajar", request("plan-check-down", params, null, null), style = "secondary").takeIf { canManage && index < items.lastIndex },
-                            UiButton("Quitar", request("plan-check-remove", params, null, null), style = "danger").takeIf { canManage },
+                            UiButton(tr("Subir"), request("plan-check-up", params, null, null), style = "secondary").takeIf { canManage && index > 0 },
+                            UiButton(tr("Bajar"), request("plan-check-down", params, null, null), style = "secondary").takeIf { canManage && index < items.lastIndex },
+                            UiButton(tr("Quitar"), request("plan-check-remove", params, null, null), style = "danger").takeIf { canManage },
                         ),
                         spacing = 8,
                     ),
@@ -902,16 +904,16 @@ object MantenimientoScreens {
             }
             if (canManage) {
                 add(UiDivider())
-                add(sectionTitle("Nuevo elemento"))
+                add(sectionTitle(tr("Nuevo elemento")))
                 add(
                     UiForm(
                         id = "plan-check",
-                        fields = listOf(UiField("text", "Texto", required = true)),
-                        submit = UiButton("Añadir", request("plan-check-add", emptyMap(), null, "plan-check"), style = "secondary"),
+                        fields = listOf(UiField("text", tr("Texto"), required = true)),
+                        submit = UiButton(tr("Añadir"), request("plan-check-add", emptyMap(), null, "plan-check"), style = "secondary"),
                     ),
                 )
             }
         }
-        return UiCard(children, title = "Lista de comprobación del plan")
+        return UiCard(children, title = tr("Lista de comprobación del plan"))
     }
 }

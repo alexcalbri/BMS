@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
@@ -226,10 +228,10 @@ object TareasRepository {
         tenant.update("UPDATE tareas_boards SET archived = ?, updated_at = now() WHERE id = ?", listOf(archived, id)) > 0
 
     private fun validateBoard(name: String, description: String, members: Collection<UUID>) {
-        if (name.isBlank()) throw TareasValidationException("El nombre del tablero es obligatorio.")
-        if (name.trim().length > 120) throw TareasValidationException("El nombre del tablero admite hasta 120 caracteres.")
-        if (description.length > 2000) throw TareasValidationException("La descripción del tablero admite hasta 2000 caracteres.")
-        if (members.distinct().size > MaxBoardMembers) throw TareasValidationException("Un tablero admite hasta $MaxBoardMembers miembros.")
+        if (name.isBlank()) throw TareasValidationException(tr("El nombre del tablero es obligatorio."))
+        if (name.trim().length > 120) throw TareasValidationException(tr("El nombre del tablero admite hasta 120 caracteres."))
+        if (description.length > 2000) throw TareasValidationException(tr("La descripción del tablero admite hasta 2000 caracteres."))
+        if (members.distinct().size > MaxBoardMembers) throw TareasValidationException(tr("Un tablero admite hasta {0} miembros.", MaxBoardMembers))
     }
 
     private fun replaceMembers(tenant: Connection, boardId: UUID, members: Collection<UUID>) {
@@ -268,15 +270,15 @@ object TareasRepository {
 
     private fun lockBoard(tenant: Connection, boardId: UUID) {
         tenant.query("SELECT 1 AS found FROM tareas_boards WHERE id = ? FOR UPDATE", listOf(boardId)) { it.getInt("found") }.firstOrNull()
-            ?: throw TareasValidationException("El tablero ya no existe.")
+            ?: throw TareasValidationException(tr("El tablero ya no existe."))
     }
 
-    private const val DuplicateGroup = "Ya existe un grupo con ese nombre."
+    private val DuplicateGroup = msg("Ya existe un grupo con ese nombre.")
 
     // Null when an active group of the board already has that name.
     private fun insertGroup(tenant: Connection, boardId: UUID, clean: String): UUID? {
         val count = tenant.query("SELECT count(*) AS total FROM tareas_groups WHERE board_id = ? AND archived = FALSE", listOf(boardId)) { it.getInt("total") }.firstOrNull() ?: 0
-        if (count >= MaxGroupsPerBoard) throw TareasValidationException("Un tablero admite hasta $MaxGroupsPerBoard grupos.")
+        if (count >= MaxGroupsPerBoard) throw TareasValidationException(tr("Un tablero admite hasta {0} grupos.", MaxGroupsPerBoard))
         val id = UUID.randomUUID()
         val inserted = tenant.update(
             "INSERT INTO tareas_groups (id, board_id, name, position) VALUES (?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM tareas_groups WHERE board_id = ?)) ON CONFLICT DO NOTHING",
@@ -289,7 +291,7 @@ object TareasRepository {
         val clean = cleanGroupName(name)
         return transaction(tenant) {
             lockBoard(tenant, boardId)
-            insertGroup(tenant, boardId, clean) ?: throw TareasValidationException(DuplicateGroup)
+            insertGroup(tenant, boardId, clean) ?: throw TareasValidationException(tr(DuplicateGroup))
         }
     }
 
@@ -302,7 +304,7 @@ object TareasRepository {
                 "SELECT 1 AS found FROM tareas_groups WHERE board_id = ? AND archived = FALSE AND lower(name) = lower(?) AND id <> ?",
                 listOf(group.boardId, clean, id),
             ) { it.getInt("found") }.isNotEmpty()
-            if (taken) throw TareasValidationException(DuplicateGroup)
+            if (taken) throw TareasValidationException(tr(DuplicateGroup))
             tenant.update("UPDATE tareas_groups SET name = ? WHERE id = ?", listOf(clean, id)) > 0
         }
     }
@@ -338,14 +340,14 @@ object TareasRepository {
         ) { it.uuid("id") }.firstOrNull()
         return transaction(tenant) {
             lockBoard(tenant, boardId)
-            existing() ?: insertGroup(tenant, boardId, clean) ?: existing() ?: throw TareasValidationException(DuplicateGroup)
+            existing() ?: insertGroup(tenant, boardId, clean) ?: existing() ?: throw TareasValidationException(tr(DuplicateGroup))
         }
     }
 
     private fun cleanGroupName(name: String): String {
         val clean = name.trim()
-        if (clean.isEmpty()) throw TareasValidationException("El nombre del grupo es obligatorio.")
-        if (clean.length > 80) throw TareasValidationException("El nombre del grupo admite hasta 80 caracteres.")
+        if (clean.isEmpty()) throw TareasValidationException(tr("El nombre del grupo es obligatorio."))
+        if (clean.length > 80) throw TareasValidationException(tr("El nombre del grupo admite hasta 80 caracteres."))
         return clean
     }
 
@@ -525,7 +527,7 @@ object TareasRepository {
             )
             if (inserted == 0) {
                 val existing = externalRef?.let { findByExternalRef(tenant, input.boardId, source, it) }
-                    ?: throw TareasValidationException("No se pudo crear la tarea.")
+                    ?: throw TareasValidationException(tr("No se pudo crear la tarea."))
                 return@transaction CreateResult(existing.id, false)
             }
             insertAssignees(tenant, id, input.assignees.distinct())
@@ -551,15 +553,15 @@ object TareasRepository {
     private fun checkInput(tenant: Connection, input: TaskInput, existing: Task?) {
         input.validate().firstOrNull()?.let { throw TareasValidationException(it) }
         val board = tenant.query("SELECT archived FROM tareas_boards WHERE id = ?", listOf(input.boardId)) { it.getBoolean("archived") }.firstOrNull()
-            ?: throw TareasValidationException("El tablero ya no existe.")
-        if (board) throw TareasValidationException("El tablero está archivado.")
+            ?: throw TareasValidationException(tr("El tablero ya no existe."))
+        if (board) throw TareasValidationException(tr("El tablero está archivado."))
         if (input.groupId != null) {
             val archived = tenant.query("SELECT archived FROM tareas_groups WHERE id = ? AND board_id = ?", listOf(input.groupId, input.boardId)) { it.getBoolean("archived") }.firstOrNull()
-                ?: throw TareasValidationException("El grupo no pertenece al tablero.")
-            if (archived && input.groupId != existing?.groupId) throw TareasValidationException("El grupo está archivado.")
+                ?: throw TareasValidationException(tr("El grupo no pertenece al tablero."))
+            if (archived && input.groupId != existing?.groupId) throw TareasValidationException(tr("El grupo está archivado."))
         }
         if (input.customerId != null && input.customerId != existing?.customerId && !customerExists(tenant, input.customerId)) {
-            throw TareasValidationException("El cliente ya no existe o está archivado.")
+            throw TareasValidationException(tr("El cliente ya no existe o está archivado."))
         }
     }
 
@@ -589,7 +591,7 @@ object TareasRepository {
     /** Replaces the responsibles and returns the ones that were added. */
     fun setAssignees(tenant: Connection, taskId: UUID, assignees: Collection<UUID>): List<UUID> {
         val wanted = assignees.distinct()
-        if (wanted.size > TaskInput.MaxAssignees) throw TareasValidationException("Una tarea admite hasta ${TaskInput.MaxAssignees} responsables.")
+        if (wanted.size > TaskInput.MaxAssignees) throw TareasValidationException(tr("Una tarea admite hasta {0} responsables.", TaskInput.MaxAssignees))
         return transaction(tenant) {
             val current = tenant.query("SELECT user_id FROM tareas_task_assignees WHERE task_id = ?", listOf(taskId)) { it.uuid("user_id") ?: NilId }.toSet()
             tenant.update("DELETE FROM tareas_task_assignees WHERE task_id = ? AND NOT (user_id = ANY(?))", listOf(taskId, tenant.uuidArray(wanted)))
@@ -620,7 +622,7 @@ object TareasRepository {
     // Serializes the writers that count before inserting (limits per task).
     private fun lockTask(tenant: Connection, taskId: UUID) {
         tenant.query("SELECT 1 AS found FROM tareas_tasks WHERE id = ? FOR UPDATE", listOf(taskId)) { it.getInt("found") }.firstOrNull()
-            ?: throw TareasValidationException("Tarea no encontrada.")
+            ?: throw TareasValidationException(tr("Tarea no encontrada."))
     }
 
     fun listChecklist(tenant: Connection, taskId: UUID): List<ChecklistItem> = tenant.query(
@@ -639,12 +641,12 @@ object TareasRepository {
 
     fun addChecklistItem(tenant: Connection, taskId: UUID, text: String): UUID {
         val clean = text.trim()
-        if (clean.isEmpty()) throw TareasValidationException("El elemento de la lista está vacío.")
-        if (clean.length > 300) throw TareasValidationException("Cada elemento de la lista admite hasta 300 caracteres.")
+        if (clean.isEmpty()) throw TareasValidationException(tr("El elemento de la lista está vacío."))
+        if (clean.length > 300) throw TareasValidationException(tr("Cada elemento de la lista admite hasta 300 caracteres."))
         return transaction(tenant) {
             lockTask(tenant, taskId)
             val count = tenant.query("SELECT count(*) AS total FROM tareas_checklist WHERE task_id = ?", listOf(taskId)) { it.getInt("total") }.firstOrNull() ?: 0
-            if (count >= MaxChecklistItems) throw TareasValidationException("Una tarea admite hasta $MaxChecklistItems elementos en la lista.")
+            if (count >= MaxChecklistItems) throw TareasValidationException(tr("Una tarea admite hasta {0} elementos en la lista.", MaxChecklistItems))
             val id = UUID.randomUUID()
             tenant.update(
                 "INSERT INTO tareas_checklist (id, task_id, text, position) VALUES (?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM tareas_checklist WHERE task_id = ?))",
@@ -665,12 +667,12 @@ object TareasRepository {
 
     fun addComment(tenant: Connection, taskId: UUID, authorId: UUID?, authorName: String, body: String): UUID {
         val clean = body.trim()
-        if (clean.isEmpty()) throw TareasValidationException("El comentario está vacío.")
-        if (clean.length > MaxCommentLength) throw TareasValidationException("El comentario admite hasta $MaxCommentLength caracteres.")
+        if (clean.isEmpty()) throw TareasValidationException(tr("El comentario está vacío."))
+        if (clean.length > MaxCommentLength) throw TareasValidationException(tr("El comentario admite hasta {0} caracteres.", MaxCommentLength))
         return transaction(tenant) {
             lockTask(tenant, taskId)
             val count = tenant.query("SELECT count(*) AS total FROM tareas_comments WHERE task_id = ?", listOf(taskId)) { it.getInt("total") }.firstOrNull() ?: 0
-            if (count >= MaxCommentsPerTask) throw TareasValidationException("Esta tarea ya tiene el máximo de $MaxCommentsPerTask comentarios.")
+            if (count >= MaxCommentsPerTask) throw TareasValidationException(tr("Esta tarea ya tiene el máximo de {0} comentarios.", MaxCommentsPerTask))
             val id = UUID.randomUUID()
             tenant.update(
                 "INSERT INTO tareas_comments (id, task_id, author_id, author_name, body) VALUES (?, ?, ?, ?, ?)",
@@ -724,7 +726,7 @@ object TareasRepository {
      */
     fun upload(tenant: Connection, files: ModuleFiles, name: String, path: String, contentType: String, content: InputStream, uploadedBy: UUID?): UiFileRef {
         val fileName = cleanFileName(name)
-        if (fileName.isEmpty()) throw TareasValidationException("El archivo no tiene nombre.")
+        if (fileName.isEmpty()) throw TareasValidationException(tr("El archivo no tiene nombre."))
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         // Uploads that wait for their form are limited per user, so abandoned forms cannot fill the storage.
         val pending = tenant.query(
@@ -732,12 +734,12 @@ object TareasRepository {
             listOf(uploadedBy),
         ) { it.getInt("total") to it.getLong("bytes") }.firstOrNull() ?: (0 to 0L)
         if (pending.first >= MaxPendingFiles || pending.second >= MaxPendingBytes) {
-            throw TareasValidationException("Tienes demasiados archivos sin guardar; guarda o espera.")
+            throw TareasValidationException(tr("Tienes demasiados archivos sin guardar; guarda o espera."))
         }
         val stored = try {
             files.put(fileName, type, content, MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw TareasValidationException("$fileName supera el máximo de ${MaxFileBytes / (1024 * 1024)} MB.")
+            throw TareasValidationException(tr("{0} supera el máximo de {1} MB.", fileName, MaxFileBytes / (1024 * 1024)))
         }
         val ref = UiFileRef(UUID.randomUUID().toString(), fileName, cleanFilePath(path), stored.size)
         try {
@@ -759,7 +761,7 @@ object TareasRepository {
         return transaction(tenant) {
             lockTask(tenant, taskId)
             val total = tenant.query("SELECT count(*) AS total FROM tareas_attachments WHERE task_id = ? AND NOT delete_pending", listOf(taskId)) { it.getInt("total") }.firstOrNull() ?: 0
-            if (total + pending.size > MaxFilesPerTask) throw TareasValidationException("Una tarea admite hasta $MaxFilesPerTask archivos.")
+            if (total + pending.size > MaxFilesPerTask) throw TareasValidationException(tr("Una tarea admite hasta {0} archivos.", MaxFilesPerTask))
             tenant.query(
                 """
                 UPDATE tareas_attachments SET task_id = ?

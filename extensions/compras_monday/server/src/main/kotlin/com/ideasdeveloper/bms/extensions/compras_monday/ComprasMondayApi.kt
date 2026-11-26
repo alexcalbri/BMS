@@ -1,16 +1,17 @@
 package com.ideasdeveloper.bms.extensions.compras_monday
 
 import com.ideasdeveloper.bms.modules.compras.ComprasAttachments
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.net.PinnedHost
 import com.ideasdeveloper.bms.server.net.PinnedHostException
+import java.io.InputStream
+import java.net.URI
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import org.slf4j.LoggerFactory
-import java.io.InputStream
-import java.net.URI
 
 private fun JsonElement?.obj() = this as? JsonObject
 private fun JsonElement?.arr() = (this as? JsonArray).orEmpty()
@@ -57,21 +58,21 @@ object ComprasMondayApi {
 
     /** Columnas y grupos de un tablero. */
     fun boardInfo(token: String, boardId: String): MondayBoardInfo {
-        if (!ComprasMondayParse.isBoardId(boardId)) throw ComprasMondayException("El id del tablero no es valido.")
+        if (!ComprasMondayParse.isBoardId(boardId)) throw ComprasMondayException(tr("El id del tablero no es valido."))
         val data = query(token, "query { boards(ids: [$boardId]) { name columns { id title type } groups { id title } } }")
         return ComprasMondayParse.parseBoardInfo(data, boardId)
-            ?: throw ComprasMondayException("monday no devolvio el tablero (revisa el id y los permisos del token).")
+            ?: throw ComprasMondayException(tr("monday no devolvio el tablero (revisa el id y los permisos del token)."))
     }
 
     /** Una pagina de elementos: la primera si [cursor] es nulo, si no la siguiente a ese cursor (que debe tener forma valida). */
     fun page(token: String, boardId: String, cursor: String?, pageSize: Int = PageSize): MondayPage {
-        if (!ComprasMondayParse.isBoardId(boardId)) throw ComprasMondayException("El id del tablero no es valido.")
+        if (!ComprasMondayParse.isBoardId(boardId)) throw ComprasMondayException(tr("El id del tablero no es valido."))
         if (cursor == null) {
             val data = query(token, "query { boards(ids: [$boardId]) { items_page(limit: $pageSize) { cursor items { $ItemFields } } } }")
-            val board = data["boards"].arr().firstOrNull().obj() ?: throw ComprasMondayException("monday no devolvio el tablero (revisa el id y los permisos del token).")
+            val board = data["boards"].arr().firstOrNull().obj() ?: throw ComprasMondayException(tr("monday no devolvio el tablero (revisa el id y los permisos del token)."))
             return ComprasMondayParse.parsePage(board["items_page"].obj())
         }
-        if (!ComprasMondayParse.isValidCursor(cursor)) throw ComprasMondayException("monday devolvio un cursor no valido; vuelve a iniciar la importacion.")
+        if (!ComprasMondayParse.isValidCursor(cursor)) throw ComprasMondayException(tr("monday devolvio un cursor no valido; vuelve a iniciar la importacion."))
         val data = query(token, "query { next_items_page(limit: $pageSize, cursor: \"$cursor\") { cursor items { $ItemFields } } }")
         return ComprasMondayParse.parsePage(data["next_items_page"].obj())
     }
@@ -101,7 +102,7 @@ object ComprasMondayApi {
     }
 
     fun query(token: String, query: String, totalMillis: Long = 60_000): JsonObject {
-        if (token.isBlank()) throw ComprasMondayException("Falta el token de la API de monday.")
+        if (token.isBlank()) throw ComprasMondayException(tr("Falta el token de la API de monday."))
         val payload = JsonObject(mapOf("query" to JsonPrimitive(query))).toString().toByteArray(Charsets.UTF_8)
         val (status, text) = try {
             val validated = PinnedHost.resolveValidated(MondayHost)
@@ -113,18 +114,18 @@ object ComprasMondayApi {
         } catch (failure: Exception) {
             // Sin el mensaje original: no debe arrastrar datos de la peticion.
             log.warn("No se pudo contactar monday ({}).", failure.javaClass.simpleName)
-            throw ComprasMondayException("No se pudo contactar monday.", retryable = true)
+            throw ComprasMondayException(tr("No se pudo contactar monday."), retryable = true)
         }
-        if (text.length > MaxBytes) throw ComprasMondayException("monday respondio con demasiados datos.", tooHeavy = true)
+        if (text.length > MaxBytes) throw ComprasMondayException(tr("monday respondio con demasiados datos."), tooHeavy = true)
         val body = ComprasMondayParse.parseJson(text)
-        if (status == 401 || status == 403) throw ComprasMondayException("monday rechazo el token.")
+        if (status == 401 || status == 403) throw ComprasMondayException(tr("monday rechazo el token."))
         // Los errores de la API (limite de uso, fallos del servicio) suelen ser pasajeros: se reintentan.
         body?.get("errors").arr().firstOrNull()?.let {
             val message = it.obj()?.get("message").str().take(300)
             // Complejidad excesiva: la lectura baja el tamano de pagina (ver ComprasMondayRetry.smallerPage).
             throw ComprasMondayException("monday: $message", retryable = true, tooHeavy = "complexity" in message.lowercase())
         }
-        return body?.get("data").obj() ?: throw ComprasMondayException("monday respondio HTTP $status.", retryable = status == 429 || status >= 500)
+        return body?.get("data").obj() ?: throw ComprasMondayException(tr("monday respondio HTTP {0}.", status), retryable = status == 429 || status >= 500)
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -73,18 +75,18 @@ object HotspotSettingsRepository {
         fun optional(key: String, fallback: String?): String? = if (values.containsKey(key)) text(key)?.takeIf { it.isNotBlank() } else fallback
         fun required(key: String, fallback: String, label: String): String {
             if (!values.containsKey(key)) return fallback
-            return text(key)?.takeIf { it.isNotBlank() } ?: throw HotspotValidationException("$label es obligatorio.")
+            return text(key)?.takeIf { it.isNotBlank() } ?: throw HotspotValidationException(tr("{0} es obligatorio.", tr(label)))
         }
         fun number(key: String, fallback: Int, range: IntRange, label: String): Int {
             if (!values.containsKey(key)) return fallback
-            val value = text(key)?.toIntOrNull() ?: throw HotspotValidationException("$label debe ser un numero entero.")
-            if (value !in range) throw HotspotValidationException("$label debe estar entre ${range.first} y ${range.last}.")
+            val value = text(key)?.toIntOrNull() ?: throw HotspotValidationException(tr("{0} debe ser un numero entero.", tr(label)))
+            if (value !in range) throw HotspotValidationException(tr("{0} debe estar entre {1} y {2}.", tr(label), range.first, range.last))
             return value
         }
         fun boolean(key: String, fallback: Boolean): Boolean {
             if (!values.containsKey(key)) return fallback
             return values[key]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
-                ?: throw HotspotValidationException("El valor de $key no es valido.")
+                ?: throw HotspotValidationException(tr("El valor de {0} no es valido.", key))
         }
         // Empty or the unchanged mask keeps the saved secret.
         fun secret(key: String, fallback: String?): String? =
@@ -92,11 +94,11 @@ object HotspotSettingsRepository {
 
         val merged = HotspotSettings(
             domain = optional("domain", current.domain)?.lowercase()?.removeSuffix("."),
-            networkName = required("networkName", current.networkName, "El nombre de la red"),
-            portalTitle = required("portalTitle", current.portalTitle, "El titulo del portal"),
+            networkName = required("networkName", current.networkName, msg("El nombre de la red")),
+            portalTitle = required("portalTitle", current.portalTitle, msg("El titulo del portal")),
             portalSubtitle = if (values.containsKey("portalSubtitle")) text("portalSubtitle").orEmpty() else current.portalSubtitle,
             logoUrl = optional("logoUrl", current.logoUrl),
-            consentText = required("consentText", current.consentText, "El texto de consentimiento"),
+            consentText = required("consentText", current.consentText, msg("El texto de consentimiento")),
             termsUrl = optional("termsUrl", current.termsUrl),
             privacyUrl = optional("privacyUrl", current.privacyUrl),
             footerText = if (values.containsKey("footerText")) text("footerText").orEmpty() else current.footerText,
@@ -104,36 +106,36 @@ object HotspotSettingsRepository {
             unifiConsoleId = optional("unifiConsoleId", current.unifiConsoleId),
             unifiSiteId = optional("unifiSiteId", current.unifiSiteId),
             unifiApiKey = secret("unifiApiKey", current.unifiApiKey),
-            accessMinutes = number("accessMinutes", current.accessMinutes, 1..10080, "El tiempo de acceso"),
-            dataLimitMb = number("dataLimitMb", current.dataLimitMb, 0..1048576, "El limite de datos"),
-            rxKbps = number("rxKbps", current.rxKbps, 0..10000000, "La velocidad de descarga"),
-            txKbps = number("txKbps", current.txKbps, 0..10000000, "La velocidad de subida"),
-            reconnectMinutes = number("reconnectMinutes", current.reconnectMinutes, 0..525600, "El tiempo de reconexion"),
-            codeTtlMinutes = number("codeTtlMinutes", current.codeTtlMinutes, 1..1440, "La vigencia del codigo"),
-            emailSubject = required("emailSubject", current.emailSubject, "El asunto del correo"),
+            accessMinutes = number("accessMinutes", current.accessMinutes, 1..10080, msg("El tiempo de acceso")),
+            dataLimitMb = number("dataLimitMb", current.dataLimitMb, 0..1048576, msg("El limite de datos")),
+            rxKbps = number("rxKbps", current.rxKbps, 0..10000000, msg("La velocidad de descarga")),
+            txKbps = number("txKbps", current.txKbps, 0..10000000, msg("La velocidad de subida")),
+            reconnectMinutes = number("reconnectMinutes", current.reconnectMinutes, 0..525600, msg("El tiempo de reconexion")),
+            codeTtlMinutes = number("codeTtlMinutes", current.codeTtlMinutes, 1..1440, msg("La vigencia del codigo")),
+            emailSubject = required("emailSubject", current.emailSubject, msg("El asunto del correo")),
             crmAccessEnabled = boolean("crmAccessEnabled", current.crmAccessEnabled),
             crmStageId = optional("crmStageId", current.crmStageId?.toString())?.let {
                 runCatching { UUID.fromString(it) }.getOrNull()
-                    ?: throw HotspotValidationException("El estado del CRM no es valido.")
+                    ?: throw HotspotValidationException(tr("El estado del CRM no es valido."))
             },
-            crmScheduleMode = when (required("crmScheduleMode", current.crmScheduleMode, "La programacion del CRM")) {
+            crmScheduleMode = when (required("crmScheduleMode", current.crmScheduleMode, msg("La programacion del CRM"))) {
                 "Cada intervalo" -> "interval"
                 "Diario a una hora" -> "daily"
-                "interval", "daily" -> required("crmScheduleMode", current.crmScheduleMode, "La programacion del CRM")
-                else -> throw HotspotValidationException("Elige una programacion del CRM valida.")
+                "interval", "daily" -> required("crmScheduleMode", current.crmScheduleMode, msg("La programacion del CRM"))
+                else -> throw HotspotValidationException(tr("Elige una programacion del CRM valida."))
             },
-            crmCheckIntervalMinutes = number("crmCheckIntervalMinutes", current.crmCheckIntervalMinutes, 1..10080, "El intervalo del CRM"),
+            crmCheckIntervalMinutes = number("crmCheckIntervalMinutes", current.crmCheckIntervalMinutes, 1..10080, msg("El intervalo del CRM")),
             crmCheckTime = if (values.containsKey("crmCheckTime")) {
                 runCatching { LocalTime.parse(text("crmCheckTime").orEmpty()) }.getOrNull()
-                    ?: throw HotspotValidationException("La hora de revision debe tener el formato HH:mm.")
+                    ?: throw HotspotValidationException(tr("La hora de revision debe tener el formato HH:mm."))
             } else current.crmCheckTime,
             portalColors = current.portalColors,
         )
         if (merged.crmAccessEnabled && merged.crmStageId == null) {
-            throw HotspotValidationException("Selecciona el estado del embudo del CRM que permite el acceso.")
+            throw HotspotValidationException(tr("Selecciona el estado del embudo del CRM que permite el acceso."))
         }
         if (merged.crmScheduleMode !in setOf("daily", "interval")) {
-            throw HotspotValidationException("Elige una programacion del CRM valida.")
+            throw HotspotValidationException(tr("Elige una programacion del CRM valida."))
         }
         validate(merged)
         return merged
@@ -144,16 +146,16 @@ object HotspotSettingsRepository {
 
     private fun validate(settings: HotspotSettings) {
         settings.domain?.let {
-            if (it.length > 253 || !domainPattern.matches(it)) throw HotspotValidationException("El dominio no es valido. Ejemplo: wifi.miempresa.com")
+            if (it.length > 253 || !domainPattern.matches(it)) throw HotspotValidationException(tr("El dominio no es valido. Ejemplo: wifi.miempresa.com"))
         }
         (listOfNotNull(settings.logoUrl, settings.termsUrl, settings.privacyUrl) + settings.successUrls).forEach { url ->
             if (!url.startsWith("https://") && !url.startsWith("http://") || url.any { it.isWhitespace() }) {
-                throw HotspotValidationException("Las direcciones web deben iniciar con https:// o http:// y no llevar espacios.")
+                throw HotspotValidationException(tr("Las direcciones web deben iniciar con https:// o http:// y no llevar espacios."))
             }
         }
-        if (settings.successUrl.orEmpty().length > 4000) throw HotspotValidationException("La lista de direcciones al conectarse es demasiado larga.")
+        if (settings.successUrl.orEmpty().length > 4000) throw HotspotValidationException(tr("La lista de direcciones al conectarse es demasiado larga."))
         listOf(settings.unifiConsoleId, settings.unifiSiteId).forEach { id ->
-            if (id != null && !unifiIdPattern.matches(id)) throw HotspotValidationException("El identificador de consola o sitio de UniFi no es valido.")
+            if (id != null && !unifiIdPattern.matches(id)) throw HotspotValidationException(tr("El identificador de consola o sitio de UniFi no es valido."))
         }
     }
 
@@ -210,7 +212,7 @@ object HotspotSettingsRepository {
             "txKbps" to settings.txKbps.toString(),
             "reconnectMinutes" to settings.reconnectMinutes.toString(),
             "codeTtlMinutes" to settings.codeTtlMinutes.toString(),
-            "mailSource" to if (sendingAvailable) "SMTP de la empresa (o del servidor): listo" else "Sin SMTP: configura el correo de la empresa",
+            "mailSource" to if (sendingAvailable) tr("SMTP de la empresa (o del servidor): listo") else tr("Sin SMTP: configura el correo de la empresa"),
             "emailSubject" to settings.emailSubject,
             "networkName" to settings.networkName,
             "portalTitle" to settings.portalTitle,
@@ -273,13 +275,13 @@ object HotspotSettingsRepository {
             val trimmed = value?.trim().orEmpty()
             if (trimmed.isEmpty()) return null
             val normalized = if (trimmed.startsWith("#")) trimmed else "#$trimmed"
-            if (!PortalBrand.isColor(normalized)) throw HotspotValidationException("$label debe tener el formato #RRGGBB, por ejemplo #667EEA.")
+            if (!PortalBrand.isColor(normalized)) throw HotspotValidationException(tr("{0} debe tener el formato #RRGGBB, por ejemplo #667EEA.", tr(label)))
             return normalized.uppercase()
         }
         val colors = PortalColors(
-            primary = color(primary, "El color principal"),
-            secondary = color(secondary, "El color secundario"),
-            text = color(text, "El color del texto"),
+            primary = color(primary, msg("El color principal")),
+            secondary = color(secondary, msg("El color secundario")),
+            text = color(text, msg("El color del texto")),
         )
         connection.prepareStatement(
             "UPDATE hotspot_settings SET portal_primary_color = ?, portal_secondary_color = ?, portal_text_color = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1"

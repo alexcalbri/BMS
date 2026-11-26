@@ -1,7 +1,10 @@
 package com.ideasdeveloper.bms.app.features.company.data
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
+import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
+import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -36,6 +39,17 @@ class CompanyApi(serverUrl: String) {
         Url(baseUrl)
     }
 
+    // Verdadero si el servidor declara Core >= 0.10.0 y por tanto acepta defaultLanguage; con version desconocida, falso.
+    suspend fun supportsDefaultLanguage(): Boolean {
+        val versionApi = VersionApi(baseUrl)
+        val serverVersion = try {
+            versionApi.version()
+        } finally {
+            versionApi.close()
+        }
+        return serverVersion?.coreVersion?.let { isCoreAtLeast(it, 0, 10, 0) } == true
+    }
+
     // Carga el perfil editable de la empresa de la sesion business_owner.
     suspend fun companyProfile(accessToken: String, companyCode: String): CompanyProfileResponse {
         try {
@@ -53,13 +67,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo cargar la empresa.")
+            throw CompanyException(tr("El servidor no pudo cargar la empresa."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -91,19 +105,19 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo actualizar la empresa.")
+            throw CompanyException(tr("El servidor no pudo actualizar la empresa."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
     // Carga la configuracion SMTP de la empresa de la sesion business_owner.
     suspend fun mailSettings(accessToken: String, companyCode: String): CompanyMailForm =
-        call("No se pudo cargar la configuracion de correo.") {
+        call(tr("No se pudo cargar la configuracion de correo.")) {
             client.get("$baseUrl/companies/me/mail") {
                 bearerAuth(accessToken)
                 header("X-Company-Code", companyCode)
@@ -112,7 +126,7 @@ class CompanyApi(serverUrl: String) {
 
     // Guarda el SMTP; el servidor responde 400 con un mensaje en espanol si algun dato no es valido.
     suspend fun updateMailSettings(accessToken: String, companyCode: String, input: CompanyMailInput): CompanyMailForm =
-        call("No se pudo guardar la configuracion de correo.") {
+        call(tr("No se pudo guardar la configuracion de correo.")) {
             client.put("$baseUrl/companies/me/mail") {
                 bearerAuth(accessToken)
                 header("X-Company-Code", companyCode)
@@ -140,7 +154,7 @@ class CompanyApi(serverUrl: String) {
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -163,7 +177,7 @@ class CompanyApi(serverUrl: String) {
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -184,7 +198,7 @@ class CompanyApi(serverUrl: String) {
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -206,7 +220,7 @@ class CompanyApi(serverUrl: String) {
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -234,7 +248,7 @@ class CompanyApi(serverUrl: String) {
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -263,7 +277,7 @@ class CompanyApi(serverUrl: String) {
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -307,13 +321,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo crear la empresa.")
+            throw CompanyException(tr("El servidor no pudo crear la empresa."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -336,13 +350,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo cargar las empresas.")
+            throw CompanyException(tr("El servidor no pudo cargar las empresas."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -365,13 +379,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo cargar los modulos.")
+            throw CompanyException(tr("El servidor no pudo cargar los modulos."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -393,13 +407,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo cargar el catalogo.")
+            throw CompanyException(tr("El servidor no pudo cargar el catalogo."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -425,13 +439,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo actualizar el catalogo.")
+            throw CompanyException(tr("El servidor no pudo actualizar el catalogo."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -455,13 +469,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo eliminar el modulo.")
+            throw CompanyException(tr("El servidor no pudo eliminar el modulo."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -485,13 +499,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo instalar el modulo.")
+            throw CompanyException(tr("El servidor no pudo instalar el modulo."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -511,13 +525,13 @@ class CompanyApi(serverUrl: String) {
             ) {
                 throw CompanyException(response.body<CompanyErrorResponse>().message)
             }
-            throw CompanyException("El servidor no pudo crear la empresa del servidor.")
+            throw CompanyException(tr("El servidor no pudo crear la empresa del servidor."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -539,13 +553,13 @@ class CompanyApi(serverUrl: String) {
             ) {
                 throw CompanyException(response.body<CompanyErrorResponse>().message)
             }
-            throw CompanyException("El servidor no pudo cambiar el uso del modulo.")
+            throw CompanyException(tr("El servidor no pudo cambiar el uso del modulo."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -576,13 +590,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo actualizar la empresa.")
+            throw CompanyException(tr("El servidor no pudo actualizar la empresa."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -613,13 +627,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo actualizar la empresa.")
+            throw CompanyException(tr("El servidor no pudo actualizar la empresa."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -657,13 +671,13 @@ class CompanyApi(serverUrl: String) {
             val response = request()
             if (response.status == HttpStatusCode.OK) return response.body()
             val error = runCatching { response.body<CompanyErrorResponse>() }.getOrNull()
-            throw CompanyException(error?.message ?: "El servidor no pudo completar la operacion.", code = error?.code)
+            throw CompanyException(error?.message ?: tr("El servidor no pudo completar la operacion."), code = error?.code)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -690,13 +704,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo cambiar la contrasena.")
+            throw CompanyException(tr("El servidor no pudo cambiar la contrasena."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -720,13 +734,13 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo eliminar la empresa.")
+            throw CompanyException(tr("El servidor no pudo eliminar la empresa."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -758,18 +772,18 @@ class CompanyApi(serverUrl: String) {
                 throw CompanyException(error.message)
             }
 
-            throw CompanyException("El servidor no pudo actualizar el modulo.")
+            throw CompanyException(tr("El servidor no pudo actualizar el modulo."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
     // A donde puede cambiar la sesion: empresas y, para el dueno del servidor, el servidor.
-    suspend fun switchTargets(accessToken: String, companyCode: String?): SwitchTargetsResponse = call("No se pudieron cargar las empresas.") {
+    suspend fun switchTargets(accessToken: String, companyCode: String?): SwitchTargetsResponse = call(tr("No se pudieron cargar las empresas.")) {
         client.get("$baseUrl/auth/switch-targets") {
             bearerAuth(accessToken)
             companyCode?.let { header("X-Company-Code", it) }
@@ -777,7 +791,7 @@ class CompanyApi(serverUrl: String) {
     }
 
     // Nombre del servidor (solo el dueno del servidor).
-    suspend fun updateServerName(accessToken: String, name: String): ServerNameResponse = call("No se pudo cambiar el nombre del servidor.") {
+    suspend fun updateServerName(accessToken: String, name: String): ServerNameResponse = call(tr("No se pudo cambiar el nombre del servidor.")) {
         client.put("$baseUrl/server/name") {
             bearerAuth(accessToken)
             contentType(ContentType.Application.Json)
@@ -787,7 +801,7 @@ class CompanyApi(serverUrl: String) {
 
     // El dueno del servidor duplica una empresa; sin newOwner la copia mantiene el business owner.
     suspend fun duplicateCompany(accessToken: String, sourceCode: String, newCode: String, newOwner: DuplicateOwnerRequest?): CreateCompanyResponse =
-        call("No se pudo duplicar la empresa.") {
+        call(tr("No se pudo duplicar la empresa.")) {
             client.post("$baseUrl/companies/${sourceCode.encodeURLPathPart()}/duplicate") {
                 bearerAuth(accessToken)
                 // Copiar modulos y configuracion tarda mas que una pantalla.
@@ -799,7 +813,7 @@ class CompanyApi(serverUrl: String) {
 
     // Vincula la empresa al grupo de otra (mismo business owner) o, con targetCode null, la desvincula.
     suspend fun linkCompany(accessToken: String, companyCode: String, targetCode: String?): List<CompanySummaryResponse> =
-        call("No se pudo vincular la empresa.") {
+        call(tr("No se pudo vincular la empresa.")) {
             client.put("$baseUrl/companies/${companyCode.encodeURLPathPart()}/link") {
                 bearerAuth(accessToken)
                 contentType(ContentType.Application.Json)
@@ -808,7 +822,7 @@ class CompanyApi(serverUrl: String) {
         }
 
     // Abre una sesion en otra empresa (o, con targetCode null, en el servidor) sin pedir la contrasena.
-    suspend fun switchCompany(accessToken: String, companyCode: String?, targetCode: String?): LoginResponse = call("No se pudo cambiar de empresa.") {
+    suspend fun switchCompany(accessToken: String, companyCode: String?, targetCode: String?): LoginResponse = call(tr("No se pudo cambiar de empresa.")) {
         client.post("$baseUrl/auth/switch-company") {
             bearerAuth(accessToken)
             companyCode?.let { header("X-Company-Code", it) }
@@ -817,20 +831,20 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
-    suspend fun serverLogs(accessToken: String): ServerLogsResponse = call("No se pudieron cargar los errores del servidor.") {
+    suspend fun serverLogs(accessToken: String): ServerLogsResponse = call(tr("No se pudieron cargar los errores del servidor.")) {
         client.get("$baseUrl/server/logs") {
             bearerAuth(accessToken)
         }
     }
 
-    suspend fun coreUpdateStatus(accessToken: String): CoreUpdateStatusResponse = call("No se pudo consultar el estado de la actualizacion.") {
+    suspend fun coreUpdateStatus(accessToken: String): CoreUpdateStatusResponse = call(tr("No se pudo consultar el estado de la actualizacion.")) {
         client.get("$baseUrl/server/core-update") {
             bearerAuth(accessToken)
         }
     }
 
     // Solicita actualizar el Core; el servidor responde 202 con la solicitud creada.
-    suspend fun requestCoreUpdate(accessToken: String): CoreUpdateRequestDto = call("No se pudo solicitar la actualizacion.") {
+    suspend fun requestCoreUpdate(accessToken: String): CoreUpdateRequestDto = call(tr("No se pudo solicitar la actualizacion.")) {
         client.post("$baseUrl/server/core-update") {
             bearerAuth(accessToken)
         }
@@ -848,7 +862,7 @@ class CompanyApi(serverUrl: String) {
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.", network = true)
+            throw CompanyException(tr("No se pudo comunicar con el servidor."), network = true)
         }
     }
 

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.platform
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -20,7 +21,7 @@ actual fun rememberFilePicker(maxFileBytes: Long, onPicked: (List<PickedFile>) -
         val chooser = JFileChooser().apply {
             fileSelectionMode = if (folders) JFileChooser.DIRECTORIES_ONLY else JFileChooser.FILES_ONLY
             isMultiSelectionEnabled = true
-            dialogTitle = if (folders) "Adjuntar carpetas" else "Adjuntar archivos"
+            dialogTitle = if (folders) tr("Adjuntar carpetas") else tr("Adjuntar archivos")
         }
         if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) return
         val chosen = chooser.selectedFiles.toList().ifEmpty { listOfNotNull(chooser.selectedFile) }

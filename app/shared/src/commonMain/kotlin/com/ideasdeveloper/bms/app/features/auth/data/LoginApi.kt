@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.auth.data
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -31,7 +32,7 @@ class LoginApi(serverUrl: String) {
                     url.fragment.isEmpty() &&
                     url.encodedPath in listOf("", "/")
         ) {
-            "Introduce la URL del servidor con http:// o https://, sin rutas."
+            tr("Introduce la URL del servidor con http:// o https://, sin rutas.")
         }
     }
 
@@ -67,7 +68,7 @@ class LoginApi(serverUrl: String) {
 
             if (response.status == HttpStatusCode.TooManyRequests) {
                 throw LoginException(
-                    "Demasiados intentos. Espera un minuto."
+                    tr("Demasiados intentos. Espera un minuto.")
                 )
             }
 
@@ -81,7 +82,7 @@ class LoginApi(serverUrl: String) {
             }
 
             throw LoginException(
-                "El servidor no pudo completar el inicio de sesión."
+                tr("El servidor no pudo completar el inicio de sesión.")
             )
         } catch (exception: CancellationException) {
             throw exception
@@ -89,7 +90,7 @@ class LoginApi(serverUrl: String) {
             throw exception
         } catch (_: Exception) {
             throw LoginException(
-                "No se pudo comunicar con el servidor o su respuesta no es válida."
+                tr("No se pudo comunicar con el servidor o su respuesta no es válida.")
             )
         }
     }

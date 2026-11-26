@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.shell.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -44,7 +45,7 @@ private fun ViewCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) 
             .size(40.dp)
             .clip(CircleShape)
             .clickable(role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = "Cerrar" },
+            .semantics { contentDescription = tr("Cerrar") },
     ) {
         Box(
             contentAlignment = Alignment.Center,

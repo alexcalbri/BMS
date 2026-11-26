@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms
 
+import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -9,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.intl.Locale
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -45,6 +48,9 @@ import com.ideasdeveloper.bms.navigation.NavRoute.Companion.routeName
 @Composable
 // Orquesta la navegacion principal segun exista o no una sesion restaurada.
 fun App(initialServerUrl: String = "") {
+    // Idioma del dispositivo: solo se usa mientras no haya idioma guardado ni sesion.
+    val deviceLanguageTag = Locale.current.language
+    remember(deviceLanguageTag) { AppLanguage.useDeviceLanguage(deviceLanguageTag) }
     BMSTheme {
         // Restaura la sesion, identidad visual y configuracion local antes de construir rutas.
         val navController = rememberNavController()
@@ -309,10 +315,9 @@ fun App(initialServerUrl: String = "") {
         // Va al final para quedar encima del dialogo de perfil obligatorio.
         if (confirmingLogout && currentSession != null) {
             ConfirmDialog(
-                title = "Cerrar sesion",
-                message = "Se cerrara tu sesion en este dispositivo y tendras que volver a iniciar sesion. " +
-                    "Los cambios que no hayas guardado se perderan.",
-                confirmLabel = "Cerrar sesion",
+                title = tr("Cerrar sesion"),
+                message = tr("Se cerrara tu sesion en este dispositivo y tendras que volver a iniciar sesion. Los cambios que no hayas guardado se perderan."),
+                confirmLabel = tr("Cerrar sesion"),
                 onConfirm = {
                     confirmingLogout = false
                     logout()
@@ -325,12 +330,12 @@ fun App(initialServerUrl: String = "") {
 
 // Convierte ids de modulo en titulos legibles para las pantallas internas.
 private fun String.toModuleTitle(): String = when (this) {
-    "empresa" -> "Empresa"
-    "server-modules" -> "Modulos del servidor"
-    "server-staff" -> "Empresa del servidor"
-    "server-logs" -> "Errores del servidor"
-    "server-update" -> "Actualizar servidor"
-    "clientes" -> "Clientes"
+    "empresa" -> tr("Empresa")
+    "server-modules" -> tr("Modulos del servidor")
+    "server-staff" -> tr("Empresa del servidor")
+    "server-logs" -> tr("Errores del servidor")
+    "server-update" -> tr("Actualizar servidor")
+    "clientes" -> tr("Clientes")
     else -> replace("-", " ")
         .replace("_", " ")
         .split(" ")

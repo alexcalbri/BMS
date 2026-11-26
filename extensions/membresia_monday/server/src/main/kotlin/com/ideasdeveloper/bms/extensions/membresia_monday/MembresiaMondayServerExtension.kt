@@ -15,6 +15,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleJobContext
 import com.ideasdeveloper.bms.ui.UiNode
@@ -36,8 +37,8 @@ object MembresiaMondayServerExtension : ServerExtension, MembresiaImportSource {
         module = "membresia",
         displayName = "Importacion de membresias desde monday",
         description = "Importa un tablero de monday como membresias: lee el tablero con el token de la empresa, mapea sus columnas y trae planes, clientes, membresias y visitas.",
-        version = "1.0.1",
-        minModuleVersion = "0.2.0",
+        version = "1.1.0",
+        minModuleVersion = "0.4.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/membresia_monday",
@@ -88,11 +89,11 @@ object MembresiaMondayServerExtension : ServerExtension, MembresiaImportSource {
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            UninstallItem(null, "Token de la API de monday (se borra)", count(tenant, "SELECT count(*) FROM ${MembresiaMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
-            UninstallItem(HistoryOption, "Importaciones de monday (trabajos)", count(tenant, "SELECT count(*) FROM ${MembresiaMondayJobs.JobsTable}"), UninstallDefault.Delete),
-            UninstallItem(HistoryOption, "Filas leidas de monday", count(tenant, "SELECT count(*) FROM ${MembresiaMondayJobs.RowsTable}"), UninstallDefault.Delete),
-            UninstallItem(null, "Membresias importadas (se conservan)", count(tenant, "SELECT count(*) FROM membresia_memberships WHERE import_key LIKE 'monday:%'"), "keep"),
-            UninstallItem(null, "Visitas importadas (se conservan)", count(tenant, "SELECT count(*) FROM membresia_visits WHERE import_key LIKE 'monday:%'"), "keep"),
+            UninstallItem(null, tr("Token de la API de monday (se borra)"), count(tenant, "SELECT count(*) FROM ${MembresiaMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
+            UninstallItem(HistoryOption, tr("Importaciones de monday (trabajos)"), count(tenant, "SELECT count(*) FROM ${MembresiaMondayJobs.JobsTable}"), UninstallDefault.Delete),
+            UninstallItem(HistoryOption, tr("Filas leidas de monday"), count(tenant, "SELECT count(*) FROM ${MembresiaMondayJobs.RowsTable}"), UninstallDefault.Delete),
+            UninstallItem(null, tr("Membresias importadas (se conservan)"), count(tenant, "SELECT count(*) FROM membresia_memberships WHERE import_key LIKE 'monday:%'"), "keep"),
+            UninstallItem(null, tr("Visitas importadas (se conservan)"), count(tenant, "SELECT count(*) FROM membresia_visits WHERE import_key LIKE 'monday:%'"), "keep"),
         )
     }
 

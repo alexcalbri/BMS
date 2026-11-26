@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.extensions.compras_monday
 
 import com.ideasdeveloper.bms.modules.compras.ComprasImportContext
 import com.ideasdeveloper.bms.modules.compras.ComprasValidationException
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -157,7 +158,7 @@ object ComprasMondayStore {
         }
         } catch (failure: SQLException) {
             // El indice unico parcial deja una sola importacion en marcha: la segunda en llegar recibe este aviso.
-            if (failure.sqlState == "23505") throw ComprasValidationException("Ya hay una importacion en curso.")
+            if (failure.sqlState == "23505") throw ComprasValidationException(tr("Ya hay una importacion en curso."))
             throw failure
         }
         return id

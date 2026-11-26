@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.modules.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.AppColors
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveGrid
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
@@ -197,9 +198,9 @@ class ModuleRenderContext(
     // Pide sugerencias de un campo UiField.suggest; sin host que las soporte no hay sugerencias.
     val suggest: suspend (route: String, params: Map<String, String>) -> UiSuggestions = { _, _ -> UiSuggestions() },
     // Sube un archivo de un campo "files" y devuelve su referencia; lanza ModuleException si falla.
-    val uploadFile: suspend (route: String, file: PickedFile) -> UiFileRef = { _, _ -> throw ModuleException("Este host no puede subir archivos.") },
+    val uploadFile: suspend (route: String, file: PickedFile) -> UiFileRef = { _, _ -> throw ModuleException(tr("Este host no puede subir archivos.")) },
     // Descarga y guarda un adjunto; devuelve el mensaje para el usuario.
-    val downloadFile: suspend (route: String, file: UiFileRef) -> String = { _, _ -> "Este host no puede descargar archivos." },
+    val downloadFile: suspend (route: String, file: UiFileRef) -> String = { _, _ -> tr("Este host no puede descargar archivos.") },
 )
 
 @Composable
@@ -386,13 +387,24 @@ private fun ModuleImage(node: UiImage, context: ModuleRenderContext) {
     }
 }
 
+// Texto de una opcion: su etiqueta (optionLabels, traducida por el servidor) si existe; lo que se envia
+// al guardar sigue siendo siempre el valor de options.
+private fun optionLabel(field: UiField, option: String): String {
+    val labels = field.optionLabels ?: return option
+    val index = field.options.indexOf(option)
+    return labels.getOrNull(index)?.takeIf { it.isNotBlank() } ?: option
+}
+
 @Composable
 private fun ModuleMetric(node: UiMetric, colors: ModuleColors) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(node.label.uppercase(), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-        // UiMetric no tiene un indicador "copiable" (vive en core, fuera de este alcance): solo los valores
-        // cuya etiqueta habla de un codigo (p. ej. "Mi codigo WiFi") llevan boton Copiar; el resto es seleccionable.
-        val isCode = node.value.isNotBlank() && (node.label.contains("codigo", ignoreCase = true) || node.label.contains("código", ignoreCase = true))
+        // UiMetric no tiene clave ni indicador "copiable" (el contrato vive en core): solo los valores cuya
+        // etiqueta habla de un codigo (p. ej. "Mi codigo WiFi" / "My WiFi code") llevan boton Copiar, en
+        // espanol o ingles; el resto es seleccionable.
+        val isCode = node.value.isNotBlank() && node.label.let {
+            it.contains("codigo", ignoreCase = true) || it.contains("c\u00f3digo", ignoreCase = true) || it.contains("code", ignoreCase = true)
+        }
         if (isCode) {
             CopyableCode(
                 label = "",
@@ -568,7 +580,7 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
             val missingField = missing
             val submitButton = remember(submit, missingField == null) { submit.copy(enabled = submit.enabled && missingField == null) }
             ModuleButton(submitButton, context)
-            missingField?.let { Text("Completa: ${it.label}", color = context.colors.muted, fontSize = 12.sp) }
+            missingField?.let { Text(tr("Completa: {0}", it.label), color = context.colors.muted, fontSize = 12.sp) }
         }
     }
 }
@@ -786,7 +798,7 @@ private fun TriggerSuggestingField(form: UiForm, field: UiField, suggest: UiSugg
                         if (item.subtitle.isNotBlank()) Text(item.subtitle, color = colors.muted, fontSize = 12.sp)
                     }
                 }
-                TextButton(onClick = { dismissed = true }) { Text("Cerrar", color = colors.accentText, fontSize = 12.sp) }
+                TextButton(onClick = { dismissed = true }) { Text(tr("Cerrar"), color = colors.accentText, fontSize = 12.sp) }
             }
         }
     }
@@ -818,9 +830,9 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
             val problems = mutableListOf<String>()
             var added = 0
             picked.forEachIndexed { index, file ->
-                status = "Subiendo ${index + 1} de ${picked.size}: ${file.name}"
+                status = tr("Subiendo {0} de {1}: {2}", index + 1, picked.size, file.name)
                 if (file.bytes == null) {
-                    problems += "${file.name} supera ${formatBytes(maxBytes)}"
+                    problems += tr("{0} supera {1}", file.name, formatBytes(maxBytes))
                     return@forEachIndexed
                 }
                 try {
@@ -831,16 +843,16 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
                 } catch (exception: CancellationException) {
                     throw exception
                 } catch (exception: Exception) {
-                    problems += exception.message ?: "No se pudo subir ${file.name}"
+                    problems += exception.message ?: tr("No se pudo subir {0}", file.name)
                 }
             }
             uploading = false
             status = buildString {
-                if (added > 0) append("$added ${if (added == 1) "archivo listo" else "archivos listos"}; se guardan al guardar el formulario.")
+                if (added > 0) append(if (added == 1) tr("{0} archivo listo; se guardan al guardar el formulario.", added) else tr("{0} archivos listos; se guardan al guardar el formulario.", added))
                 if (problems.isNotEmpty()) {
                     if (isNotEmpty()) append(" ")
-                    append("No se adjuntaron: ").append(problems.take(5).joinToString("; "))
-                    if (problems.size > 5) append(" y ${problems.size - 5} mas")
+                    append(tr("No se adjuntaron: ")).append(problems.take(5).joinToString("; "))
+                    if (problems.size > 5) append(tr(" y {0} mas", problems.size - 5))
                     append(".")
                 }
             }
@@ -857,10 +869,10 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
                 .border(1.dp, colors.border, RoundedCornerShape(10.dp))
                 .padding(10.dp),
         ) {
-            if (current.isEmpty()) Text("Sin archivos.", color = colors.muted, fontSize = 13.sp)
+            if (current.isEmpty()) Text(tr("Sin archivos."), color = colors.muted, fontSize = 13.sp)
             folders.forEach { (folder, items) ->
                 if (folder.isNotBlank()) {
-                    Text("Carpeta: $folder", color = colors.accentText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                    Text(tr("Carpeta: {0}", folder), color = colors.accentText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
                 }
                 items.forEach { file ->
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -870,7 +882,7 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
                         }
                         if (files != null) {
                             Text(
-                                "Descargar",
+                                tr("Descargar"),
                                 color = colors.accentText,
                                 fontSize = 13.sp,
                                 modifier = Modifier.clickable(enabled = !uploading) {
@@ -880,12 +892,12 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
                         }
                         if (editable) {
                             Text(
-                                "Quitar",
+                                tr("Quitar"),
                                 color = colors.danger,
                                 fontSize = 13.sp,
                                 modifier = Modifier.clickable(enabled = !uploading && !context.busy) {
                                     setFiles(current.filter { it.id != file.id })
-                                    status = "${file.name} se quita al guardar el formulario."
+                                    status = tr("{0} se quita al guardar el formulario.", file.name)
                                 }.padding(4.dp),
                             )
                         }
@@ -898,19 +910,19 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val enabled = !uploading && !context.busy
                     OutlinedButton(onClick = { picker.pickFiles() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accentText else colors.border)) {
-                        Text("Adjuntar archivos", color = if (enabled) colors.accentText else colors.muted)
+                        Text(tr("Adjuntar archivos"), color = if (enabled) colors.accentText else colors.muted)
                     }
                     if (files?.folders == true && picker.supportsFolders) {
                         OutlinedButton(onClick = { picker.pickFolder() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accentText else colors.border)) {
-                            Text("Adjuntar carpeta", color = if (enabled) colors.accentText else colors.muted)
+                            Text(tr("Adjuntar carpeta"), color = if (enabled) colors.accentText else colors.muted)
                         }
                     }
                 }
             } else {
-                Text("En este dispositivo aun no se pueden adjuntar archivos; hazlo desde la app de escritorio, web o Android.", color = colors.muted, fontSize = 12.sp)
+                Text(tr("En este dispositivo aun no se pueden adjuntar archivos; hazlo desde la app de escritorio, web o Android."), color = colors.muted, fontSize = 12.sp)
             }
         }
-        if (uploading) Text("Espera a que terminen de subir antes de guardar.", color = colors.warning, fontSize = 12.sp)
+        if (uploading) Text(tr("Espera a que terminen de subir antes de guardar."), color = colors.warning, fontSize = 12.sp)
         status?.let { Text(it, color = colors.muted, fontSize = 12.sp) }
         if (field.help.isNotBlank()) Text(field.help, color = colors.muted, fontSize = 12.sp)
     }
@@ -938,7 +950,7 @@ private fun ModuleField(
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         when {
             field.readOnly -> {
-                val display = if (field.multiple) UiFieldValues.options(value).joinToString(", ") else value
+                val display = if (field.multiple) UiFieldValues.options(value).joinToString(", ") { optionLabel(field, it) } else optionLabel(field, value)
                 if (field.multiple || display.isBlank()) {
                     Text(field.label, color = colors.muted, fontSize = 12.sp)
                     Text(
@@ -976,7 +988,7 @@ private fun ModuleField(
                             enabled = enabled,
                             colors = RadioButtonDefaults.colors(selectedColor = colors.accent, unselectedColor = colors.muted),
                         )
-                        Text(option, color = colors.text)
+                        Text(optionLabel(field, option), color = colors.text)
                     }
                 }
             }
@@ -995,7 +1007,7 @@ private fun ModuleField(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            chosen.joinToString(", ").ifBlank { field.placeholder.ifBlank { "Selecciona una o varias opciones" } },
+                            chosen.joinToString(", ") { optionLabel(field, it) }.ifBlank { field.placeholder.ifBlank { tr("Selecciona una o varias opciones") } },
                             color = if (chosen.isEmpty()) colors.muted else colors.text,
                             modifier = Modifier.weight(1f),
                         )
@@ -1012,7 +1024,7 @@ private fun ModuleField(
                                             colors = CheckboxDefaults.colors(checkedColor = colors.accent, uncheckedColor = colors.muted),
                                         )
                                         Spacer(Modifier.width(8.dp))
-                                        Text(option)
+                                        Text(optionLabel(field, option))
                                     }
                                 },
                                 // El menu sigue abierto para marcar varias; se cierra tocando fuera.
@@ -1037,7 +1049,7 @@ private fun ModuleField(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            value.ifBlank { field.placeholder.ifBlank { "Selecciona una opcion" } },
+                            if (value.isBlank()) field.placeholder.ifBlank { tr("Selecciona una opcion") } else optionLabel(field, value),
                             color = if (value.isBlank()) colors.muted else colors.text,
                             modifier = Modifier.weight(1f),
                         )
@@ -1046,7 +1058,7 @@ private fun ModuleField(
                     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                         field.options.forEach { option ->
                             DropdownMenuItem(
-                                text = { Text(option) },
+                                text = { Text(optionLabel(field, option)) },
                                 onClick = {
                                     expanded = false
                                     onChange(option)
@@ -1062,7 +1074,7 @@ private fun ModuleField(
                 label = label,
                 withTime = field.type == "datetime",
                 enabled = enabled,
-                placeholder = field.placeholder.ifBlank { if (field.type == "datetime") "AAAA-MM-DDTHH:mm" else "AAAA-MM-DD" },
+                placeholder = field.placeholder.ifBlank { if (field.type == "datetime") tr("AAAA-MM-DDTHH:mm") else tr("AAAA-MM-DD") },
                 textFieldColors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = colors.text,
                     unfocusedTextColor = colors.text,
@@ -1179,7 +1191,7 @@ private const val PageSize = 50
 
 @Composable
 private fun ShowMoreButton(remaining: Int, colors: ModuleColors, onClick: () -> Unit) {
-    TextButton(onClick = onClick) { Text("Ver m\u00e1s ($remaining restantes)", color = colors.accentText) }
+    TextButton(onClick = onClick) { Text(tr("Ver m\u00e1s ({0} restantes)", remaining), color = colors.accentText) }
 }
 
 /**
@@ -1285,9 +1297,9 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
                         selecting = false
                     }
                     context.onAction(pending.request.copy(confirm = null))
-                }) { Text("Continuar") }
+                }) { Text(tr("Continuar")) }
             },
-            dismissButton = { TextButton(onClick = { pendingRun = null }) { Text("Cancelar") } },
+            dismissButton = { TextButton(onClick = { pendingRun = null }) { Text(tr("Cancelar")) } },
         )
     }
     val hasActions = node.actions.isNotEmpty()
@@ -1302,7 +1314,7 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
                 }
             } else {
                 TextButton(onClick = { selecting = true }, enabled = !context.busy) {
-                    Text("Seleccionar", color = colors.accentText, fontWeight = FontWeight.SemiBold)
+                    Text(tr("Seleccionar"), color = colors.accentText, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -1358,13 +1370,13 @@ private fun BoardSelectionBar(
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Text(
-            if (count == 1) "1 seleccionado" else "$count seleccionados",
+            if (count == 1) tr("1 seleccionado") else tr("{0} seleccionados", count),
             color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
         )
         actions.forEach { action ->
             BoardActionButton(action, colors, enabled && count > 0) { value -> onRun(action, selection.keys.toList(), value, true) }
         }
-        TextButton(onClick = onCancel) { Text("Cancelar", color = colors.muted) }
+        TextButton(onClick = onCancel) { Text(tr("Cancelar"), color = colors.muted) }
     }
 }
 
@@ -1431,7 +1443,7 @@ private fun BoardColumn(
             Text(column.cards.size.toString(), color = colors.muted, fontSize = 12.sp)
         }
         if (column.caption.isNotBlank()) Text(column.caption, color = colors.muted, fontSize = 12.sp)
-        if (column.cards.isEmpty()) Text("Sin elementos.", color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+        if (column.cards.isEmpty()) Text(tr("Sin elementos."), color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
         if (selecting && column.cards.isNotEmpty()) {
             // Solo las tarjetas ya cargadas (las que muestra "Ver mas") entran en "Seleccionar todos".
             val loaded = column.cards.take(shown)
@@ -1447,7 +1459,7 @@ private fun BoardColumn(
                     onCheckedChange = null,
                     colors = CheckboxDefaults.colors(checkedColor = colors.accent, uncheckedColor = colors.muted, checkmarkColor = colors.onAccent),
                 )
-                Text("Seleccionar todos", color = colors.text, fontSize = 12.sp)
+                Text(tr("Seleccionar todos"), color = colors.text, fontSize = 12.sp)
             }
         }
         column.cards.take(shown).forEach { card ->
@@ -1576,9 +1588,9 @@ private fun BoardCard(
             Box {
                 Text(
                     when {
-                        canPickColumn && actions.isNotEmpty() -> "Mover / Acciones"
-                        canPickColumn -> "Mover a..."
-                        else -> "Acciones"
+                        canPickColumn && actions.isNotEmpty() -> tr("Mover / Acciones")
+                        canPickColumn -> tr("Mover a...")
+                        else -> tr("Acciones")
                     },
                     color = colors.accentText,
                     fontSize = 12.sp,
@@ -1658,6 +1670,7 @@ private fun ModuleList(node: UiList, context: ModuleRenderContext) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
                     Text(item.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     if (item.subtitle.isNotBlank()) Text(item.subtitle, color = colors.muted, fontSize = 12.sp, maxLines = 2)
+                    item.translation?.takeIf { it.isNotBlank() && it != item.subtitle }?.let { Text(it, color = colors.muted, fontSize = 12.sp) }
                     ModuleBadges(item.badges, colors)
                 }
                 if (item.trailing.isNotBlank()) Text(item.trailing, color = colors.muted, fontSize = 12.sp)
@@ -1681,6 +1694,11 @@ private fun ModuleTimeline(node: UiTimeline, colors: ModuleColors) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
                     Text(entry.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     if (entry.body.isNotBlank()) Text(entry.body, color = colors.text, fontSize = 13.sp)
+                    // Traduccion de la nota (la original no se reemplaza): debajo, en tono secundario.
+                    val translation = entry.translation
+                    if (!translation.isNullOrBlank() && translation != entry.body) {
+                        Text(translation, color = colors.muted, fontSize = 13.sp)
+                    }
                     if (entry.caption.isNotBlank()) Text(entry.caption, color = colors.muted, fontSize = 11.sp)
                 }
             }

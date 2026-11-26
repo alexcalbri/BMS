@@ -12,6 +12,7 @@ import com.ideasdeveloper.bms.server.extensions.ExtensionSource
 import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -26,8 +27,8 @@ object UnifiExtension : ServerExtension, NetworkControllerProvider {
         module = "hotspot",
         displayName = "UniFi",
         description = "Controlador de red UniFi: autoriza y desconecta a los visitantes del portal en una consola UniFi a traves de UniFi Site Manager (api.ui.com) y lista sus redes WiFi.",
-        version = "1.0.0",
-        minModuleVersion = "0.11.0",
+        version = "1.1.0",
+        minModuleVersion = "0.13.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/unifi",
@@ -47,7 +48,7 @@ object UnifiExtension : ServerExtension, NetworkControllerProvider {
 
     override fun sites(settings: HotspotSettings, consoleId: String): List<ControllerOption> = try {
         UnifiClient.sites(settings.unifiApiKey.orEmpty(), consoleId).map { site ->
-            ControllerOption(site.id, site.name, site.reference.takeIf { it.isNotBlank() }?.let { "Referencia: $it" }.orEmpty())
+            ControllerOption(site.id, site.name, site.reference.takeIf { it.isNotBlank() }?.let { tr("Referencia: {0}", it) }.orEmpty())
         }
     } catch (failure: UnifiException) {
         throw NetworkControllerException(failure.message.orEmpty())
@@ -58,7 +59,7 @@ object UnifiExtension : ServerExtension, NetworkControllerProvider {
 object UnifiController : NetworkController {
     override val id = "unifi"
     override val name = "UniFi"
-    override val description = "Autoriza a los visitantes en una consola UniFi a traves de UniFi Site Manager (api.ui.com)."
+    override val description: String get() = tr("Autoriza a los visitantes en una consola UniFi a traves de UniFi Site Manager (api.ui.com).")
 
     override fun isConfigured(settings: HotspotSettings) = settings.unifiConfigured
 
@@ -77,7 +78,7 @@ object UnifiController : NetworkController {
     private val ssidCache = ConcurrentHashMap<List<String>, Pair<Long, List<String>>>()
 
     override fun wifiNetworks(settings: HotspotSettings): List<String> {
-        if (!settings.unifiConfigured) throw NetworkControllerException("Configura la consola y el sitio de UniFi primero.")
+        if (!settings.unifiConfigured) throw NetworkControllerException(tr("Configura la consola y el sitio de UniFi primero."))
         val key = listOf(settings.unifiApiKey!!, settings.unifiConsoleId!!, settings.unifiSiteId!!)
         val now = System.currentTimeMillis()
         ssidCache[key]?.let { (readAt, ssids) -> if (now - readAt < SsidCacheMillis) return ssids }

@@ -23,6 +23,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerReference
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.ui.UiNode
@@ -44,8 +45,8 @@ object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider, CrmImpo
         module = "crm",
         displayName = "Inmobiliaria (corretaje)",
         description = "Convierte el CRM en una herramienta de corretaje: inventario de propiedades con enlaces por portal e historial de precios, captaciones, transacciones con partes y comisiones, y herramientas para agentes de IA.",
-        version = "1.1.1",
-        minModuleVersion = "0.28.0",
+        version = "1.2.0",
+        minModuleVersion = "0.30.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/inmobiliaria",
@@ -98,13 +99,13 @@ object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider, CrmImpo
 
     override val extensionId: String get() = ExtensionId
 
-    override val sections = listOf(
-        CrmExtensionSection("inmobiliaria_inventory", "Propiedades", CrmScreens.View),
-        CrmExtensionSection("inmobiliaria_property", "Propiedad", CrmScreens.View, inMenu = false),
-        CrmExtensionSection("inmobiliaria_intake", "Captaciones", CrmScreens.View),
-        CrmExtensionSection("inmobiliaria_deals", "Cierres", CrmScreens.View),
-        CrmExtensionSection("inmobiliaria_deal", "Transaccion", CrmScreens.View, inMenu = false),
-        CrmExtensionSection("inmobiliaria_stages", "Etapas de cierres", CrmScreens.Settings, inMenu = false),
+    override val sections get() = listOf(
+        CrmExtensionSection("inmobiliaria_inventory", tr("Propiedades"), CrmScreens.View),
+        CrmExtensionSection("inmobiliaria_property", tr("Propiedad"), CrmScreens.View, inMenu = false),
+        CrmExtensionSection("inmobiliaria_intake", tr("Captaciones"), CrmScreens.View),
+        CrmExtensionSection("inmobiliaria_deals", tr("Cierres"), CrmScreens.View),
+        CrmExtensionSection("inmobiliaria_deal", tr("Transaccion"), CrmScreens.View, inMenu = false),
+        CrmExtensionSection("inmobiliaria_stages", tr("Etapas de cierres"), CrmScreens.Settings, inMenu = false),
     )
 
     override val mcpTools: List<McpTool> get() = InmobiliariaMcpTools.tools
@@ -136,10 +137,10 @@ object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider, CrmImpo
         val tenant = context.tenant
         fun count(table: String) = CrmExtensions.count(tenant, "SELECT count(*) FROM $table")
         return listOf(
-            CrmExtensions.item(null, "Ajustes de la extension (moneda y comision por defecto, se borran)", count(InmobiliariaStore.SettingsTable), "delete"),
-            CrmExtensions.item(null, "Etapas de las transacciones (se borran si no quedan transacciones)", count(InmobiliariaStore.StagesTable), "delete"),
-            CrmExtensions.item(PropertiesOption, "Inventario de propiedades, enlaces e historial de precios (si se borran, tambien las transacciones y los intereses de leads con esas propiedades)", count(InmobiliariaStore.PropertiesTable), UninstallDefault.Keep),
-            CrmExtensions.item(DealsOption, "Transacciones y sus partes", count(InmobiliariaStore.DealsTable), UninstallDefault.Keep),
+            CrmExtensions.item(null, tr("Ajustes de la extension (moneda y comision por defecto, se borran)"), count(InmobiliariaStore.SettingsTable), "delete"),
+            CrmExtensions.item(null, tr("Etapas de las transacciones (se borran si no quedan transacciones)"), count(InmobiliariaStore.StagesTable), "delete"),
+            CrmExtensions.item(PropertiesOption, tr("Inventario de propiedades, enlaces e historial de precios (si se borran, tambien las transacciones y los intereses de leads con esas propiedades)"), count(InmobiliariaStore.PropertiesTable), UninstallDefault.Keep),
+            CrmExtensions.item(DealsOption, tr("Transacciones y sus partes"), count(InmobiliariaStore.DealsTable), UninstallDefault.Keep),
         )
     }
 

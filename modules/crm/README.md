@@ -832,7 +832,7 @@ that apply to every lead) with a button that opens the customer's profile. The l
 An extension package can add screens to the CRM by implementing `CrmScreenProvider` next to `ServerExtension`
 (the Core links the extensions with `CrmModuleExtensions.link`; the CRM lists the providers with
 `CrmModuleExtensions.screenProviders()`). The change is additive: nothing the CRM did before changes and
-`CrmExtensions.MinModuleVersion` stays 0.27.0.
+`CrmExtensions.MinModuleVersion` was 0.27.0 then (now 0.30.0, the first bilingual CRM).
 
 - `sections`: `CrmExtensionSection(id, label, permission, inMenu)`. The id must start with `<extensionId>_`; ids that
   clash with a screen of the CRM, or lack the prefix, are ignored. `permission` is one of the CRM permissions.
@@ -979,3 +979,32 @@ the IMAP password is typed (or generated) only in the app. No tool takes or retu
 (only "configured" flags); to save other settings the tools send the stored values back to the same
 save functions server side. `ModuleRegistryTest.noModuleToolTakesCredentials` fails if a tool of any
 module takes an argument named like a credential.
+
+## Languages (0.30.0, needs Core 0.10.0)
+
+Every text the CRM shows to its users (screens, notices, errors, confirmations, permissions, option labels, and the
+notices and emails sent to staff) is available in Spanish (source) and English: the code writes `tr("Texto en espanol")`
+and the English catalog is `server/src/main/resources/modules/crm/i18n/en.json`. Labels of the enums (field types,
+triggers, conditions, actions, stage kinds and tones, providers) are marked with `msg` and shown with `tr`; what the app
+posts back (options, `op`, ids, tabs) stays in Spanish and Core adds `optionLabels`. Notices, digests and emails to staff
+(assignments, mentions, new messages, follow-ups, daily summary, automation notices) are written in the language of each
+recipient (user, else company, else Spanish). Emails and templates sent to customers keep their own translation logic.
+
+- **Dynamic translation (I18N.md section 8).** The CRM registers its translation provider with Core
+  (`registerTextTranslator`), backed by the provider and key of Integrations > Traduccion; without them the originals are
+  shown. Stage names are shown translated as labels (board columns, filters, selects, badges) while the stored name stays
+  the value; the stage editor has a manual translation per language, which wins over the provider. The notes of a lead are
+  shown with their translation under the original (`UiTimelineEntry.translation`), see the privacy paragraph below.
+  Customer data (names, emails, phones, custom field values, imported content, customer emails) is never sent to the provider.
+- **Languages / translation privacy.** Only texts written by staff inside BMS may reach the translation provider. Notes of a
+  lead are sent only when they have an author user (`crm_activity.user_id`, read as `CrmActivity.userId`; `CrmTexts.staffNotes`):
+  notes created by imports (CSV/XLSX columns, monday updates, replies and subitems, WordPress forms) have no user and are never
+  sent. On top of that, sending staff notes is off by default: Integraciones > Traduccion has the switch "Traducir notas del
+  personal" (`crm_settings.translate_staff_notes`, V023, `CrmTranslationSettings.translateNotes`), which says that notes go to
+  the configured provider and may mention customers. Core enforces it for every module (the translator reports
+  `notesAllowed(tenant)` and `TextTranslation.noteTranslations` returns nothing when it is off, so Tareas comments obey it too).
+  Stage, board and other names are translated independently of the switch. The cache keeps no text of a translated note, only
+  its hash (`text_translations.source_text` is empty); manual translations of names keep their source text.
+- **Not translated.** Activity and history rows, run records of the automations, import rows and errors, spam log, the
+  customer history events (written in Spanish when they happen), notes of the customer (Clientes), custom field labels,
+  interests, user and template names, and the MCP tools (names, descriptions and results).

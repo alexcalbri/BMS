@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import com.ideasdeveloper.bms.ui.UiTone
@@ -24,10 +26,10 @@ data class CrmButtonResult(val lines: List<String>, val tone: String) {
 
 /** Button fields (type "button"): their configuration and what pressing them does. */
 object CrmButtons {
-    const val ActionTemplate = "Enviar una plantilla"
-    const val ActionAutomations = "Ejecutar automatizaciones"
+    val ActionTemplate = msg("Enviar una plantilla")
+    val ActionAutomations = msg("Ejecutar automatizaciones")
 
-    fun confirmText(field: CrmField) = "¿Ejecutar ${field.label}?"
+    fun confirmText(field: CrmField) = tr("¿Ejecutar {0}?", field.label)
 
     // ---- Configuration (crm_field_definitions.config) ----
 
@@ -53,18 +55,18 @@ object CrmButtons {
         when (values["buttonAction"].orEmpty().trim()) {
             ActionTemplate -> {
                 val name = values["buttonTemplate"].orEmpty().trim()
-                val template = templates.firstOrNull { it.name == name } ?: throw CrmValidationException("Elige la plantilla del boton (se crean en Plantillas).")
+                val template = templates.firstOrNull { it.name == name } ?: throw CrmValidationException(tr("Elige la plantilla del boton (se crean en Plantillas)."))
                 toJson(CrmButtonConfig(templateId = template.id))
             }
             ActionAutomations -> {
                 val names = UiFieldValues.options(values["buttonAutomations"].orEmpty())
-                if (names.isEmpty()) throw CrmValidationException("Elige al menos una automatizacion manual para el boton.")
+                if (names.isEmpty()) throw CrmValidationException(tr("Elige al menos una automatizacion manual para el boton."))
                 val ids = names.map { name ->
-                    manualAutomations.firstOrNull { it.name == name }?.id ?: throw CrmValidationException("La automatizacion $name no existe o no es manual.")
+                    manualAutomations.firstOrNull { it.name == name }?.id ?: throw CrmValidationException(tr("La automatizacion {0} no existe o no es manual.", name))
                 }
                 toJson(CrmButtonConfig(automationIds = ids.distinct()))
             }
-            else -> throw CrmValidationException("Elige que hace el boton: $ActionTemplate o ${ActionAutomations.lowercase()}.")
+            else -> throw CrmValidationException(tr("Elige que hace el boton: {0} o {1}.", tr(ActionTemplate), tr(ActionAutomations).lowercase()))
         }
 
     /** Values of the field form for an existing button. */
@@ -84,9 +86,9 @@ object CrmButtons {
     fun describe(config: JsonObject, templates: List<CrmTemplate>, automations: List<CrmAutomation>): String {
         val read = read(config)
         return when {
-            read.templateId != null -> "envia ${templates.firstOrNull { it.id == read.templateId }?.name ?: "una plantilla eliminada"}"
-            read.automationIds.isNotEmpty() -> "ejecuta ${read.automationIds.joinToString(", ") { id -> automations.firstOrNull { it.id == id }?.name ?: "una automatizacion eliminada" }}"
-            else -> "sin accion"
+            read.templateId != null -> tr("envia {0}", templates.firstOrNull { it.id == read.templateId }?.name ?: tr("una plantilla eliminada"))
+            read.automationIds.isNotEmpty() -> tr("ejecuta {0}", read.automationIds.joinToString(", ") { id -> automations.firstOrNull { it.id == id }?.name ?: tr("una automatizacion eliminada") })
+            else -> tr("sin accion")
         }
     }
 
@@ -108,26 +110,26 @@ object CrmButtons {
         tenant: Connection, lead: CrmLead, field: CrmField, actor: CrmActor,
         notifier: ModuleNotifier? = CrmLeadEvents.access?.notificationsFor(CrmModule.id), http: CrmHttp = CrmJavaHttp,
     ): CrmButtonResult {
-        if (lead.archivedAt != null) return CrmButtonResult(listOf("El lead esta archivado: restauralo antes de usar sus botones."), UiTone.Warning)
+        if (lead.archivedAt != null) return CrmButtonResult(listOf(tr("El lead esta archivado: restauralo antes de usar sus botones.")), UiTone.Warning)
         val config = read(field.config)
         return when {
             config.templateId != null -> sendTemplate(tenant, lead, config.templateId, actor, http)
             config.automationIds.isNotEmpty() -> runAutomations(tenant, lead, config.automationIds, actor, notifier, http)
-            else -> CrmButtonResult(listOf("El boton ${field.label} no tiene accion: elige una en Configuracion > Campos personalizados."), UiTone.Warning)
+            else -> CrmButtonResult(listOf(tr("El boton {0} no tiene accion: elige una en Configuracion > Campos personalizados.", field.label)), UiTone.Warning)
         }
     }
 
     private fun sendTemplate(tenant: Connection, lead: CrmLead, templateId: UUID, actor: CrmActor, http: CrmHttp): CrmButtonResult {
         val template = CrmMail.templates(tenant).firstOrNull { it.id == templateId }
-            ?: return CrmButtonResult(listOf("Esa plantilla ya no existe."), UiTone.Danger)
+            ?: return CrmButtonResult(listOf(tr("Esa plantilla ya no existe.")), UiTone.Danger)
         val missing = CrmAutomationRequirements.missing(CrmAction(CrmActionKind.SendTemplate, templateId = templateId), CrmLeadFacts(email = lead.email))
         if (missing.isNotEmpty()) {
-            return CrmButtonResult(listOf("No se envio ${template.name}: falta ${CrmAutomationRequirements.sentence(missing)}."), UiTone.Warning)
+            return CrmButtonResult(listOf(tr("No se envio {0}: falta {1}.", template.name, CrmAutomationRequirements.sentence(missing))), UiTone.Warning)
         }
         return try {
             val sent = CrmTemplateMailer.send(tenant, templateId, lead.id, actor, http = http)
-            val translated = if (sent.mail.translated) " (traducida al ${sent.mail.language})" else ""
-            CrmButtonResult(listOfNotNull("Plantilla ${template.name} enviada a ${sent.to}$translated.", sent.mail.note), if (sent.mail.note == null) UiTone.Success else UiTone.Warning)
+            val translated = if (sent.mail.translated) tr(" (traducida al {0})", sent.mail.language) else ""
+            CrmButtonResult(listOfNotNull(tr("Plantilla {0} enviada a {1}{2}.", template.name, sent.to, translated), sent.mail.note), if (sent.mail.note == null) UiTone.Success else UiTone.Warning)
         } catch (failure: CrmValidationException) {
             CrmButtonResult(listOf(failure.message.orEmpty()), UiTone.Danger)
         }
@@ -144,19 +146,19 @@ object CrmButtons {
         for (id in ids) {
             val automation = all.firstOrNull { it.id == id && it.trigger.type == CrmTriggerType.Manual }
             if (automation == null) {
-                lines += "Una automatizacion del boton ya no existe o dejo de ser manual."
+                lines += tr("Una automatizacion del boton ya no existe o dejo de ser manual.")
                 statuses += CrmRunOutcome.Skipped
                 break
             }
             if (!automation.enabled) {
-                lines += "${automation.name} esta desactivada: activala en Configuracion > Automatizaciones."
+                lines += tr("{0} esta desactivada: activala en Configuracion > Automatizaciones.", automation.name)
                 statuses += CrmRunOutcome.Skipped
                 break
             }
             // The previous automation may have changed the lead.
             val current = CrmRepository.lead(tenant, lead.id)
             if (current == null) {
-                lines += "El lead ya no existe."
+                lines += tr("El lead ya no existe.")
                 statuses += CrmRunOutcome.Failed
                 break
             }

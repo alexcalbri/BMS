@@ -5,10 +5,11 @@ import com.ideasdeveloper.bms.modules.tareas.TareasImportApply
 import com.ideasdeveloper.bms.modules.tareas.TareasImportJobContext
 import com.ideasdeveloper.bms.modules.tareas.TareasRepository
 import com.ideasdeveloper.bms.modules.tareas.TareasValidationException
-import org.slf4j.LoggerFactory
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.time.Duration
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /**
  * Avanza las importaciones: lee un tablero pagina por pagina (cursor guardado en el trabajo, hasta 20 000 elementos) y
@@ -100,7 +101,7 @@ object TareasMondayRunner {
     private fun readPages(context: TareasImportJobContext, job: MondayJob, deadline: Long): Int {
         val tenant = context.tenant
         val token = TareasMondaySettings.loadToken(context.access.secrets, tenant)
-            ?: throw TareasMondayException("Falta el token de monday o no se puede leer; guardalo de nuevo.")
+            ?: throw TareasMondayException(tr("Falta el token de monday o no se puede leer; guardalo de nuevo."))
         var cursor = job.cursor
         var pages = job.pages
         var read = 0
@@ -108,15 +109,15 @@ object TareasMondayRunner {
         if (cursor != "") {
             do {
                 if (TareasMondayJobs.statusOf(tenant, job.id) != MondayJobStatus.Reading) return read
-                if (pages >= MaxPages) throw TareasMondayException("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo.")
+                if (pages >= MaxPages) throw TareasMondayException(tr("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo."))
                 // Solo la pagina de elementos se puede reducir ante complejidad o respuesta enorme; personas y notas, no.
                 val page: MondayPage
                 try {
                     page = TareasMondayClient.itemsPage(token, job.boardId, cursor, job.pageSize, deadline)
-                    if (page.cursor.length > MaxCursorLength) throw TareasMondayException("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero.")
-                    if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw TareasMondayException("monday devolvio una pagina vacia sin terminar la lectura del tablero.")
+                    if (page.cursor.length > MaxCursorLength) throw TareasMondayException(tr("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero."))
+                    if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw TareasMondayException(tr("monday devolvio una pagina vacia sin terminar la lectura del tablero."))
                     if (job.total + read + page.items.size > TareasMondayClient.MaxItems) {
-                        throw TareasMondayException("El tablero tiene mas de ${TareasMondayClient.MaxItems} elementos; divide el tablero antes de importarlo.")
+                        throw TareasMondayException(tr("El tablero tiene mas de {0} elementos; divide el tablero antes de importarlo.", TareasMondayClient.MaxItems))
                     }
                 } catch (failure: TareasMondayException) {
                     return recoverRead(tenant, job, failure, read, canShrink = true)
@@ -197,7 +198,7 @@ object TareasMondayRunner {
             parts += MondaySummaryDto.of(TareasImportApply.summary(tasks, users, 0))
             after = last
         }
-        if (parts.isEmpty()) throw TareasMondayException("El tablero no tiene elementos.")
+        if (parts.isEmpty()) throw TareasMondayException(tr("El tablero no tiene elementos."))
         val summary = MondaySummaryDto.merge(parts).copy(files = TareasMondayJobs.fileCount(tenant, job.id))
         TareasMondayJobs.moveToPreview(tenant, job.id, summary)
     }

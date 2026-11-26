@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.RoundingMode
@@ -10,9 +12,11 @@ import java.util.UUID
 
 /** Persistencia de las reservas (tabla crm_reservations, que se queda en el CRM). */
 object CrmReservations {
+    fun statusLabel(status: String): String = statusLabels[status]?.let { tr(it) } ?: status
+
     val statusLabels = mapOf(
-        "not_confirmed" to "Sin confirmar", "confirmed" to "Confirmada", "canceled" to "Cancelada",
-        "checked_in" to "En el hotel", "checked_out" to "Salio", "no_show" to "No llego",
+        "not_confirmed" to msg("Sin confirmar"), "confirmed" to msg("Confirmada"), "canceled" to msg("Cancelada"),
+        "checked_in" to msg("En el hotel"), "checked_out" to msg("Salio"), "no_show" to msg("No llego"),
     )
 
     /** Reparte [total] en [parts] montos de 2 decimales que suman exactamente [total] (los centavos sobrantes van primero). */

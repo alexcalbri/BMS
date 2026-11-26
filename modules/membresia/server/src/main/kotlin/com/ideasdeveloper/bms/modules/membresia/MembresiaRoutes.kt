@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessErrorResponse
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -10,6 +13,7 @@ import com.ideasdeveloper.bms.ui.UiScreen
 import com.ideasdeveloper.bms.ui.UiSuggestions
 import com.ideasdeveloper.bms.ui.UiTone
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receiveStream
@@ -19,7 +23,13 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import io.ktor.http.HttpHeaders
+import java.io.IOException
+import java.math.BigDecimal
+import java.sql.Connection
+import java.sql.SQLException
+import java.time.DateTimeException
+import java.time.LocalDate
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,13 +39,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
-import java.io.IOException
-import java.math.BigDecimal
-import java.sql.Connection
-import java.sql.SQLException
-import java.time.DateTimeException
-import java.time.LocalDate
-import java.util.UUID
 
 /**
  * Rutas de las pantallas nativas. Cada ruta comprueba el permiso especifico despues de requireModuleAccess y todo el
@@ -94,7 +97,7 @@ object MembresiaRoutes {
                 val rights = MembresiaAccess.from(permissions)
                 val requested = call.parameters["screen"].orEmpty()
                 val screen = if (requested == "home") MembresiaScreens.home(rights) ?: return@get call.forbidden() else requested
-                if (!MembresiaScreens.isScreen(screen)) return@get call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("UNKNOWN_SCREEN", "Sección no encontrada."))
+                if (!MembresiaScreens.isScreen(screen)) return@get call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("UNKNOWN_SCREEN", tr("Sección no encontrada.")))
                 if (!MembresiaScreens.allowed(rights, screen)) return@get call.forbidden()
                 val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
                 val env = ImportEnv(access, permissions, access.companyCode(call).orEmpty())
@@ -107,9 +110,9 @@ object MembresiaRoutes {
                 val permissions = call.requireModuleAccess(access, MembresiaModule.Id) ?: return@post
                 val action = call.parameters["screen"].orEmpty()
                 val required = actionPermission[action]
-                    ?: return@post call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("UNKNOWN_ACTION", "Acción no encontrada."))
+                    ?: return@post call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("UNKNOWN_ACTION", tr("Acción no encontrada.")))
                 if (!permissions.has(required)) return@post call.forbidden()
-                val values = call.formValues() ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ModuleAccessErrorResponse("BODY_TOO_LARGE", "Los datos enviados son demasiado grandes."))
+                val values = call.formValues() ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ModuleAccessErrorResponse("BODY_TOO_LARGE", tr("Los datos enviados son demasiado grandes.")))
                 val env = ImportEnv(access, permissions, access.companyCode(call).orEmpty())
                 call.respondTenant(access, UiScreen.serializer()) { tenant ->
                     perform(access, tenant, permissions, action, values, LocalDate.now(), env)
@@ -165,8 +168,8 @@ object MembresiaRoutes {
                 )
             }
             "miembro" -> {
-                val customerId = uuid(params["customer"]) ?: return fallback("El miembro no es válido.")
-                val detail = MembresiaRepository.member(tenant, customerId, today, expiringDays) ?: return fallback("El miembro no existe o no está disponible.")
+                val customerId = uuid(params["customer"]) ?: return fallback(tr("El miembro no es válido."))
+                val detail = MembresiaRepository.member(tenant, customerId, today, expiringDays) ?: return fallback(tr("El miembro no existe o no está disponible."))
                 val wifiCode = if (rights.visits || rights.manage) MembresiaRepository.customerCode(tenant, customerId) else null
                 MembresiaScreens.miembro(rights, detail, today, expiringDays, notice, overrideReason, wifiCode)
             }
@@ -187,11 +190,11 @@ object MembresiaRoutes {
                 )
             }
             "renovar" -> {
-                val membership = uuid(params["id"])?.let { MembresiaRepository.membership(tenant, it) } ?: return fallback("La membresía no existe.")
+                val membership = uuid(params["id"])?.let { MembresiaRepository.membership(tenant, it) } ?: return fallback(tr("La membresía no existe."))
                 MembresiaScreens.renovar(rights, membership, MembresiaRepository.plans(tenant), settings, today, values, notice)
             }
             "editar" -> {
-                val membership = uuid(params["id"])?.let { MembresiaRepository.membership(tenant, it) } ?: return fallback("La membresía no existe.")
+                val membership = uuid(params["id"])?.let { MembresiaRepository.membership(tenant, it) } ?: return fallback(tr("La membresía no existe."))
                 MembresiaScreens.editar(rights, membership, settings, MembresiaRepository.hostCandidates(tenant), values, notice)
             }
             "planes" -> {
@@ -205,11 +208,11 @@ object MembresiaRoutes {
             }
             "importar" -> {
                 val selected = importSources.firstOrNull { it.sourceId == params["source"] } ?: importSources.singleOrNull()
-                val nodes = if (env != null && selected != null) selected.screen(env.context(tenant, today), params) else emptyList()
+                val nodes = if (env != null && selected != null) localizedFor(selected, selected.screen(env.context(tenant, today), params)) else emptyList()
                 MembresiaScreens.importar(rights, importSources.map { it.sourceId to it.title }, selected?.sourceId, nodes, notice)
             }
             "ajustes" -> MembresiaScreens.ajustes(rights, values ?: MembresiaScreens.ajustesValues(settings), notice)
-            else -> fallback("Sección no encontrada.")
+            else -> fallback(tr("Sección no encontrada."))
         }
     }
 
@@ -236,29 +239,29 @@ object MembresiaRoutes {
                 "guest" -> guest(tenant, values, author, today, ::member, ::show)
                 "crear" -> create(access, tenant, values, author, today, ::member, ::show)
                 "renovar" -> {
-                    val id = uuid(values["id"]) ?: return show("recepcion", emptyMap(), failure("La membresía no es válida."))
+                    val id = uuid(values["id"]) ?: return show("recepcion", emptyMap(), failure(tr("La membresía no es válida.")))
                     val plans = MembresiaRepository.plans(tenant)
                     val settings = MembresiaRepository.settings(tenant)
                     val errors = mutableListOf<String>()
                     val plan = values["plan"].orEmpty().takeIf { it.isNotBlank() }?.let { label -> plans.firstOrNull { MembresiaScreens.planLabel(it, settings.currency) == label } }
-                    if (values["plan"].orEmpty().isNotBlank() && plan == null) errors += "Elige un plan de la lista."
-                    val startsOn = parseOptionalDate(values["startsOn"], "El inicio no es una fecha válida (AAAA-MM-DD).", errors)
+                    if (values["plan"].orEmpty().isNotBlank() && plan == null) errors += tr("Elige un plan de la lista.")
+                    val startsOn = parseOptionalDate(values["startsOn"], tr("El inicio no es una fecha válida (AAAA-MM-DD)."), errors)
                     val amount = parseOptionalAmount(values["amount"], errors)
                     if (errors.isNotEmpty()) return show("renovar", mapOf("id" to id.toString()), failure(errors.joinToString(" ")), values)
                     try {
                         val renewed = MembresiaService.renew(tenant, id, RenewalInput(plan?.id, startsOn, amount), author, today)
-                            ?: return show("recepcion", emptyMap(), failure("Membresía no encontrada."))
-                        member(renewed.customerId, notice("Membresía renovada: ${renewed.startsOn} a ${renewed.endsOn}.", UiTone.Success))
+                            ?: return show("recepcion", emptyMap(), failure(tr("Membresía no encontrada.")))
+                        member(renewed.customerId, notice(tr("Membresía renovada: {0} a {1}.", renewed.startsOn, renewed.endsOn), UiTone.Success))
                     } catch (invalid: MembresiaValidationException) {
                         show("renovar", mapOf("id" to id.toString()), failure(invalid.errors.joinToString(" ")), values)
                     }
                 }
                 "editar" -> {
-                    val id = uuid(values["id"]) ?: return show("recepcion", emptyMap(), failure("La membresía no es válida."))
+                    val id = uuid(values["id"]) ?: return show("recepcion", emptyMap(), failure(tr("La membresía no es válida.")))
                     val hosts = MembresiaRepository.hostCandidates(tenant)
                     val errors = mutableListOf<String>()
-                    val endsOn = date(values["endsOn"]) ?: run { errors += "El fin no es una fecha válida (AAAA-MM-DD)."; null }
-                    val amount = MembresiaRules.parseAmount(values["amount"]) ?: run { errors += "El monto no es válido."; null }
+                    val endsOn = date(values["endsOn"]) ?: run { errors += tr("El fin no es una fecha válida (AAAA-MM-DD)."); null }
+                    val amount = MembresiaRules.parseAmount(values["amount"]) ?: run { errors += tr("El monto no es válido."); null }
                     if (errors.isNotEmpty() || endsOn == null || amount == null) {
                         return show("editar", mapOf("id" to id.toString()), failure(errors.joinToString(" ")), values)
                     }
@@ -269,18 +272,18 @@ object MembresiaRoutes {
                             tenant, id,
                             MembershipEdit(endsOn, amount, values["source"].orEmpty().trim(), host?.userId, host?.name.orEmpty(), values["unit"].orEmpty(), values["notes"].orEmpty()),
                             today,
-                        ) ?: return show("recepcion", emptyMap(), failure("Membresía no encontrada."))
-                        member(edited.customerId, notice("Cambios guardados.", UiTone.Success))
+                        ) ?: return show("recepcion", emptyMap(), failure(tr("Membresía no encontrada.")))
+                        member(edited.customerId, notice(tr("Cambios guardados."), UiTone.Success))
                     } catch (invalid: MembresiaValidationException) {
                         show("editar", mapOf("id" to id.toString()), failure(invalid.errors.joinToString(" ")), values)
                     }
                 }
                 "cancelar" -> {
-                    val id = uuid(values["id"]) ?: return show("recepcion", emptyMap(), failure("La membresía no es válida."))
+                    val id = uuid(values["id"]) ?: return show("recepcion", emptyMap(), failure(tr("La membresía no es válida.")))
                     try {
                         val cancelled = MembresiaService.cancel(tenant, id, values["reason"].orEmpty())
-                            ?: return show("recepcion", emptyMap(), failure("Membresía no encontrada o ya cancelada."))
-                        member(cancelled.customerId, notice("Membresía cancelada.", UiTone.Success))
+                            ?: return show("recepcion", emptyMap(), failure(tr("Membresía no encontrada o ya cancelada.")))
+                        member(cancelled.customerId, notice(tr("Membresía cancelada."), UiTone.Success))
                     } catch (invalid: MembresiaValidationException) {
                         val membership = MembresiaRepository.membership(tenant, id)
                         if (membership == null) show("recepcion", emptyMap(), failure(invalid.errors.joinToString(" "))) else member(membership.customerId, failure(invalid.errors.joinToString(" ")))
@@ -288,30 +291,30 @@ object MembresiaRoutes {
                 }
                 "plan-guardar" -> savePlan(tenant, values, ::show)
                 "plan-activo" -> {
-                    val id = uuid(values["id"]) ?: return show("planes", emptyMap(), failure("El plan no es válido."))
+                    val id = uuid(values["id"]) ?: return show("planes", emptyMap(), failure(tr("El plan no es válido.")))
                     val active = values["active"] == "true"
                     val changed = MembresiaRepository.setPlanActive(tenant, id, active)
-                    if (!changed) show("planes", emptyMap(), failure("El plan no existe."))
-                    else show("planes", emptyMap(), notice(if (active) "Plan activado." else "Plan desactivado.", UiTone.Success))
+                    if (!changed) show("planes", emptyMap(), failure(tr("El plan no existe.")))
+                    else show("planes", emptyMap(), notice(if (active) tr("Plan activado.") else tr("Plan desactivado."), UiTone.Success))
                 }
                 "ajustes-guardar" -> {
                     val days = values["expiringDays"].orEmpty().trim().toIntOrNull()
-                    if (days == null) return show("ajustes", emptyMap(), failure("Los días de aviso deben ser un número."), values)
+                    if (days == null) return show("ajustes", emptyMap(), failure(tr("Los días de aviso deben ser un número.")), values)
                     val settings = MembresiaSettings(values["currency"].orEmpty().trim().uppercase(), days, MembresiaRules.parseSources(values["sources"].orEmpty()))
                     try {
                         MembresiaRepository.saveSettings(tenant, settings)
-                        show("ajustes", emptyMap(), notice("Ajustes guardados.", UiTone.Success))
+                        show("ajustes", emptyMap(), notice(tr("Ajustes guardados."), UiTone.Success))
                     } catch (invalid: MembresiaValidationException) {
                         show("ajustes", emptyMap(), failure(invalid.errors.joinToString(" ")), values)
                     }
                 }
                 "importar" -> {
                     val source = MembresiaImportSources.find(values["source"].orEmpty())?.takeIf { it.enabled(tenant, env.companyCode) }
-                        ?: return show("importar", emptyMap(), failure("La fuente de importación no está disponible."))
+                        ?: return show("importar", emptyMap(), failure(tr("La fuente de importación no está disponible.")))
                     val reply = source.action(env.context(tenant, today), values["op"].orEmpty(), values)
                     show("importar", reply.params + ("source" to source.sourceId), notice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
                 }
-                else -> show("recepcion", emptyMap(), failure("Acción no encontrada."))
+                else -> show("recepcion", emptyMap(), failure(tr("Acción no encontrada.")))
             }
         } catch (invalid: MembresiaValidationException) {
             // Cualquier validacion no prevista: se vuelve a la pantalla de inicio con el motivo.
@@ -327,21 +330,21 @@ object MembresiaRoutes {
         member: (UUID, UiNotice, String?) -> UiScreen,
         show: (String, Map<String, String>, UiNotice, Map<String, String>?, String?) -> UiScreen,
     ): UiScreen {
-        val customerId = uuid(values["customer"]) ?: return show("recepcion", emptyMap(), failure("El cliente no es válido."), null, null)
+        val customerId = uuid(values["customer"]) ?: return show("recepcion", emptyMap(), failure(tr("El cliente no es válido.")), null, null)
         return when (val outcome = MembresiaService.checkIn(tenant, customerId, values["override"] == "true", author, today)) {
-            CheckInOutcome.NoMember -> show("recepcion", emptyMap(), failure("El cliente no existe o no está disponible."), null, null)
-            CheckInOutcome.NoMembership -> member(customerId, notice("Este cliente aún no tiene membresía.", UiTone.Warning), null)
+            CheckInOutcome.NoMember -> show("recepcion", emptyMap(), failure(tr("El cliente no existe o no está disponible.")), null, null)
+            CheckInOutcome.NoMembership -> member(customerId, notice(tr("Este cliente aún no tiene membresía."), UiTone.Warning), null)
             is CheckInOutcome.Done -> when (val result = outcome.result) {
                 is VisitResult.Recorded -> {
                     val exhausted = MembresiaRules.visitsLeft(outcome.membership) == 0
                     val text = when {
-                        result.overridden -> "Visita registrada igual (con aviso)."
-                        exhausted -> "Visita registrada. Era la última visita incluida en su plan."
-                        else -> "Visita registrada"
+                        result.overridden -> tr("Visita registrada igual (con aviso).")
+                        exhausted -> tr("Visita registrada. Era la última visita incluida en su plan.")
+                        else -> tr("Visita registrada")
                     }
                     member(customerId, notice(text, if (exhausted && !result.overridden) UiTone.Warning else UiTone.Success), null)
                 }
-                VisitResult.AlreadyToday -> member(customerId, notice("Ya tenía visita hoy", UiTone.Info), null)
+                VisitResult.AlreadyToday -> member(customerId, notice(tr("Ya tenía visita hoy"), UiTone.Info), null)
                 is VisitResult.NeedsOverride -> member(customerId, notice(result.reason, UiTone.Warning), result.reason)
                 is VisitResult.Refused -> member(customerId, failure(result.reason), null)
             }
@@ -356,13 +359,13 @@ object MembresiaRoutes {
         member: (UUID, UiNotice, String?) -> UiScreen,
         show: (String, Map<String, String>, UiNotice, Map<String, String>?, String?) -> UiScreen,
     ): UiScreen {
-        val customerId = uuid(values["customer"]) ?: return show("recepcion", emptyMap(), failure("El cliente no es válido."), null, null)
+        val customerId = uuid(values["customer"]) ?: return show("recepcion", emptyMap(), failure(tr("El cliente no es válido.")), null, null)
         return try {
             when (val outcome = MembresiaService.guestPass(tenant, customerId, values["guestName"].orEmpty(), author, today)) {
-                GuestPassOutcome.NoMember -> show("recepcion", emptyMap(), failure("El cliente no existe o no está disponible."), null, null)
-                GuestPassOutcome.NoMembership -> member(customerId, notice("Este cliente aún no tiene membresía.", UiTone.Warning), null)
+                GuestPassOutcome.NoMember -> show("recepcion", emptyMap(), failure(tr("El cliente no existe o no está disponible.")), null, null)
+                GuestPassOutcome.NoMembership -> member(customerId, notice(tr("Este cliente aún no tiene membresía."), UiTone.Warning), null)
                 is GuestPassOutcome.Done -> when (val result = outcome.result) {
-                    GuestPassResult.Recorded -> member(customerId, notice("Invitado registrado. Pases restantes: ${MembresiaRules.guestPassesLeft(outcome.membership)}.", UiTone.Success), null)
+                    GuestPassResult.Recorded -> member(customerId, notice(tr("Invitado registrado. Pases restantes: {0}.", MembresiaRules.guestPassesLeft(outcome.membership)), UiTone.Success), null)
                     is GuestPassResult.Refused -> member(customerId, failure(result.reason), null)
                 }
             }
@@ -385,12 +388,12 @@ object MembresiaRoutes {
         val hosts = MembresiaRepository.hostCandidates(tenant)
         val errors = mutableListOf<String>()
         val plan = values["plan"].orEmpty().let { label -> plans.firstOrNull { MembresiaScreens.planLabel(it, settings.currency) == label } }
-        if (plan == null) errors += "Elige un plan de la lista."
-        val startsOn = parseOptionalDate(values["startsOn"], "El inicio no es una fecha válida (AAAA-MM-DD).", errors)
+        if (plan == null) errors += tr("Elige un plan de la lista.")
+        val startsOn = parseOptionalDate(values["startsOn"], tr("El inicio no es una fecha válida (AAAA-MM-DD)."), errors)
         val amount = parseOptionalAmount(values["amount"], errors)
         val existing = uuid(values["customerId"])
         val name = values["name"].orEmpty().trim()
-        if (existing == null && name.isEmpty()) errors += "Escribe o elige el cliente."
+        if (existing == null && name.isEmpty()) errors += tr("Escribe o elige el cliente.")
         if (errors.isNotEmpty() || plan == null) return show("nueva", emptyMap(), failure(errors.joinToString(" ")), values, null)
         val host = hostOf(values["host"], hosts)
         val input = MembershipInput(
@@ -407,7 +410,7 @@ object MembresiaRoutes {
         val newCustomer = if (existing == null) NewCustomerInput(name, values["email"].orEmpty(), values["phone"].orEmpty()) else null
         return try {
             val created = MembresiaService.create(access, tenant, input, newCustomer, author, today)
-            member(created.customerId, notice("Membresía creada: ${created.planName}, ${created.startsOn} a ${created.endsOn}.", UiTone.Success), null)
+            member(created.customerId, notice(tr("Membresía creada: {0}, {1} a {2}.", created.planName, created.startsOn, created.endsOn), UiTone.Success), null)
         } catch (invalid: MembresiaValidationException) {
             show("nueva", emptyMap(), failure(invalid.errors.joinToString(" ")), values, null)
         }
@@ -420,15 +423,15 @@ object MembresiaRoutes {
     ): UiScreen {
         val rawId = values["id"]
         val id = uuid(rawId)
-        if (!rawId.isNullOrBlank() && id == null) return show("planes", emptyMap(), failure("El plan no es válido."), null, null)
+        if (!rawId.isNullOrBlank() && id == null) return show("planes", emptyMap(), failure(tr("El plan no es válido.")), null, null)
         val errors = mutableListOf<String>()
-        val price = MembresiaRules.parseAmount(values["price"]) ?: run { errors += "El precio no es válido."; null }
-        val duration = values["durationDays"].orEmpty().trim().toIntOrNull() ?: run { errors += "La duración debe ser un número de días."; null }
+        val price = MembresiaRules.parseAmount(values["price"]) ?: run { errors += tr("El precio no es válido."); null }
+        val duration = values["durationDays"].orEmpty().trim().toIntOrNull() ?: run { errors += tr("La duración debe ser un número de días."); null }
         val includedText = values["includedVisits"].orEmpty().trim()
         val included = includedText.toIntOrNull()
-        if (includedText.isNotEmpty() && included == null) errors += "Las visitas incluidas deben ser un número o quedar vacías."
-        val passes = values["guestPasses"].orEmpty().trim().ifEmpty { "0" }.toIntOrNull() ?: run { errors += "Los pases de invitado deben ser un número."; null }
-        val order = values["displayOrder"].orEmpty().trim().ifEmpty { "0" }.toIntOrNull() ?: run { errors += "El orden debe ser un número."; null }
+        if (includedText.isNotEmpty() && included == null) errors += tr("Las visitas incluidas deben ser un número o quedar vacías.")
+        val passes = values["guestPasses"].orEmpty().trim().ifEmpty { "0" }.toIntOrNull() ?: run { errors += tr("Los pases de invitado deben ser un número."); null }
+        val order = values["displayOrder"].orEmpty().trim().ifEmpty { "0" }.toIntOrNull() ?: run { errors += tr("El orden debe ser un número."); null }
         val formParams = id?.let { mapOf("edit" to it.toString()) }.orEmpty()
         if (errors.isNotEmpty() || price == null || duration == null || passes == null || order == null) {
             return show("planes", formParams, failure(errors.joinToString(" ")), values, null)
@@ -445,7 +448,7 @@ object MembresiaRoutes {
         )
         return try {
             val saved = MembresiaRepository.savePlan(tenant, id, input)
-            show("planes", emptyMap(), notice("Plan ${saved.name} guardado.", UiTone.Success), null, null)
+            show("planes", emptyMap(), notice(tr("Plan {0} guardado.", saved.name), UiTone.Success), null, null)
         } catch (invalid: MembresiaValidationException) {
             show("planes", formParams, failure(invalid.errors.joinToString(" ")), values, null)
         }
@@ -458,7 +461,7 @@ object MembresiaRoutes {
 
     private fun parseOptionalAmount(text: String?, errors: MutableList<String>): BigDecimal? {
         if (text.isNullOrBlank()) return null
-        return MembresiaRules.parseAmount(text) ?: run { errors += "El monto no es válido (hasta 2 decimales)."; null }
+        return MembresiaRules.parseAmount(text) ?: run { errors += tr("El monto no es válido (hasta 2 decimales)."); null }
     }
 
     // Anfitrion elegido; si ya no es candidato pero es el actual de la membresia, se conserva (user id y nombre).
@@ -472,7 +475,7 @@ object MembresiaRoutes {
     // ---------------------------------------------------------------- http
 
     private suspend fun ApplicationCall.forbidden() =
-        respond(HttpStatusCode.Forbidden, ModuleAccessErrorResponse("missing_permission", "No tienes permiso para esta acción."))
+        respond(HttpStatusCode.Forbidden, ModuleAccessErrorResponse("missing_permission", tr("No tienes permiso para esta acción.")))
 
     /**
      * Valores del formulario (cuerpo JSON) y parametros de la ruta; los parametros del boton mandan sobre el cuerpo.
@@ -504,26 +507,26 @@ object MembresiaRoutes {
     // Abre la base de la empresa autorizada, corre [block] en IO y responde su resultado como JSON.
     private suspend fun <T> ApplicationCall.respondTenant(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
         val companyCode = access.companyCode(this)
-            ?: return respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+            ?: return respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
         val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
-            ?: return respond(HttpStatusCode.Forbidden, ModuleAccessErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+            ?: return respond(HttpStatusCode.Forbidden, ModuleAccessErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
         try {
             val result = connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }
-            respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
+            respondText(UiJson.encodeToString(serializer, localizedPayload(result)), ContentType.Application.Json)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: SQLException) {
             log.error("Membresías: falló una pantalla de la empresa {}", companyCode, failure)
-            respond(HttpStatusCode.InternalServerError, ModuleAccessErrorResponse("DATABASE_ERROR", "No se pudo completar la operación."))
+            respond(HttpStatusCode.InternalServerError, ModuleAccessErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operación.")))
         } catch (failure: DateTimeException) {
             log.warn("Membresías: fecha inválida en la empresa {}", companyCode, failure)
-            respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("INVALID_REQUEST", "Los datos enviados no son válidos."))
+            respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("INVALID_REQUEST", tr("Los datos enviados no son válidos.")))
         } catch (failure: IllegalArgumentException) {
             log.warn("Membresías: datos inválidos en la empresa {}", companyCode, failure)
-            respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("INVALID_REQUEST", "Los datos enviados no son válidos."))
+            respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("INVALID_REQUEST", tr("Los datos enviados no son válidos.")))
         } catch (failure: IllegalStateException) {
             log.error("Membresías: estado inesperado en la empresa {}", companyCode, failure)
-            respond(HttpStatusCode.InternalServerError, ModuleAccessErrorResponse("UNEXPECTED_STATE", "No se pudo completar la operación."))
+            respond(HttpStatusCode.InternalServerError, ModuleAccessErrorResponse("UNEXPECTED_STATE", tr("No se pudo completar la operación.")))
         }
     }
 }

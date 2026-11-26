@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.company.api
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CoreUpdateOutcome
 import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
@@ -44,18 +45,18 @@ fun Route.companyRoutes(
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val context = call.businessOwnerContext()
         if (context == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@get
         }
         val service = selfService
         if (service == null) {
-            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("COMPANY_SELF_NOT_CONFIGURED", "El servidor no tiene configuracion de empresa disponible."))
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("COMPANY_SELF_NOT_CONFIGURED", tr("El servidor no tiene configuracion de empresa disponible.")))
             return@get
         }
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.profile(context.companyCode, context.token) })
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_PROFILE_UNAVAILABLE", exception.message ?: "No se pudo cargar la empresa."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_PROFILE_UNAVAILABLE", exception.message ?: tr("No se pudo cargar la empresa.")))
         }
     }
 
@@ -64,27 +65,27 @@ fun Route.companyRoutes(
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val context = call.businessOwnerContext()
         if (context == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@put
         }
         val service = selfService
         if (service == null) {
-            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("COMPANY_SELF_NOT_CONFIGURED", "El servidor no tiene configuracion de empresa disponible."))
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("COMPANY_SELF_NOT_CONFIGURED", tr("El servidor no tiene configuracion de empresa disponible.")))
             return@put
         }
         val request = try {
             call.receive<UpdateCompanyProfileRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateProfile(context.companyCode, context.token, request) })
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_PROFILE_NOT_UPDATED", exception.message ?: "No se pudo actualizar la empresa."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_PROFILE_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar la empresa.")))
         }
     }
 
@@ -94,13 +95,13 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@get
         }
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.mailSettings(context.companyCode, context.token) })
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_MAIL_UNAVAILABLE", exception.message ?: "No se pudo cargar el correo."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_MAIL_UNAVAILABLE", exception.message ?: tr("No se pudo cargar el correo.")))
         }
     }
 
@@ -110,26 +111,26 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@put
         }
         val request = try {
             call.receive<CompanyMailInput>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateMailSettings(context.companyCode, context.token, request) })
         } catch (exception: CompanyMailRejectedException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("COMPANY_MAIL_NOT_SAVED", exception.message ?: "Datos de correo no validos."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("COMPANY_MAIL_NOT_SAVED", exception.message ?: tr("Datos de correo no validos.")))
         } catch (exception: CompanyMailStorageException) {
-            call.respond(HttpStatusCode.InternalServerError, CompanyErrorResponse("COMPANY_MAIL_STORAGE_FAILED", "No se pudo guardar el correo de la empresa."))
+            call.respond(HttpStatusCode.InternalServerError, CompanyErrorResponse("COMPANY_MAIL_STORAGE_FAILED", tr("No se pudo guardar el correo de la empresa.")))
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_MAIL_UNAVAILABLE", exception.message ?: "No tienes permiso para cambiar el correo."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_MAIL_UNAVAILABLE", exception.message ?: tr("No tienes permiso para cambiar el correo.")))
         }
     }
 
@@ -139,7 +140,7 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@get
         }
         call.respond(HttpStatusCode.OK, CompanyBackupListResponse(withContext(Dispatchers.IO) { service.listBackups(context.companyCode, context.token) }))
@@ -150,13 +151,13 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@get
         }
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.users(context.companyCode, context.token) })
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_USERS_UNAVAILABLE", exception.message ?: "No se pudieron cargar usuarios."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_USERS_UNAVAILABLE", exception.message ?: tr("No se pudieron cargar usuarios.")))
         }
     }
 
@@ -165,22 +166,22 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@post
         }
         val request = try {
             call.receive<CreateCompanyUserRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@post
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@post
         }
         try {
             call.respond(HttpStatusCode.Created, withContext(Dispatchers.IO) { service.createUser(context.companyCode, context.token, request) })
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_CREATED", exception.message ?: "No se pudo crear el usuario."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_CREATED", exception.message ?: tr("No se pudo crear el usuario.")))
         }
     }
 
@@ -189,16 +190,16 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@put
         }
         val request = try {
             call.receive<UpdateCompanyUserPermissionsRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
         try {
@@ -209,7 +210,7 @@ fun Route.companyRoutes(
                 },
             )
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el usuario."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el usuario.")))
         }
     }
 
@@ -219,11 +220,11 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@put
         }
         val request = runCatching { call.receive<UpdateCompanyUserRequest>() }.getOrNull()
-            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
         try {
             call.respond(
                 HttpStatusCode.OK,
@@ -234,9 +235,9 @@ fun Route.companyRoutes(
             val status = if (exception.code == "TOO_MANY_ATTEMPTS") HttpStatusCode.TooManyRequests else HttpStatusCode.BadRequest
             call.respond(status, CompanyErrorResponse(exception.code, exception.message.orEmpty()))
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el usuario."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el usuario.")))
         } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el usuario."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el usuario.")))
         } catch (exception: SQLException) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
         }
@@ -248,7 +249,7 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@post
         }
         call.respond(HttpStatusCode.Created, withContext(Dispatchers.IO) { service.createProfileBackup(context.companyCode, context.token) })
@@ -260,14 +261,14 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@post
         }
         // Autoriza de verdad (sesion de business_owner) ANTES de leer el cuerpo multipart.
         try {
             withContext(Dispatchers.IO) { service.listBackups(context.companyCode, context.token) }
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@post
         }
         var fileName: String? = null
@@ -283,13 +284,13 @@ fun Route.companyRoutes(
         val uploadedName = fileName
         val uploadedBytes = bytes
         if (uploadedName == null || uploadedBytes == null) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_BACKUP", "Debes subir un archivo ZIP."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_BACKUP", tr("Debes subir un archivo ZIP.")))
             return@post
         }
         try {
             call.respond(HttpStatusCode.Created, withContext(Dispatchers.IO) { service.storeImportedBackup(context.companyCode, context.token, uploadedName, uploadedBytes) })
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BACKUP_NOT_IMPORTED", exception.message ?: "No se pudo importar el backup."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BACKUP_NOT_IMPORTED", exception.message ?: tr("No se pudo importar el backup.")))
         }
     }
 
@@ -298,13 +299,13 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@get
         }
         try {
             call.respondFile(withContext(Dispatchers.IO) { service.backupPath(context.companyCode, context.token, call.parameters["fileName"].orEmpty()).toFile() })
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BACKUP_NOT_FOUND", exception.message ?: "Backup no encontrado."))
+            call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BACKUP_NOT_FOUND", exception.message ?: tr("Backup no encontrado.")))
         }
     }
 
@@ -314,14 +315,14 @@ fun Route.companyRoutes(
         val context = call.businessOwnerContext()
         val service = selfService
         if (context == null || service == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@delete
         }
         try {
             withContext(Dispatchers.IO) { service.deleteBackup(context.companyCode, context.token, call.parameters["fileName"].orEmpty()) }
             call.respond(HttpStatusCode.NoContent)
         } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BACKUP_NOT_FOUND", exception.message ?: "Backup no encontrado."))
+            call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BACKUP_NOT_FOUND", exception.message ?: tr("Backup no encontrado.")))
         }
     }
 
@@ -333,7 +334,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para consultar empresas.",
+                    message = tr("Debes iniciar sesion como server_owner para consultar empresas."),
                 ),
             )
             return@get
@@ -345,7 +346,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@get
@@ -359,7 +360,7 @@ fun Route.companyRoutes(
         if (call.serverOwnerRole(authorizer) == null) {
             call.respond(
                 HttpStatusCode.Forbidden,
-                CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para consultar los errores."),
+                CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para consultar los errores.")),
             )
             return@get
         }
@@ -374,7 +375,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para administrar modulos del servidor.",
+                    message = tr("Debes iniciar sesion como server_owner para administrar modulos del servidor."),
                 ),
             )
             return@get
@@ -386,7 +387,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@get
@@ -399,12 +400,12 @@ fun Route.companyRoutes(
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
         if (serverOwnerRole == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para consultar el catalogo."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para consultar el catalogo.")))
             return@get
         }
         val service = provisioning
         if (service == null) {
-            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
             return@get
         }
         call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.serverModuleCatalog() })
@@ -414,27 +415,27 @@ fun Route.companyRoutes(
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
         if (serverOwnerRole == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para configurar el catalogo."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para configurar el catalogo.")))
             return@put
         }
         val service = provisioning
         if (service == null) {
-            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
             return@put
         }
         val request = try {
             call.receive<UpdateServerModuleCatalogRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerModuleCatalog(request.catalogUrl) })
         } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("SERVER_MODULE_CATALOG_NOT_UPDATED", exception.message ?: "No se pudo actualizar el catalogo."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("SERVER_MODULE_CATALOG_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el catalogo.")))
         }
     }
 
@@ -446,7 +447,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para eliminar modulos del servidor.",
+                    message = tr("Debes iniciar sesion como server_owner para eliminar modulos del servidor."),
                 ),
             )
             return@delete
@@ -458,7 +459,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@delete
@@ -472,7 +473,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("SERVER_MODULE_NOT_DELETED", exception.message ?: "No se pudo eliminar el modulo del servidor."),
+                CompanyErrorResponse("SERVER_MODULE_NOT_DELETED", exception.message ?: tr("No se pudo eliminar el modulo del servidor.")),
             )
             return@delete
         }
@@ -488,7 +489,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para instalar modulos del servidor.",
+                    message = tr("Debes iniciar sesion como server_owner para instalar modulos del servidor."),
                 ),
             )
             return@post
@@ -500,7 +501,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@post
@@ -514,7 +515,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse(exception.code ?: "SERVER_MODULE_NOT_INSTALLED", exception.message ?: "No se pudo instalar el modulo del servidor."),
+                CompanyErrorResponse(exception.code ?: "SERVER_MODULE_NOT_INSTALLED", exception.message ?: tr("No se pudo instalar el modulo del servidor.")),
             )
             return@post
         }
@@ -526,17 +527,17 @@ fun Route.companyRoutes(
     get("/server/modules/{moduleId}/inspect") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         if (call.serverOwnerRole(authorizer) == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para revisar paquetes de modulos."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para revisar paquetes de modulos.")))
             return@get
         }
         val service = provisioning ?: run {
-            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
             return@get
         }
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.inspectServerModule(call.parameters["moduleId"].orEmpty()) })
         } catch (exception: CompanyProvisioningException) {
-            call.respond(modulePackageStatus(exception), CompanyErrorResponse(exception.code ?: "INVALID_REQUEST", exception.message ?: "No se pudo revisar el modulo."))
+            call.respond(modulePackageStatus(exception), CompanyErrorResponse(exception.code ?: "INVALID_REQUEST", exception.message ?: tr("No se pudo revisar el modulo.")))
         }
     }
 
@@ -545,17 +546,17 @@ fun Route.companyRoutes(
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
         if (serverOwnerRole == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para autorizar paquetes sin firma."))
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para autorizar paquetes sin firma.")))
             return@post
         }
         val service = provisioning ?: run {
-            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
             return@post
         }
         val request = try {
             call.receive<com.ideasdeveloper.bms.server.modules.AuthorizeUnsignedModuleRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@post
         }
         try {
@@ -569,7 +570,7 @@ fun Route.companyRoutes(
                 },
             )
         } catch (exception: CompanyProvisioningException) {
-            call.respond(modulePackageStatus(exception), CompanyErrorResponse(exception.code ?: "INVALID_REQUEST", exception.message ?: "No se pudo autorizar el modulo."))
+            call.respond(modulePackageStatus(exception), CompanyErrorResponse(exception.code ?: "INVALID_REQUEST", exception.message ?: tr("No se pudo autorizar el modulo.")))
         }
     }
 
@@ -581,7 +582,7 @@ fun Route.companyRoutes(
         if (serverOwnerRole == null) {
             call.respond(
                 HttpStatusCode.Forbidden,
-                CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para crear la empresa del servidor."),
+                CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para crear la empresa del servidor.")),
             )
             return@post
         }
@@ -589,7 +590,7 @@ fun Route.companyRoutes(
         if (service == null) {
             call.respond(
                 HttpStatusCode.ServiceUnavailable,
-                CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."),
+                CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")),
             )
             return@post
         }
@@ -598,7 +599,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("SERVER_WORKSPACE_NOT_CREATED", exception.message ?: "No se pudo crear la empresa del servidor."),
+                CompanyErrorResponse("SERVER_WORKSPACE_NOT_CREATED", exception.message ?: tr("No se pudo crear la empresa del servidor.")),
             )
             return@post
         }
@@ -614,7 +615,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para usar modulos en el servidor.",
+                    message = tr("Debes iniciar sesion como server_owner para usar modulos en el servidor."),
                 ),
             )
             return@put
@@ -625,7 +626,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@put
@@ -639,7 +640,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("SERVER_MODULE_USAGE", exception.message ?: "No se pudo cambiar el uso del modulo en el servidor."),
+                CompanyErrorResponse("SERVER_MODULE_USAGE", exception.message ?: tr("No se pudo cambiar el uso del modulo en el servidor.")),
             )
             return@put
         }
@@ -656,7 +657,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para crear empresas.",
+                    message = tr("Debes iniciar sesion como server_owner para crear empresas."),
                 ),
             )
             return@post
@@ -668,7 +669,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@post
@@ -677,10 +678,10 @@ fun Route.companyRoutes(
         val request = try {
             call.receive<CreateCompanyRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@post
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@post
         }
 
@@ -691,7 +692,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("COMPANY_NOT_CREATED", exception.message ?: "No se pudo crear la empresa."),
+                CompanyErrorResponse("COMPANY_NOT_CREATED", exception.message ?: tr("No se pudo crear la empresa.")),
             )
             return@post
         } catch (exception: SQLException) {
@@ -714,7 +715,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para administrar empresas.",
+                    message = tr("Debes iniciar sesion como server_owner para administrar empresas."),
                 ),
             )
             return@put
@@ -726,7 +727,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@put
@@ -735,10 +736,10 @@ fun Route.companyRoutes(
         val request = try {
             call.receive<UpdateCompanyRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
 
@@ -750,7 +751,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("COMPANY_NOT_UPDATED", exception.message ?: "No se pudo actualizar la empresa."),
+                CompanyErrorResponse("COMPANY_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar la empresa.")),
             )
             return@put
         } catch (exception: SQLException) {
@@ -772,7 +773,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para administrar empresas.",
+                    message = tr("Debes iniciar sesion como server_owner para administrar empresas."),
                 ),
             )
             return@put
@@ -784,7 +785,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@put
@@ -793,10 +794,10 @@ fun Route.companyRoutes(
         val request = try {
             call.receive<UpdateCompanyStatusRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
 
@@ -808,7 +809,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("COMPANY_NOT_UPDATED", exception.message ?: "No se pudo actualizar la empresa."),
+                CompanyErrorResponse("COMPANY_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar la empresa.")),
             )
             return@put
         } catch (exception: SQLException) {
@@ -830,7 +831,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para eliminar empresas.",
+                    message = tr("Debes iniciar sesion como server_owner para eliminar empresas."),
                 ),
             )
             return@delete
@@ -842,7 +843,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@delete
@@ -856,7 +857,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("COMPANY_NOT_DELETED", exception.message ?: "No se pudo eliminar la empresa."),
+                CompanyErrorResponse("COMPANY_NOT_DELETED", exception.message ?: tr("No se pudo eliminar la empresa.")),
             )
             return@delete
         } catch (exception: SQLException) {
@@ -881,7 +882,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para administrar modulos.",
+                    message = tr("Debes iniciar sesion como server_owner para administrar modulos."),
                 ),
             )
             return@put
@@ -893,7 +894,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@put
@@ -902,10 +903,10 @@ fun Route.companyRoutes(
         val request = try {
             call.receive<UpdateCompanyModuleRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
 
@@ -918,7 +919,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("MODULE_NOT_UPDATED", exception.message ?: "No se pudo actualizar el modulo."),
+                CompanyErrorResponse("MODULE_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el modulo.")),
             )
             return@put
         } catch (exception: SQLException) {
@@ -937,17 +938,17 @@ fun Route.companyRoutes(
     post("/companies/{code}/duplicate") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@post call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para duplicar empresas."))
+            ?: return@post call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para duplicar empresas.")))
         val service = provisioning
-            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<DuplicateCompanyRequest>() }.getOrNull()
-            ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Indica el codigo de la nueva empresa."))
+            ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Indica el codigo de la nueva empresa.")))
         val source = call.parameters["code"].orEmpty()
         try {
             val created = withContext(Dispatchers.IO) { service.duplicateCompany(source, request.code, serverOwnerRole, request.newOwner) }
             call.respond(HttpStatusCode.Created, created)
         } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_DUPLICATED", exception.message ?: "No se pudo duplicar la empresa."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_DUPLICATED", exception.message ?: tr("No se pudo duplicar la empresa.")))
         } catch (exception: SQLException) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toProvisioningMessage()))
         }
@@ -957,16 +958,16 @@ fun Route.companyRoutes(
     put("/companies/{code}/link") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para vincular empresas."))
+            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para vincular empresas.")))
         val service = provisioning
-            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<LinkCompanyRequest>() }.getOrNull()
-            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
         try {
             val companies = withContext(Dispatchers.IO) { service.linkCompany(call.parameters["code"].orEmpty(), request.targetCode, serverOwnerRole) }
             call.respond(HttpStatusCode.OK, companies)
         } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_LINKED", exception.message ?: "No se pudo vincular la empresa."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_LINKED", exception.message ?: tr("No se pudo vincular la empresa.")))
         } catch (exception: SQLException) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
         }
@@ -976,9 +977,9 @@ fun Route.companyRoutes(
     get("/server/core-update") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         call.serverOwnerRole(authorizer)
-            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
         val service = coreUpdates
-            ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", "La actualizacion del servidor no esta disponible."))
+            ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", tr("La actualizacion del servidor no esta disponible.")))
         call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.status() })
     }
 
@@ -986,14 +987,14 @@ fun Route.companyRoutes(
     post("/server/core-update") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@post call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+            ?: return@post call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
         val service = coreUpdates
-            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", "La actualizacion del servidor no esta disponible."))
+            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", tr("La actualizacion del servidor no esta disponible.")))
         when (val outcome = withContext(Dispatchers.IO) { service.request(serverOwnerRole) }) {
             is CoreUpdateOutcome.Accepted -> call.respond(HttpStatusCode.Accepted, outcome.request)
-            CoreUpdateOutcome.CatalogUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("VERSION_CATALOG_UNAVAILABLE", "No se pudo leer el catalogo de versiones."))
-            CoreUpdateOutcome.UpToDate -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UP_TO_DATE", "El servidor ya tiene la ultima version."))
-            CoreUpdateOutcome.InProgress -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_IN_PROGRESS", "Ya hay una actualizacion en curso."))
+            CoreUpdateOutcome.CatalogUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("VERSION_CATALOG_UNAVAILABLE", tr("No se pudo leer el catalogo de versiones.")))
+            CoreUpdateOutcome.UpToDate -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UP_TO_DATE", tr("El servidor ya tiene la ultima version.")))
+            CoreUpdateOutcome.InProgress -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_IN_PROGRESS", tr("Ya hay una actualizacion en curso.")))
         }
     }
 
@@ -1001,15 +1002,15 @@ fun Route.companyRoutes(
     put("/server/name") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
         val service = provisioning
-            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<ServerNameRequest>() }.getOrNull()
-            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerName(request.name, serverOwnerRole) })
         } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("SERVER_NAME_INVALID", exception.message ?: "Nombre invalido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("SERVER_NAME_INVALID", exception.message ?: tr("Nombre invalido.")))
         }
     }
 
@@ -1017,13 +1018,13 @@ fun Route.companyRoutes(
     get("/companies/{code}/business-owner") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         call.serverOwnerRole(authorizer)
-            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
         val service = provisioning
-            ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.businessOwner(call.parameters["code"].orEmpty()) })
         } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BUSINESS_OWNER_NOT_FOUND", exception.message ?: "Business owner no encontrado."))
+            call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BUSINESS_OWNER_NOT_FOUND", exception.message ?: tr("Business owner no encontrado.")))
         } catch (exception: SQLException) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
         }
@@ -1033,18 +1034,18 @@ fun Route.companyRoutes(
     put("/companies/{code}/business-owner") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
         val service = provisioning
-            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<UpdateBusinessOwnerRequest>() }.getOrNull()
-            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
         try {
             call.respond(
                 HttpStatusCode.OK,
                 withContext(Dispatchers.IO) { service.updateBusinessOwner(call.parameters["code"].orEmpty(), request, serverOwnerRole) },
             )
         } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BUSINESS_OWNER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el business owner."))
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BUSINESS_OWNER_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el business owner.")))
         } catch (exception: SQLException) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
         }
@@ -1058,7 +1059,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.Forbidden,
                 CompanyErrorResponse(
                     code = "SERVER_OWNER_REQUIRED",
-                    message = "Debes iniciar sesion como server_owner para cambiar la contrasena del business owner.",
+                    message = tr("Debes iniciar sesion como server_owner para cambiar la contrasena del business owner."),
                 ),
             )
             return@put
@@ -1070,7 +1071,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.ServiceUnavailable,
                 CompanyErrorResponse(
                     code = "PROVISIONING_NOT_CONFIGURED",
-                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
                 ),
             )
             return@put
@@ -1079,10 +1080,10 @@ fun Route.companyRoutes(
         val request = try {
             call.receive<ResetBusinessOwnerPasswordRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         } catch (_: ContentTransformationException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@put
         }
 
@@ -1094,7 +1095,7 @@ fun Route.companyRoutes(
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("PASSWORD_NOT_UPDATED", exception.message ?: "No se pudo cambiar la contrasena."),
+                CompanyErrorResponse("PASSWORD_NOT_UPDATED", exception.message ?: tr("No se pudo cambiar la contrasena.")),
             )
             return@put
         } catch (exception: SQLException) {
@@ -1147,10 +1148,10 @@ private suspend fun io.ktor.server.application.ApplicationCall.serverOwnerRole(
 
 
 private fun SQLException.toProvisioningMessage(): String =
-    "No se pudo completar la provision de la empresa. PostgreSQL ${sqlState.orEmpty()}: ${message.orEmpty()}"
+    tr("No se pudo completar la provision de la empresa. PostgreSQL {0}: {1}", sqlState.orEmpty(), message.orEmpty())
 
 private fun SQLException.toModuleMessage(): String =
-    "No se pudo actualizar el modulo. PostgreSQL ${sqlState.orEmpty()}: ${message.orEmpty()}"
+    tr("No se pudo actualizar el modulo. PostgreSQL {0}: {1}", sqlState.orEmpty(), message.orEmpty())
 
 private fun SQLException.toCompanyMessage(): String =
-    "No se pudo actualizar la empresa. PostgreSQL ${sqlState.orEmpty()}: ${message.orEmpty()}"
+    tr("No se pudo actualizar la empresa. PostgreSQL {0}: {1}", sqlState.orEmpty(), message.orEmpty())

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.extensions.tareas_monday
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.time.Duration
 import java.time.Instant
 
@@ -19,7 +21,7 @@ object TareasMondayReading {
     const val MinPageSize = 10
     const val MaxAttempts = 5
     const val MaxMessage = 200
-    const val TooHeavyMessage = "Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas."
+    val TooHeavyMessage = msg("Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas.")
 
     // Fallos que pasan solos: limites de uso, concurrencia, errores del servidor o tiempos agotados.
     private val transientWords = listOf(
@@ -61,16 +63,16 @@ object TareasMondayReading {
         return when (kind) {
             MondayErrorKind.Permanent -> Step.Fail(shown)
             MondayErrorKind.CursorExpired ->
-                if (restarts >= 1) Step.Fail("monday vencio el cursor de lectura dos veces seguidas; divide el tablero en otros mas chicos o vuelve a intentarlo mas tarde.")
+                if (restarts >= 1) Step.Fail(tr("monday vencio el cursor de lectura dos veces seguidas; divide el tablero en otros mas chicos o vuelve a intentarlo mas tarde."))
                 else Step.Restart
             MondayErrorKind.Complexity, MondayErrorKind.TooLarge -> when {
-                !canShrink -> Step.Fail("monday rechazo la consulta por su tamano o complejidad y no se puede reducir: $shown")
-                pageSize <= MinPageSize -> Step.Fail(TooHeavyMessage)
+                !canShrink -> Step.Fail(tr("monday rechazo la consulta por su tamano o complejidad y no se puede reducir: {0}", shown))
+                pageSize <= MinPageSize -> Step.Fail(tr(TooHeavyMessage))
                 else -> Step.Retry(attempts, nextPageSize(pageSize))
             }
             MondayErrorKind.Transient -> {
                 val next = attempts + 1
-                if (next >= MaxAttempts) Step.Fail("monday siguio fallando tras $MaxAttempts intentos: $shown")
+                if (next >= MaxAttempts) Step.Fail(tr("monday siguio fallando tras {0} intentos: {1}", MaxAttempts, shown))
                 else Step.Retry(next, pageSize)
             }
         }

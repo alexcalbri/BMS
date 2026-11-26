@@ -1,9 +1,10 @@
 package com.ideasdeveloper.bms.modules.eventos
 
-import org.slf4j.LoggerFactory
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.time.LocalDate
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /** A current membership of a customer (module Membresia). */
 data class ActiveMembership(val planName: String, val endsOn: LocalDate)
@@ -46,5 +47,5 @@ object EventosMembership {
     }
 
     /** "Miembro vigente: {plan} hasta {fecha}", the line shown in the card and when registering. */
-    fun label(membership: ActiveMembership): String = "Miembro vigente: ${membership.planName} hasta ${membership.endsOn}"
+    fun label(membership: ActiveMembership): String = tr("Miembro vigente: {0} hasta {1}", membership.planName, membership.endsOn)
 }

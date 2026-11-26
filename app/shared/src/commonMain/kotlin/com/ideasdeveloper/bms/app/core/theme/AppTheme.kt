@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.theme
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -182,8 +183,8 @@ object BuiltInThemes {
     const val Light = "light"
     const val Dark = "dark"
 
-    val light = UiAppTheme(Light, "Claro", dark = false, colors = LightPalette, brandBackground = true)
-    val dark = UiAppTheme(Dark, "Oscuro", dark = true, colors = DarkPalette)
+    val light: UiAppTheme get() = UiAppTheme(Light, tr("Claro"), dark = false, colors = LightPalette, brandBackground = true)
+    val dark: UiAppTheme get() = UiAppTheme(Dark, tr("Oscuro"), dark = true, colors = DarkPalette)
 }
 
 // Tema elegido; un tema de modulo que ya no existe cae en Claro u Oscuro segun el sistema.

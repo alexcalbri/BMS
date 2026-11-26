@@ -22,6 +22,13 @@ class LoginSuccessResponse(
     val serverName: String? = null,
     // A server owner opened this company session as its business owner (company switcher).
     val serverOwnerAccess: Boolean = false,
+    // Effective language of the user (I18N.md §7): their own, else the company default, else "es".
+    // The app switches to it after signing in and sends it as Accept-Language.
+    val language: String = "es",
+    // Default language of the company (for server sessions, the server workspace's), "es" without one.
+    val companyLanguage: String = "es",
+    // The user's own language, null when they follow the company default.
+    val userLanguage: String? = null,
 )
 
 // A company the session can move to.

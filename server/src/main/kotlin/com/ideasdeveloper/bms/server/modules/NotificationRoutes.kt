@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -68,7 +71,7 @@ fun notificationResponse(
  */
 fun Route.notificationRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
     val notifications = access.notifications
-    fun moduleName(moduleId: String): String? = registry.availableDefinition(moduleId)?.displayName
+    fun moduleName(moduleId: String): String? = registry.availableDefinition(moduleId)?.displayName?.let { trIn(I18n.moduleNamespace(moduleId), it) }
 
     route("/notifications") {
         get {
@@ -94,7 +97,7 @@ fun Route.notificationRoutes(registry: ModuleRegistry, access: ModuleAccessServi
         }
         post("/{id}/read") {
             val id = runCatching { UUID.fromString(call.parameters["id"].orEmpty()) }.getOrNull()
-                ?: return@post call.respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("invalid_id", "La notificacion no es valida."))
+                ?: return@post call.respond(HttpStatusCode.BadRequest, ModuleAccessErrorResponse("invalid_id", tr("La notificacion no es valida.")))
             call.withNotifications(access) { tenant, userId ->
                 val changed = if (notifications.markRead(tenant, userId, id)) 1 else 0
                 NotificationChangeResponse(changed, notifications.unreadCount(tenant, userId))
@@ -114,7 +117,7 @@ private suspend inline fun <reified T : Any> ApplicationCall.withNotifications(
             when (val session = access.userSession(this@withNotifications)) {
                 is UserSessionLookup.Denied -> session.decision
                 is UserSessionLookup.Granted -> {
-                    val tenant = access.tenantConnectionForCompany(session.companyCode) ?: return@withContext ModuleAccessDecision.Forbidden("company_not_found", "La empresa no esta activa.")
+                    val tenant = access.tenantConnectionForCompany(session.companyCode) ?: return@withContext ModuleAccessDecision.Forbidden("company_not_found", tr("La empresa no esta activa."))
                     tenant.use { block(it, session.userId) }
                 }
             }
@@ -127,6 +130,6 @@ private suspend inline fun <reified T : Any> ApplicationCall.withNotifications(
             else -> respond(HttpStatusCode.InternalServerError)
         }
     } catch (_: SQLException) {
-        respond(HttpStatusCode.ServiceUnavailable, ModuleAccessErrorResponse("notifications_unavailable", "No se pudieron leer las notificaciones."))
+        respond(HttpStatusCode.ServiceUnavailable, ModuleAccessErrorResponse("notifications_unavailable", tr("No se pudieron leer las notificaciones.")))
     }
 }

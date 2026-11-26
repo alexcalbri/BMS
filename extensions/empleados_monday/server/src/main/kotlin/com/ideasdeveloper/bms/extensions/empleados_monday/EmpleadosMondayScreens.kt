@@ -2,6 +2,8 @@ package com.ideasdeveloper.bms.extensions.empleados_monday
 
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportContext
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportReply
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.security.SecretBox
@@ -39,7 +41,7 @@ object MondayOp {
 
 /** Lo que comparten la pantalla y las herramientas MCP: leer un tablero con el token guardado y revisar el mapeo. */
 object EmpleadosMondayFlow {
-    const val NoColumn = "No usar"
+    val NoColumn = msg("No usar")
     const val DepartmentField = "defaultDepartment"
     const val JobTitleField = "defaultJobTitle"
     private const val OptionSeparator = " · "
@@ -53,7 +55,7 @@ object EmpleadosMondayFlow {
     /** Quien queda como autor de lo importado: el usuario; un dueno del servidor no es usuario de la empresa. */
     fun actorOf(permissions: ModulePermissions): UUID? = permissions.userId?.takeUnless { permissions.serverOwner }
 
-    const val ApplyDenied = "Aplicar la importacion crea y actualiza fichas de empleados: ademas de importar datos, necesitas el permiso de administrar fichas (empleados.manage)."
+    val ApplyDenied = msg("Aplicar la importacion crea y actualiza fichas de empleados: ademas de importar datos, necesitas el permiso de administrar fichas (empleados.manage).")
 
     /** Aplicar exige importar Y administrar fichas (o ser dueno del negocio o del servidor); leer y revisar solo piden importar. */
     fun canApply(permissions: ModulePermissions): Boolean =
@@ -61,7 +63,7 @@ object EmpleadosMondayFlow {
             (permissions.has(EmpleadosManagePermission) || permissions.businessOwner || permissions.serverOwner)
 
     fun requireApply(permissions: ModulePermissions) {
-        if (!canApply(permissions)) throw EmpleadosMondayException(ApplyDenied)
+        if (!canApply(permissions)) throw EmpleadosMondayException(tr(ApplyDenied))
     }
 
     /** Aplicar o cancelar una importacion: solo quien la inicio o quien administra fichas (empleados.manage). */
@@ -69,19 +71,19 @@ object EmpleadosMondayFlow {
         val actor = actorOf(permissions)
         if (actor != null && job.createdBy == actor) return
         if (permissions.has(EmpleadosManagePermission)) return
-        throw EmpleadosMondayException("Solo quien inicio la importacion o quien administra las fichas de empleados puede aplicarla o cancelarla.")
+        throw EmpleadosMondayException(tr("Solo quien inicio la importacion o quien administra las fichas de empleados puede aplicarla o cancelarla."))
     }
 
     /** Problema del mapeo que impide importar, o null: solo se revisa que las columnas elegidas sigan existiendo. */
     fun mappingProblem(mapping: MondayMapping, columns: List<MondayColumn>): String? {
         val ids = columns.map { it.id }.toSet()
-        return if (mapping.columns.values.any { it !in ids }) "El mapeo usa una columna que ya no existe en el tablero." else null
+        return if (mapping.columns.values.any { it !in ids }) tr("El mapeo usa una columna que ya no existe en el tablero.") else null
     }
 
     /** Lee el tablero en segundo plano con el token guardado; el mapeo se comprueba antes de encolar. */
     fun startRead(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, boardId: String, mapping: MondayMapping?): UUID {
         val token = EmpleadosMondaySettings.loadToken(access.secrets, tenant)
-            ?: throw EmpleadosMondayException("Guarda primero el token de la API de monday (pantalla Importar).")
+            ?: throw EmpleadosMondayException(tr("Guarda primero el token de la API de monday (pantalla Importar)."))
         val board = EmpleadosMondayClient.boardInfo(token, boardId)
         val effective = mapping ?: EmpleadosMondayMapping.suggest(board.columns, board.name)
         mappingProblem(effective, board.columns)?.let { throw EmpleadosMondayException(it) }
@@ -89,12 +91,12 @@ object EmpleadosMondayFlow {
     }
 
     fun statusLabel(status: String): String = when (status) {
-        MondayJobStatus.Reading -> "Leyendo"
-        MondayJobStatus.Preview -> "Por revisar"
-        MondayJobStatus.Applying -> "Aplicando"
-        MondayJobStatus.Done -> "Terminada"
-        MondayJobStatus.Failed -> "Con error"
-        MondayJobStatus.Cancelled -> "Cancelada"
+        MondayJobStatus.Reading -> tr("Leyendo")
+        MondayJobStatus.Preview -> tr("Por revisar")
+        MondayJobStatus.Applying -> tr("Aplicando")
+        MondayJobStatus.Done -> tr("Terminada")
+        MondayJobStatus.Failed -> tr("Con error")
+        MondayJobStatus.Cancelled -> tr("Cancelada")
         else -> status
     }
 
@@ -111,7 +113,7 @@ object EmpleadosMondayFlow {
 object EmpleadosMondayScreens {
     private const val Route = "/modules/empleados/ui/importar"
     private const val MaxListed = 20
-    const val ReimportWarning = "Reimportar el mismo tablero actualiza los empleados ya importados: se sobrescriben los campos que traiga monday y, si trae dias y horario, el horario habitual."
+    val ReimportWarning = msg("Reimportar el mismo tablero actualiza los empleados ya importados: se sobrescriben los campos que traiga monday y, si trae dias y horario, el horario habitual.")
 
     private fun navigate(params: Map<String, String> = emptyMap()) = UiNavigate("importar", mapOf("source" to EmpleadosMondayId) + params)
 
@@ -120,7 +122,7 @@ object EmpleadosMondayScreens {
 
     fun screen(context: EmpleadosImportContext, params: Map<String, String>): List<UiNode> {
         if (!context.permissions.has(EmpleadosImportPermission)) {
-            return listOf(UiText("No tienes permiso para importar datos.", tone = UiTone.Warning))
+            return listOf(UiText(tr("No tienes permiso para importar datos."), tone = UiTone.Warning))
         }
         return when (params["step"]) {
             "boards" -> boardsStep(context)
@@ -137,23 +139,23 @@ object EmpleadosMondayScreens {
         val configured = EmpleadosMondaySettings.configured(tenant)
         val tokenCard = UiCard(
             listOfNotNull(
-                UiText(if (configured) "El token de monday esta configurado." else "Aun no hay un token de monday guardado.", tone = if (configured) UiTone.Success else UiTone.Warning),
+                UiText(if (configured) tr("El token de monday esta configurado.") else tr("Aun no hay un token de monday guardado."), tone = if (configured) UiTone.Success else UiTone.Warning),
                 // El campo nunca se rellena: el token guardado no se vuelve a mostrar.
                 UiForm(
                     "mondayToken",
                     listOf(
                         UiField(
-                            "token", "Token de la API de monday", type = "password", required = !configured,
-                            help = "monday > tu avatar > Developers > Mi token. Se guarda sellado para la empresa y no se vuelve a mostrar.",
+                            "token", tr("Token de la API de monday"), type = "password", required = !configured,
+                            help = tr("monday > tu avatar > Developers > Mi token. Se guarda sellado para la empresa y no se vuelve a mostrar."),
                         ),
                     ),
-                    submit = UiButton(if (configured) "Cambiar token" else "Guardar token", post(MondayOp.Token, formId = "mondayToken")),
+                    submit = UiButton(if (configured) tr("Cambiar token") else tr("Guardar token"), post(MondayOp.Token, formId = "mondayToken")),
                 ),
                 if (configured) {
                     UiRow(
                         listOf(
-                            UiButton("Cargar tableros", post(MondayOp.Boards)),
-                            UiButton("Quitar token", post(MondayOp.Forget, confirm = "Se borra el token de monday guardado. Continuar?"), style = "secondary"),
+                            UiButton(tr("Cargar tableros"), post(MondayOp.Boards)),
+                            UiButton(tr("Quitar token"), post(MondayOp.Forget, confirm = tr("Se borra el token de monday guardado. Continuar?")), style = "secondary"),
                         ),
                     )
                 } else {
@@ -167,14 +169,14 @@ object EmpleadosMondayScreens {
                 UiList(
                     EmpleadosMondayJobs.recent(tenant, 8).map { job ->
                         UiListItem(
-                            title = job.boardName.ifBlank { "Tablero ${job.boardId}" },
-                            subtitle = job.message.ifBlank { "${job.total} elementos" },
+                            title = job.boardName.ifBlank { tr("Tablero {0}", job.boardId) },
+                            subtitle = job.message.ifBlank { tr("{0} elementos", job.total) },
                             trailing = job.createdAt.toString().take(10),
                             badges = listOf(UiBadge(EmpleadosMondayFlow.statusLabel(job.status), EmpleadosMondayFlow.statusTone(job.status))),
                             action = navigate(mapOf("step" to "job", "job" to job.id.toString())),
                         )
                     },
-                    emptyText = "Todavia no hay importaciones.",
+                    emptyText = tr("Todavia no hay importaciones."),
                 ),
             ),
             title = "Importaciones",
@@ -185,25 +187,25 @@ object EmpleadosMondayScreens {
     // ---- Tableros ----
 
     private fun boardsStep(context: EmpleadosImportContext): List<UiNode> {
-        val back = UiButton("Volver", navigate(), style = "secondary")
+        val back = UiButton(tr("Volver"), navigate(), style = "secondary")
         val token = EmpleadosMondaySettings.loadToken(context.access.secrets, context.tenant)
-            ?: return listOf(UiText("Guarda primero el token de la API de monday.", tone = UiTone.Danger), back)
+            ?: return listOf(UiText(tr("Guarda primero el token de la API de monday."), tone = UiTone.Danger), back)
         val boards = try {
             EmpleadosMondayClient.boards(token)
         } catch (failure: EmpleadosMondayException) {
             return listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger), back)
         }
-        if (boards.isEmpty()) return listOf(UiText("El token no tiene acceso a ningun tablero activo.", tone = UiTone.Warning), back)
+        if (boards.isEmpty()) return listOf(UiText(tr("El token no tiene acceso a ningun tablero activo."), tone = UiTone.Warning), back)
         return listOf(
             UiCard(
                 listOf(
-                    UiText("Elige el tablero de monday con tu equipo (un elemento por empleado). Cada elemento pasa a ser un empleado."),
+                    UiText(tr("Elige el tablero de monday con tu equipo (un elemento por empleado). Cada elemento pasa a ser un empleado.")),
                     UiList(
                         boards.map { board ->
                             UiListItem(
                                 title = board.name,
-                                subtitle = board.workspace,
-                                trailing = board.items?.let { "$it elementos" }.orEmpty(),
+                                subtitle = workspaceLabel(board.workspace),
+                                trailing = board.items?.let { tr("{0} elementos", it) }.orEmpty(),
                                 action = post(MondayOp.Map, mapOf("board" to board.id)),
                             )
                         },
@@ -218,9 +220,9 @@ object EmpleadosMondayScreens {
     // ---- Mapeo ----
 
     private fun mapStep(context: EmpleadosImportContext, boardId: String): List<UiNode> {
-        val back = UiButton("Elegir otro tablero", post(MondayOp.Boards), style = "secondary")
+        val back = UiButton(tr("Elegir otro tablero"), post(MondayOp.Boards), style = "secondary")
         val token = EmpleadosMondaySettings.loadToken(context.access.secrets, context.tenant)
-            ?: return listOf(UiText("Guarda primero el token de la API de monday.", tone = UiTone.Danger))
+            ?: return listOf(UiText(tr("Guarda primero el token de la API de monday."), tone = UiTone.Danger))
         val board = try {
             EmpleadosMondayClient.boardInfo(token, boardId)
         } catch (failure: EmpleadosMondayException) {
@@ -229,11 +231,11 @@ object EmpleadosMondayScreens {
         val suggested = EmpleadosMondayMapping.suggest(board.columns, board.name)
         val byId = board.columns.associateBy { it.id }
         val columnOptions = listOf(EmpleadosMondayFlow.NoColumn) + board.columns.filter { it.type != "name" && it.type != "subitems" }.map(EmpleadosMondayFlow::columnOption)
-        val fields = listOf(UiField("board", "Id del tablero de monday", readOnly = true)) +
-            MondayTarget.all.map { definition -> UiField("map:${definition.target}", definition.label, type = "dropdown", options = columnOptions) } +
+        val fields = listOf(UiField("board", tr("Id del tablero de monday"), readOnly = true)) +
+            MondayTarget.all.map { definition -> UiField("map:${definition.target}", tr(definition.label), type = "dropdown", options = columnOptions) } +
             listOf(
-                UiField(EmpleadosMondayFlow.DepartmentField, "Departamento para todos", help = "Se usa cuando el tablero no tiene columna de departamento o viene vacia."),
-                UiField(EmpleadosMondayFlow.JobTitleField, "Puesto para todos", help = "Se usa cuando el tablero no tiene columna de puesto o viene vacia."),
+                UiField(EmpleadosMondayFlow.DepartmentField, tr("Departamento para todos"), help = tr("Se usa cuando el tablero no tiene columna de departamento o viene vacia.")),
+                UiField(EmpleadosMondayFlow.JobTitleField, tr("Puesto para todos"), help = tr("Se usa cuando el tablero no tiene columna de puesto o viene vacia.")),
             )
         val values = mapOf("board" to board.id) + MondayTarget.all.associate { definition ->
             "map:${definition.target}" to (suggested.columns[definition.target]?.let(byId::get)?.let(EmpleadosMondayFlow::columnOption) ?: EmpleadosMondayFlow.NoColumn)
@@ -241,16 +243,14 @@ object EmpleadosMondayScreens {
         return listOf(
             UiCard(
                 listOf(
-                    UiText("Tablero: ${board.name}. Revisa a que columna va cada dato; ya van elegidas las que parecen corresponder.", UiTextStyle.Body),
+                    UiText(tr("Tablero: {0}. Revisa a que columna va cada dato; ya van elegidas las que parecen corresponder.", board.name), UiTextStyle.Body),
                     UiText(
-                        "El nombre del elemento es el nombre del empleado. Con Dias de trabajo y Horario se arma el horario habitual (por ejemplo Lunes a Viernes y 8:00-17:00); " +
-                            "si no se entienden, el texto original queda en las notas del empleado. Las sedes y departamentos que no existan se crean. " +
-                            "Las columnas sin destino con valor se agregan a las notas.",
+                        tr("El nombre del elemento es el nombre del empleado. Con Dias de trabajo y Horario se arma el horario habitual (por ejemplo Lunes a Viernes y 8:00-17:00); si no se entienden, el texto original queda en las notas del empleado. Las sedes y departamentos que no existan se crean. Las columnas sin destino con valor se agregan a las notas."),
                         UiTextStyle.Caption,
                     ),
                     UiForm(
                         "mondayMapping", fields, values,
-                        submit = UiButton("Leer tablero", post(MondayOp.Read, mapOf("board" to board.id), formId = "mondayMapping")),
+                        submit = UiButton(tr("Leer tablero"), post(MondayOp.Read, mapOf("board" to board.id), formId = "mondayMapping")),
                     ),
                     back,
                 ),
@@ -262,85 +262,88 @@ object EmpleadosMondayScreens {
     // ---- Trabajo ----
 
     private fun jobStep(tenant: Connection, id: UUID, canApply: Boolean): List<UiNode> {
-        val back = UiButton("Volver", navigate(), style = "secondary")
-        val job = EmpleadosMondayJobs.find(tenant, id) ?: return listOf(UiText("No se encontro la importacion.", tone = UiTone.Danger), back)
-        val refresh = UiButton("Actualizar", navigate(mapOf("step" to "job", "job" to id.toString())), style = "secondary")
-        val cancel = UiButton("Cancelar importacion", post(MondayOp.Cancel, mapOf("job" to id.toString()), confirm = "Se cancela la importacion. Lo ya importado se conserva. Continuar?"), style = "danger")
-        val header = UiText("Tablero: ${job.boardName.ifBlank { job.boardId }} · ${EmpleadosMondayFlow.statusLabel(job.status)}", UiTextStyle.Subtitle)
+        val back = UiButton(tr("Volver"), navigate(), style = "secondary")
+        val job = EmpleadosMondayJobs.find(tenant, id) ?: return listOf(UiText(tr("No se encontro la importacion."), tone = UiTone.Danger), back)
+        val refresh = UiButton(tr("Actualizar"), navigate(mapOf("step" to "job", "job" to id.toString())), style = "secondary")
+        val cancel = UiButton(tr("Cancelar importacion"), post(MondayOp.Cancel, mapOf("job" to id.toString()), confirm = tr("Se cancela la importacion. Lo ya importado se conserva. Continuar?")), style = "danger")
+        val header = UiText(tr("Tablero: {0} · {1}", job.boardName.ifBlank { job.boardId }, EmpleadosMondayFlow.statusLabel(job.status)), UiTextStyle.Subtitle)
         return when (job.status) {
             MondayJobStatus.Reading -> listOf(
                 header,
-                UiText("Se esta leyendo el tablero. Actualiza esta pantalla para seguir."),
-                UiText("Elementos leidos: ${job.total}", UiTextStyle.Caption),
+                UiText(tr("Se esta leyendo el tablero. Actualiza esta pantalla para seguir.")),
+                UiText(tr("Elementos leidos: {0}", job.total), UiTextStyle.Caption),
                 UiRow(listOf(refresh, cancel)),
             )
             MondayJobStatus.Preview -> previewNodes(job, header, cancel, canApply)
             MondayJobStatus.Applying -> listOf(
                 header,
                 progress(job),
-                UiText("Puedes salir de esta pantalla; la importacion sigue sola.", UiTextStyle.Caption),
+                UiText(tr("Puedes salir de esta pantalla; la importacion sigue sola."), UiTextStyle.Caption),
                 UiRow(listOf(refresh, cancel)),
             )
             MondayJobStatus.Done -> listOf(header, UiText(job.message, tone = UiTone.Success), progress(job)) + problemNodes(tenant, job) + back
-            MondayJobStatus.Failed -> listOf(header, UiText(job.message.ifBlank { "No se pudo completar la importacion." }, tone = UiTone.Danger), progress(job), back)
-            else -> listOf(header, UiText(job.message.ifBlank { "Importacion cancelada." }, tone = UiTone.Warning), progress(job), back)
+            MondayJobStatus.Failed -> listOf(header, UiText(job.message.ifBlank { tr("No se pudo completar la importacion.") }, tone = UiTone.Danger), progress(job), back)
+            else -> listOf(header, UiText(job.message.ifBlank { tr("Importacion cancelada.") }, tone = UiTone.Warning), progress(job), back)
         }
     }
 
     private fun progress(job: MondayJob): UiNode = UiGrid(
         listOf(
-            UiMetric("Procesados", "${job.applied} de ${job.total}"),
-            UiMetric("Creados", job.created.toString()),
-            UiMetric("Actualizados", job.updated.toString()),
-            UiMetric("Omitidos", job.skipped.toString()),
-            UiMetric("Con error", job.failed.toString()),
+            UiMetric(tr("Procesados"), tr("{0} de {1}", job.applied, job.total)),
+            UiMetric(tr("Creados"), job.created.toString()),
+            UiMetric(tr("Actualizados"), job.updated.toString()),
+            UiMetric(tr("Omitidos"), job.skipped.toString()),
+            UiMetric(tr("Con error"), job.failed.toString()),
         ),
         minItemWidth = 140,
     )
 
     private fun previewNodes(job: MondayJob, header: UiNode, cancel: UiNode, canApply: Boolean): List<UiNode> {
         // El resumen se calculo y guardo una vez al terminar de leer: la pantalla solo lo muestra.
-        val summary = job.summary ?: return listOf(header, UiText("La vista previa de esta importacion no esta disponible; cancelala y vuelve a leer el tablero.", tone = UiTone.Danger), cancel)
+        val summary = job.summary ?: return listOf(header, UiText(tr("La vista previa de esta importacion no esta disponible; cancelala y vuelve a leer el tablero."), tone = UiTone.Danger), cancel)
         val nodes = mutableListOf<UiNode>(
             header,
             UiGrid(
                 listOf(
-                    UiMetric("Empleados", summary.employees.toString()),
-                    UiMetric("Sedes", summary.sites.size.toString()),
-                    UiMetric("Departamentos", summary.departments.size.toString()),
-                    UiMetric("Con horario", summary.withSchedule.toString()),
-                    UiMetric("Posibles cuentas por correo",summary.linkedUsers.size.toString()),
-                    UiMetric("Problemas", summary.problemCount.toString(), captionTone = if (summary.problemCount == 0) UiTone.Success else UiTone.Warning),
+                    UiMetric(tr("Empleados"), summary.employees.toString()),
+                    UiMetric(tr("Sedes"), summary.sites.size.toString()),
+                    UiMetric(tr("Departamentos"), summary.departments.size.toString()),
+                    UiMetric(tr("Con horario"), summary.withSchedule.toString()),
+                    UiMetric(tr("Posibles cuentas por correo"),summary.linkedUsers.size.toString()),
+                    UiMetric(tr("Problemas"), summary.problemCount.toString(), captionTone = if (summary.problemCount == 0) UiTone.Success else UiTone.Warning),
                 ),
                 minItemWidth = 140,
             ),
-            UiText(ReimportWarning, UiTextStyle.Caption, tone = UiTone.Warning),
+            UiText(tr(ReimportWarning), UiTextStyle.Caption, tone = UiTone.Warning),
         )
-        if (summary.sites.isNotEmpty()) nodes += UiText("Sedes: ${listed(summary.sites)}.", UiTextStyle.Caption)
-        if (summary.departments.isNotEmpty()) nodes += UiText("Departamentos: ${listed(summary.departments)}.", UiTextStyle.Caption)
-        if (summary.linkedUsers.isNotEmpty()) nodes += UiText("Posibles cuentas por correo: ${listed(summary.linkedUsers)}. Enlazalas a mano en la ficha.", UiTextStyle.Caption)
+        if (summary.sites.isNotEmpty()) nodes += UiText(tr("Sedes: {0}.", listed(summary.sites)), UiTextStyle.Caption)
+        if (summary.departments.isNotEmpty()) nodes += UiText(tr("Departamentos: {0}.", listed(summary.departments)), UiTextStyle.Caption)
+        if (summary.linkedUsers.isNotEmpty()) nodes += UiText(tr("Posibles cuentas por correo: {0}. Enlazalas a mano en la ficha.", listed(summary.linkedUsers)), UiTextStyle.Caption)
         if (summary.problems.isNotEmpty()) {
             nodes += UiCard(
                 summary.problems.take(MaxListed).map { UiText(it) } +
-                    listOfNotNull(summary.problemCount.takeIf { it > MaxListed }?.let { UiText("Y ${it - MaxListed} problemas mas.", UiTextStyle.Caption) }),
+                    listOfNotNull(summary.problemCount.takeIf { it > MaxListed }?.let { UiText(tr("Y {0} problemas mas.", it - MaxListed), UiTextStyle.Caption) }),
                 title = "Problemas encontrados",
             )
         }
         nodes += if (canApply) {
             UiRow(
                 listOf(
-                    UiButton("Aplicar importacion", post(MondayOp.Apply, mapOf("job" to job.id.toString()), confirm = "Se crean o actualizan ${summary.employees} empleados con sus sedes y horarios. $ReimportWarning Continuar?")),
+                    UiButton(tr("Aplicar importacion"), post(MondayOp.Apply, mapOf("job" to job.id.toString()), confirm = tr("Se crean o actualizan {0} empleados con sus sedes y horarios. {1} Continuar?", summary.employees, tr(ReimportWarning)))),
                     cancel,
                 ),
             )
         } else {
-            UiText(EmpleadosMondayFlow.ApplyDenied, UiTextStyle.Caption, tone = UiTone.Warning)
+            UiText(tr(EmpleadosMondayFlow.ApplyDenied), UiTextStyle.Caption, tone = UiTone.Warning)
         }
         if (!canApply) nodes += cancel
         return nodes
     }
 
-    private fun listed(names: List<String>) = names.take(MaxListed).joinToString() + if (names.size > MaxListed) " y ${names.size - MaxListed} mas" else ""
+    /** El espacio de trabajo "Espacio principal" (el que pone la API si no trae nombre) se muestra traducido; los demas son de monday. */
+    private fun workspaceLabel(name: String) = if (name == EmpleadosMondayClient.MainWorkspace) tr(name) else name
+
+    private fun listed(names: List<String>) = names.take(MaxListed).joinToString() + if (names.size > MaxListed) tr(" y {0} mas", names.size - MaxListed) else ""
 
     private fun problemNodes(tenant: Connection, job: MondayJob): List<UiNode> {
         val rows = EmpleadosMondayJobs.problems(tenant, job.id, 50)
@@ -349,7 +352,7 @@ object EmpleadosMondayScreens {
             UiCard(
                 listOf(
                     UiTable(
-                        listOf(UiTableColumn("row", "Fila"), UiTableColumn("name", "Empleado"), UiTableColumn("result", "Resultado"), UiTableColumn("message", "Motivo")),
+                        listOf(UiTableColumn("row", tr("Fila")), UiTableColumn("name", tr("Empleado")), UiTableColumn("result", tr("Resultado")), UiTableColumn("message", tr("Motivo"))),
                         rows.map { mapOf("row" to it.rowNo.toString(), "name" to it.name, "result" to resultLabel(it.outcome), "message" to it.message) },
                     ),
                 ),
@@ -359,9 +362,9 @@ object EmpleadosMondayScreens {
     }
 
     private fun resultLabel(outcome: String) = when (outcome) {
-        "failed" -> "Error"
-        "skipped" -> "Omitida"
-        else -> "Con avisos"
+        "failed" -> tr("Error")
+        "skipped" -> tr("Omitida")
+        else -> tr("Con avisos")
     }
 
     // ---- Acciones (POST importar?source=empleados_monday&op=...) ----
@@ -369,20 +372,20 @@ object EmpleadosMondayScreens {
     private fun failure(message: String, params: Map<String, String> = emptyMap()) = EmpleadosImportReply(message, error = true, params = params)
 
     fun action(context: EmpleadosImportContext, op: String, values: Map<String, String>): EmpleadosImportReply {
-        if (!context.permissions.has(EmpleadosImportPermission)) return failure("No tienes permiso para importar datos.")
+        if (!context.permissions.has(EmpleadosImportPermission)) return failure(tr("No tienes permiso para importar datos."))
         val tenant = context.tenant
         return try {
             when (op) {
                 MondayOp.Token -> saveToken(context, values)
                 MondayOp.Forget -> {
                     EmpleadosMondaySettings.saveToken(context.access.secrets, tenant, null)
-                    EmpleadosImportReply("Token de monday borrado.")
+                    EmpleadosImportReply(tr("Token de monday borrado."))
                 }
-                MondayOp.Boards -> EmpleadosImportReply("Elige un tablero.", params = mapOf("step" to "boards"))
+                MondayOp.Boards -> EmpleadosImportReply(tr("Elige un tablero."), params = mapOf("step" to "boards"))
                 MondayOp.Map -> {
                     val board = values["board"].orEmpty().trim()
-                    if (!EmpleadosMondayClient.isBoardId(board)) failure("Elige un tablero.", mapOf("step" to "boards"))
-                    else EmpleadosImportReply("Revisa el mapeo de columnas.", params = mapOf("step" to "map", "board" to board))
+                    if (!EmpleadosMondayClient.isBoardId(board)) failure(tr("Elige un tablero."), mapOf("step" to "boards"))
+                    else EmpleadosImportReply(tr("Revisa el mapeo de columnas."), params = mapOf("step" to "map", "board" to board))
                 }
                 MondayOp.Read -> read(context, values)
                 MondayOp.Apply -> {
@@ -390,18 +393,18 @@ object EmpleadosMondayScreens {
                     EmpleadosMondayFlow.requireApply(context.permissions)
                     controlled(context, id)
                     if (EmpleadosMondayJobs.requestApply(tenant, id)) {
-                        EmpleadosImportReply("Se esta importando.", params = mapOf("step" to "job", "job" to id.toString()))
+                        EmpleadosImportReply(tr("Se esta importando."), params = mapOf("step" to "job", "job" to id.toString()))
                     } else {
-                        failure("Esta importacion ya no esta en revision.", mapOf("step" to "job", "job" to id.toString()))
+                        failure(tr("Esta importacion ya no esta en revision."), mapOf("step" to "job", "job" to id.toString()))
                     }
                 }
                 MondayOp.Cancel -> {
                     val id = jobId(values)
                     controlled(context, id)
                     val done = EmpleadosMondayJobs.cancel(tenant, id)
-                    EmpleadosImportReply(if (done) "Importacion cancelada." else "Esta importacion ya habia terminado.", error = !done, params = mapOf("step" to "job", "job" to id.toString()))
+                    EmpleadosImportReply(if (done) tr("Importacion cancelada.") else tr("Esta importacion ya habia terminado."), error = !done, params = mapOf("step" to "job", "job" to id.toString()))
                 }
-                else -> failure("Operacion desconocida.")
+                else -> failure(tr("Operacion desconocida."))
             }
         } catch (problem: EmpleadosMondayException) {
             failure(problem.message.orEmpty())
@@ -410,24 +413,24 @@ object EmpleadosMondayScreens {
 
     // Solo quien inicio la importacion o quien administra fichas la aplica o cancela.
     private fun controlled(context: EmpleadosImportContext, id: UUID) {
-        val job = EmpleadosMondayJobs.find(context.tenant, id) ?: throw EmpleadosMondayException("No se encontro la importacion.")
+        val job = EmpleadosMondayJobs.find(context.tenant, id) ?: throw EmpleadosMondayException(tr("No se encontro la importacion."))
         EmpleadosMondayFlow.requireJobControl(context.permissions, job)
     }
 
     private fun jobId(values: Map<String, String>): UUID =
-        runCatching { UUID.fromString(values["job"].orEmpty().trim()) }.getOrNull() ?: throw EmpleadosMondayException("No se encontro la importacion.")
+        runCatching { UUID.fromString(values["job"].orEmpty().trim()) }.getOrNull() ?: throw EmpleadosMondayException(tr("No se encontro la importacion."))
 
     private fun saveToken(context: EmpleadosImportContext, values: Map<String, String>): EmpleadosImportReply {
         val tenant = context.tenant
         val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != SecretBox.Mask }
-        if (typed == null && !EmpleadosMondaySettings.configured(tenant)) return failure("Escribe el token de la API de monday.")
+        if (typed == null && !EmpleadosMondaySettings.configured(tenant)) return failure(tr("Escribe el token de la API de monday."))
         typed?.let { EmpleadosMondaySettings.saveToken(context.access.secrets, tenant, it) }
-        return EmpleadosImportReply("Token de monday guardado.", params = mapOf("step" to "boards"))
+        return EmpleadosImportReply(tr("Token de monday guardado."), params = mapOf("step" to "boards"))
     }
 
     private fun read(context: EmpleadosImportContext, values: Map<String, String>): EmpleadosImportReply {
         val board = values["board"].orEmpty().trim()
-        if (!EmpleadosMondayClient.isBoardId(board)) return failure("Elige un tablero.", mapOf("step" to "boards"))
+        if (!EmpleadosMondayClient.isBoardId(board)) return failure(tr("Elige un tablero."), mapOf("step" to "boards"))
         val chosen = MondayTarget.all.mapNotNull { definition ->
             values["map:${definition.target}"]?.let(EmpleadosMondayFlow::columnIdOf)?.let { definition.target to it }
         }.toMap()
@@ -441,6 +444,6 @@ object EmpleadosMondayScreens {
         } catch (problem: EmpleadosMondayException) {
             return failure(problem.message.orEmpty(), mapOf("step" to "map", "board" to board))
         }
-        return EmpleadosImportReply("Se esta leyendo el tablero de monday.", params = mapOf("step" to "job", "job" to id.toString()))
+        return EmpleadosImportReply(tr("Se esta leyendo el tablero de monday."), params = mapOf("step" to "job", "job" to id.toString()))
     }
 }

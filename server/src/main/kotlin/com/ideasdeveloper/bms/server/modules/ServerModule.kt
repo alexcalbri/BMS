@@ -142,6 +142,11 @@ class ModuleRegistry(
     private val packageRequirements: Map<String, ModuleRequirements> = emptyMap(),
 ) {
     private val modulesById = modules.associateBy { it.definition.id }.toMutableMap()
+
+    init {
+        // Texts of each loaded module in other languages (modules/<id>/i18n, I18N.md §3).
+        modules.forEach { com.ideasdeveloper.bms.server.i18n.loadModuleCatalog(it) }
+    }
     private val externalDefinitionsById = ConcurrentHashMap<String, ModuleDefinition>()
     // Read on every module request and changed when the server owner installs or removes modules.
     private val installedIds: MutableSet<String> = ConcurrentHashMap.newKeySet<String>().apply { addAll(installedModuleIds) }

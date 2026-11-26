@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.CustomerTimelineEntry
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -29,20 +30,20 @@ object ClientesActivity {
 
     /** Title shown for an activity kind in the customer's history and in "Registro de Clientes". */
     fun title(kind: String): String = when (kind) {
-        "created" -> "Cliente creado"
-        "archived" -> "Cliente archivado"
-        "restored" -> "Cliente restaurado"
-        "note_deleted" -> "Nota borrada"
-        "history_deleted" -> "Entrada del historial borrada"
-        "merged" -> "Cliente fusionado"
-        "separated" -> "Clientes separados"
-        "field_created" -> "Campo personalizado creado"
-        "field_deleted" -> "Campo personalizado borrado"
-        "linked" -> "Empresa vinculada"
-        "unlinked" -> "Empresa desvinculada"
-        "user_linked" -> "Cuenta de usuario enlazada"
-        "user_unlinked" -> "Cuenta de usuario desenlazada"
-        else -> "Datos del cliente modificados"
+        "created" -> tr("Cliente creado")
+        "archived" -> tr("Cliente archivado")
+        "restored" -> tr("Cliente restaurado")
+        "note_deleted" -> tr("Nota borrada")
+        "history_deleted" -> tr("Entrada del historial borrada")
+        "merged" -> tr("Cliente fusionado")
+        "separated" -> tr("Clientes separados")
+        "field_created" -> tr("Campo personalizado creado")
+        "field_deleted" -> tr("Campo personalizado borrado")
+        "linked" -> tr("Empresa vinculada")
+        "unlinked" -> tr("Empresa desvinculada")
+        "user_linked" -> tr("Cuenta de usuario enlazada")
+        "user_unlinked" -> tr("Cuenta de usuario desenlazada")
+        else -> tr("Datos del cliente modificados")
     }
 
     /** Records an event of one customer. */

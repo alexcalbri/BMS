@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.platform
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import android.content.ContentValues
 import android.content.Context
 import android.os.Build
@@ -22,7 +23,7 @@ actual fun saveTextFile(fileName: String, content: String, mimeType: String): St
 
 actual fun saveBinaryFile(fileName: String, bytes: ByteArray, mimeType: String): String {
     val context = AndroidFileExport.applicationContext
-        ?: return "No se pudo guardar el archivo: la app no esta inicializada."
+        ?: return tr("No se pudo guardar el archivo: la app no esta inicializada.")
     val name = File(fileName).name
     return try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -34,21 +35,21 @@ actual fun saveBinaryFile(fileName: String, bytes: ByteArray, mimeType: String):
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: return "No se pudo crear el archivo en Descargas."
+                ?: return tr("No se pudo crear el archivo en Descargas.")
             resolver.openOutputStream(uri)?.use { it.write(bytes) }
-                ?: return "No se pudo escribir el archivo en Descargas."
+                ?: return tr("No se pudo escribir el archivo en Descargas.")
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
-            "Archivo guardado en Descargas: $name"
+            tr("Archivo guardado en Descargas: {0}", name)
         } else {
             // Android 7-9: carpeta de la app, accesible desde el administrador de archivos.
             val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
             val target = File(directory, name)
             target.writeBytes(bytes)
-            "Archivo guardado en ${target.absolutePath}"
+            tr("Archivo guardado en {0}", target.absolutePath)
         }
     } catch (exception: Exception) {
-        "No se pudo guardar el archivo: ${exception.message}"
+        tr("No se pudo guardar el archivo: {0}", exception.message)
     }
 }

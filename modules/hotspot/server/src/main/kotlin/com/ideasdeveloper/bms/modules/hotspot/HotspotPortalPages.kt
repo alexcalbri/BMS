@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.security.MessageDigest
 import java.util.Base64
 
@@ -37,7 +39,7 @@ object HotspotPortalPages {
             "color_primario" to settings.brand.primary,
             "color_secundario" to settings.brand.secondary,
             "color_texto" to settings.brand.onPrimary,
-            "tipo_codigo" to view.label,
+            "tipo_codigo" to tr(view.label),
         ) + extra
         val raw = mapOf(
             "campos_ocultos" to guestFields(guest),
@@ -51,23 +53,23 @@ object HotspotPortalPages {
         header = networkHeader(settings, guest),
         body = """
             <form action="$BasePath/register" method="POST">
-              <h2>Conectate ahora</h2>
-              <p class="muted">Dejanos tus datos y te enviaremos un codigo de acceso a tu correo.</p>
+              <h2>${tr("Conectate ahora")}</h2>
+              <p class="muted">${tr("Dejanos tus datos y te enviaremos un codigo de acceso a tu correo.")}</p>
               ${error?.let { "<div class=\"error\">${esc(it)}</div>" }.orEmpty()}
-              <label for="name">Nombre</label>
+              <label for="name">${tr("Nombre")}</label>
               <input id="name" name="name" type="text" autocomplete="name" maxlength="60" required value="${esc(values.name)}">
-              <label for="email">Correo electronico</label>
+              <label for="email">${tr("Correo electronico")}</label>
               <input id="email" name="email" type="email" autocomplete="email" maxlength="120" required value="${esc(values.email)}">
-              <label for="phone">Celular</label>
+              <label for="phone">${tr("Celular")}</label>
               <input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="20" required value="${esc(values.phone)}">
-              <label for="birthday">Cumpleanos <span class="optional">(opcional)</span></label>
+              <label for="birthday">${tr("Cumpleanos")} <span class="optional">${tr("(opcional)")}</span></label>
               <input id="birthday" name="birthday" type="date" value="${esc(values.birthday)}">
               <label class="consent">
                 <input type="checkbox" name="terms" value="si" required>
                 <span>${esc(settings.consentText)}${legalLinks(settings)}</span>
               </label>
               ${guestFields(guest)}
-              <button type="submit" data-busy="Enviando codigo...">Enviar codigo</button>
+              <button type="submit" data-busy="${esc(tr("Enviando codigo..."))}">${tr("Enviar codigo")}</button>
             </form>
         """.trimIndent(),
     )
@@ -76,19 +78,19 @@ object HotspotPortalPages {
     // (Usuarios integration) instead of the form.
     fun accessCode(settings: HotspotSettings, guest: GuestContext, byUser: Boolean = false, error: String? = null): String {
         custom(settings, if (byUser) HotspotTemplates.UserCode else HotspotTemplates.CustomerCode, guest, error, emptyMap())?.let { return it }
-        val label = if (byUser) "Codigo de usuario" else "Codigo de cliente"
+        val label = if (byUser) tr("Codigo de usuario") else tr("Codigo de cliente")
         return page(
             settings,
             header = networkHeader(settings, guest),
             body = """
                 <form action="$BasePath/code" method="POST">
-                  <h2>Ingresa tu codigo</h2>
-                  <p class="muted">Escribe tu ${label.lowercase()} para conectarte a esta red.</p>
+                  <h2>${tr("Ingresa tu codigo")}</h2>
+                  <p class="muted">${if (byUser) tr("Escribe tu codigo de usuario para conectarte a esta red.") else tr("Escribe tu codigo de cliente para conectarte a esta red.")}</p>
                   ${error?.let { "<div class=\"error\">${esc(it)}</div>" }.orEmpty()}
-                  <label for="access_code">$label</label>
+                  <label for="access_code">${esc(label)}</label>
                   <input id="access_code" name="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" required class="code">
                   ${guestFields(guest)}
-                  <button type="submit" data-busy="Conectando...">Conectarme al WiFi</button>
+                  <button type="submit" data-busy="${esc(tr("Conectando..."))}">${tr("Conectarme al WiFi")}</button>
                 </form>
             """.trimIndent(),
         )
@@ -99,16 +101,16 @@ object HotspotPortalPages {
         header = "<h1>${esc(settings.portalTitle)}</h1>",
         body = """
             <form action="$BasePath/verify" method="POST">
-              <h2>Revisa tu correo</h2>
-              <p class="muted">Enviamos un codigo de 6 digitos a <strong>${esc(maskEmail(email))}</strong>. Vence en ${settings.codeTtlMinutes} minutos.</p>
+              <h2>${tr("Revisa tu correo")}</h2>
+              <p class="muted">${tr("Enviamos un codigo de 6 digitos a {0}. Vence en {1} minutos.", "<strong>${esc(maskEmail(email))}</strong>", settings.codeTtlMinutes)}</p>
               ${error?.let { "<div class=\"error\">${esc(it)}</div>" }.orEmpty()}
-              <label for="code">Codigo</label>
+              <label for="code">${tr("Codigo")}</label>
               <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required class="code">
               <input type="hidden" name="pending" value="${esc(pendingId)}">
               <input type="hidden" name="url" value="${esc(continueUrl)}">
-              <button type="submit" data-busy="Conectando...">Conectarme al WiFi</button>
+              <button type="submit" data-busy="${esc(tr("Conectando..."))}">${tr("Conectarme al WiFi")}</button>
             </form>
-            <p class="small"><a href="$BasePath/">Volver a empezar</a></p>
+            <p class="small"><a href="$BasePath/">${tr("Volver a empezar")}</a></p>
         """.trimIndent(),
     )
 
@@ -124,10 +126,10 @@ object HotspotPortalPages {
         body = """
             <div class="center">
               <div class="check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
-              <h2>Estas conectado</h2>
-              <p>Bienvenido, ${esc(name)}. Ya puedes navegar.</p>
-              ${if (showDuration && settings.accessMinutes > 0) "<p class=\"note\">Tu sesion de WiFi dura <strong>${settings.accessMinutes} minutos</strong>.</p>" else ""}
-              ${continueUrl?.let { "<p class=\"small\">Te llevaremos a la pagina en unos segundos.</p><a class=\"button\" href=\"${esc(it)}\">Continuar</a>" }.orEmpty()}
+              <h2>${tr("Estas conectado")}</h2>
+              <p>${tr("Bienvenido, {0}. Ya puedes navegar.", esc(name))}</p>
+              ${if (showDuration && settings.accessMinutes > 0) "<p class=\"note\">${tr("Tu sesion de WiFi dura {0}.", "<strong>${tr("{0} minutos", settings.accessMinutes)}</strong>")}</p>" else ""}
+              ${continueUrl?.let { "<p class=\"small\">${tr("Te llevaremos a la pagina en unos segundos.")}</p><a class=\"button\" href=\"${esc(it)}\">${tr("Continuar")}</a>" }.orEmpty()}
             </div>
         """.trimIndent(),
     )
@@ -143,10 +145,10 @@ object HotspotPortalPages {
         body = """
             <div class="center">
               <div class="check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
-              <h2>Bienvenido de nuevo</h2>
-              <p>${esc(name.ifBlank { "Hola" })}, ya tenias acceso a esta red. Puedes seguir navegando.</p>
-              ${minutesLeft?.let { "<p class=\"note\">Te quedan <strong>${timeLeft(it.toLong())}</strong> de tu sesion de WiFi.</p>" }.orEmpty()}
-              ${continueUrl?.let { "<p class=\"small\">Te llevaremos a la pagina en unos segundos.</p><a class=\"button\" href=\"${esc(it)}\">Continuar</a>" }.orEmpty()}
+              <h2>${tr("Bienvenido de nuevo")}</h2>
+              <p>${tr("{0}, ya tenias acceso a esta red. Puedes seguir navegando.", esc(name.ifBlank { tr("Hola") }))}</p>
+              ${minutesLeft?.let { "<p class=\"note\">${tr("Te quedan {0} de tu sesion de WiFi.", "<strong>${timeLeft(it.toLong())}</strong>")}</p>" }.orEmpty()}
+              ${continueUrl?.let { "<p class=\"small\">${tr("Te llevaremos a la pagina en unos segundos.")}</p><a class=\"button\" href=\"${esc(it)}\">${tr("Continuar")}</a>" }.orEmpty()}
             </div>
         """.trimIndent(),
     )
@@ -157,16 +159,20 @@ object HotspotPortalPages {
         val hours = minutes % 1440 / 60
         val rest = minutes % 60
         return listOfNotNull(
-            days.takeIf { it > 0 }?.let { "$it dia${if (it == 1L) "" else "s"}" },
-            hours.takeIf { it > 0 }?.let { "$it h" },
-            rest.takeIf { it > 0 || minutes == 0L }?.let { "$it min" },
+            days.takeIf { it > 0 }?.let { if (it == 1L) tr("{0} dia", it) else tr("{0} dias", it) },
+            hours.takeIf { it > 0 }?.let { tr("{0} h", it) },
+            rest.takeIf { it > 0 || minutes == 0L }?.let { tr("{0} min", it) },
         ).joinToString(" ")
     }
 
     fun wait(settings: HotspotSettings, minutesRemaining: Long, byCode: Boolean = false): String = message(
         settings,
-        title = "Ya usaste tu acceso",
-        text = "${if (byCode) "Este codigo" else "Este correo"} ya se conecto recientemente. Podras volver a conectarte en ${formatMinutes(minutesRemaining)}.",
+        title = tr("Ya usaste tu acceso"),
+        text = if (byCode) {
+            tr("Este codigo ya se conecto recientemente. Podras volver a conectarte en {0}.", formatMinutes(minutesRemaining))
+        } else {
+            tr("Este correo ya se conecto recientemente. Podras volver a conectarte en {0}.", formatMinutes(minutesRemaining))
+        },
     )
 
     fun message(settings: HotspotSettings?, title: String, text: String, retry: Boolean = true): String = page(
@@ -176,7 +182,7 @@ object HotspotPortalPages {
             <div class="center">
               <h2>${esc(title)}</h2>
               <p>${esc(text)}</p>
-              ${if (retry) "<p class=\"small\"><a href=\"$BasePath/\">Volver a empezar</a></p>" else ""}
+              ${if (retry) "<p class=\"small\"><a href=\"$BasePath/\">${tr("Volver a empezar")}</a></p>" else ""}
             </div>
         """.trimIndent(),
     )
@@ -185,7 +191,7 @@ object HotspotPortalPages {
     private fun networkHeader(settings: HotspotSettings, guest: GuestContext) = """
         <h1>${esc(settings.portalTitle)}</h1>
         ${settings.portalSubtitle.takeIf { it.isNotBlank() }?.let { "<p class=\"lead\">${esc(it)}</p>" }.orEmpty()}
-        <div class="network">${WifiIcon} Red: ${esc(guest.ssid.ifBlank { settings.networkName })}</div>
+        <div class="network">${WifiIcon} ${tr("Red: {0}", esc(guest.ssid.ifBlank { settings.networkName }))}</div>
     """.trimIndent()
 
     private fun guestFields(guest: GuestContext) = listOf(
@@ -197,8 +203,8 @@ object HotspotPortalPages {
 
     private fun legalLinks(settings: HotspotSettings): String {
         val links = listOfNotNull(
-            settings.termsUrl?.let { "<a href=\"${esc(it)}\" target=\"_blank\" rel=\"noopener\">Terminos</a>" },
-            settings.privacyUrl?.let { "<a href=\"${esc(it)}\" target=\"_blank\" rel=\"noopener\">Privacidad</a>" },
+            settings.termsUrl?.let { "<a href=\"${esc(it)}\" target=\"_blank\" rel=\"noopener\">${tr("Terminos")}</a>" },
+            settings.privacyUrl?.let { "<a href=\"${esc(it)}\" target=\"_blank\" rel=\"noopener\">${tr("Privacidad")}</a>" },
         )
         return if (links.isEmpty()) "" else " " + links.joinToString(" · ")
     }
@@ -213,7 +219,7 @@ object HotspotPortalPages {
         val footer = settings?.footerText?.takeIf { it.isNotBlank() }?.let { "<footer>${esc(it)}</footer>" }.orEmpty()
         return """
             <!DOCTYPE html>
-            <html lang="es">
+            <html lang="${I18n.language()}">
             <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -284,14 +290,14 @@ object HotspotPortalPages {
     }
 
     private fun formatMinutes(minutes: Long): String = when {
-        minutes < 60 -> "$minutes minuto${if (minutes == 1L) "" else "s"}"
+        minutes < 60 -> if (minutes == 1L) tr("{0} minuto", minutes) else tr("{0} minutos", minutes)
         minutes < 1440 -> {
             val hours = (minutes + 59) / 60
-            "$hours hora${if (hours == 1L) "" else "s"}"
+            if (hours == 1L) tr("{0} hora", hours) else tr("{0} horas", hours)
         }
         else -> {
             val days = (minutes + 1439) / 1440
-            "$days dia${if (days == 1L) "" else "s"}"
+            if (days == 1L) tr("{0} dia", days) else tr("{0} dias", days)
         }
     }
 

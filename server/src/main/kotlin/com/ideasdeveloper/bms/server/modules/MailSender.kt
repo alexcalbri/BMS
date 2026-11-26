@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import jakarta.mail.Authenticator
 import jakarta.mail.Message
 import jakarta.mail.PasswordAuthentication
@@ -83,16 +84,16 @@ object MailHostGuard {
         allowPrivate: Boolean = false,
         resolve: (String) -> List<java.net.InetAddress> = { name -> java.net.InetAddress.getAllByName(name).toList() },
     ) {
-        if (port !in AllowedPorts) throw MailException("El puerto debe ser uno de: ${AllowedPorts.sorted().joinToString(", ")}.")
+        if (port !in AllowedPorts) throw MailException(tr("El puerto debe ser uno de: {0}.", AllowedPorts.sorted().joinToString(", ")))
         val name = host.trim()
-        if (name.isEmpty()) throw MailException("Escribe el servidor de correo.")
+        if (name.isEmpty()) throw MailException(tr("Escribe el servidor de correo."))
         if (allowPrivate) return
         val addresses = try {
             resolve(name)
         } catch (failure: Exception) {
-            throw MailException("No se encontro el servidor de correo $name.")
+            throw MailException(tr("No se encontro el servidor de correo {0}.", name))
         }
-        if (addresses.isEmpty() || addresses.any(::blockedAddress)) throw MailException("El servidor de correo apunta a una red privada o local: no se permite.")
+        if (addresses.isEmpty() || addresses.any(::blockedAddress)) throw MailException(tr("El servidor de correo apunta a una red privada o local: no se permite."))
     }
 }
 
@@ -114,7 +115,7 @@ object MailSender {
     }
 
     private fun send(settings: SmtpSettings, to: String, subject: String, allowPrivate: Boolean, body: MimeMessage.() -> Unit) {
-        if (!settings.isUsable) throw MailException("El correo SMTP no esta configurado.")
+        if (!settings.isUsable) throw MailException(tr("El correo SMTP no esta configurado."))
         // Se valida justo antes de conectar (el nombre pudo cambiar de destino desde que se guardo).
         // El SMTP del servidor (settings.trusted) o un llamador de confianza puede usar un relay interno.
         val trusted = allowPrivate || settings.trusted
@@ -135,7 +136,7 @@ object MailSender {
             Transport.send(message)
         } catch (failure: Exception) {
             // Mensaje generico: el detalle de la conexion no se muestra al usuario (queda en la causa).
-            throw MailException("No se pudo enviar el correo. Revisa la configuracion SMTP.", failure)
+            throw MailException(tr("No se pudo enviar el correo. Revisa la configuracion SMTP."), failure)
         }
     }
 

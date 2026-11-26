@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiTone
 import java.math.BigDecimal
@@ -13,14 +15,14 @@ class ComprasValidationException(message: String) : RuntimeException(message)
 
 /** Estados de una solicitud; [id] es el valor guardado en `compras_requests.status`. */
 enum class RequestStatus(val id: String, val label: String, val tone: String) {
-    Draft("draft", "Borrador", UiTone.Neutral),
-    Quoting("quoting", "En cotizacion", UiTone.Info),
-    PendingApproval("pending_approval", "Pendiente de aprobacion", UiTone.Warning),
-    Approved("approved", "Aprobada", UiTone.Success),
-    Rejected("rejected", "Rechazada", UiTone.Danger),
-    InProgress("in_progress", "Comprada / en progreso", UiTone.Info),
-    Completed("completed", "Completada", UiTone.Success),
-    Cancelled("cancelled", "Cancelada", UiTone.Neutral);
+    Draft("draft", msg("Borrador"), UiTone.Neutral),
+    Quoting("quoting", msg("En cotizacion"), UiTone.Info),
+    PendingApproval("pending_approval", msg("Pendiente de aprobacion"), UiTone.Warning),
+    Approved("approved", msg("Aprobada"), UiTone.Success),
+    Rejected("rejected", msg("Rechazada"), UiTone.Danger),
+    InProgress("in_progress", msg("Comprada / en progreso"), UiTone.Info),
+    Completed("completed", msg("Completada"), UiTone.Success),
+    Cancelled("cancelled", msg("Cancelada"), UiTone.Neutral);
 
     /** Completada o cancelada: ya no se edita ni siquiera con manage. */
     val terminal: Boolean get() = this == Completed || this == Cancelled
@@ -38,10 +40,10 @@ enum class RequestStatus(val id: String, val label: String, val tone: String) {
 
 /** Prioridad de una solicitud; [rank] mayor = mas urgente. */
 enum class Priority(val id: String, val label: String, val tone: String, val rank: Int) {
-    Low("low", "Baja", UiTone.Neutral, 0),
-    Medium("medium", "Media", UiTone.Info, 1),
-    High("high", "Alta", UiTone.Warning, 2),
-    Critical("critical", "Critica", UiTone.Danger, 3);
+    Low("low", msg("Baja"), UiTone.Neutral, 0),
+    Medium("medium", msg("Media"), UiTone.Info, 1),
+    High("high", msg("Alta"), UiTone.Warning, 2),
+    Critical("critical", msg("Critica"), UiTone.Danger, 3);
 
     companion object {
         fun fromId(id: String?): Priority? = entries.firstOrNull { it.id == id }
@@ -87,10 +89,10 @@ data class RequestDraft(
     /** Copia normalizada o [ComprasValidationException]. */
     fun validated(): RequestDraft {
         val cleanTitle = title.trim()
-        if (cleanTitle.isEmpty()) throw ComprasValidationException("El titulo es obligatorio.")
-        if (cleanTitle.length > MaxTitle) throw ComprasValidationException("El titulo admite hasta $MaxTitle caracteres.")
+        if (cleanTitle.isEmpty()) throw ComprasValidationException(tr("El titulo es obligatorio."))
+        if (cleanTitle.length > MaxTitle) throw ComprasValidationException(tr("El titulo admite hasta {0} caracteres.", MaxTitle))
         val cleanDescription = description.trim()
-        if (cleanDescription.length > MaxDescription) throw ComprasValidationException("La descripcion admite hasta $MaxDescription caracteres.")
+        if (cleanDescription.length > MaxDescription) throw ComprasValidationException(tr("La descripcion admite hasta {0} caracteres.", MaxDescription))
         return copy(
             title = cleanTitle,
             description = cleanDescription,
@@ -231,14 +233,14 @@ object ComprasMoney {
     fun parseOptional(text: String?): BigDecimal? {
         val raw = text?.trim().orEmpty().replace(" ", "")
         if (raw.isEmpty()) return null
-        if (raw.startsWith("-")) throw ComprasValidationException("El monto no puede ser negativo.")
+        if (raw.startsWith("-")) throw ComprasValidationException(tr("El monto no puede ser negativo."))
         val normalized = normalize(raw)
-        if (!AmountPattern.matches(normalized)) throw ComprasValidationException("El monto '$text' no es valido; usa un numero con hasta 2 decimales.")
+        if (!AmountPattern.matches(normalized)) throw ComprasValidationException(tr("El monto '{0}' no es valido; usa un numero con hasta 2 decimales.", text))
         return check(BigDecimal(normalized))
     }
 
     /** Como [parseOptional] pero el monto es obligatorio. */
-    fun parse(text: String?): BigDecimal = parseOptional(text) ?: throw ComprasValidationException("El monto es obligatorio.")
+    fun parse(text: String?): BigDecimal = parseOptional(text) ?: throw ComprasValidationException(tr("El monto es obligatorio."))
 
     private fun normalize(raw: String): String {
         val lastDot = raw.lastIndexOf('.')
@@ -261,17 +263,17 @@ object ComprasMoney {
 
     /** Verifica el rango (0..[Max], hasta 2 decimales) y devuelve el monto con escala 2. */
     fun check(amount: BigDecimal): BigDecimal {
-        if (amount.signum() < 0) throw ComprasValidationException("El monto no puede ser negativo.")
-        if (amount.signum() != 0 && amount.stripTrailingZeros().scale() > 2) throw ComprasValidationException("El monto admite hasta 2 decimales.")
+        if (amount.signum() < 0) throw ComprasValidationException(tr("El monto no puede ser negativo."))
+        if (amount.signum() != 0 && amount.stripTrailingZeros().scale() > 2) throw ComprasValidationException(tr("El monto admite hasta 2 decimales."))
         val scaled = amount.setScale(2, RoundingMode.HALF_UP)
-        if (scaled > Max) throw ComprasValidationException("El monto supera el maximo de 999,999,999,999.99.")
+        if (scaled > Max) throw ComprasValidationException(tr("El monto supera el maximo de 999,999,999,999.99."))
         return scaled
     }
 
     /** Moneda de 3 letras en mayusculas ("usd" -> "USD") o [ComprasValidationException]. */
     fun currency(text: String?): String {
         val code = text?.trim()?.uppercase().orEmpty()
-        if (!CurrencyPattern.matches(code)) throw ComprasValidationException("La moneda debe ser un codigo de 3 letras, por ejemplo USD.")
+        if (!CurrencyPattern.matches(code)) throw ComprasValidationException(tr("La moneda debe ser un codigo de 3 letras, por ejemplo USD."))
         return code
     }
 

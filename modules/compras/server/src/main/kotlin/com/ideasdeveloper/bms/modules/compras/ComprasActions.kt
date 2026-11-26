@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import com.ideasdeveloper.bms.ui.UiFileRef
@@ -71,16 +72,16 @@ object ComprasActions {
         val department = if (departmentName.isEmpty() || departmentName == ComprasScreens.NoDepartment) {
             null
         } else {
-            departments.firstOrNull { it.name.equals(departmentName, ignoreCase = true) } ?: throw invalid("El departamento '$departmentName' no existe.")
+            departments.firstOrNull { it.name.equals(departmentName, ignoreCase = true) } ?: throw invalid(tr("El departamento '{0}' no existe.", departmentName))
         }
         val priorityText = values["priority"]?.trim().orEmpty()
         val priority = if (priorityText.isEmpty()) {
             Priority.Medium
         } else {
-            Priority.entries.firstOrNull { it.label.equals(priorityText, ignoreCase = true) || it.id == priorityText } ?: throw invalid("La prioridad no es valida.")
+            Priority.entries.firstOrNull { it.label.equals(priorityText, ignoreCase = true) || it.id == priorityText } ?: throw invalid(tr("La prioridad no es valida."))
         }
         val dateText = values["requiredDate"]?.trim().orEmpty()
-        val requiredDate = if (dateText.isEmpty()) null else runCatching { LocalDate.parse(dateText) }.getOrNull() ?: throw invalid("La fecha requerida no es valida.")
+        val requiredDate = if (dateText.isEmpty()) null else runCatching { LocalDate.parse(dateText) }.getOrNull() ?: throw invalid(tr("La fecha requerida no es valida."))
         return RequestDraft(
             title = values["title"].orEmpty(),
             description = values["description"].orEmpty(),
@@ -100,19 +101,19 @@ object ComprasActions {
      * una lista JSON valida, es un error (no se borra nada). Un valor vacio es la lista vacia a proposito.
      */
     fun strictFileIds(values: Map<String, String>): List<UUID> {
-        val value = values["files"]?.trim() ?: throw invalid("No llegaron los archivos del formulario; recarga la solicitud e intenta de nuevo.")
+        val value = values["files"]?.trim() ?: throw invalid(tr("No llegaron los archivos del formulario; recarga la solicitud e intenta de nuevo."))
         if (value.isEmpty()) return emptyList()
         val refs = try {
             UiJson.decodeFromString(ListSerializer(UiFileRef.serializer()), value)
         } catch (_: SerializationException) {
-            throw invalid("La lista de archivos no es valida; recarga la solicitud e intenta de nuevo.")
+            throw invalid(tr("La lista de archivos no es valida; recarga la solicitud e intenta de nuevo."))
         } catch (_: IllegalArgumentException) {
-            throw invalid("La lista de archivos no es valida; recarga la solicitud e intenta de nuevo.")
+            throw invalid(tr("La lista de archivos no es valida; recarga la solicitud e intenta de nuevo."))
         }
-        return refs.map { uuid(it.id) ?: throw invalid("La lista de archivos no es valida; recarga la solicitud e intenta de nuevo.") }
+        return refs.map { uuid(it.id) ?: throw invalid(tr("La lista de archivos no es valida; recarga la solicitud e intenta de nuevo.")) }
     }
 
-    private fun notFound() = invalid("La solicitud no existe o no tienes acceso a ella.")
+    private fun notFound() = invalid(tr("La solicitud no existe o no tienes acceso a ella."))
 
     private fun checkedRequest(tenant: Connection, actor: Actor, id: UUID?): PurchaseRequest =
         id?.let { ComprasRepository.get(tenant, it, actor) } ?: throw notFound()
@@ -125,14 +126,14 @@ object ComprasActions {
         val result = ComprasRepository.transition(tenant, actor, id, to, reason)
         ComprasNotify.afterTransition(tenant, notifier, result, actor)
         val request = result.request
-        val text = "${request.folio} paso a ${request.status.label}."
+        val text = tr("{0} paso a {1}.", request.folio, tr(request.status.label))
         if (to == RequestStatus.PendingApproval) {
             val amount = request.approvalAmount
             val covered = if (amount == null) true else runCatching { ComprasApproval.eligibleApprovers(tenant, amount, request.approvalCurrency).isNotEmpty() }
                 .onFailure { log.warn("No se pudo comprobar quien cubre el monto de una solicitud de compra ({}).", it.javaClass.simpleName) }
                 .getOrDefault(true)
             if (!covered) {
-                return UiNotice("$text Ningun aprobador cubre este monto (${ComprasScreens.money(amount, request.approvalCurrency)}): pide a quien administra Compras que designe uno.", UiTone.Warning)
+                return UiNotice(tr("{0} Ningun aprobador cubre este monto ({1}): pide a quien administra Compras que designe uno.", text, ComprasScreens.money(amount, request.approvalCurrency)), UiTone.Warning)
             }
         }
         return UiNotice(text, UiTone.Success)
@@ -161,10 +162,10 @@ object ComprasActions {
         if (screen == "import") {
             // "<fuente>:<op>": la extension de la fuente atiende la operacion y devuelve el aviso.
             val full = params["op"].orEmpty()
-            val source = ComprasImportSources.byId(full.substringBefore(':')) ?: throw invalid("Esa fuente de importacion no esta instalada.")
-            val ctx = importContext?.invoke() ?: throw invalid("No se pudo preparar la importacion.")
+            val source = ComprasImportSources.byId(full.substringBefore(':')) ?: throw invalid(tr("Esa fuente de importacion no esta instalada."))
+            val ctx = importContext?.invoke() ?: throw invalid(tr("No se pudo preparar la importacion."))
             if (activeSources(listOf(source)) { it.isEnabled(ctx) }.isEmpty()) {
-                throw invalid("La importacion desde ${source.label} no esta activa en esta empresa.")
+                throw invalid(tr("La importacion desde {0} no esta activa en esta empresa.", source.label))
             }
             val notice = source.action(ctx, full.substringAfter(':'), values) ?: UiNotice("Listo.", UiTone.Success)
             return Outcome("import", back, notice)
@@ -179,26 +180,26 @@ object ComprasActions {
                 val files = try {
                     linkFiles(tenant, actor, request.id, values["files"])
                 } catch (failure: ComprasValidationException) {
-                    return Outcome("request", shown, UiNotice("${request.folio} se guardo como borrador, pero los archivos no: ${failure.message}", UiTone.Warning))
+                    return Outcome("request", shown, UiNotice(tr("{0} se guardo como borrador, pero los archivos no: {1}", request.folio, failure.message), UiTone.Warning))
                 }
                 if (params["submit"] == "true") {
                     try {
                         Outcome("request", shown, move(tenant, actor, notifier, request.id, RequestStatus.PendingApproval, null))
                     } catch (failure: ComprasValidationException) {
-                        Outcome("request", shown, UiNotice("${request.folio} se guardo como borrador, pero no se pudo enviar a aprobacion: ${failure.message}", UiTone.Warning))
+                        Outcome("request", shown, UiNotice(tr("{0} se guardo como borrador, pero no se pudo enviar a aprobacion: {1}", request.folio, failure.message), UiTone.Warning))
                     }
                 } else {
-                    ok("request", "${request.folio} guardada como borrador." + (files?.let { " $it." } ?: ""), shown)
+                    ok("request", tr("{0} guardada como borrador.", request.folio) + (files?.let { " $it." } ?: ""), shown)
                 }
             }
             "request:save" -> {
                 val request = checkedRequest(tenant, actor, id)
                 val draft = draftOf(values, ComprasRepository.departments(tenant), request.currency)
                 val saved = ComprasRepository.update(tenant, actor, request.id, draft)
-                ok("request", "Cambios guardados en ${saved.folio}.")
+                ok("request", tr("Cambios guardados en {0}.", saved.folio))
             }
             "request:transition" -> {
-                val to = RequestStatus.fromId(params["to"]) ?: throw invalid("Estado no valido.")
+                val to = RequestStatus.fromId(params["to"]) ?: throw invalid(tr("Estado no valido."))
                 val request = checkedRequest(tenant, actor, id)
                 Outcome("request", back, move(tenant, actor, notifier, request.id, to, values["reason"]))
             }
@@ -209,18 +210,18 @@ object ComprasActions {
                     tenant, actor, request.id, values["supplier"].orEmpty(), ComprasMoney.parse(values["quoteAmount"]), ComprasMoney.currency(currency), values["quoteNotes"].orEmpty(),
                 )
                 linkFiles(tenant, actor, request.id, values["quoteFiles"], quote.id, "quote")
-                ok("request", "Cotizacion de ${quote.supplier} agregada.")
+                ok("request", tr("Cotizacion de {0} agregada.", quote.supplier))
             }
             "request:quoteSelect" -> {
                 val request = checkedRequest(tenant, actor, id)
-                val quoteId = if (params["quote"] == "none") null else uuid(params["quote"]) ?: throw invalid("La cotizacion no existe.")
+                val quoteId = if (params["quote"] == "none") null else uuid(params["quote"]) ?: throw invalid(tr("La cotizacion no existe."))
                 ComprasRepository.selectQuote(tenant, actor, request.id, quoteId)
-                ok("request", if (quoteId == null) "Se quito la cotizacion elegida: el monto a aprobar vuelve a ser el estimado." else "Cotizacion elegida: ahora es el monto a aprobar.")
+                ok("request", if (quoteId == null) tr("Se quito la cotizacion elegida: el monto a aprobar vuelve a ser el estimado.") else tr("Cotizacion elegida: ahora es el monto a aprobar."))
             }
             "request:quoteDelete" -> {
                 val request = checkedRequest(tenant, actor, id)
-                ComprasRepository.deleteQuote(tenant, actor, request.id, uuid(params["quote"]) ?: throw invalid("La cotizacion no existe."))
-                ok("request", "Cotizacion quitada.")
+                ComprasRepository.deleteQuote(tenant, actor, request.id, uuid(params["quote"]) ?: throw invalid(tr("La cotizacion no existe.")))
+                ok("request", tr("Cotizacion quitada."))
             }
             "request:saveFiles" -> {
                 val request = checkedRequest(tenant, actor, id)
@@ -231,7 +232,7 @@ object ComprasActions {
                 val added = if (toLink.isEmpty()) 0 else ComprasAttachments.link(tenant, actor, request.id, toLink).added.size
                 var removed = 0
                 toRemove.forEach { attachment -> if (ComprasAttachments.remove(tenant, actor, request.id, UUID.fromString(attachment.ref.id)) != null) removed++ }
-                ok("request", "Archivos guardados (+$added, -$removed).")
+                ok("request", tr("Archivos guardados (+{0}, -{1}).", added, removed))
             }
             "board:move" -> boardMove(tenant, actor, notifier, params)
             "approvals:approve", "approvals:reject" -> {
@@ -241,39 +242,39 @@ object ComprasActions {
             }
             "settings:currency" -> {
                 ComprasRepository.setDefaultCurrency(tenant, ComprasMoney.currency(values["currency"]))
-                ok("settings", "Moneda por defecto guardada.")
+                ok("settings", tr("Moneda por defecto guardada."))
             }
             "settings:deptSave" -> {
                 ComprasRepository.saveDepartment(tenant, actor, id, values["name"].orEmpty())
-                ok("settings", "Departamento guardado.")
+                ok("settings", tr("Departamento guardado."))
             }
             "settings:deptActive" -> {
-                ComprasRepository.setDepartmentActive(tenant, actor, id ?: throw invalid("El departamento no existe."), params["active"] == "true")
-                ok("settings", "Departamento actualizado.")
+                ComprasRepository.setDepartmentActive(tenant, actor, id ?: throw invalid(tr("El departamento no existe.")), params["active"] == "true")
+                ok("settings", tr("Departamento actualizado."))
             }
             "settings:approverSave" -> {
                 val userId = uuid(params["user"]) ?: ComprasAdminScreens.userLabels(ComprasRepository.companyUsers(tenant))[values["user"].orEmpty()]?.id
-                    ?: throw invalid("Elige un usuario de la lista.")
+                    ?: throw invalid(tr("Elige un usuario de la lista."))
                 val currency = values["limitCurrency"]?.takeIf { it.isNotBlank() } ?: ComprasRepository.settings(tenant).defaultCurrency
                 ComprasRepository.saveApprover(tenant, actor, userId, ComprasMoney.parseOptional(values["maxAmount"]), ComprasMoney.currency(currency), values["active"] == "true")
-                ok("settings", "Aprobador guardado.")
+                ok("settings", tr("Aprobador guardado."))
             }
             "settings:approverRemove" -> {
-                ComprasRepository.removeApprover(tenant, actor, uuid(params["user"]) ?: throw invalid("El aprobador no existe."))
-                ok("settings", "Aprobador quitado.")
+                ComprasRepository.removeApprover(tenant, actor, uuid(params["user"]) ?: throw invalid(tr("El aprobador no existe.")))
+                ok("settings", tr("Aprobador quitado."))
             }
-            else -> throw invalid("Operacion no reconocida.")
+            else -> throw invalid(tr("Operacion no reconocida."))
         }
     }
 
     // Arrastrar una tarjeta del tablero: valida el flujo igual que el detalle. Rechazar pide motivo, asi que se hace en el detalle.
     private fun boardMove(tenant: Connection, actor: Actor, notifier: ModuleNotifier?, params: Map<String, String>): Outcome {
         fun warn(text: String) = Outcome("board", emptyMap(), UiNotice(text, UiTone.Warning))
-        val request = uuid(params["card"])?.let { ComprasRepository.get(tenant, it, actor) } ?: return warn("Esa solicitud ya no esta disponible.")
-        val to = RequestStatus.fromId(params["column"]) ?: return warn("Esa columna no existe.")
-        if (to == request.status) return Outcome("board", emptyMap(), UiNotice("${request.folio} ya esta en ${to.label}.", UiTone.Info))
-        if (to == RequestStatus.Rejected) return warn("Para rechazar ${request.folio} abre la solicitud e indica el motivo.")
-        if ((to == RequestStatus.Approved) && !actor.can(ComprasModule.Approve)) return warn("No tienes permiso para aprobar compras.")
+        val request = uuid(params["card"])?.let { ComprasRepository.get(tenant, it, actor) } ?: return warn(tr("Esa solicitud ya no esta disponible."))
+        val to = RequestStatus.fromId(params["column"]) ?: return warn(tr("Esa columna no existe."))
+        if (to == request.status) return Outcome("board", emptyMap(), UiNotice(tr("{0} ya esta en {1}.", request.folio, tr(to.label)), UiTone.Info))
+        if (to == RequestStatus.Rejected) return warn(tr("Para rechazar {0} abre la solicitud e indica el motivo.", request.folio))
+        if ((to == RequestStatus.Approved) && !actor.can(ComprasModule.Approve)) return warn(tr("No tienes permiso para aprobar compras."))
         return Outcome("board", emptyMap(), move(tenant, actor, notifier, request.id, to, null))
     }
 }

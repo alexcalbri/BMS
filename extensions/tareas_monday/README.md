@@ -94,3 +94,7 @@ Siempre se borra el token. La opcion `import_history` (por omision, borrar) elim
 - Migracion `V002__rendimiento.sql`: columnas `page_size` y `restarts`, e indice parcial de filas pendientes.
 - Reintentos pasajeros con espera creciente (2, 4, 8... min, tope 30); reducir la pagina por complejidad o respuesta de mas de 5 MB no cuenta como intento y, a 10 por pagina, da un error claro.
 - Notas: la consulta de actualizaciones lleva `limit` igual al lote; si falta un elemento o llega al tope de 100, la fila queda con el aviso "Notas incompletas".
+
+## Idiomas
+
+Bilingüe español/inglés (1.1.0, necesita Core 0.10.0): los textos del código usan `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/tareas_monday/i18n/en.json`. Lo que viene de monday (nombres de tableros, grupos, columnas, elementos, subelementos, personas, archivos) no se traduce. Lo que se guarda al importar (notas, motivos y errores de las filas) queda en español.

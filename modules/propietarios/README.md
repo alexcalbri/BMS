@@ -2,7 +2,7 @@
 
 Registro de desarrollos (urbanizaciones o proyectos), sus lotes y quienes son sus propietarios. Cada lote guarda su número, número de
 registro, área en m², tipo de propiedad y estado, sus titulares vigentes (con porcentaje opcional), el historial de cambios de
-titularidad y archivos adjuntos como escrituras y planos. Versión 0.2.1.
+titularidad y archivos adjuntos como escrituras y planos. Versión 0.3.0.
 
 Los propietarios son clientes de **Clientes** (módulo base): aquí solo se guarda quién es titular de qué lote y desde/hasta cuándo.
 Los datos de contacto no se duplican.
@@ -114,3 +114,13 @@ y `propietarios_payments`.
 ## Trabajos
 
 `attachments-cleanup` (cada hora): borra adjuntos quitados y subidas cuyo formulario no se guardó en 24 horas. `import-runner` (cada minuto).
+
+## Languages (0.3.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, confirmations, permissions and the module definition) is available in
+Spanish (source) and English: the code writes `tr("Texto en espanol")` and the English catalog is
+`server/src/main/resources/modules/propietarios/i18n/en.json`. The lot statuses are stored and parsed in Spanish
+and translated only where they are shown. Developments, lots, owners, customers, file names and the MCP tools
+(names, descriptions and results) are not translated; neither are the history texts already written to the database
+("Alta de:", "Baja de:", the lot diffs and the import notes). Values the app sends back (`op`, ids, filters, the
+"Todos" option value) never change with the language.

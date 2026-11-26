@@ -1,13 +1,15 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleJob
 import com.ideasdeveloper.bms.server.modules.ModuleJobContext
 import com.ideasdeveloper.bms.server.modules.NotificationTarget
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import com.ideasdeveloper.bms.server.modules.runGuarded
-import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalTime
+import org.slf4j.LoggerFactory
 
 /** Trabajo diario: cada paso va en su propio try/catch, con lotes acotados, y es idempotente. */
 object MembresiaJobs {
@@ -78,13 +80,12 @@ object MembresiaJobs {
                 val recipients = if (host != null && host in activeHosts) (baseRecipients + host).distinct().sorted() else baseRecipients
                 recipients.forEach { userId ->
                     try {
-                        ctx.notifier.notify(
-                            tenant,
-                            userId,
-                            "Membresía por vencer",
-                            "${membership.customerName} · ${membership.planName} vence el ${membership.endsOn}",
-                            NotificationTarget("miembro", mapOf("customer" to membership.customerId.toString())),
-                        )
+                        ctx.notifier.notify(tenant, userId, NotificationTarget("miembro", mapOf("customer" to membership.customerId.toString()))) {
+                            NotificationText(
+                                tr("Membresía por vencer"),
+                                tr("{0} · {1} vence el {2}", membership.customerName, membership.planName, membership.endsOn),
+                            )
+                        }
                     } catch (failure: Exception) {
                         log.warn("Membresías {}: no se pudo notificar a {}: {}", ctx.companyCode, userId, failure.message)
                     }

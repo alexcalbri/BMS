@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.CustomerTimelineEntry
 import com.ideasdeveloper.bms.ui.UiOpenModule
@@ -48,7 +50,7 @@ object CrmCustomerTimeline {
                     val created = rows.getObject("created_at", OffsetDateTime::class.java)
                     val lead = VisibleLead(
                         id = rows.getObject("id", UUID::class.java),
-                        label = (interest ?: "sin interes") + " (" + created.toLocalDate() + ")",
+                        label = (interest ?: tr("sin interes")) + " (" + created.toLocalDate() + ")",
                         createdAt = created,
                         closedAt = rows.getObject("closed_at", OffsetDateTime::class.java),
                         stage = rows.getString("stage"),
@@ -62,8 +64,8 @@ object CrmCustomerTimeline {
     }
 
     private val reservationStatus = mapOf(
-        "not_confirmed" to "sin confirmar", "confirmed" to "confirmada", "canceled" to "cancelada",
-        "checked_in" to "en estancia", "checked_out" to "finalizada", "no_show" to "no se presento",
+        "not_confirmed" to msg("sin confirmar"), "confirmed" to msg("confirmada"), "canceled" to msg("cancelada"),
+        "checked_in" to msg("en estancia"), "checked_out" to msg("finalizada"), "no_show" to msg("no se presento"),
     )
 
     // Reservations (Cloudbeds) of the leads, built later with the lead's label.
@@ -83,13 +85,13 @@ object CrmCustomerTimeline {
                     val start = rows.getObject("start_date", LocalDate::class.java)
                     val end = rows.getObject("end_date", LocalDate::class.java)
                     val detail = listOfNotNull(
-                        "Estado: ${reservationStatus[status] ?: status}",
-                        rows.getString("rooms").takeIf { it.isNotBlank() }?.let { "Habitaciones: $it" },
-                        rows.getBigDecimal("total")?.let { "Total: ${it.stripTrailingZeros().toPlainString()}" },
+                        tr("Estado: {0}", reservationStatus[status]?.let { tr(it) } ?: status),
+                        rows.getString("rooms").takeIf { it.isNotBlank() }?.let { tr("Habitaciones: {0}", it) },
+                        rows.getBigDecimal("total")?.let { tr("Total: {0}", it.stripTrailingZeros().toPlainString()) },
                     )
                     val at = rows.getObject("created_at", OffsetDateTime::class.java).toInstant()
                     add(leadId to { label: String ->
-                        CustomerTimelineEntry(at, "reservation", "Reserva $number: $start al $end", (detail + "Lead: $label").joinToString("\n"))
+                        CustomerTimelineEntry(at, "reservation", tr("Reserva {0}: {1} al {2}", number, start, end), (detail + tr("Lead: {0}", label)).joinToString("\n"))
                             .apply { link = UiOpenModule(CrmModule.id, "lead", mapOf("id" to leadId.toString())) }
                     })
                 }

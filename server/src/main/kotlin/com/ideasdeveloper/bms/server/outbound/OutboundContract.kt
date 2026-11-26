@@ -104,7 +104,11 @@ data class OutboundFieldDef(
     val options: List<String> = emptyList(),
 )
 
-data class OutboundRecordType(val id: String, val label: String, val fields: List<OutboundFieldDef>)
+/**
+ * [namespace] is the i18n namespace (I18n.moduleNamespace) of the package that declares the type: its
+ * [label] and the field labels are translated with that catalog. Null: the caller's own.
+ */
+data class OutboundRecordType(val id: String, val label: String, val fields: List<OutboundFieldDef>, val namespace: String? = null)
 
 /** Valor de un campo leido del registro. */
 sealed interface OutboundValue {

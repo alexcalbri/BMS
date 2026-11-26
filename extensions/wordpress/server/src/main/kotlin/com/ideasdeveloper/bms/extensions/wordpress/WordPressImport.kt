@@ -13,6 +13,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmImportSourceResult
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
 import com.ideasdeveloper.bms.modules.crm.CrmTable
 import com.ideasdeveloper.bms.modules.crm.CrmWordPressException
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.ui.UiButton
@@ -53,7 +54,7 @@ object WordPressImport : CrmImportSource {
 
     override val id = Source
     override val label = "CT Leads Pro"
-    override val readingLabel = "Leyendo CT Leads Pro"
+    override val readingLabel: String get() = tr("Leyendo CT Leads Pro")
     override val extensionId: String = CrmExtensionIds.WordPress
 
     override fun importCards(context: CrmScreens.Context): List<UiNode> {
@@ -63,10 +64,10 @@ object WordPressImport : CrmImportSource {
         return listOf(
             UiCard(
                 listOf(
-                    UiText("Lee los leads de CT Leads Pro del sitio conectado: etapa, agente, origen, etiquetas, notas, mensajes y propiedades de interes."),
-                    UiButton("Leer CT Leads Pro", UiRequest(UiRoute + "/import", params = mapOf("op" to "leadspro")), enabled = ready),
-                ) + listOfNotNull(UiText("Conecta el sitio en Integraciones > WordPress.", UiTextStyle.Caption).takeIf { !ready }),
-                title = "Real estate (CT Leads Pro)",
+                    UiText(tr("Lee los leads de CT Leads Pro del sitio conectado: etapa, agente, origen, etiquetas, notas, mensajes y propiedades de interes.")),
+                    UiButton(tr("Leer CT Leads Pro"), UiRequest(UiRoute + "/import", params = mapOf("op" to "leadspro")), enabled = ready),
+                ) + listOfNotNull(UiText(tr("Conecta el sitio en Integraciones > WordPress."), UiTextStyle.Caption).takeIf { !ready }),
+                title = tr("Real estate (CT Leads Pro)"),
             ),
         )
     }
@@ -75,7 +76,7 @@ object WordPressImport : CrmImportSource {
         if (op != "leadspro") return null
         return try {
             val (job, rows) = readJob(tenant, LocalDate.now(), userId)
-            CrmImportSourceResult("$rows filas leidas. Revisa el mapeo.", UiTone.Success, "importjob", mapOf("job" to job.toString()))
+            CrmImportSourceResult(tr("{0} filas leidas. Revisa el mapeo.", rows), UiTone.Success, "importjob", mapOf("job" to job.toString()))
         } catch (failure: CrmImportException) {
             CrmImportSourceResult(failure.message.orEmpty(), UiTone.Danger)
         }
@@ -123,7 +124,7 @@ object WordPressImport : CrmImportSource {
     fun fromLeadsPro(tenant: Connection): CrmTable {
         CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.WordPress)?.let { throw CrmImportException(it) }
         val settings = CrmWordPress.load(tenant)
-        if (!settings.ready) throw CrmImportException("Conecta primero el sitio en Integraciones > WordPress.")
+        if (!settings.ready) throw CrmImportException(tr("Conecta primero el sitio en Integraciones > WordPress."))
         val rows = mutableListOf<Map<String, String>>()
         var page = 1
         while (true) {
@@ -131,7 +132,7 @@ object WordPressImport : CrmImportSource {
                 CrmWordPress.rpc(settings, "leads", buildJsonObject { put("page", page); put("per_page", PageSize) }).obj()
             } catch (failure: CrmWordPressException) {
                 throw CrmImportException(failure.message.orEmpty())
-            } ?: throw CrmImportException("Respuesta invalida del sitio.")
+            } ?: throw CrmImportException(tr("Respuesta invalida del sitio."))
             if (result["error"].str().isNotEmpty()) throw CrmImportException(result["error"].str())
             val items = result["items"].arr().mapNotNull { it.obj() }
             items.forEach { lead ->

@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.server.outbound.OutboundEvent
 import com.ideasdeveloper.bms.server.outbound.OutboundEventKind
@@ -77,20 +80,20 @@ object CrmOutboundSource : OutboundSource {
 
     /** Los campos del lead: los del CRM y, despues, los personalizados de la empresa. */
     fun leadFields(stages: List<CrmStage>, interests: List<CrmInterest>, custom: List<CrmField>): List<OutboundFieldDef> = buildList {
-        add(OutboundFieldDef(CrmOutboundKeys.Name, "Nombre", OutboundFieldType.Text))
-        add(OutboundFieldDef(CrmOutboundKeys.Email, "Correo", OutboundFieldType.Email))
-        add(OutboundFieldDef(CrmOutboundKeys.Phone, "Telefono", OutboundFieldType.Phone))
-        add(OutboundFieldDef(CrmOutboundKeys.Stage, "Etapa", OutboundFieldType.Status, stages.map { it.name }))
-        add(OutboundFieldDef(CrmOutboundKeys.Interest, "Interes", OutboundFieldType.Status, interests.map { it.name }))
-        add(OutboundFieldDef(CrmOutboundKeys.Owners, "Asignados", OutboundFieldType.Person))
-        add(OutboundFieldDef(CrmOutboundKeys.FollowUp, "Seguimiento", OutboundFieldType.Date))
-        add(OutboundFieldDef(CrmOutboundKeys.Source, "Origen", OutboundFieldType.Text))
-        add(OutboundFieldDef(CrmOutboundKeys.Language, "Idioma", OutboundFieldType.Text))
-        add(OutboundFieldDef(CrmOutboundKeys.Message, "Mensaje", OutboundFieldType.LongText))
-        add(OutboundFieldDef(CrmOutboundKeys.Details, "Detalles", OutboundFieldType.LongText))
-        add(OutboundFieldDef(CrmOutboundKeys.EstimatedValue, "Valor estimado", OutboundFieldType.Number))
-        add(OutboundFieldDef(CrmOutboundKeys.Stay, "Estadia", OutboundFieldType.Timeline))
-        add(OutboundFieldDef(CrmOutboundKeys.CreatedAt, "Creado", OutboundFieldType.Date))
+        add(OutboundFieldDef(CrmOutboundKeys.Name, msg("Nombre"), OutboundFieldType.Text))
+        add(OutboundFieldDef(CrmOutboundKeys.Email, msg("Correo"), OutboundFieldType.Email))
+        add(OutboundFieldDef(CrmOutboundKeys.Phone, msg("Telefono"), OutboundFieldType.Phone))
+        add(OutboundFieldDef(CrmOutboundKeys.Stage, msg("Etapa"), OutboundFieldType.Status, stages.map { it.name }))
+        add(OutboundFieldDef(CrmOutboundKeys.Interest, msg("Interes"), OutboundFieldType.Status, interests.map { it.name }))
+        add(OutboundFieldDef(CrmOutboundKeys.Owners, msg("Asignados"), OutboundFieldType.Person))
+        add(OutboundFieldDef(CrmOutboundKeys.FollowUp, msg("Seguimiento"), OutboundFieldType.Date))
+        add(OutboundFieldDef(CrmOutboundKeys.Source, msg("Origen"), OutboundFieldType.Text))
+        add(OutboundFieldDef(CrmOutboundKeys.Language, msg("Idioma"), OutboundFieldType.Text))
+        add(OutboundFieldDef(CrmOutboundKeys.Message, msg("Mensaje"), OutboundFieldType.LongText))
+        add(OutboundFieldDef(CrmOutboundKeys.Details, msg("Detalles"), OutboundFieldType.LongText))
+        add(OutboundFieldDef(CrmOutboundKeys.EstimatedValue, msg("Valor estimado"), OutboundFieldType.Number))
+        add(OutboundFieldDef(CrmOutboundKeys.Stay, msg("Estadia"), OutboundFieldType.Timeline))
+        add(OutboundFieldDef(CrmOutboundKeys.CreatedAt, msg("Creado"), OutboundFieldType.Date))
         custom.forEach { field ->
             val type = customType(field) ?: return@forEach
             add(OutboundFieldDef(CrmOutboundKeys.custom(field.key), field.label, type, if (field.type == CrmFieldType.Dropdown) field.options else emptyList()))
@@ -178,7 +181,7 @@ object CrmOutboundSource : OutboundSource {
     // ---- OutboundSource ----
 
     override fun recordTypes(tenant: Connection): List<OutboundRecordType> =
-        listOf(OutboundRecordType(LeadType, "Lead", leadFields(CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmFields.all(tenant))))
+        listOf(OutboundRecordType(LeadType, msg("Lead"), leadFields(CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmFields.all(tenant)), I18n.moduleNamespace(moduleId)))
 
     override fun record(tenant: Connection, recordType: String, recordId: String): OutboundRecord? {
         if (recordType != LeadType) return null

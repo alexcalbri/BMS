@@ -2,6 +2,8 @@ package com.ideasdeveloper.bms.extensions.propietarios_monday
 
 import com.ideasdeveloper.bms.modules.propietarios.ImportedLot
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.security.SecretDecryptionException
 import com.ideasdeveloper.bms.server.security.SecretsUnavailableException
@@ -34,7 +36,7 @@ class PropietariosMondayException(message: String, val transient: Boolean = fals
  */
 object PropietariosMondaySettings {
     const val Table = "ext_propietarios_monday__settings"
-    const val UnavailableMessage = "No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."
+    val UnavailableMessage = msg("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
 
     /** La extension esta activa en la empresa (tenant_extensions.status = enabled); sin la tabla o la fila, no. */
     fun extensionEnabled(tenant: Connection): Boolean = try {
@@ -73,7 +75,7 @@ object PropietariosMondaySettings {
             try {
                 secrets.seal(tenant, it)
             } catch (failure: SecretsUnavailableException) {
-                throw PropietariosMondayException(UnavailableMessage)
+                throw PropietariosMondayException(tr(UnavailableMessage))
             }
         }
         tenant.prepareStatement(
@@ -142,15 +144,15 @@ class MondayPendingRow(val rowNo: Int, val payload: String, val files: String, v
 object PropietariosMondayJobs {
     const val JobsTable = "ext_propietarios_monday__jobs"
     const val RowsTable = "ext_propietarios_monday__rows"
-    const val OpenJobMessage = "Ya hay una importacion en curso o por revisar; aplicala, cancelala o espera a que termine."
+    val OpenJobMessage = msg("Ya hay una importacion en curso o por revisar; aplicala, cancelala o espera a que termine.")
     private val json = Json { ignoreUnknownKeys = true }
 
     // ---- Cola ----
 
     /** Pone en cola la lectura de un tablero. Solo hay una importacion en curso a la vez. */
     fun queueRead(tenant: Connection, boardId: String, boardName: String, targetDevelopmentId: UUID?, mapping: MondayMapping, createdBy: UUID?): UUID {
-        if (!PropietariosMondayClient.isBoardId(boardId)) throw PropietariosMondayException("El id del tablero debe ser un numero.")
-        if (recent(tenant, 20).any { it.open }) throw PropietariosMondayException(OpenJobMessage)
+        if (!PropietariosMondayClient.isBoardId(boardId)) throw PropietariosMondayException(tr("El id del tablero debe ser un numero."))
+        if (recent(tenant, 20).any { it.open }) throw PropietariosMondayException(tr(OpenJobMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
@@ -166,7 +168,7 @@ object PropietariosMondayJobs {
             }
         } catch (failure: SQLException) {
             // El indice unico parcial deja una sola importacion abierta por empresa (dos peticiones a la vez).
-            if (failure.sqlState == "23505") throw PropietariosMondayException(OpenJobMessage)
+            if (failure.sqlState == "23505") throw PropietariosMondayException(tr(OpenJobMessage))
             throw failure
         }
         return id
@@ -177,7 +179,7 @@ object PropietariosMondayJobs {
 
     /** Cancela un trabajo que aun no termino; false si ya habia terminado. */
     fun cancel(tenant: Connection, id: UUID): Boolean =
-        changeStatus(tenant, id, MondayJobStatus.Cancelled, "Cancelada por el usuario.", from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
+        changeStatus(tenant, id, MondayJobStatus.Cancelled, msg("Cancelada por el usuario."), from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
 
     fun changeStatus(tenant: Connection, id: UUID, status: String, message: String, from: List<String>): Boolean =
         tenant.prepareStatement(

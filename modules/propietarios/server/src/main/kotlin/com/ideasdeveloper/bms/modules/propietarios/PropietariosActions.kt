@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import com.ideasdeveloper.bms.ui.UiFileRef
 import com.ideasdeveloper.bms.ui.UiJson
@@ -21,7 +23,7 @@ data class FileChanges(val added: List<UiFileRef>, val removed: List<UUID>)
  */
 object PropietariosActions {
     const val AllOption = "Todos"
-    const val InvalidForm = "Formulario demasiado grande o no válido."
+    val InvalidForm = msg("Formulario demasiado grande o no válido.")
     private const val MaxBodyChars = 1_000_000
 
     /** Valores de un formulario: cadenas tal cual y un arreglo JSON (lista desplegable multiple) como su texto codificado. */
@@ -40,8 +42,8 @@ object PropietariosActions {
 
     /** Como [bodyValues], pero un cuerpo demasiado grande o que no es un objeto JSON es un error para el usuario. */
     fun formValues(body: String): Map<String, String> {
-        if (body.length > MaxBodyChars) throw PropietariosValidationException(InvalidForm)
-        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw PropietariosValidationException(InvalidForm)
+        if (body.length > MaxBodyChars) throw PropietariosValidationException(tr(InvalidForm))
+        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw PropietariosValidationException(tr(InvalidForm))
         return bodyValues(parsed.toString())
     }
 
@@ -54,7 +56,7 @@ object PropietariosActions {
         return try {
             LocalDate.parse(clean)
         } catch (_: DateTimeParseException) {
-            throw PropietariosValidationException("La fecha debe tener el formato AAAA-MM-DD.")
+            throw PropietariosValidationException(tr("La fecha debe tener el formato AAAA-MM-DD."))
         }
     }
 
@@ -62,12 +64,12 @@ object PropietariosActions {
     fun decimal(text: String?, label: String): BigDecimal? {
         val clean = text?.trim().orEmpty().replace(',', '.')
         if (clean.isEmpty()) return null
-        if (clean.length > 30) throw PropietariosValidationException("$label no es un número válido.")
-        return clean.toBigDecimalOrNull() ?: throw PropietariosValidationException("$label no es un número válido.")
+        if (clean.length > 30) throw PropietariosValidationException(tr("{0} no es un número válido.", label))
+        return clean.toBigDecimalOrNull() ?: throw PropietariosValidationException(tr("{0} no es un número válido.", label))
     }
 
     fun status(text: String?): LotStatus =
-        LotStatus.fromLabel(text) ?: throw PropietariosValidationException("Estado no válido: ${text.orEmpty()}.")
+        LotStatus.fromLabel(text) ?: throw PropietariosValidationException(tr("Estado no válido: {0}.", text.orEmpty()))
 
     /** El filtro de estado de una pantalla: "Todos" y las etiquetas desconocidas significan sin filtro. */
     fun statusFilter(text: String?): LotStatus? = text?.takeIf { !it.equals(AllOption, ignoreCase = true) }?.let { LotStatus.fromLabel(it) }
@@ -77,8 +79,8 @@ object PropietariosActions {
             name = values["name"].orEmpty().trim(),
             location = values["location"].orEmpty().trim(),
             mapUrl = values["map_url"].orEmpty().trim(),
-            latitude = decimal(values["latitude"], "La latitud"),
-            longitude = decimal(values["longitude"], "La longitud"),
+            latitude = decimal(values["latitude"], tr("La latitud")),
+            longitude = decimal(values["longitude"], tr("La longitud")),
             notes = values["notes"].orEmpty().trim(),
         )
         val problems = input.validate()
@@ -95,8 +97,8 @@ object PropietariosActions {
             propertyType = values["property_type"].orEmpty().trim(),
             status = values["status"]?.takeIf { it.isNotBlank() }?.let { status(it) } ?: LotStatus.Disponible,
             areaM2 = decimal(values["area_m2"], "El área"),
-            latitude = decimal(values["latitude"], "La latitud"),
-            longitude = decimal(values["longitude"], "La longitud"),
+            latitude = decimal(values["latitude"], tr("La latitud")),
+            longitude = decimal(values["longitude"], tr("La longitud")),
             mapUrl = values["map_url"].orEmpty().trim(),
             notes = values["notes"].orEmpty().trim(),
         )
@@ -112,16 +114,16 @@ object PropietariosActions {
     fun newOwners(values: Map<String, String>): List<NewOwner> = (1..PropietariosRules.MaxFormOwners).mapNotNull { index ->
         val name = values["owner$index"]?.trim().orEmpty()
         if (name.isEmpty()) return@mapNotNull null
-        val id = uuid(values["owner${index}_id"]) ?: throw PropietariosValidationException("Elige el cliente $index de la lista de sugerencias.")
-        NewOwner(id, decimal(values["share$index"], "El porcentaje $index"))
+        val id = uuid(values["owner${index}_id"]) ?: throw PropietariosValidationException(tr("Elige el cliente {0} de la lista de sugerencias.", index))
+        NewOwner(id, decimal(values["share$index"], tr("El porcentaje {0}", index)))
     }
 
     /** El cotitular del formulario de un lote (campos owner, owner_id y share). */
     fun coOwner(values: Map<String, String>): NewOwner {
         val name = values["owner"]?.trim().orEmpty()
-        if (name.isEmpty()) throw PropietariosValidationException("Elige el cliente.")
-        val id = uuid(values["owner_id"]) ?: throw PropietariosValidationException("Elige el cliente de la lista de sugerencias.")
-        return NewOwner(id, decimal(values["share"], "El porcentaje"))
+        if (name.isEmpty()) throw PropietariosValidationException(tr("Elige el cliente."))
+        val id = uuid(values["owner_id"]) ?: throw PropietariosValidationException(tr("Elige el cliente de la lista de sugerencias."))
+        return NewOwner(id, decimal(values["share"], tr("El porcentaje")))
     }
 
     /**

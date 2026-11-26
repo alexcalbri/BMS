@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.platform
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import kotlinx.browser.document
 import org.w3c.dom.HTMLAnchorElement
 import org.w3c.dom.url.URL
@@ -22,5 +23,5 @@ private fun download(fileName: String, blob: Blob): String {
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
-    return "Descarga iniciada: $fileName"
+    return tr("Descarga iniciada: {0}", fileName)
 }

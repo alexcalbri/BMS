@@ -193,3 +193,12 @@ Tools are named `membresia_<name>`; each respects the user's live permissions an
 - 0.3.0: the customer history is a `CustomerTimeline` (permission `membresia.view`, visits aggregated per month, real dates for imports); no more writes in `customer_history`.
 - 0.2.0: import of memberships through extensions (`MembresiaImportSource`, idempotent by `import_key`, V002, permission `membresia.import`, extension `membresia_monday`); WiFi code on the member screen; agent tools list is dynamic so extensions can add tools.
 - 0.1.0: first version: plans, memberships, visits and guest passes, reception, expiry warnings to the team, customer history, revenue, Hotspot passes, `membresia_active_members` and agent tools.
+
+## Languages (0.4.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, confirmations, notices, permissions and the module description) is available in
+Spanish (source) and English: the code writes `tr("Texto en espanol")` and the English catalog is
+`server/src/main/resources/modules/membresia/i18n/en.json`. Customer, member and guest names, plans, sources, hosts, units and notes
+typed by users, the rows already stored (the hotspot source name and its WiFi description, notes, the default sources) and the MCP
+tools are not translated. Values the app sends back (`op`, ids, filter and option values such as "Activa", "Todas" or the plan
+options) never change with the language. Notices to staff are written in each recipient's language.

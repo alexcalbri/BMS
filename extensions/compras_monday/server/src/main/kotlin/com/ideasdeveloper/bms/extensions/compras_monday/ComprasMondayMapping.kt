@@ -8,6 +8,7 @@ import com.ideasdeveloper.bms.modules.compras.ImportedRequest
 import com.ideasdeveloper.bms.modules.compras.Priority
 import com.ideasdeveloper.bms.modules.compras.RequestDraft
 import com.ideasdeveloper.bms.modules.compras.RequestStatus
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.io.InputStream
 import java.math.BigDecimal
 import java.text.Normalizer
@@ -33,16 +34,16 @@ object MondayFields {
     val All = listOf(Status, Priority, Amount, RequiredDate, Files, QuotedBy, Supplier, Requester, Department, Description)
 
     fun label(field: String): String = when (field) {
-        Description -> "Descripcion"
-        Department -> "Departamento"
-        Amount -> "Monto"
-        RequiredDate -> "Fecha requerida"
-        Requester -> "Solicitante"
-        Priority -> "Prioridad"
-        Status -> "Estado"
-        Files -> "Archivos"
-        QuotedBy -> "Cotizado por"
-        Supplier -> "Proveedor"
+        Description -> tr("Descripcion")
+        Department -> tr("Departamento")
+        Amount -> tr("Monto")
+        RequiredDate -> tr("Fecha requerida")
+        Requester -> tr("Solicitante")
+        Priority -> tr("Prioridad")
+        Status -> tr("Estado")
+        Files -> tr("Archivos")
+        QuotedBy -> tr("Cotizado por")
+        Supplier -> tr("Proveedor")
         else -> field
     }
 }

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -106,7 +107,7 @@ fun DateFieldPicker(
     modifier: Modifier = Modifier,
     withTime: Boolean = false,
     enabled: Boolean = true,
-    placeholder: String = if (withTime) "AAAA-MM-DDTHH:mm" else "AAAA-MM-DD",
+    placeholder: String = if (withTime) tr("AAAA-MM-DDTHH:mm") else tr("AAAA-MM-DD"),
     textFieldColors: TextFieldColors = OutlinedTextFieldDefaults.colors(),
 ) {
     val colors = AppTheme.colors
@@ -124,11 +125,11 @@ fun DateFieldPicker(
         enabled = enabled,
         singleLine = true,
         isError = invalid,
-        supportingText = if (invalid) ({ Text("Formato $placeholder") }) else null,
+        supportingText = if (invalid) ({ Text(tr("Formato {0}", placeholder)) }) else null,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
         trailingIcon = {
             TextButton(onClick = { step = 1 }, enabled = enabled) {
-                Text("Calendario", color = if (enabled) colors.accentText else colors.muted)
+                Text(tr("Calendario"), color = if (enabled) colors.accentText else colors.muted)
             }
         },
         colors = textFieldColors,
@@ -158,12 +159,12 @@ fun DateFieldPicker(
                             step = 0
                         }
                     },
-                ) { Text(if (withTime) "Siguiente" else "Aceptar", color = colors.accentText) }
+                ) { Text(if (withTime) tr("Siguiente") else tr("Aceptar"), color = colors.accentText) }
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { onValueChange(""); step = 0 }) { Text("Borrar", color = colors.danger) }
-                    TextButton(onClick = dismiss) { Text("Cancelar", color = colors.accentText) }
+                    TextButton(onClick = { onValueChange(""); step = 0 }) { Text(tr("Borrar"), color = colors.danger) }
+                    TextButton(onClick = dismiss) { Text(tr("Cancelar"), color = colors.accentText) }
                 }
             },
             colors = DatePickerDefaults.colors(containerColor = colors.surface),
@@ -201,7 +202,7 @@ fun DateFieldPicker(
         AlertDialog(
             onDismissRequest = { step = 0 },
             containerColor = colors.surface,
-            title = { Text("Hora", color = colors.text) },
+            title = { Text(tr("Hora"), color = colors.text) },
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -227,12 +228,12 @@ fun DateFieldPicker(
                 TextButton(onClick = {
                     onValueChange("${day.first.toString().padStart(4, '0')}-${two(day.second)}-${two(day.third)}T${two(time.hour)}:${two(time.minute)}")
                     step = 0
-                }) { Text("Aceptar", color = colors.accentText) }
+                }) { Text(tr("Aceptar"), color = colors.accentText) }
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { onValueChange(""); step = 0 }) { Text("Borrar", color = colors.danger) }
-                    TextButton(onClick = { step = 0 }) { Text("Cancelar", color = colors.accentText) }
+                    TextButton(onClick = { onValueChange(""); step = 0 }) { Text(tr("Borrar"), color = colors.danger) }
+                    TextButton(onClick = { step = 0 }) { Text(tr("Cancelar"), color = colors.accentText) }
                 }
             },
         )

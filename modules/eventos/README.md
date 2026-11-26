@@ -185,3 +185,12 @@ Lists never show the e-mail or phone of a customer.
 - 0.1.0: first version.
 - 0.2.0: the customer history is read from the module's own tables (`CustomerTimeline`) instead of being written in `customer_history`.
 - 0.2.1: the import job is marked as long running (Core 0.8.x scheduling); `V002__perf_indices.sql` (index for the past-events list and the weekly registrations count); the event list picks the page first and joins registrations/payments only to those events.
+
+## Languages (0.3.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, confirmations, notices, permissions and the module description) is available in
+Spanish (source) and English: the code writes `tr("Texto en espanol")` and the English catalog is
+`server/src/main/resources/modules/eventos/i18n/en.json`. Customer data, names typed by users (event titles, series, spaces,
+categories, hosts), notes, payments and the rows already stored (history, import origin, default categories and spaces, the
+"Sistema"-style authors) are not translated. Values the app sends back (`op`, ids, filter and option values such as "Todos",
+"Miembro" or "Público") never change with the language. Notices to staff are written in each recipient's language.

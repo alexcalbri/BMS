@@ -6,6 +6,13 @@ import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.company.application.CompanyLinks
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.bms.server.i18n.CompanyLanguages
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.SessionLanguages
+import com.ideasdeveloper.bms.server.i18n.TextTranslation
+import com.ideasdeveloper.bms.server.i18n.TextTranslator
+import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -110,8 +117,86 @@ class ModuleAccessService(
         }
     private val tokenGenerator = SessionTokenGenerator()
 
-    /** The notifier of [moduleId]: creates notifications that always carry that module as their origin. */
-    fun notificationsFor(moduleId: String): ModuleNotifier = ModuleNotifier(moduleId, notifications)
+    /**
+     * The notifier of [moduleId]: creates notifications that always carry that module as their origin.
+     * Its `notify(tenant, userId) { tr(...) }` overload renders each notification in the recipient's language.
+     */
+    fun notificationsFor(moduleId: String): ModuleNotifier = ModuleNotifier(moduleId, notifications, ::recipientLanguage)
+
+    /**
+     * Translation of texts written by users (stage names, notes) into the viewer's language, with a cache
+     * per company (I18N.md §8). Without a registered provider the texts come back as they are.
+     */
+    val textTranslation: TextTranslation by lazy {
+        TextTranslation(
+            openTenant = { companyCode -> tenantConnectionForCompany(companyCode) },
+            companyLanguage = ::companyLanguage,
+        )
+    }
+
+    /** Registers the machine translation provider of a module (the CRM); see [TextTranslation]. */
+    fun registerTextTranslator(id: String, translator: TextTranslator) = textTranslation.registerTextTranslator(id, translator)
+
+    /** Default language of the company ("es" or "en"; "es" when unknown). Cached for a few minutes. */
+    fun companyLanguage(companyCode: String): String = CompanyLanguages.resolve(companyCode) {
+        central.connection.use { connection -> com.ideasdeveloper.bms.server.i18n.companyLanguage(connection, companyCode) }
+    }
+
+    /**
+     * Changes the default language of the company (the caller checks who may edit company data, as for
+     * its name). False when the company does not exist; IllegalArgumentException for a language the
+     * server does not support (see I18n.Languages).
+     */
+    fun setCompanyLanguage(companyCode: String, language: String): Boolean =
+        central.connection.use { connection -> com.ideasdeveloper.bms.server.i18n.setCompanyLanguage(connection, companyCode, language) }
+
+    /**
+     * Language to render something for [userId] of the company behind [tenant]: the user's own, else the
+     * company default, else "es" (I18N.md §7). For notifications, mail to staff and jobs.
+     */
+    fun recipientLanguage(tenant: Connection, userId: UUID): String {
+        val own = try {
+            com.ideasdeveloper.bms.server.i18n.userLanguage(tenant, userId)
+        } catch (_: Exception) {
+            null
+        }
+        if (own != null) return own
+        val company = try {
+            companyCodeOf(tenant)
+        } catch (_: Exception) {
+            null
+        }
+        return company?.let(::companyLanguage) ?: I18n.Source
+    }
+
+    // database name -> company code: a notifyEach over many recipients opens one central connection, not one each.
+    private val companyCodes = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun companyCodeOf(tenant: Connection): String? {
+        val database = tenant.createStatement().use { statement ->
+            statement.executeQuery("SELECT current_database()").use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: return null
+        companyCodes[database]?.let { return it }
+        val code = companyOf(tenant)?.code ?: return null
+        if (companyCodes.size > 10_000) companyCodes.clear()
+        companyCodes[database] = code
+        return code
+    }
+
+    // The request now knows its user: their stored language (from memory when fresh) wins over Accept-Language.
+    private fun applySessionLanguage(scope: String?, userId: UUID, token: String, connection: Connection?) {
+        try {
+            val key = SessionLanguages.userKey(scope, userId)
+            SessionLanguages.rememberSession(token, key)
+            val language = SessionLanguages.resolve(key) {
+                if (connection != null) com.ideasdeveloper.bms.server.i18n.userLanguage(connection, userId)
+                else central.connection.use { com.ideasdeveloper.bms.server.i18n.userLanguage(it, userId) }
+            }
+            I18n.overrideRequestLanguage(language)
+        } catch (failure: Exception) {
+            log.debug("Language of user {} not read: {}", userId, failure.message)
+        }
+    }
 
     /** Where [moduleId] stores the files of [companyCode]; the table of the module keeps the returned refs. */
     fun files(companyCode: String, moduleId: String): ModuleFiles = companyFiles.module(companyCode, moduleId)
@@ -279,7 +364,7 @@ class ModuleAccessService(
             .sortedByDescending { it.second.at }
             .take(limit)
             .map { (registered, entry) ->
-                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, registered.moduleName, entry.kind, entry.title, entry.detail, entry.author, entry.link)
+                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, trIn(I18n.moduleNamespace(registered.moduleId), registered.moduleName), entry.kind, entry.title, entry.detail, entry.author, entry.link)
             }
     }
 
@@ -491,16 +576,19 @@ class ModuleAccessService(
      */
     fun userSession(call: ApplicationCall): UserSessionLookup {
         val token = accessToken(call)
-            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", "La sesion es requerida."))
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", tr("La sesion es requerida.")))
         val companyCode = companyCode(call)
-            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", "La empresa es requerida."))
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", tr("La empresa es requerida.")))
         val databaseName = findActiveDatabase(companyCode)
-            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Forbidden("company_not_found", "La empresa no esta activa."))
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Forbidden("company_not_found", tr("La empresa no esta activa.")))
         val tenantConfig = loginDatabases.tenantConfig(databaseName)
-            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_not_configured", "La base de datos de la empresa no esta configurada."))
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_not_configured", tr("La base de datos de la empresa no esta configurada.")))
         // Server owners hold a central session and act in the server workspace.
         if (companyCode == ServerWorkspace.Code && isServerWorkspace(companyCode)) {
-            serverOwnerSessionUser(token)?.let { return UserSessionLookup.Granted(companyCode, it) }
+            serverOwnerSessionUser(token)?.let {
+                applySessionLanguage(null, it, token, null)
+                return UserSessionLookup.Granted(companyCode, it)
+            }
         }
         val userId = tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { connection ->
             connection.prepareStatement(
@@ -516,8 +604,8 @@ class ModuleAccessService(
             ).use { query ->
                 query.setString(1, tokenGenerator.hash(token))
                 query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
-            }
-        } ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", "La sesion no es valida."))
+            }?.also { applySessionLanguage(companyCode, it, token, connection) }
+        } ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", tr("La sesion no es valida.")))
         return UserSessionLookup.Granted(companyCode, userId)
     }
 
@@ -542,7 +630,7 @@ class ModuleAccessService(
             is ModulePermissionLookup.Granted -> if (lookup.permissions.has(permissionId)) {
                 ModuleAccessDecision.Allowed
             } else {
-                ModuleAccessDecision.Forbidden("missing_permission", "No tienes permiso para usar esta funcion.")
+                ModuleAccessDecision.Forbidden("missing_permission", tr("No tienes permiso para usar esta funcion."))
             }
             is ModulePermissionLookup.Denied -> lookup.decision
         }
@@ -553,25 +641,26 @@ class ModuleAccessService(
      */
     fun permissions(call: ApplicationCall, moduleId: String): ModulePermissionLookup {
         if (!moduleInstalled(moduleId)) {
-            return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_not_installed", "El modulo no esta instalado en el servidor."))
+            return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_not_installed", tr("El modulo no esta instalado en el servidor.")))
         }
         val token = accessToken(call)
-            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", "La sesion es requerida."))
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", tr("La sesion es requerida.")))
         val companyCode = companyCode(call)
-            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", "La empresa es requerida."))
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", tr("La empresa es requerida.")))
 
         val databaseName = findActiveDatabase(companyCode)
-            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("company_not_found", "La empresa no esta activa."))
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("company_not_found", tr("La empresa no esta activa.")))
         val tenantConfig = loginDatabases.tenantConfig(databaseName)
-            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_not_configured", "La base de datos de la empresa no esta configurada."))
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_not_configured", tr("La base de datos de la empresa no esta configurada.")))
 
         // Server owners sign in centrally and hold every permission in the server workspace; its
         // staff use the tenant sessions and permissions below, like a company's users.
         val serverOwnerId = if (companyCode == ServerWorkspace.Code && isServerWorkspace(companyCode)) serverOwnerSessionUser(token) else null
         if (serverOwnerId != null) {
+            applySessionLanguage(null, serverOwnerId, token, null)
             return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { connection ->
                 if (!moduleEnabled(connection, moduleId)) {
-                    ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", "El modulo no esta activo en el espacio del servidor."))
+                    ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", tr("El modulo no esta activo en el espacio del servidor.")))
                 } else {
                     ModulePermissionLookup.Granted(
                         ModulePermissions(companyCode, token, businessOwner = true, granted = emptySet(), userId = serverOwnerId, serverOwner = true)
@@ -604,10 +693,11 @@ class ModuleAccessService(
                         )
                     }
                 }
-            } ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", "La sesion no es valida."))
+            } ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", tr("La sesion no es valida.")))
+            applySessionLanguage(companyCode, user.id, token, connection)
 
             if (!moduleEnabled(connection, moduleId)) {
-                return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", "El modulo no esta activo para esta empresa."))
+                return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", tr("El modulo no esta activo para esta empresa.")))
             }
 
             val granted = if (user.businessOwner) emptySet() else connection.prepareStatement(
@@ -837,7 +927,7 @@ suspend fun ApplicationCall.requireModuleAccess(access: ModuleAccessService, mod
     val lookup = try {
         withContext(Dispatchers.IO) { access.permissions(this@requireModuleAccess, moduleId) }
     } catch (_: SQLException) {
-        ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_access_error", "No se pudo validar el acceso a la empresa."))
+        ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_access_error", tr("No se pudo validar el acceso a la empresa.")))
     }
     return when (lookup) {
         is ModulePermissionLookup.Granted -> lookup.permissions
@@ -866,7 +956,7 @@ suspend fun ApplicationCall.requireModulePermission(
     val decision = try {
         withContext(Dispatchers.IO) { access.authorize(this@requireModulePermission, moduleId, permissionId) }
     } catch (_: SQLException) {
-        ModuleAccessDecision.Forbidden("tenant_access_error", "No se pudo validar el acceso a la empresa.")
+        ModuleAccessDecision.Forbidden("tenant_access_error", tr("No se pudo validar el acceso a la empresa."))
     }
 
     return when (decision) {

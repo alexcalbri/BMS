@@ -187,6 +187,15 @@ Arguments use `snake_case`; states and priorities are the fixed codes.
 Recommended flow to load minutes (acta): `list_boards`, `list_people`, then `create_task` per point with a stable
 `external_ref` so repeating the load does not duplicate tasks.
 
+## Languages (0.4.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, notices, permissions) is available in Spanish (source) and English:
+the code writes `tr("Texto en espanol")` and the English catalog is `server/src/main/resources/modules/tareas/i18n/en.json`.
+Board and group names are company configuration: they are shown translated through the Core's dynamic translation
+(values posted back stay the original names) and comments show their translation under the original. Task titles,
+descriptions, checklist items, activity rows already stored and the MCP tools are not translated. Reminders and
+notices are written in the language of their recipient.
+
 ## Pending
 
 - Tests against a real PostgreSQL tenant (repository SQL, migration V001, MCP handlers): today only the

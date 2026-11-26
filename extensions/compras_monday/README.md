@@ -9,6 +9,11 @@ Una importacion a la vez por empresa; todo paso es idempotente (cada fila se rec
 `ext_compras_monday__settings` (token sellado), `ext_compras_monday__jobs` y `ext_compras_monday__rows`. Migracion:
 `migrations/V001__staging.sql`. Cada pasada purga las importaciones terminadas, fallidas o canceladas de mas de 30 dias.
 
+## Version 1.1.0 (bilingue)
+
+- Textos en español e inglés: el código usa `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/compras_monday/i18n/en.json`. Necesita Core 0.10.0.
+- Lo que viene de monday (nombres de tableros, grupos, columnas, elementos, estados) no se traduce. Los datos guardados al importar (motivos, problemas, errores de la importación) quedan en español.
+
 ## Version 1.0.2 (estados de revision)
 
 - Los estados de monday "Pending Review", "In review", "Under review", "Pendiente de revision", "En revision" y "Por revisar"

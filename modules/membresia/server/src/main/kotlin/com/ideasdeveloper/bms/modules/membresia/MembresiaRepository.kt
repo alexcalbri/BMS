@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import java.math.BigDecimal
 import java.sql.Connection
@@ -103,9 +104,9 @@ object MembresiaRepository {
                 listOf(clean.name, clean.description, clean.price, clean.durationDays, clean.includedVisits, clean.guestPasses, clean.wifiAccess, clean.displayOrder, id),
                 ::readPlan,
             )
-            return updated.firstOrNull() ?: throw MembresiaValidationException(listOf("El plan no existe."))
+            return updated.firstOrNull() ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
         } catch (failure: SQLException) {
-            if (failure.sqlState == UniqueViolation) throw MembresiaValidationException(listOf("Ya existe un plan con ese nombre."))
+            if (failure.sqlState == UniqueViolation) throw MembresiaValidationException(listOf(tr("Ya existe un plan con ese nombre.")))
             throw failure
         }
     }
@@ -197,10 +198,10 @@ object MembresiaRepository {
         val email = input.email.trim()
         val phone = input.phone.trim()
         val errors = buildList {
-            if (name.isEmpty()) add("Escribe el nombre del cliente.")
-            if (name.length > 200) add("El nombre del cliente admite hasta 200 caracteres.")
-            if (email.isNotEmpty() && (!email.contains('@') || email.length > 254 || email.any { it.isWhitespace() })) add("Escribe un correo válido o déjalo vacío.")
-            if (phone.length > 40) add("El teléfono admite hasta 40 caracteres.")
+            if (name.isEmpty()) add(tr("Escribe el nombre del cliente."))
+            if (name.length > 200) add(tr("El nombre del cliente admite hasta 200 caracteres."))
+            if (email.isNotEmpty() && (!email.contains('@') || email.length > 254 || email.any { it.isWhitespace() })) add(tr("Escribe un correo válido o déjalo vacío."))
+            if (phone.length > 40) add(tr("El teléfono admite hasta 40 caracteres."))
         }
         if (errors.isNotEmpty()) throw MembresiaValidationException(errors)
         if (email.isNotEmpty()) {
@@ -371,8 +372,8 @@ object MembresiaRepository {
         val amount = input.amount ?: plan.price
         val startsOn = input.startsOn ?: today
         val errors = buildList {
-            if (!plan.active) add("El plan ${plan.name} está desactivado.")
-            if (newCustomer == null && visibleCustomer(tenant, input.customerId) == null) add("El cliente no existe o no está disponible.")
+            if (!plan.active) add(tr("El plan {0} está desactivado.", plan.name))
+            if (newCustomer == null && visibleCustomer(tenant, input.customerId) == null) add(tr("El cliente no existe o no está disponible."))
             addAll(MembresiaRules.validateMembership(input, amount, settings))
             addAll(MembresiaRules.validateDates(startsOn, MembresiaRules.endsOn(startsOn, plan.durationDays), today))
         }
@@ -388,20 +389,20 @@ object MembresiaRepository {
 
     /** Renueva: crea una nueva fila enlazada (renewed_from) que empieza en MembresiaRules.renewalStart salvo que se indique otra fecha. */
     fun renew(tenant: Connection, id: UUID, input: RenewalInput, today: LocalDate, createdBy: String): Membership = transaction(tenant) {
-        val previous = lockedMembership(tenant, id) ?: throw MembresiaValidationException(listOf("La membresía no existe."))
+        val previous = lockedMembership(tenant, id) ?: throw MembresiaValidationException(listOf(tr("La membresía no existe.")))
         val settings = settings(tenant)
-        val plan = plan(tenant, input.planId ?: previous.planId) ?: throw MembresiaValidationException(listOf("El plan no existe."))
+        val plan = plan(tenant, input.planId ?: previous.planId) ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
         val startsOn = input.startsOn ?: MembresiaRules.renewalStart(previous.endsOn, today)
         val amount = input.amount ?: plan.price
         val errors = buildList {
-            if (previous.status == StoredStatus.Cancelada) add("Una membresía cancelada no se renueva: crea una nueva.")
-            if (!plan.active) add("El plan ${plan.name} está desactivado.")
+            if (previous.status == StoredStatus.Cancelada) add(tr("Una membresía cancelada no se renueva: crea una nueva."))
+            if (!plan.active) add(tr("El plan {0} está desactivado.", plan.name))
             val alreadyRenewed = query(
                 tenant,
                 "SELECT 1 FROM membresia_memberships WHERE renewed_from = ? AND status <> 'cancelada' LIMIT 1",
                 listOf(id),
             ) { 1 }.isNotEmpty()
-            if (alreadyRenewed) add("Esta membresía ya fue renovada.")
+            if (alreadyRenewed) add(tr("Esta membresía ya fue renovada."))
             val probe = MembershipInput(previous.customerId, plan.id, startsOn, amount, previous.source, previous.hostUserId, previous.hostName, previous.unit, "")
             addAll(MembresiaRules.validateMembership(probe, amount, settings.copy(sources = settings.sources + previous.source)))
             addAll(MembresiaRules.validateDates(startsOn, MembresiaRules.endsOn(startsOn, plan.durationDays), today))
@@ -415,7 +416,7 @@ object MembresiaRepository {
         val current = lockedMembership(tenant, id) ?: return@transaction null
         val settings = settings(tenant)
         val errors = buildList {
-            if (current.status == StoredStatus.Cancelada) add("Una membresía cancelada no se edita.")
+            if (current.status == StoredStatus.Cancelada) add(tr("Una membresía cancelada no se edita."))
             addAll(MembresiaRules.validateEdit(edit, current.startsOn, settings.copy(sources = settings.sources + current.source), today))
         }
         if (errors.isNotEmpty()) throw MembresiaValidationException(errors)
@@ -439,7 +440,7 @@ object MembresiaRepository {
     /** Cancela (queda en el historial; no se recrea). Null si no existe, no es visible o ya estaba cancelada. */
     fun cancel(tenant: Connection, id: UUID, reason: String): Membership? = transaction(tenant) {
         val clean = reason.trim()
-        if (clean.length > 1000) throw MembresiaValidationException(listOf("El motivo admite hasta 1000 caracteres."))
+        if (clean.length > 1000) throw MembresiaValidationException(listOf(tr("El motivo admite hasta 1000 caracteres.")))
         val current = lockedMembership(tenant, id) ?: return@transaction null
         if (current.status == StoredStatus.Cancelada) return@transaction null
         execute(
@@ -455,7 +456,7 @@ object MembresiaRepository {
      * [VisitResult.AlreadyToday]. Si hay aviso (vencida, programada, visitas agotadas) pide [override]; la cancelada se rechaza siempre.
      */
     fun recordMemberVisit(tenant: Connection, membershipId: UUID, today: LocalDate, override: Boolean, recordedBy: String, note: String = ""): VisitResult = transaction(tenant) {
-        val membership = lockedMembership(tenant, membershipId) ?: throw MembresiaValidationException(listOf("La membresía no existe."))
+        val membership = lockedMembership(tenant, membershipId) ?: throw MembresiaValidationException(listOf(tr("La membresía no existe.")))
         val already = query(
             tenant,
             "SELECT 1 FROM membresia_visits WHERE membership_id = ? AND visit_on = ? AND kind = 'miembro'",
@@ -484,9 +485,9 @@ object MembresiaRepository {
     /** Descuenta un pase de invitado (UPDATE atomico con cupo) y registra la visita del invitado. */
     fun useGuestPass(tenant: Connection, membershipId: UUID, guestName: String, today: LocalDate, recordedBy: String): GuestPassResult = transaction(tenant) {
         val name = guestName.trim()
-        if (name.isEmpty()) throw MembresiaValidationException(listOf("Escribe el nombre del invitado."))
-        if (name.length > 160) throw MembresiaValidationException(listOf("El nombre del invitado admite hasta 160 caracteres."))
-        val membership = lockedMembership(tenant, membershipId) ?: throw MembresiaValidationException(listOf("La membresía no existe."))
+        if (name.isEmpty()) throw MembresiaValidationException(listOf(tr("Escribe el nombre del invitado.")))
+        if (name.length > 160) throw MembresiaValidationException(listOf(tr("El nombre del invitado admite hasta 160 caracteres.")))
+        val membership = lockedMembership(tenant, membershipId) ?: throw MembresiaValidationException(listOf(tr("La membresía no existe.")))
         when (val decision = MembresiaRules.guestPassAllowed(membership, today, settings(tenant).expiringDays)) {
             is CheckInDecision.Refused -> return@transaction GuestPassResult.Refused(decision.reason)
             is CheckInDecision.NeedsOverride -> return@transaction GuestPassResult.Refused(decision.reason)
@@ -500,7 +501,7 @@ object MembresiaRepository {
             RETURNING customer_id
             """.trimIndent(),
             listOf(membershipId, today, today),
-        ) { rows -> rows.uuid(1) }.firstOrNull() ?: return@transaction GuestPassResult.Refused("No quedan pases de invitado.")
+        ) { rows -> rows.uuid(1) }.firstOrNull() ?: return@transaction GuestPassResult.Refused(tr("No quedan pases de invitado."))
         execute(
             tenant,
             "INSERT INTO membresia_visits (membership_id, customer_id, kind, guest_name, visit_on, recorded_by) VALUES (?, ?, 'invitado', ?, ?, ?)",
@@ -680,7 +681,7 @@ object MembresiaRepository {
             """.trimIndent(),
             listOf(customerId, planId, endsOn, startsOn, excludeId, excludeId),
         ) { 1 }.isNotEmpty()
-        if (overlaps) throw MembresiaValidationException(listOf("Ya tiene una membresía vigente de ese plan en esas fechas."))
+        if (overlaps) throw MembresiaValidationException(listOf(tr("Ya tiene una membresía vigente de ese plan en esas fechas.")))
     }
 
     private fun resolveHostName(tenant: Connection, hostUserId: UUID?, given: String): String {

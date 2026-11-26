@@ -10,8 +10,11 @@ import com.ideasdeveloper.bms.modules.compras.ComprasRepository
 import com.ideasdeveloper.bms.modules.compras.ComprasScreens
 import com.ideasdeveloper.bms.modules.compras.ComprasValidationException
 import com.ideasdeveloper.bms.modules.compras.ImportOutcome
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiField
 import com.ideasdeveloper.bms.ui.UiFieldValues
@@ -28,10 +31,10 @@ import com.ideasdeveloper.bms.ui.UiTableColumn
 import com.ideasdeveloper.bms.ui.UiText
 import com.ideasdeveloper.bms.ui.UiTextStyle
 import com.ideasdeveloper.bms.ui.UiTone
-import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /**
  * Importacion de solicitudes de compra desde tableros de monday. Lee un tablero por la API GraphQL en trabajos cortos (una pagina de
@@ -47,7 +50,7 @@ object ComprasMondayImport : ComprasImportSource {
     const val ImportPermission = "compras.import"
     private const val ImportRoute = ComprasScreens.UiRoute + "/import"
     private const val PreviewRows = 10
-    private const val NoColumn = "(ninguna)"
+    private val NoColumn = msg("(ninguna)")
     private const val ApplyBatch = 25
     private const val RunMillis = 40_000L
     private val log = LoggerFactory.getLogger(ComprasMondayImport::class.java)
@@ -83,11 +86,11 @@ object ComprasMondayImport : ComprasImportSource {
     }
 
     private fun requireEnabled(tenant: Connection) {
-        if (!enabled(tenant)) throw ComprasValidationException("La extension de monday no esta activa en esta empresa.")
+        if (!enabled(tenant)) throw ComprasValidationException(tr("La extension de monday no esta activa en esta empresa."))
     }
 
     private fun requireToken(ctx: ComprasImportContext): String =
-        ComprasMondayStore.loadToken(ctx) ?: throw ComprasValidationException("Guarda primero el token de la API de monday en la app (Compras > Importar).")
+        ComprasMondayStore.loadToken(ctx) ?: throw ComprasValidationException(tr("Guarda primero el token de la API de monday en la app (Compras > Importar)."))
 
     // ---- Operaciones (las usan la pantalla y las herramientas MCP) ----
 
@@ -95,7 +98,7 @@ object ComprasMondayImport : ComprasImportSource {
     fun saveToken(ctx: ComprasImportContext, typed: String) {
         requireEnabled(ctx.tenant)
         val token = typed.trim().takeIf { it.isNotEmpty() && it != "********" }
-            ?: throw ComprasValidationException("Escribe el token de la API de monday.")
+            ?: throw ComprasValidationException(tr("Escribe el token de la API de monday."))
         ComprasMondayStore.saveToken(ctx, token)
     }
 
@@ -111,16 +114,16 @@ object ComprasMondayImport : ComprasImportSource {
      */
     fun startImport(ctx: ComprasImportContext, info: MondayBoardInfo, groups: List<String>, mapping: Map<String, String>, currency: String): UUID {
         requireEnabled(ctx.tenant)
-        val actor = ctx.actor ?: throw ComprasValidationException("No se pudo identificar al usuario.")
+        val actor = ctx.actor ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
         val chosen = groups.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-        if (chosen.isEmpty()) throw ComprasValidationException("Elige al menos un grupo del tablero.")
-        if (chosen.any { id -> info.groups.none { it.id == id } }) throw ComprasValidationException("Uno de los grupos no existe en el tablero.")
+        if (chosen.isEmpty()) throw ComprasValidationException(tr("Elige al menos un grupo del tablero."))
+        if (chosen.any { id -> info.groups.none { it.id == id } }) throw ComprasValidationException(tr("Uno de los grupos no existe en el tablero."))
         val columns = MondayFields.All.associateWith { field -> mapping[field].orEmpty().trim() }.filterValues { it.isNotEmpty() }
-        if (columns.values.any { id -> info.columns.none { it.id == id } }) throw ComprasValidationException("Una de las columnas elegidas no existe en el tablero.")
+        if (columns.values.any { id -> info.columns.none { it.id == id } }) throw ComprasValidationException(tr("Una de las columnas elegidas no existe en el tablero."))
         val money = currency.trim().ifEmpty { ComprasRepository.settings(ctx.tenant).defaultCurrency }
         val stored = columns + (MondayFields.Currency to ComprasMoney.currency(money))
         ComprasMondayStore.activeJob(ctx.tenant)?.let {
-            throw ComprasValidationException("Ya hay una importacion de monday en curso (${statusLabel(it.status)}). Cancelala o espera a que termine.")
+            throw ComprasValidationException(tr("Ya hay una importacion de monday en curso ({0}). Cancelala o espera a que termine.", tr(statusLabel(it.status))))
         }
         return ComprasMondayStore.insertJob(ctx.tenant, info.id, info.name, chosen, stored, actor.userId, actor.name)
     }
@@ -129,12 +132,12 @@ object ComprasMondayImport : ComprasImportSource {
     fun applyJob(ctx: ComprasImportContext, jobId: UUID?): MondayJob {
         requireEnabled(ctx.tenant)
         val job = (jobId?.let { ComprasMondayStore.job(ctx.tenant, it) } ?: ComprasMondayStore.activeJob(ctx.tenant))
-            ?: throw ComprasValidationException("No hay una importacion de monday para aplicar.")
-        if (job.status != "ready") throw ComprasValidationException("La importacion no esta lista para aplicarse (${statusLabel(job.status)}).")
-        if (job.readCount == 0) throw ComprasValidationException("Ningun elemento de los grupos elegidos; no hay nada que importar.")
-        val actor = ctx.actor ?: throw ComprasValidationException("No se pudo identificar al usuario.")
+            ?: throw ComprasValidationException(tr("No hay una importacion de monday para aplicar."))
+        if (job.status != "ready") throw ComprasValidationException(tr("La importacion no esta lista para aplicarse ({0}).", tr(statusLabel(job.status))))
+        if (job.readCount == 0) throw ComprasValidationException(tr("Ningun elemento de los grupos elegidos; no hay nada que importar."))
+        val actor = ctx.actor ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
         if (!ComprasMondayStore.startApplying(ctx.tenant, job.id, actor.userId, actor.name)) {
-            throw ComprasValidationException("La importacion cambio de estado; actualiza la pantalla.")
+            throw ComprasValidationException(tr("La importacion cambio de estado; actualiza la pantalla."))
         }
         return job
     }
@@ -142,19 +145,19 @@ object ComprasMondayImport : ComprasImportSource {
     fun cancelJob(ctx: ComprasImportContext, jobId: UUID?) {
         requireEnabled(ctx.tenant)
         val job = (jobId?.let { ComprasMondayStore.job(ctx.tenant, it) } ?: ComprasMondayStore.activeJob(ctx.tenant))
-            ?: throw ComprasValidationException("No hay una importacion de monday en curso.")
+            ?: throw ComprasValidationException(tr("No hay una importacion de monday en curso."))
         if (!ComprasMondayStore.transition(ctx.tenant, job.id, MondayJob.ActiveStatuses, "cancelled")) {
-            throw ComprasValidationException("La importacion ya no esta en curso.")
+            throw ComprasValidationException(tr("La importacion ya no esta en curso."))
         }
     }
 
     fun statusLabel(status: String): String = when (status) {
-        "reading" -> "leyendo monday"
-        "ready" -> "lista para importar"
-        "applying" -> "importando solicitudes"
-        "done" -> "terminada"
-        "failed" -> "con error"
-        "cancelled" -> "cancelada"
+        "reading" -> msg("leyendo monday")
+        "ready" -> msg("lista para importar")
+        "applying" -> msg("importando solicitudes")
+        "done" -> msg("terminada")
+        "failed" -> msg("con error")
+        "cancelled" -> msg("cancelada")
         else -> status
     }
 
@@ -169,11 +172,11 @@ object ComprasMondayImport : ComprasImportSource {
     private fun run(ctx: ComprasImportContext, op: String, values: Map<String, String>): UiNotice? = when (op) {
         "token" -> {
             saveToken(ctx, values["token"].orEmpty())
-            UiNotice("Token de monday guardado.", UiTone.Success)
+            UiNotice(tr("Token de monday guardado."), UiTone.Success)
         }
         "forget" -> {
             forgetToken(ctx)
-            UiNotice("Token de monday borrado.", UiTone.Success)
+            UiNotice(tr("Token de monday borrado."), UiTone.Success)
         }
         "read" -> {
             // El nombre, los grupos y las columnas salen de monday, no del formulario: de el solo se toma el id del tablero y lo elegido.
@@ -184,15 +187,15 @@ object ComprasMondayImport : ComprasImportSource {
             }
             val mapping = MondayFields.All.associateWith { field -> optionIdOf(values["map_$field"].orEmpty()).orEmpty() }
             startImport(ctx, info, UiFieldValues.options(values["groups"].orEmpty()).mapNotNull { optionIdOf(it) }, mapping, values["currency"].orEmpty())
-            UiNotice("Se esta leyendo el tablero de monday. Actualiza esta pantalla para ver el avance.", UiTone.Success)
+            UiNotice(tr("Se esta leyendo el tablero de monday. Actualiza esta pantalla para ver el avance."), UiTone.Success)
         }
         "apply" -> {
             val job = applyJob(ctx, null)
-            UiNotice("Se importaran ${job.readCount} elementos de ${job.boardName} en segundo plano.", UiTone.Success)
+            UiNotice(tr("Se importaran {0} elementos de {1} en segundo plano.", job.readCount, job.boardName), UiTone.Success)
         }
         "cancel" -> {
             cancelJob(ctx, null)
-            UiNotice("Importacion cancelada. Las solicitudes ya importadas se conservan.", UiTone.Success)
+            UiNotice(tr("Importacion cancelada. Las solicitudes ya importadas se conservan."), UiTone.Success)
         }
         else -> null
     }
@@ -202,6 +205,9 @@ object ComprasMondayImport : ComprasImportSource {
         if (option == NoColumn) null else optionId.find(option.trim())?.groupValues?.get(1)
 
     private fun optionLabel(title: String, id: String) = "${title.take(80)} ($id)"
+
+    /** El espacio "Espacio principal" (el que pone la API cuando no trae nombre) se muestra traducido; los demas nombres son de monday. */
+    private fun workspaceLabel(name: String) = if (name == ComprasMondayParse.MainWorkspace) tr(name) else name
 
     // ---- Tarjeta de la pantalla Importar ----
 
@@ -213,8 +219,8 @@ object ComprasMondayImport : ComprasImportSource {
         if (hasToken) {
             nodes += UiRow(
                 listOf(
-                    UiButton("Cargar tableros", UiNavigate("import", mapOf(SourceId to "boards")), style = "secondary"),
-                    UiButton("Quitar token", UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:forget"), confirm = "Se borra el token de monday guardado. Continuar?"), style = "secondary"),
+                    UiButton(tr("Cargar tableros"), UiNavigate("import", mapOf(SourceId to "boards")), style = "secondary"),
+                    UiButton(tr("Quitar token"), UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:forget"), confirm = tr("Se borra el token de monday guardado. Continuar?")), style = "secondary"),
                 ),
             )
             when (params[SourceId]) {
@@ -238,24 +244,24 @@ object ComprasMondayImport : ComprasImportSource {
         "mondayToken",
         listOf(
             UiField(
-                "token", "Token de la API de monday", type = "password", required = !hasToken,
-                help = if (hasToken) "Hay un token guardado (no se muestra). Escribe otro solo para cambiarlo."
-                else "monday > tu avatar > Developers > Mi token. Se guarda sellado para la empresa.",
+                "token", tr("Token de la API de monday"), type = "password", required = !hasToken,
+                help = if (hasToken) tr("Hay un token guardado (no se muestra). Escribe otro solo para cambiarlo.")
+                else tr("monday > tu avatar > Developers > Mi token. Se guarda sellado para la empresa."),
             ),
         ),
-        submit = UiButton("Guardar token", UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:token"), formId = "mondayToken")),
+        submit = UiButton(tr("Guardar token"), UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:token"), formId = "mondayToken")),
     )
 
     private fun boardsNodes(ctx: ComprasImportContext): List<UiNode> {
         val boards = ComprasMondayApi.boards(requireToken(ctx))
-        if (boards.isEmpty()) return listOf(UiText("El token no tiene acceso a ningun tablero activo.", tone = UiTone.Warning))
+        if (boards.isEmpty()) return listOf(UiText(tr("El token no tiene acceso a ningun tablero activo."), tone = UiTone.Warning))
         return listOf(
-            UiText("Elige el tablero a importar. Despues eliges los grupos (propiedades) y mapeas las columnas.", UiTextStyle.Caption),
+            UiText(tr("Elige el tablero a importar. Despues eliges los grupos (propiedades) y mapeas las columnas."), UiTextStyle.Caption),
             UiList(
                 boards.take(300).map { board ->
                     UiListItem(
                         board.name,
-                        board.workspace + board.items?.let { " - $it elementos" }.orEmpty(),
+                        workspaceLabel(board.workspace) + board.items?.let { tr(" - {0} elementos", it) }.orEmpty(),
                         action = UiNavigate("import", mapOf(SourceId to "pick", "board" to board.id)),
                     )
                 },
@@ -270,19 +276,19 @@ object ComprasMondayImport : ComprasImportSource {
         val columnOptions = listOf(NoColumn) + info.columns.map { optionLabel(it.title, it.id) }
         val mappingFields = MondayFields.All.map { field ->
             UiField(
-                "map_$field", MondayFields.label(field), type = "dropdown", options = columnOptions, section = "Columnas",
-                help = if (field == MondayFields.Department) "Sin columna, el departamento sale del nombre del tablero." else "",
+                "map_$field", MondayFields.label(field), type = "dropdown", options = columnOptions, section = tr("Columnas"),
+                help = if (field == MondayFields.Department) tr("Sin columna, el departamento sale del nombre del tablero.") else "",
             )
         }
         val fields = listOf(
-            UiField("board_id", "Tablero (id)", readOnly = true),
-            UiField("board_name", "Tablero", readOnly = true),
+            UiField("board_id", tr("Tablero (id)"), readOnly = true),
+            UiField("board_name", tr("Tablero"), readOnly = true),
             UiField(
-                "groups", "Grupos a importar", type = "dropdown", multiple = true, required = true,
+                "groups", tr("Grupos a importar"), type = "dropdown", multiple = true, required = true,
                 options = info.groups.map { optionLabel(it.title, it.id) },
-                help = "Cada grupo es una propiedad (por ejemplo Costa Azul, Vista Mar, Bosque). Solo se importan los elegidos.",
+                help = tr("Cada grupo es una propiedad (por ejemplo Costa Azul, Vista Mar, Bosque). Solo se importan los elegidos."),
             ),
-            UiField("currency", "Moneda", help = "Codigo de 3 letras; vacio usa la moneda de Compras."),
+            UiField("currency", tr("Moneda"), help = tr("Codigo de 3 letras; vacio usa la moneda de Compras.")),
         ) + mappingFields
         val values = buildMap<String, String> {
             put("board_id", info.id)
@@ -291,19 +297,19 @@ object ComprasMondayImport : ComprasImportSource {
             MondayFields.All.forEach { field -> put("map_$field", suggestion[field]?.let { byId[it] }?.let { optionLabel(it.title, it.id) } ?: NoColumn) }
         }
         return listOf(
-            UiText("Tablero: ${info.name}", UiTextStyle.Subtitle),
+            UiText(tr("Tablero: {0}", info.name), UiTextStyle.Subtitle),
             UiForm(
                 "mondayRead", fields, values,
-                submit = UiButton("Leer tablero", UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:read"), formId = "mondayRead")),
+                submit = UiButton(tr("Leer tablero"), UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:read"), formId = "mondayRead")),
             ),
         )
     }
 
     private fun jobNodes(tenant: Connection, job: MondayJob): List<UiNode> {
         val nodes = mutableListOf<UiNode>(
-            UiText("Importacion de ${job.boardName}: ${statusLabel(job.status)}", UiTextStyle.Subtitle),
+            UiText(tr("Importacion de {0}: {1}", job.boardName, tr(statusLabel(job.status))), UiTextStyle.Subtitle),
             UiText(
-                "Leidos: ${job.readCount}. Creadas: ${job.createdCount}. Ya existian: ${job.existingCount}. Con error: ${job.failedCount}.",
+                tr("Leidos: {0}. Creadas: {1}. Ya existian: {2}. Con error: {3}.", job.readCount, job.createdCount, job.existingCount, job.failedCount),
                 UiTextStyle.Caption,
             ),
         )
@@ -315,36 +321,36 @@ object ComprasMondayImport : ComprasImportSource {
                 val request = ComprasMondayMapping.convert(item, job.boardName, job.mapping, fallback) { null }.request
                 mapOf(
                     "title" to item.name,
-                    "status" to (request?.status?.label ?: "Sin importar"),
+                    "status" to (request?.status?.label ?: tr("Sin importar")),
                     "amount" to ((request?.estimatedAmount ?: request?.quotes?.firstOrNull()?.amount)?.let { ComprasMoney.format(it, request?.currency ?: "") } ?: ""),
                     "result" to rowResult(row.status),
                 )
             }
             nodes += UiTable(
-                listOf(UiTableColumn("title", "Titulo"), UiTableColumn("status", "Estado en Compras"), UiTableColumn("amount", "Monto"), UiTableColumn("result", "Resultado")),
-                rows, emptyText = "Sin filas.",
+                listOf(UiTableColumn("title", tr("Titulo")), UiTableColumn("status", tr("Estado en Compras")), UiTableColumn("amount", tr("Monto")), UiTableColumn("result", tr("Resultado"))),
+                rows, emptyText = tr("Sin filas."),
             )
             ComprasMondayStore.problemRows(tenant, job.id, PreviewRows).forEach { row ->
                 val title = ComprasMondayParse.decode(row.payload)?.name ?: row.itemId
-                nodes += UiText("$title: ${row.problem.ifEmpty { "con error" }}", tone = UiTone.Warning)
+                nodes += UiText(tr("{0}: {1}", title, row.problem.ifEmpty { tr("con error") }), tone = UiTone.Warning)
             }
         }
-        val buttons = mutableListOf<UiNode>(UiButton("Actualizar", UiNavigate("import"), style = "secondary"))
+        val buttons = mutableListOf<UiNode>(UiButton(tr("Actualizar"), UiNavigate("import"), style = "secondary"))
         if (job.status == "ready" && job.readCount > 0) {
             buttons += UiButton(
-                "Importar ${job.readCount} elementos", UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:apply"), confirm = "Se crearan solicitudes en Compras con lo que se ve aqui. Continuar?"),
+                tr("Importar {0} elementos", job.readCount), UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:apply"), confirm = tr("Se crearan solicitudes en Compras con lo que se ve aqui. Continuar?")),
             )
         }
-        if (job.active) buttons += UiButton("Cancelar", UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:cancel")), style = "danger")
+        if (job.active) buttons += UiButton(tr("Cancelar"), UiRequest(ImportRoute, params = mapOf("op" to "$SourceId:cancel")), style = "danger")
         nodes += UiRow(buttons)
         return nodes
     }
 
     private fun rowResult(status: String) = when (status) {
-        "applied" -> "Creada"
-        "existing" -> "Ya existia"
-        "failed" -> "Con error"
-        else -> "Pendiente"
+        "applied" -> tr("Creada")
+        "existing" -> tr("Ya existia")
+        "failed" -> tr("Con error")
+        else -> tr("Pendiente")
     }
 
     // ---- Trabajo periodico ----
@@ -387,21 +393,21 @@ object ComprasMondayImport : ComprasImportSource {
         var pageSize = ComprasMondayApi.PageSize
         while (System.nanoTime() < deadline) {
             try {
-                if (job.pages >= ComprasMondayRetry.MaxPages) throw ComprasMondayException("El tablero tiene demasiadas paginas (mas de ${ComprasMondayRetry.MaxPages}).")
-                val token = ComprasMondayStore.loadToken(ctx) ?: throw ComprasMondayException("Se borro el token de monday; guardalo de nuevo y repite la importacion.")
+                if (job.pages >= ComprasMondayRetry.MaxPages) throw ComprasMondayException(tr("El tablero tiene demasiadas paginas (mas de {0}).", ComprasMondayRetry.MaxPages))
+                val token = ComprasMondayStore.loadToken(ctx) ?: throw ComprasMondayException(tr("Se borro el token de monday; guardalo de nuevo y repite la importacion."))
                 val page = try {
                     ComprasMondayApi.page(token, job.boardId, job.cursor, pageSize)
                 } catch (heavy: ComprasMondayException) {
                     if (!heavy.tooHeavy) throw heavy
                     // Respuesta demasiado grande o compleja: pagina mas chica dentro de la misma corrida; a 10 ya no hay mas que bajar.
-                    val smaller = ComprasMondayRetry.smallerPage(pageSize) ?: throw ComprasMondayException(ComprasMondayRetry.TooHeavyMessage)
+                    val smaller = ComprasMondayRetry.smallerPage(pageSize) ?: throw ComprasMondayException(tr(ComprasMondayRetry.TooHeavyMessage))
                     log.warn("La lectura de monday en {} baja la pagina de {} a {} elementos.", ctx.companyCode, pageSize, smaller)
                     pageSize = smaller
                     continue
                 }
                 val kept = ComprasMondayParse.filterByGroups(page.items, job.groups.toSet())
-                if (job.readCount + kept.size > ComprasMondayApi.MaxItems) throw ComprasMondayException("El tablero tiene mas de ${ComprasMondayApi.MaxItems} elementos en los grupos elegidos.")
-                if (page.cursor != null && !ComprasMondayParse.isValidCursor(page.cursor)) throw ComprasMondayException("monday devolvio un cursor no valido; vuelve a iniciar la importacion.")
+                if (job.readCount + kept.size > ComprasMondayApi.MaxItems) throw ComprasMondayException(tr("El tablero tiene mas de {0} elementos en los grupos elegidos.", ComprasMondayApi.MaxItems))
+                if (page.cursor != null && !ComprasMondayParse.isValidCursor(page.cursor)) throw ComprasMondayException(tr("monday devolvio un cursor no valido; vuelve a iniciar la importacion."))
                 // Falso: se cancelo mientras se leia o otra corrida ya guardo esta pagina.
                 if (!ComprasMondayStore.saveReadPage(tenant, job, kept, page.cursor) || page.cursor == null) return
                 job = job.copy(cursor = page.cursor, readCount = job.readCount + kept.size, pages = job.pages + 1, attempts = 0)
@@ -413,7 +419,7 @@ object ComprasMondayImport : ComprasImportSource {
                 throw failure
             } catch (failure: Exception) {
                 log.warn("La lectura de monday fallo en {} ({}).", ctx.companyCode, failure.javaClass.simpleName, failure)
-                failRead(tenant, job, "No se pudo leer el tablero de monday.", true)
+                failRead(tenant, job, tr("No se pudo leer el tablero de monday."), true)
                 return
             }
         }
@@ -517,10 +523,12 @@ object ComprasMondayImport : ComprasImportSource {
     private fun finish(ctx: ComprasImportContext, job: MondayJob) {
         val userId = job.appliedBy ?: job.createdBy ?: return
         try {
-            ctx.notifier?.notify(
-                ctx.tenant, userId, "Importacion de monday terminada",
-                "${job.boardName}: ${job.createdCount} creadas, ${job.existingCount} ya existian y ${job.failedCount} con error.",
-            )
+            ctx.notifier?.notify(ctx.tenant, userId) {
+                NotificationText(
+                    tr("Importacion de monday terminada"),
+                    tr("{0}: {1} creadas, {2} ya existian y {3} con error.", job.boardName, job.createdCount, job.existingCount, job.failedCount),
+                )
+            }
         } catch (failure: Exception) {
             log.warn("No se pudo crear el aviso de la importacion de monday ({}).", failure.javaClass.simpleName)
         }

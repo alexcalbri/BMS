@@ -59,6 +59,7 @@ import com.ideasdeveloper.bms.server.extensions.extensionRoutes
 import com.ideasdeveloper.bms.server.security.MasterKeySecretBox
 import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.modules.notificationRoutes
+import com.ideasdeveloper.bms.server.i18n.installI18n
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
@@ -83,8 +84,10 @@ fun main(args: Array<String>) {
 }
 
 fun Application.module() {
+    // Language of every request (Accept-Language, then the user's stored language) and the Core catalog.
+    installI18n()
     install(ContentNegotiation) {
-        json(kotlinx.serialization.json.Json { encodeDefaults = true })
+        json(kotlinx.serialization.json.Json { encodeDefaults = true; ignoreUnknownKeys = true })
     }
     install(RateLimit) {
         register(RateLimitName("login")) {

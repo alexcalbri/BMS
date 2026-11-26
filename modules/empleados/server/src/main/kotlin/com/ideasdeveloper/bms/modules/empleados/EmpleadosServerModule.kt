@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.empleados
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
 import com.ideasdeveloper.bms.server.modules.ModuleJob
@@ -82,8 +83,8 @@ object EmpleadosServerModule : ServerModule {
         id = EmpleadosModule.id,
         displayName = EmpleadosModule.displayName,
         description = "Fichas de empleados, sedes y departamentos, horario habitual con turnos concretos, vista semanal por sede, solicitudes de ausencia con aprobacion y avisos de cambios de turno.",
-        version = "0.1.1",
-        minCoreVersion = "0.8.0",
+        version = "0.2.0",
+        minCoreVersion = "0.10.0",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -129,16 +130,16 @@ data class EmpleadosErrorResponse(val code: String, val message: String)
  */
 suspend fun <T> ApplicationCall.respondEmpleados(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
     val companyCode = access.companyCode(this)
-        ?: return respond(HttpStatusCode.BadRequest, EmpleadosErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+        ?: return respond(HttpStatusCode.BadRequest, EmpleadosErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
     val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
-        ?: return respond(HttpStatusCode.Forbidden, EmpleadosErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+        ?: return respond(HttpStatusCode.Forbidden, EmpleadosErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
     try {
         val result = withContext(Dispatchers.IO) { connection.use { tenant -> block(tenant) } }
         respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
     } catch (failure: EmpleadosValidationException) {
         respond(HttpStatusCode.BadRequest, EmpleadosErrorResponse("invalid_request", failure.message.orEmpty()))
     } catch (failure: SQLException) {
-        respond(HttpStatusCode.InternalServerError, EmpleadosErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+        respond(HttpStatusCode.InternalServerError, EmpleadosErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
     }
 }
 

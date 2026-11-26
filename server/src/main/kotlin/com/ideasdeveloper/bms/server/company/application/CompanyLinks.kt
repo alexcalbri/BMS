@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.company.application
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CompanyLinkException
 import com.ideasdeveloper.bms.server.modules.GroupCompany
 import java.sql.Connection
@@ -27,7 +28,7 @@ object CompanyLinks {
 
     /** Throws when [purpose] is not a valid link purpose (same rule as the table's CHECK). */
     fun requirePurpose(purpose: String) {
-        if (!PurposePattern.matches(purpose)) throw CompanyLinkException("El uso del vinculo no es valido.")
+        if (!PurposePattern.matches(purpose)) throw CompanyLinkException(tr("El uso del vinculo no es valido."))
     }
 
     /**
@@ -35,13 +36,13 @@ object CompanyLinks {
      * [companyCode]; a company of another owner is simply not among them. Throws [CompanyLinkException].
      */
     fun validateLink(companyCode: String, targetCode: String, groupRows: List<LinkCompanyRow>) {
-        if (companyCode == targetCode) throw CompanyLinkException("Elige otra empresa para vincular.")
+        if (companyCode == targetCode) throw CompanyLinkException(tr("Elige otra empresa para vincular."))
         val company = groupRows.firstOrNull { it.code == companyCode }
-            ?: throw CompanyLinkException("La empresa no existe o no pertenece a un dueno.")
+            ?: throw CompanyLinkException(tr("La empresa no existe o no pertenece a un dueno."))
         val target = groupRows.firstOrNull { it.code == targetCode }
-            ?: throw CompanyLinkException("Solo se pueden vincular empresas del mismo dueno.")
-        if (company.serverWorkspace || target.serverWorkspace) throw CompanyLinkException("El espacio del servidor no se puede vincular.")
-        if (!company.active || !target.active) throw CompanyLinkException("Solo se pueden vincular empresas activas.")
+            ?: throw CompanyLinkException(tr("Solo se pueden vincular empresas del mismo dueno."))
+        if (company.serverWorkspace || target.serverWorkspace) throw CompanyLinkException(tr("El espacio del servidor no se puede vincular."))
+        if (!company.active || !target.active) throw CompanyLinkException(tr("Solo se pueden vincular empresas activas."))
     }
 
     /**
@@ -49,8 +50,8 @@ object CompanyLinks {
      * group (inactive ones may be unlinked). Throws [CompanyLinkException].
      */
     fun validateUnlink(companyCode: String, targetCode: String, groupRows: List<LinkCompanyRow>) {
-        if (groupRows.none { it.code == companyCode }) throw CompanyLinkException("La empresa no existe o no pertenece a un dueno.")
-        if (groupRows.none { it.code == targetCode }) throw CompanyLinkException("Solo se pueden desvincular empresas del mismo dueno.")
+        if (groupRows.none { it.code == companyCode }) throw CompanyLinkException(tr("La empresa no existe o no pertenece a un dueno."))
+        if (groupRows.none { it.code == targetCode }) throw CompanyLinkException(tr("Solo se pueden desvincular empresas del mismo dueno."))
     }
 
     /**
@@ -83,7 +84,7 @@ object CompanyLinks {
         requirePurpose(purpose)
         return inTransaction(connection) {
             val ownerGroup = ownerGroupOf(connection, companyCode)
-                ?: throw CompanyLinkException("La empresa no existe o no pertenece a un dueno.")
+                ?: throw CompanyLinkException(tr("La empresa no existe o no pertenece a un dueno."))
             val rows = lockGroup(connection, ownerGroup)
             validateLink(companyCode, targetCode, rows)
             val existing = linkRow(connection, purpose, companyCode)
@@ -103,7 +104,7 @@ object CompanyLinks {
         requirePurpose(purpose)
         return inTransaction(connection) {
             val ownerGroup = ownerGroupOf(connection, companyCode)
-                ?: throw CompanyLinkException("La empresa no existe o no pertenece a un dueno.")
+                ?: throw CompanyLinkException(tr("La empresa no existe o no pertenece a un dueno."))
             val rows = lockGroup(connection, ownerGroup)
             validateUnlink(companyCode, targetCode, rows)
             val mine = linkRow(connection, purpose, companyCode)

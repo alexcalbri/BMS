@@ -12,6 +12,11 @@ import com.ideasdeveloper.bms.server.auth.domain.SwitchTarget
 import com.ideasdeveloper.bms.server.auth.domain.SwitchTargetsResponse
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.PostgresCredentialVerifier
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.SessionLanguages
+import com.ideasdeveloper.bms.server.i18n.companyLanguage
+import com.ideasdeveloper.bms.server.i18n.userLanguage
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.serialization.Serializable
@@ -270,7 +275,7 @@ class LoginDatabases(
         }
     } catch (_: java.sql.SQLException) {
         null
-    }?.takeIf { it.isNotBlank() } ?: DefaultServerName
+    }?.takeIf { it.isNotBlank() } ?: tr("Servidor")
 
     @Synchronized
     private fun tenantScope(name: String): Scope? {
@@ -355,7 +360,18 @@ class LoginDatabases(
             if (server && !owner) return null
             val session = sessions.createSession(user)
             val workspace = if (server) serverWorkspace() else null
-            val profile = profile(source, java.util.UUID.fromString(user.id.toString()))
+            val userId = java.util.UUID.fromString(user.id.toString())
+            val profile = profile(source, userId)
+            // Language: the user's own (core V006), else the company default (control V014), else the source.
+            val ownLanguage = source.connection.use { connection -> userLanguage(connection, userId) }
+            val languageCompany = if (server) workspace?.first else companyCode
+            val defaultLanguage = languageCompany?.let { code -> central.connection.use { connection -> companyLanguage(connection, code) } } ?: I18n.Source
+            val userKey = SessionLanguages.userKey(if (server) null else companyCode, userId)
+            SessionLanguages.rememberUser(userKey, ownLanguage)
+            SessionLanguages.rememberSession(session.accessToken, userKey)
+            val effective = ownLanguage ?: defaultLanguage
+            // The rest of this request (and its messages) already uses the language of the user.
+            I18n.overrideRequestLanguage(effective)
             return LoginSuccessResponse(session.userId, session.username, session.accessToken, session.expiresInSeconds,
                 scope = if (server) "server" else "company",
                 companyCode = if (server) null else companyCode,
@@ -366,7 +382,10 @@ class LoginDatabases(
                 email = profile?.second,
                 profileComplete = profile == null || UserProfileRules.isComplete(profile.first, profile.second),
                 serverName = if (server) serverName() else null,
-                serverOwnerAccess = serverOwnerAccess)
+                serverOwnerAccess = serverOwnerAccess,
+                language = effective,
+                companyLanguage = defaultLanguage,
+                userLanguage = ownLanguage)
         }
     }
 

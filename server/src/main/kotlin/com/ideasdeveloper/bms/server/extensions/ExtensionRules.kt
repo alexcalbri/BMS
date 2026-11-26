@@ -1,6 +1,9 @@
 package com.ideasdeveloper.bms.server.extensions
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ModuleVersion
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.ModuleAccessErrorResponse
 import io.ktor.http.HttpStatusCode
 
@@ -37,7 +40,7 @@ object ExtensionLifecycle {
 
     fun require(from: String?, to: String) {
         if (!canTransition(from, to)) {
-            throw ExtensionException("invalid_transition", "La extension no puede pasar de ${from ?: "no instalada"} a $to.")
+            throw ExtensionException("invalid_transition", tr("La extension no puede pasar de {0} a {1}.", from ?: tr("no instalada"), to))
         }
     }
 
@@ -59,15 +62,15 @@ sealed class ExtensionGateDecision {
             ExtensionStatus.Enabled -> Open
             ExtensionStatus.Incompatible -> Closed(
                 HttpStatusCode.Conflict,
-                ModuleAccessErrorResponse("extension_incompatible", "La extension no es compatible con la version del modulo."),
+                ModuleAccessErrorResponse("extension_incompatible", tr("La extension no es compatible con la version del modulo.")),
             )
             ExtensionStatus.Installed, ExtensionStatus.Disabled -> Closed(
                 HttpStatusCode.Forbidden,
-                ModuleAccessErrorResponse("extension_disabled", "La extension esta desactivada en esta empresa."),
+                ModuleAccessErrorResponse("extension_disabled", tr("La extension esta desactivada en esta empresa.")),
             )
             else -> Closed(
                 HttpStatusCode.NotFound,
-                ModuleAccessErrorResponse("extension_not_installed", "La extension no esta instalada en esta empresa."),
+                ModuleAccessErrorResponse("extension_not_installed", tr("La extension no esta instalada en esta empresa.")),
             )
         }
     }
@@ -81,7 +84,7 @@ object UninstallChoices {
     fun resolve(options: List<ExtensionUninstallOption>, answers: Map<String, String>): Map<String, String> {
         val known = options.map { it.id }.toSet()
         answers.keys.firstOrNull { it !in known }?.let {
-            throw ExtensionException("unknown_uninstall_option", "La opcion '$it' no existe en esta extension.", ExtensionException.Kind.BadRequest)
+            throw ExtensionException("unknown_uninstall_option", tr("La opcion '{0}' no existe en esta extension.", it), ExtensionException.Kind.BadRequest)
         }
         val valid = setOf(UninstallDefault.Keep, UninstallDefault.Delete)
         val missing = mutableListOf<String>()
@@ -91,7 +94,7 @@ object UninstallChoices {
             when {
                 answer != null && answer in valid -> resolved[option.id] = answer
                 answer != null -> throw ExtensionException(
-                    "invalid_uninstall_choice", "La respuesta de '${option.id}' debe ser keep o delete.", ExtensionException.Kind.BadRequest,
+                    "invalid_uninstall_choice", tr("La respuesta de '{0}' debe ser keep o delete.", option.id), ExtensionException.Kind.BadRequest,
                 )
                 option.default in valid -> resolved[option.id] = option.default
                 else -> missing += option.id
@@ -99,14 +102,15 @@ object UninstallChoices {
         }
         if (missing.isNotEmpty()) {
             throw ExtensionException(
-                "uninstall_choice_required", "Responde estas opciones antes de desinstalar: ${missing.joinToString(", ")}.",
+                "uninstall_choice_required", tr("Responde estas opciones antes de desinstalar: {0}.", missing.joinToString(", ")),
                 ExtensionException.Kind.BadRequest,
             )
         }
         return resolved
     }
 
-    fun views(options: List<ExtensionUninstallOption>): List<UninstallOptionView> = options.map { UninstallOptionView(it.id, it.label, it.default) }
+    fun views(options: List<ExtensionUninstallOption>, namespace: String = I18n.CoreNamespace): List<UninstallOptionView> =
+        options.map { UninstallOptionView(it.id, trIn(namespace, it.label), it.default) }
 }
 
 object SettingsCopy {
@@ -142,17 +146,17 @@ data class GroupTargetFacts(
 object GroupTargetValidator {
     /** Why [facts] cannot receive an operation, or null when it can. */
     fun problem(facts: GroupTargetFacts, sourceCode: String): String? = when {
-        facts.companyCode == sourceCode -> "La empresa de origen no puede ser destino."
-        !facts.exists -> "La empresa no existe."
-        !facts.active -> "La empresa no esta activa."
-        !facts.sameGroup -> "La empresa no pertenece al grupo."
-        facts.suspended -> "La empresa esta suspendida en el grupo hasta que el dueno del servidor la revise."
+        facts.companyCode == sourceCode -> tr("La empresa de origen no puede ser destino.")
+        !facts.exists -> tr("La empresa no existe.")
+        !facts.active -> tr("La empresa no esta activa.")
+        !facts.sameGroup -> tr("La empresa no pertenece al grupo.")
+        facts.suspended -> tr("La empresa esta suspendida en el grupo hasta que el dueno del servidor la revise.")
         facts.expectedOwnerEmail.isNullOrBlank() || facts.ownerEmail.isNullOrBlank() ->
-            "No se pudo verificar el business owner de la empresa."
-        !facts.expectedOwnerEmail.equals(facts.ownerEmail, ignoreCase = true) -> "El business owner de la empresa no es el del grupo."
-        !facts.moduleInstalled -> "El modulo no esta instalado en el servidor."
-        !facts.moduleEnabled -> "El modulo no esta activo en la empresa."
-        !facts.compatible -> "La version del modulo es menor que la que la extension necesita."
+            tr("No se pudo verificar el business owner de la empresa.")
+        !facts.expectedOwnerEmail.equals(facts.ownerEmail, ignoreCase = true) -> tr("El business owner de la empresa no es el del grupo.")
+        !facts.moduleInstalled -> tr("El modulo no esta instalado en el servidor.")
+        !facts.moduleEnabled -> tr("El modulo no esta activo en la empresa.")
+        !facts.compatible -> tr("La version del modulo es menor que la que la extension necesita.")
         else -> null
     }
 }
@@ -226,7 +230,7 @@ class OperationRunner(private val store: ExtensionOperationStore) {
     fun retryFailed(operationId: Long, validate: (String) -> String?, execute: (String) -> Unit) {
         val failed = store.targets(operationId).filter { it.status == TargetStatus.Failed }
         if (failed.isEmpty()) {
-            throw ExtensionException("nothing_to_retry", "La operacion no tiene destinos fallidos.")
+            throw ExtensionException("nothing_to_retry", tr("La operacion no tiene destinos fallidos."))
         }
         failed.forEach { run(operationId, it.companyCode, it.attempts + 1, validate, execute) }
         store.finish(operationId, OperationStatus.of(store.targets(operationId)))
@@ -255,7 +259,7 @@ class OperationRunner(private val store: ExtensionOperationStore) {
     // are kept; anything else could carry SQL text or values, so it gets a generic message.
     private fun safeReason(failure: Exception): String = when (failure) {
         is ExtensionException -> failure.message
-        is java.sql.SQLException -> "Error de base de datos (${failure.sqlState.orEmpty()})."
-        else -> "Error inesperado al procesar esta empresa."
+        is java.sql.SQLException -> tr("Error de base de datos ({0}).", failure.sqlState.orEmpty())
+        else -> tr("Error inesperado al procesar esta empresa.")
     }
 }

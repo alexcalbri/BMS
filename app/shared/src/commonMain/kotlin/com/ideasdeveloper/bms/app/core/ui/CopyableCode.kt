@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -79,11 +80,11 @@ fun CopyableCode(
                 clipboard.setText(AnnotatedString(code))
                 clicks++
             },
-            modifier = Modifier.size(32.dp).semantics { contentDescription = if (label.isBlank()) "Copiar" else "Copiar $label" },
+            modifier = Modifier.size(32.dp).semantics { contentDescription = if (label.isBlank()) tr("Copiar") else tr("Copiar {0}", label) },
         ) {
             CopyIcon(AppTheme.colors.accentText)
         }
-        if (copied) Text("Copiado", color = AppTheme.colors.success, fontSize = 12.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        if (copied) Text(tr("Copiado"), color = AppTheme.colors.success, fontSize = 12.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     }
 }
 

@@ -374,3 +374,13 @@ clear text.
 
 Clearing the domain field and saving unpublishes the portal; the helper removes
 its Nginx site and certificate on the next run.
+
+## Languages (0.13.0, needs Core 0.10.0)
+
+Every text the module shows (admin screens, errors, permissions and the captive-portal pages and the access-code
+email that guests receive) is available in Spanish (source) and English: the code writes `tr("Texto en espanol")`
+and the English catalog is `server/src/main/resources/modules/hotspot/i18n/en.json`. The portal pages follow the
+guest's browser language (`Accept-Language`); the admin screens follow the user's language. Company data (portal title,
+subtitle, consent text, footer, email subject, network and pass-source names), the company's own HTML templates,
+the CSV export (headers and values stay in Spanish) and the MCP tools are not translated. Option values and ids the app
+posts back never change with the language.

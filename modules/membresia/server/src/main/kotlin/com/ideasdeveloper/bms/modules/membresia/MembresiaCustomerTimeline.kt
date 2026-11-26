@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.CustomerTimelineEntry
@@ -70,7 +71,7 @@ object MembresiaCustomerTimeline {
                     CustomerTimelineEntry(
                         at = minOf(row.createdAt, start),
                         kind = if (row.renewal) "membresia_renovada" else "membresia_alta",
-                        title = (if (row.renewal) "Membresía ${row.planName} renovada" else "Membresía ${row.planName}").take(300),
+                        title = (if (row.renewal) tr("Membresía {0} renovada", row.planName) else tr("Membresía {0}", row.planName)).take(300),
                         detail = createdDetail(row),
                     ).also { it.link = link }
                 )
@@ -79,7 +80,7 @@ object MembresiaCustomerTimeline {
                         CustomerTimelineEntry(
                             at = cancelledAt,
                             kind = "membresia_cancelada",
-                            title = "Membresía ${row.planName} cancelada".take(300),
+                            title = tr("Membresía {0} cancelada", row.planName).take(300),
                         ).also { it.link = link }
                     )
                 }
@@ -88,7 +89,7 @@ object MembresiaCustomerTimeline {
                         CustomerTimelineEntry(
                             at = row.endsOn.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant(),
                             kind = "membresia_vencida",
-                            title = "Membresía ${row.planName} vencida".take(300),
+                            title = tr("Membresía {0} vencida", row.planName).take(300),
                             detail = createdDetail(row),
                         ).also { it.link = link }
                     )
@@ -99,8 +100,8 @@ object MembresiaCustomerTimeline {
                     CustomerTimelineEntry(
                         at = month.lastVisitAt,
                         kind = "membresia_visitas",
-                        title = "Visitas de ${monthLabel(month.month)}: ${month.memberVisits + month.guestVisits}",
-                        detail = if (month.guestVisits > 0) "Con invitado: ${month.guestVisits}" else "",
+                        title = tr("Visitas de {0}: {1}", monthLabel(month.month), month.memberVisits + month.guestVisits),
+                        detail = if (month.guestVisits > 0) tr("Con invitado: {0}", month.guestVisits) else "",
                     ).also { it.link = link }
                 )
             }
@@ -110,12 +111,12 @@ object MembresiaCustomerTimeline {
 
     /** "{inicio} a {fin} · {monto} {moneda}" y, si el plan trae pases de invitado, "Pases de invitado: usados/total". */
     fun createdDetail(row: MembershipTimelineRow): String = listOfNotNull(
-        "${row.startsOn} a ${row.endsOn} · ${row.amount.toPlainString()} ${row.currency}",
-        "Pases de invitado: ${row.guestPassesUsed}/${row.guestPassesTotal}".takeIf { row.guestPassesTotal > 0 },
+        tr("{0} a {1} · {2} {3}", row.startsOn, row.endsOn, row.amount.toPlainString(), row.currency),
+        tr("Pases de invitado: {0}/{1}", row.guestPassesUsed, row.guestPassesTotal).takeIf { row.guestPassesTotal > 0 },
     ).joinToString("\n")
 
     /** "noviembre 2026". */
-    fun monthLabel(month: YearMonth): String = "${monthNames[month.monthValue - 1]} ${month.year}"
+    fun monthLabel(month: YearMonth): String = tr("{0} {1}", monthNames[month.monthValue - 1], month.year)
 
     private fun membershipRows(tenant: Connection, customerId: UUID, limit: Int): List<MembershipTimelineRow> =
         tenant.prepareStatement(

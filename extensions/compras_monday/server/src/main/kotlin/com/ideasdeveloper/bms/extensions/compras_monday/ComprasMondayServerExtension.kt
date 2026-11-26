@@ -14,6 +14,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.server.routing.Route
 import java.sql.Connection
 
@@ -31,8 +32,8 @@ object ComprasMondayServerExtension : ServerExtension, ComprasImportSource by Co
         module = "compras",
         displayName = "Importacion desde monday",
         description = "Importa tableros de monday como solicitudes de compra: eliges los grupos de cada tablero, mapeas sus columnas y traen cotizaciones y archivos.",
-        version = "1.0.3",
-        minModuleVersion = "0.2.0",
+        version = "1.1.0",
+        minModuleVersion = "0.3.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/compras_monday",
@@ -65,9 +66,9 @@ object ComprasMondayServerExtension : ServerExtension, ComprasImportSource by Co
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            UninstallItem(null, "Token de la API de monday (se borra)", count(tenant, "SELECT count(*) FROM ${ComprasMondayStore.SettingsTable} WHERE coalesce(token, '') <> ''"), "delete"),
-            UninstallItem(HistoryOption, "Historial de importaciones de monday", count(tenant, "SELECT count(*) FROM ${ComprasMondayStore.JobsTable}"), UninstallDefault.Delete),
-            UninstallItem(null, "Solicitudes importadas (se conservan)", count(tenant, "SELECT count(*) FROM compras_requests WHERE import_key LIKE 'monday:%'"), "keep"),
+            UninstallItem(null, tr("Token de la API de monday (se borra)"), count(tenant, "SELECT count(*) FROM ${ComprasMondayStore.SettingsTable} WHERE coalesce(token, '') <> ''"), "delete"),
+            UninstallItem(HistoryOption, tr("Historial de importaciones de monday"), count(tenant, "SELECT count(*) FROM ${ComprasMondayStore.JobsTable}"), UninstallDefault.Delete),
+            UninstallItem(null, tr("Solicitudes importadas (se conservan)"), count(tenant, "SELECT count(*) FROM compras_requests WHERE import_key LIKE 'monday:%'"), "keep"),
         )
     }
 

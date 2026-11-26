@@ -15,12 +15,13 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.ui.UiNode
-import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.Duration
+import org.slf4j.LoggerFactory
 
 /**
  * Extension "eventos_monday": importa un tablero de monday (por ejemplo "Vista Mar Eventos") como eventos privados, cada
@@ -39,8 +40,8 @@ object EventosMondayServerExtension : ServerExtension, EventosImportSource {
         module = "eventos",
         displayName = "Importacion de eventos desde monday",
         description = "Importa un tablero de monday (por ejemplo Vista Mar Eventos) como eventos privados: lee el tablero con el token de la empresa, mapea sus columnas y crea el evento y su cliente por cada elemento.",
-        version = "1.0.1",
-        minModuleVersion = "0.1.0",
+        version = "1.1.0",
+        minModuleVersion = "0.3.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/eventos_monday",
@@ -99,10 +100,10 @@ object EventosMondayServerExtension : ServerExtension, EventosImportSource {
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            UninstallItem(null, "Token de la API de monday (se borra)", count(tenant, "SELECT count(*) FROM ${EventosMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
-            UninstallItem(HistoryOption, "Importaciones de monday (trabajos)", count(tenant, "SELECT count(*) FROM ${EventosMondayJobs.JobsTable}"), UninstallDefault.Delete),
-            UninstallItem(HistoryOption, "Filas leidas de monday", count(tenant, "SELECT count(*) FROM ${EventosMondayJobs.RowsTable}"), UninstallDefault.Delete),
-            UninstallItem(null, "Eventos importados (se conservan, con sus clientes y abonos)", count(tenant, "SELECT count(*) FROM eventos_events WHERE import_key LIKE 'monday:%'"), "keep"),
+            UninstallItem(null, tr("Token de la API de monday (se borra)"), count(tenant, "SELECT count(*) FROM ${EventosMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
+            UninstallItem(HistoryOption, tr("Importaciones de monday (trabajos)"), count(tenant, "SELECT count(*) FROM ${EventosMondayJobs.JobsTable}"), UninstallDefault.Delete),
+            UninstallItem(HistoryOption, tr("Filas leidas de monday"), count(tenant, "SELECT count(*) FROM ${EventosMondayJobs.RowsTable}"), UninstallDefault.Delete),
+            UninstallItem(null, tr("Eventos importados (se conservan, con sus clientes y abonos)"), count(tenant, "SELECT count(*) FROM eventos_events WHERE import_key LIKE 'monday:%'"), "keep"),
         )
     }
 

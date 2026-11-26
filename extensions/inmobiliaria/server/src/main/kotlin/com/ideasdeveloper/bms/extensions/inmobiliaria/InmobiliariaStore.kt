@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.inmobiliaria
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.sql.Connection
 import java.sql.PreparedStatement
@@ -340,8 +341,8 @@ object InmobiliariaStore {
         if (failure.sqlState == "23505") {
             // El mensaje de PostgreSQL trae el nombre del indice que choco.
             val text = failure.message.orEmpty()
-            if (text.contains("properties_wordpress_uq")) throw InmobiliariaException("Ese listado del sitio web ya esta vinculado a otra propiedad.")
-            if (text.contains("properties_code_uq")) throw InmobiliariaException("Ya existe una propiedad con el codigo $code.")
+            if (text.contains("properties_wordpress_uq")) throw InmobiliariaException(tr("Ese listado del sitio web ya esta vinculado a otra propiedad."))
+            if (text.contains("properties_code_uq")) throw InmobiliariaException(tr("Ya existe una propiedad con el codigo {0}.", code))
         }
         throw failure
     }
@@ -442,7 +443,7 @@ object InmobiliariaStore {
         val old = tenant.prepareStatement("SELECT price FROM $PropertiesTable WHERE id = ? FOR UPDATE").use { query ->
             query.setObject(1, id)
             query.executeQuery().use { rows ->
-                if (!rows.next()) throw InmobiliariaException("La propiedad ya no existe.")
+                if (!rows.next()) throw InmobiliariaException(tr("La propiedad ya no existe."))
                 rows.getBigDecimal(1)
             }
         }
@@ -588,7 +589,7 @@ object InmobiliariaStore {
         val existing = stages(tenant).associateBy { it.id }
         val kept = inputs.mapNotNull { it.id }.toSet()
         existing.values.filter { it.id !in kept }.forEach { stage ->
-            if (stageInUse(tenant, stage.id)) throw InmobiliariaException("La etapa '${stage.name}' tiene transacciones: muevelas a otra etapa antes de borrarla.")
+            if (stageInUse(tenant, stage.id)) throw InmobiliariaException(tr("La etapa '{0}' tiene transacciones: muevelas a otra etapa antes de borrarla.", stage.name))
             tenant.prepareStatement("DELETE FROM $StagesTable WHERE id = ?").use { delete ->
                 delete.setObject(1, stage.id)
                 delete.executeUpdate()
@@ -598,7 +599,7 @@ object InmobiliariaStore {
             if (input.id != null && input.id in existing) {
                 val before = existing.getValue(input.id)
                 if (before.outcome != input.outcome && stageInUse(tenant, before.id)) {
-                    throw InmobiliariaException("La etapa '${before.name}' tiene transacciones: no se puede cambiar su resultado.")
+                    throw InmobiliariaException(tr("La etapa '{0}' tiene transacciones: no se puede cambiar su resultado.", before.name))
                 }
                 tenant.prepareStatement("UPDATE $StagesTable SET name = ?, position = ?, outcome = ? WHERE id = ?").use { update ->
                     update.setString(1, input.name)

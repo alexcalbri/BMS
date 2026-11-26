@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.time.LocalDate
 import java.util.UUID
@@ -56,7 +57,7 @@ object TareasExternal {
                 null
             }
             if (outcome?.created == true) return@transaction outcome.id
-            val task = existing ?: outcome?.id?.let { TareasRepository.get(tenant, it) } ?: throw TareasValidationException("No se pudo guardar la tarea.")
+            val task = existing ?: outcome?.id?.let { TareasRepository.get(tenant, it) } ?: throw TareasValidationException(tr("No se pudo guardar la tarea."))
             TareasRepository.update(tenant, task.id, request.asInput(groupId ?: task.groupId, task.reviewerId, task.customerId))
             TareasRepository.setAssignees(tenant, task.id, request.assignees)
             task.id

@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.server.company.application
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.companyLanguage
+import com.ideasdeveloper.bms.server.i18n.setCompanyLanguage
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.auth.application.UserProfileRules
 import com.ideasdeveloper.bms.server.auth.application.ApplicationUserCodes
@@ -18,6 +22,7 @@ import com.ideasdeveloper.bms.server.company.api.UpdateCompanyUserRequest
 import com.ideasdeveloper.bms.server.company.api.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.bms.server.company.api.BusinessOwnerResponse
 import com.ideasdeveloper.bms.server.company.api.UpdateCompanyProfileRequest
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.CompanyMail
 import com.ideasdeveloper.bms.server.modules.CompanyMailForm
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
@@ -94,7 +99,8 @@ class CompanySelfService(
     // administra asi la empresa del servidor, sin crear una empresa.
     fun profile(companyCode: String, accessToken: String): CompanyProfileResponse {
         val context = authorizeUserAdministrator(companyCode, accessToken)
-        return context.profile
+        val language = central.connection.use { connection -> companyLanguage(connection, context.companyCode) }
+        return context.profile.copy(defaultLanguage = language)
     }
 
     // Actualiza nombre, logo y colores sin tocar datos tenant.
@@ -103,13 +109,17 @@ class CompanySelfService(
         val name = request.name.trim()
         val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (name.isBlank()) {
-            throw CompanySelfException("El nombre de la empresa es obligatorio.")
+            throw CompanySelfException(tr("El nombre de la empresa es obligatorio."))
         }
         if (!colorPattern.matches(request.primaryColor) ||
             !colorPattern.matches(request.secondaryColor) ||
             !colorPattern.matches(request.accentColor)
         ) {
-            throw CompanySelfException("Los colores deben usar formato hexadecimal #RRGGBB.")
+            throw CompanySelfException(tr("Los colores deben usar formato hexadecimal #RRGGBB."))
+        }
+        val language = request.defaultLanguage?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        if (language != null && language !in I18n.Languages) {
+            throw CompanySelfException(tr("El idioma no es valido."))
         }
 
         central.connection.use { connection ->
@@ -128,6 +138,7 @@ class CompanySelfService(
                 update.setString(6, context.companyCode)
                 update.executeUpdate()
             }
+            if (language != null) setCompanyLanguage(connection, context.companyCode, language)
         }
 
         return profile(companyCode, accessToken)
@@ -188,7 +199,7 @@ class CompanySelfService(
         val directory = backupDirectory(context.companyCode)
         val path = directory.resolve(fileName).normalize()
         if (!path.startsWith(directory) || !path.exists()) {
-            throw CompanySelfException("Backup no encontrado.")
+            throw CompanySelfException(tr("Backup no encontrado."))
         }
         return path
     }
@@ -226,11 +237,11 @@ class CompanySelfService(
         try {
             CompanyMail.validate(input)
         } catch (failure: MailException) {
-            throw CompanyMailRejectedException(failure.message ?: "Servidor de correo no valido.")
+            throw CompanyMailRejectedException(failure.message ?: tr("Servidor de correo no valido."))
         }
         val box = secrets
         if (!input.password.isNullOrEmpty() && (box == null || !box.available)) {
-            throw CompanyMailRejectedException("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
+            throw CompanyMailRejectedException(tr("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."))
         }
         try {
             tenantConnection(context.tenant).use { connection ->
@@ -238,12 +249,12 @@ class CompanySelfService(
                 return CompanyMail.load(connection)
             }
         } catch (failure: SecretsUnavailableException) {
-            throw CompanyMailRejectedException("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
+            throw CompanyMailRejectedException(tr("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."))
         } catch (failure: IllegalArgumentException) {
-            throw CompanyMailRejectedException("La contrasena no es valida.")
+            throw CompanyMailRejectedException(tr("La contrasena no es valida."))
         } catch (failure: SQLException) {
             LoggerFactory.getLogger(CompanySelfService::class.java).error("No se pudo guardar el correo de la empresa {}", companyCode, failure)
-            throw CompanyMailStorageException("No se pudo guardar el correo de la empresa.")
+            throw CompanyMailStorageException(tr("No se pudo guardar el correo de la empresa."))
         }
     }
 
@@ -262,12 +273,12 @@ class CompanySelfService(
         val context = authorizeUserAdministrator(companyCode, accessToken)
         val username = request.username.trim()
         if (!postgresRolePattern.matches(username)) {
-            throw CompanySelfException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+            throw CompanySelfException(tr("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
         }
         if (request.password.length < 12) {
-            throw CompanySelfException("La contrasena del usuario debe tener al menos 12 caracteres.")
+            throw CompanySelfException(tr("La contrasena del usuario debe tener al menos 12 caracteres."))
         }
-        UserProfileRules.problem(request.displayName, request.email)?.let { throw CompanySelfException("Usuario: $it") }
+        UserProfileRules.problem(request.displayName, request.email)?.let { throw CompanySelfException(tr("Usuario: {0}", it)) }
 
         val userId = UUID.randomUUID()
         val passwordHash = ApplicationPasswordHasher.hash(request.password)
@@ -277,11 +288,11 @@ class CompanySelfService(
             connection.autoCommit = false
             try {
                 if (connection.existsUser(username)) {
-                    throw CompanySelfException("Ya existe un usuario con ese nombre.")
+                    throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
                 }
                 // Sign-in also accepts a PostgreSQL role's password for the same name.
                 if (connection.existsRole(username)) {
-                    throw CompanySelfException("Ese nombre de usuario esta reservado; elige otro.")
+                    throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
                 }
                 connection.prepareStatement(
                     "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
@@ -312,7 +323,7 @@ class CompanySelfService(
             } finally {
                 connection.autoCommit = true
             }
-            return loadUser(connection, userId) ?: throw CompanySelfException("No se pudo cargar el usuario creado.")
+            return loadUser(connection, userId) ?: throw CompanySelfException(tr("No se pudo cargar el usuario creado."))
         }
     }
 
@@ -326,10 +337,10 @@ class CompanySelfService(
         val targetUserId = try {
             UUID.fromString(userId)
         } catch (_: IllegalArgumentException) {
-            throw CompanySelfException("Usuario invalido.")
+            throw CompanySelfException(tr("Usuario invalido."))
         }
         if (targetUserId == context.businessOwnerUserId) {
-            throw CompanySelfException("No puedes quitar permisos del business_owner desde este flujo.")
+            throw CompanySelfException(tr("No puedes quitar permisos del business_owner desde este flujo."))
         }
         tenantConnection(context.tenant).use { connection ->
             syncPermissionCatalog(connection)
@@ -337,7 +348,7 @@ class CompanySelfService(
             connection.autoCommit = false
             try {
                 if (!connection.userExists(targetUserId)) {
-                    throw CompanySelfException("Usuario no encontrado.")
+                    throw CompanySelfException(tr("Usuario no encontrado."))
                 }
                 replaceUserPermissions(connection, targetUserId, request.permissions)
                 connection.commit()
@@ -347,7 +358,7 @@ class CompanySelfService(
             } finally {
                 connection.autoCommit = true
             }
-            return loadUser(connection, targetUserId) ?: throw CompanySelfException("Usuario no encontrado.")
+            return loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
     }
 
@@ -361,21 +372,21 @@ class CompanySelfService(
         val targetUserId = try {
             UUID.fromString(userId)
         } catch (_: IllegalArgumentException) {
-            throw CompanySelfException("Usuario invalido.")
+            throw CompanySelfException(tr("Usuario invalido."))
         }
         val username = request.username.trim()
         val displayName = request.displayName.trim()
         val email = request.email.trim()
         val password = request.password
         if (!postgresRolePattern.matches(username)) {
-            throw CompanySelfException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+            throw CompanySelfException(tr("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
         }
-        UserProfileRules.problem(displayName, email)?.let { throw CompanySelfException("Usuario: $it") }
+        UserProfileRules.problem(displayName, email)?.let { throw CompanySelfException(tr("Usuario: {0}", it)) }
         if (password.isNotEmpty() && password.length < 12) {
-            throw CompanySelfException("La contrasena del usuario debe tener al menos 12 caracteres.")
+            throw CompanySelfException(tr("La contrasena del usuario debe tener al menos 12 caracteres."))
         }
         if (targetUserId == context.businessOwnerUserId) {
-            val editor = ownerEditor ?: throw CompanySelfException("El business owner no se puede editar en este servidor.")
+            val editor = ownerEditor ?: throw CompanySelfException(tr("El business owner no se puede editar en este servidor."))
             // El business owner cambia SU PROPIO correo: exige la contrasena actual (misma regla que /auth/profile).
             val storedEmail = tenantConnection(context.tenant).use { connection ->
                 connection.prepareStatement("SELECT email FROM application_users WHERE id = ?").use { query ->
@@ -390,7 +401,7 @@ class CompanySelfService(
                 val role = context.businessOwnerRole.orEmpty()
                 PasswordConfirmation.require(
                     request.currentPassword, passwordAttempts, "${context.companyCode}/$role",
-                    "Escribe tu contrasena actual para cambiar el correo o la contrasena.",
+                    tr("Escribe tu contrasena actual para cambiar el correo o la contrasena."),
                 ) { current -> verifyOwnerPassword?.invoke(context.companyCode, role, current) ?: false }
             }
             if (sensitiveChange) {
@@ -408,7 +419,7 @@ class CompanySelfService(
             }
             editor(context.companyCode, UpdateBusinessOwnerRequest(username, displayName, email, password))
             return tenantConnection(context.tenant).use { connection -> loadUser(connection, targetUserId) }
-                ?: throw CompanySelfException("Usuario no encontrado.")
+                ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
         tenantConnection(context.tenant).use { connection ->
             syncPermissionCatalog(connection)
@@ -418,14 +429,14 @@ class CompanySelfService(
                 val current = connection.prepareStatement("SELECT postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
                     query.setObject(1, targetUserId)
                     query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
-                } ?: throw CompanySelfException("Usuario no encontrado.")
+                } ?: throw CompanySelfException(tr("Usuario no encontrado."))
                 if (connection.isBusinessOwner(targetUserId)) {
-                    throw CompanySelfException("Solo el business owner o el dueno del servidor pueden editar al business owner.")
+                    throw CompanySelfException(tr("Solo el business owner o el dueno del servidor pueden editar al business owner."))
                 }
                 if (username != current.first) {
-                    if (connection.existsUser(username)) throw CompanySelfException("Ya existe un usuario con ese nombre.")
+                    if (connection.existsUser(username)) throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
                     // Sign-in also accepts a PostgreSQL role's password for the same name.
-                    if (connection.existsRole(username)) throw CompanySelfException("Ese nombre de usuario esta reservado; elige otro.")
+                    if (connection.existsRole(username)) throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
                 }
                 connection.prepareStatement(
                     "UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?, is_active = ? WHERE id = ?"
@@ -471,7 +482,7 @@ class CompanySelfService(
             } finally {
                 connection.autoCommit = true
             }
-            return loadUser(connection, targetUserId) ?: throw CompanySelfException("Usuario no encontrado.")
+            return loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
     }
 
@@ -493,7 +504,7 @@ class CompanySelfService(
                     query.setString(1, code)
                     query.executeQuery().use { rows ->
                         if (!rows.next()) {
-                            throw CompanySelfException("El espacio del servidor aun no existe; activa un modulo para el servidor.")
+                            throw CompanySelfException(tr("El espacio del servidor aun no existe; activa un modulo para el servidor."))
                         }
                         rows.getString("database_name") to CompanyProfileResponse(
                             code = rows.getString("code"),
@@ -507,7 +518,7 @@ class CompanySelfService(
                 }
             }
             val tenant = loginDatabases.tenantConfig(workspace.first)
-                ?: throw CompanySelfException("El espacio del servidor no tiene conexion configurada.")
+                ?: throw CompanySelfException(tr("El espacio del servidor no tiene conexion configurada."))
             return BusinessOwnerContext(
                 companyCode = code,
                 databaseName = workspace.first,
@@ -552,7 +563,7 @@ class CompanySelfService(
             ).use { query ->
                 query.setString(1, code)
                 query.executeQuery().use { rows ->
-                    if (!rows.next()) throw CompanySelfException("Empresa no encontrada.")
+                    if (!rows.next()) throw CompanySelfException(tr("Empresa no encontrada."))
                     CompanyRow(
                         code = rows.getString("code"),
                         databaseName = rows.getString("database_name"),
@@ -570,7 +581,7 @@ class CompanySelfService(
         }
         // Comprueba la sesion dentro de la base tenant, no en la base central.
         val tenant = loginDatabases.tenantConfig(company.databaseName)
-            ?: throw CompanySelfException("La empresa no tiene conexion tenant configurada.")
+            ?: throw CompanySelfException(tr("La empresa no tiene conexion tenant configurada."))
         val tokenHash = tokenGenerator.hash(accessToken)
         val ownerUserId = tenantConnection(tenant).use { connection ->
             connection.prepareStatement(
@@ -587,7 +598,7 @@ class CompanySelfService(
             ).use { query ->
                 query.setString(1, tokenHash)
                 query.executeQuery().use { rows ->
-                    if (!rows.next()) throw CompanySelfException("Debes iniciar sesion como business_owner.")
+                    if (!rows.next()) throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
                     rows.getObject("id", UUID::class.java) to rows.getString("postgres_role")
                 }
             }
@@ -644,8 +655,9 @@ class CompanySelfService(
                             CompanyPermissionResponse(
                                 permissionId = rows.getString("permission_id"),
                                 moduleId = rows.getString("module_id"),
-                                title = rows.getString("title"),
-                                description = rows.getString("description"),
+                                // Stored in Spanish from the module definitions; shown in the user's language.
+                                title = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("title")),
+                                description = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("description")),
                             )
                         )
                     }
@@ -700,7 +712,7 @@ class CompanySelfService(
         val known = loadPermissions(connection).map { it.permissionId }.toSet()
         val unknown = permissions.toSet() - known
         if (unknown.isNotEmpty()) {
-            throw CompanySelfException("Permisos no reconocidos: ${unknown.joinToString()}.")
+            throw CompanySelfException(tr("Permisos no reconocidos: {0}.", unknown.joinToString()))
         }
     }
 
@@ -756,7 +768,7 @@ class CompanySelfService(
     // Rechaza nombres que no sigan el formato generado por el servidor.
     private fun validateBackupName(fileName: String) {
         if (!backupNamePattern.matches(fileName)) {
-            throw CompanySelfException("Nombre de backup invalido.")
+            throw CompanySelfException(tr("Nombre de backup invalido."))
         }
     }
 
@@ -764,7 +776,7 @@ class CompanySelfService(
     private fun validateZip(bytes: ByteArray) {
         ZipInputStream(bytes.inputStream()).use { zip ->
             if (zip.nextEntry == null) {
-                throw CompanySelfException("El archivo ZIP esta vacio.")
+                throw CompanySelfException(tr("El archivo ZIP esta vacio."))
             }
         }
     }

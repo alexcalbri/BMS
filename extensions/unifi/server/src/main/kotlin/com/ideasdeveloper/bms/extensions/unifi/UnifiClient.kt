@@ -3,6 +3,8 @@ package com.ideasdeveloper.bms.extensions.unifi
 import com.ideasdeveloper.bms.modules.hotspot.ConnectedGuest
 import com.ideasdeveloper.bms.modules.hotspot.GuestAuthorization
 import com.ideasdeveloper.bms.modules.hotspot.HotspotSettings
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -49,7 +51,11 @@ object UnifiClient {
      * that brings the guest to the portal is not signed, so the network it claims is checked
      * against the one UniFi reports before letting the device in.
      */
-    fun authorizeGuest(settings: HotspotSettings, mac: String, ssid: String): GuestAuthorization {
+    // The result message is stored (hotspot_accesses.unifi_message), so it is always built in Spanish.
+    fun authorizeGuest(settings: HotspotSettings, mac: String, ssid: String): GuestAuthorization =
+        I18n.withLanguage(I18n.Source) { authorize(settings, mac, ssid) }
+
+    private fun authorize(settings: HotspotSettings, mac: String, ssid: String): GuestAuthorization {
         if (!settings.unifiConfigured) return GuestAuthorization(false, "UniFi no esta configurado.")
         // Both ids were validated against [A-Za-z0-9:._-]; the console id keeps its ':' as UniFi shows it.
         val base = "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}" +
@@ -92,7 +98,11 @@ object UnifiClient {
     }
 
     /** Removes the guest access of [mac]; a device that is no longer connected has nothing to remove. */
-    fun unauthorizeGuest(settings: HotspotSettings, mac: String): GuestAuthorization {
+    // Stored like [authorizeGuest] (unifi_message): Spanish whatever the viewer's language.
+    fun unauthorizeGuest(settings: HotspotSettings, mac: String): GuestAuthorization =
+        I18n.withLanguage(I18n.Source) { unauthorize(settings, mac) }
+
+    private fun unauthorize(settings: HotspotSettings, mac: String): GuestAuthorization {
         if (!settings.unifiConfigured) return GuestAuthorization(false, "UniFi no esta configurado.")
         val base = "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}" +
             "/proxy/network/integration/v1/sites/${settings.unifiSiteId}"
@@ -178,16 +188,16 @@ object UnifiClient {
         val response = try {
             send(HttpRequest.newBuilder(URI.create(url)).header("Accept", "application/json").header("X-API-Key", apiKey).GET())
         } catch (failure: Exception) {
-            throw UnifiException("No se pudo contactar UniFi: ${failure.message}")
+            throw UnifiException(tr("No se pudo contactar UniFi: {0}", failure.message))
         }
         when (response.statusCode()) {
             200 -> Unit
-            401, 403 -> throw UnifiException("UniFi rechazo la API key (HTTP ${response.statusCode()}). Revisa que sea valida y tenga acceso a la consola.")
-            404 -> throw UnifiException("UniFi no encontro la consola o la funcion pedida (HTTP 404). Las redes WiFi requieren UniFi Network 10 o superior.")
-            else -> throw UnifiException("UniFi respondio HTTP ${response.statusCode()}: ${response.body().take(300)}")
+            401, 403 -> throw UnifiException(tr("UniFi rechazo la API key (HTTP {0}). Revisa que sea valida y tenga acceso a la consola.", response.statusCode()))
+            404 -> throw UnifiException(tr("UniFi no encontro la consola o la funcion pedida (HTTP 404). Las redes WiFi requieren UniFi Network 10 o superior."))
+            else -> throw UnifiException(tr("UniFi respondio HTTP {0}: {1}", response.statusCode(), response.body().take(300)))
         }
         return runCatching { Json.parseToJsonElement(response.body()).jsonObject }
-            .getOrElse { throw UnifiException("UniFi devolvio una respuesta que no se pudo leer.") }
+            .getOrElse { throw UnifiException(tr("UniFi devolvio una respuesta que no se pudo leer.")) }
     }
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
@@ -221,12 +231,12 @@ object UnifiClient {
     private fun siteReference(apiKey: String, consoleId: String, siteId: String): String =
         siteReferences["$consoleId/$siteId"] ?: (
             sites(apiKey, consoleId).firstOrNull { it.id == siteId }?.reference?.takeIf { it.isNotBlank() }
-                ?: throw UnifiException("El sitio de UniFi configurado no aparece en la consola.")
+                ?: throw UnifiException(tr("El sitio de UniFi configurado no aparece en la consola."))
             ).also { siteReferences["$consoleId/$siteId"] = it }
 
     /** Guest devices connected to the site now. Throws [UnifiException] when UniFi cannot be asked. */
     fun connectedGuests(settings: HotspotSettings): List<ConnectedGuest> {
-        if (!settings.unifiConfigured) throw UnifiException("UniFi no esta configurado.")
+        if (!settings.unifiConfigured) throw UnifiException(tr("UniFi no esta configurado."))
         // Copia local: HotspotSettings es de otro modulo y el compilador no puede afinar el tipo de su propiedad.
         val apiKey = settings.unifiApiKey!!
         val reference = siteReference(apiKey, settings.unifiConsoleId!!, settings.unifiSiteId!!)
@@ -234,7 +244,7 @@ object UnifiClient {
             "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}/proxy/network/api/s/${encode(reference)}/stat/sta",
             apiKey,
         )
-        if ((page["meta"] as? JsonObject)?.string("rc") != "ok") throw UnifiException("UniFi no devolvio los dispositivos conectados.")
+        if ((page["meta"] as? JsonObject)?.string("rc") != "ok") throw UnifiException(tr("UniFi no devolvio los dispositivos conectados."))
         return parseGuests(page)
     }
 

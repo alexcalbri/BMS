@@ -5,6 +5,8 @@ import com.ideasdeveloper.bms.modules.crm.CrmExtensions
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmImportKind
 import com.ideasdeveloper.bms.modules.crm.CrmImportTarget
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.util.UUID
 
@@ -17,10 +19,10 @@ object InmobiliariaMondayService {
     fun unavailableReason(tenant: Connection): String? {
         CrmHost.extensionInactiveReason(tenant, InmobiliariaMondayServerExtension.ExtensionId)?.let { return it }
         if (!CrmHost.extensionEnabled(tenant, InmobiliariaMondayServerExtension.TargetId)) {
-            return "Para importar necesitas la extension ${CrmExtensions.displayName(InmobiliariaMondayServerExtension.TargetId)} activa en esta empresa (Empresa > Extensiones)."
+            return tr("Para importar necesitas la extension {0} activa en esta empresa (Empresa > Extensiones).", CrmExtensions.displayName(InmobiliariaMondayServerExtension.TargetId))
         }
         if (InmobiliariaMondayRunner.target(tenant) == null) {
-            return "La extension Inmobiliaria instalada no admite importaciones; actualizala desde Empresa > Extensiones."
+            return tr("La extension Inmobiliaria instalada no admite importaciones; actualizala desde Empresa > Extensiones.")
         }
         return null
     }
@@ -28,12 +30,12 @@ object InmobiliariaMondayService {
     /** El destino listo para importar o el error que explica por que no. */
     fun requireTarget(tenant: Connection): CrmImportTarget {
         unavailableReason(tenant)?.let { throw InmobiliariaMondayException(it) }
-        return InmobiliariaMondayRunner.target(tenant) ?: throw InmobiliariaMondayException("La extension Inmobiliaria no esta disponible.")
+        return InmobiliariaMondayRunner.target(tenant) ?: throw InmobiliariaMondayException(tr("La extension Inmobiliaria no esta disponible."))
     }
 
     fun kind(tenant: Connection, kindId: String): CrmImportKind =
         InmobiliariaMondayRunner.kindOf(requireTarget(tenant), kindId)
-            ?: throw InmobiliariaMondayException("La extension Inmobiliaria no importa registros de tipo '${kindId.take(40)}'.")
+            ?: throw InmobiliariaMondayException(tr("La extension Inmobiliaria no importa registros de tipo '{0}'.", kindId.take(40)))
 
     /** Guarda el token; guardarlo exige la extension activa, borrarlo (null) siempre se puede. */
     fun saveToken(tenant: Connection, token: String?) {
@@ -45,7 +47,7 @@ object InmobiliariaMondayService {
 
     /** Boards de monday con el token guardado. */
     fun boards(tenant: Connection): List<MondayBoard> {
-        val token = token(tenant) ?: throw InmobiliariaMondayException("Guarda primero el token de la API de monday.")
+        val token = token(tenant) ?: throw InmobiliariaMondayException(tr("Guarda primero el token de la API de monday."))
         return InmobiliariaMondayClient.boards(token)
     }
 
@@ -55,20 +57,20 @@ object InmobiliariaMondayService {
      */
     fun start(tenant: Connection, actor: CrmActor, boardId: String, boardName: String, kindId: String, newListings: Boolean, mapping: Map<String, String>): UUID {
         val importKind = kind(tenant, kindId)
-        if (token(tenant) == null) throw InmobiliariaMondayException("Guarda primero el token de la API de monday.")
-        if (!InmobiliariaMondayClient.validBoardId(boardId)) throw InmobiliariaMondayException("Elige un tablero.")
-        if (InmobiliariaMondayStore.busy(tenant)) throw InmobiliariaMondayException(InmobiliariaMondayStore.AlreadyActive)
+        if (token(tenant) == null) throw InmobiliariaMondayException(tr("Guarda primero el token de la API de monday."))
+        if (!InmobiliariaMondayClient.validBoardId(boardId)) throw InmobiliariaMondayException(tr("Elige un tablero."))
+        if (InmobiliariaMondayStore.busy(tenant)) throw InmobiliariaMondayException(tr(InmobiliariaMondayStore.AlreadyActive))
         // Las columnas aun no se conocen: aqui solo se comprueba que los campos existan y no se repitan.
         val clean = MondayMapping.checkMapping(importKind, mapping.keys.map { MondayColumn("", it, "") }, mapping)
         return InmobiliariaMondayStore.create(tenant, boardId, boardName, kindId, newListings && kindId == MondayMapping.KindProperty, clean, actor.userId, actor.name)
     }
 
-    fun job(tenant: Connection, id: UUID): MondayJob = InmobiliariaMondayStore.find(tenant, id) ?: throw InmobiliariaMondayException("Esa importacion ya no existe.")
+    fun job(tenant: Connection, id: UUID): MondayJob = InmobiliariaMondayStore.find(tenant, id) ?: throw InmobiliariaMondayException(tr("Esa importacion ya no existe."))
 
     /** Guarda el mapeo de una importacion lista (o leyendo, para el caso de agentes que lo envian al aplicar). */
     fun saveMapping(tenant: Connection, id: UUID, mapping: Map<String, String>): MondayJob {
         val job = job(tenant, id)
-        if (job.state != MondayJobState.Ready) throw InmobiliariaMondayException("El mapeo solo se cambia cuando la lectura termino y antes de aplicar.")
+        if (job.state != MondayJobState.Ready) throw InmobiliariaMondayException(tr("El mapeo solo se cambia cuando la lectura termino y antes de aplicar."))
         val clean = MondayMapping.checkMapping(kind(tenant, job.kind), job.columns, mapping)
         InmobiliariaMondayStore.setMapping(tenant, id, clean)
         return job.copy(mapping = clean)
@@ -81,12 +83,12 @@ object InmobiliariaMondayService {
      */
     fun apply(tenant: Connection, actor: CrmActor, id: UUID) {
         val job = job(tenant, id)
-        if (job.state != MondayJobState.Ready) throw InmobiliariaMondayException("La importacion no esta lista para aplicar (estado: ${job.state}).")
+        if (job.state != MondayJobState.Ready) throw InmobiliariaMondayException(tr("La importacion no esta lista para aplicar (estado: {0}).", job.state))
         val missing = MondayMapping.missingRequired(kind(tenant, job.kind), job.mapping)
-        if (missing.isNotEmpty()) throw InmobiliariaMondayException("Falta mapear: ${missing.joinToString()}.")
-        if (job.kind == MondayMapping.KindDeal && !propertiesImported(tenant)) throw InmobiliariaMondayException(PropertiesFirst)
+        if (missing.isNotEmpty()) throw InmobiliariaMondayException(tr("Falta mapear: {0}.", missing.joinToString { tr(it) }))
+        if (job.kind == MondayMapping.KindDeal && !propertiesImported(tenant)) throw InmobiliariaMondayException(tr(PropertiesFirst))
         if (!InmobiliariaMondayStore.startApplying(tenant, id, actor.userId, actor.name)) {
-            throw InmobiliariaMondayException("La importacion cambio de estado; revisa la pantalla.")
+            throw InmobiliariaMondayException(tr("La importacion cambio de estado; revisa la pantalla."))
         }
     }
 
@@ -94,7 +96,7 @@ object InmobiliariaMondayService {
     private fun propertiesImported(tenant: Connection): Boolean =
         InmobiliariaMondayStore.hasDoneJob(tenant, MondayMapping.KindProperty) || InmobiliariaMondayStore.hasImportedProperties(tenant)
 
-    const val PropertiesFirst = "Importa primero las propiedades."
+    val PropertiesFirst = msg("Importa primero las propiedades.")
 
     /** Cancela: leyendo o lista se descarta con sus filas; aplicando se detiene y queda lista para aplicar lo pendiente. */
     fun cancel(tenant: Connection, id: UUID): String {
@@ -102,11 +104,11 @@ object InmobiliariaMondayService {
         return when (job.state) {
             MondayJobState.Applying -> {
                 InmobiliariaMondayStore.transition(tenant, id, MondayJobState.Applying, MondayJobState.Ready)
-                "Se detuvo la aplicacion; lo ya aplicado se conserva y puedes seguir con lo pendiente."
+                tr("Se detuvo la aplicacion; lo ya aplicado se conserva y puedes seguir con lo pendiente.")
             }
             else -> {
                 InmobiliariaMondayStore.delete(tenant, id)
-                "Importacion descartada."
+                tr("Importacion descartada.")
             }
         }
     }
@@ -114,7 +116,7 @@ object InmobiliariaMondayService {
     /** Descarta una importacion terminada o fallida (los datos ya importados quedan en Inmobiliaria). */
     fun discard(tenant: Connection, id: UUID) {
         val job = job(tenant, id)
-        if (job.state == MondayJobState.Applying) throw InmobiliariaMondayException("Cancela primero la aplicacion.")
+        if (job.state == MondayJobState.Applying) throw InmobiliariaMondayException(tr("Cancela primero la aplicacion."))
         InmobiliariaMondayStore.delete(tenant, id)
     }
 }

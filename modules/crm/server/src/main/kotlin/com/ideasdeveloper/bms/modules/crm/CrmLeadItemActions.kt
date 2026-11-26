@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 
 /**
@@ -9,7 +11,7 @@ import java.sql.Connection
 class CrmActionNotice(message: String, val warning: Boolean = false) : Exception(message)
 
 /** Aviso cuando la extensión de Cloudbeds no está instalada y alguien pide algo de ella. */
-const val CrmCloudbedsMissing = "La integración de Cloudbeds no está instalada."
+val CrmCloudbedsMissing = msg("La integración de Cloudbeds no está instalada.")
 
 /**
  * Integration actions on a lead's items, shared by the screens and the agent tools so both follow
@@ -20,10 +22,10 @@ object CrmLeadItemActions {
     /** Marks a website property as sold on the site and in the lead, and wins the lead. [values]: price, date. */
     fun markSold(context: CrmScreens.Context, lead: CrmLead, item: CrmItem, values: Map<String, String>, actor: CrmActor): String {
         val tenant = context.tenant
-        if (item.source != WordPressPluginInfo.Source) throw CrmActionNotice("Solo las propiedades del sitio se cierran asi.", warning = true)
+        if (item.source != WordPressPluginInfo.Source) throw CrmActionNotice(tr("Solo las propiedades del sitio se cierran asi."), warning = true)
         val price = values["price"].orEmpty().trim().ifEmpty { null }?.let {
             it.replace(",", "").toBigDecimalOrNull()?.takeIf { value -> value.signum() >= 0 }
-                ?: throw CrmActionNotice("El precio debe ser un numero positivo.")
+                ?: throw CrmActionNotice(tr("El precio debe ser un numero positivo."))
         }
         val date = try {
             CrmWordPressScreens.saleDate(values["date"], context.today)
@@ -33,13 +35,13 @@ object CrmLeadItemActions {
         try {
             CrmHost.wordpressMarkSold(tenant, item.externalId.toLong(), price, date)
         } catch (failure: CrmWordPressException) {
-            throw CrmActionNotice("La venta no se cerro: ${failure.message}")
+            throw CrmActionNotice(tr("La venta no se cerro: {0}", failure.message))
         }
         CrmItems.setStatus(tenant, item, "sold", price ?: item.price)
         CrmRepository.addActivity(tenant, lead.id, "item", "Venta cerrada: ${item.title}${price?.let { " por ${it.toPlainString()}" }.orEmpty()} el $date. Marcada como vendida en el sitio.", actor)
         // The lead is won: first won stage of the pipeline.
         context.stages.firstOrNull { it.kind == StageKind.Won }?.takeIf { lead.archivedAt == null }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
-        return "Venta cerrada y propiedad marcada como vendida."
+        return tr("Venta cerrada y propiedad marcada como vendida.")
     }
 
     /**
@@ -50,7 +52,7 @@ object CrmLeadItemActions {
         cloudbeds().assignRoom(CrmHost, context.tenant, lead, params, actor, context.today).message
 
     /** El proveedor de Cloudbeds; sin la extensión instalada avisa con un [CrmActionNotice] en vez de romper. */
-    private fun cloudbeds(): CloudbedsProvider = CrmModuleExtensions.cloudbeds() ?: throw CrmActionNotice(CrmCloudbedsMissing, warning = true)
+    private fun cloudbeds(): CloudbedsProvider = CrmModuleExtensions.cloudbeds() ?: throw CrmActionNotice(tr(CrmCloudbedsMissing), warning = true)
 
     /** Result of a reservation: the message and whether the user should check something in Cloudbeds. */
     data class Reservation(val message: String, val warning: Boolean)

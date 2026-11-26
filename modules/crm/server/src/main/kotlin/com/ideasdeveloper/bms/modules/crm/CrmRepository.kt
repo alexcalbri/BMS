@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
@@ -64,7 +65,7 @@ object CrmRepository {
             statement.setString(3, input.tone.id)
             statement.setInt(4, input.position)
             statement.setObject(5, id ?: UUID.randomUUID())
-            if (statement.executeUpdate() != 1) throw CrmValidationException("Esa etapa ya no existe.")
+            if (statement.executeUpdate() != 1) throw CrmValidationException(tr("Esa etapa ya no existe."))
         }
         // Leads keep their closing date in line with the kind of the stage they are in.
         if (id != null) tenant.prepareStatement(
@@ -83,7 +84,7 @@ object CrmRepository {
 
     // Only stages without leads can be deleted, so no lead is left without a stage.
     fun deleteStage(tenant: Connection, id: UUID): Boolean {
-        if (stageLeadCount(tenant, id) > 0) throw CrmValidationException("Mueve primero los leads de esta etapa a otra.")
+        if (stageLeadCount(tenant, id) > 0) throw CrmValidationException(tr("Mueve primero los leads de esta etapa a otra."))
         return transaction(tenant) {
             // The exit automation forgets the stage; without stages left it is switched off.
             tenant.prepareStatement(
@@ -98,7 +99,7 @@ object CrmRepository {
 
     // Replaces every stage with a template. Only allowed while the company has no leads.
     fun applyTemplate(tenant: Connection, template: CrmTemplates.Template) = transaction(tenant) {
-        if (leadCount(tenant) > 0) throw CrmValidationException("Las plantillas solo se aplican mientras no hay leads.")
+        if (leadCount(tenant) > 0) throw CrmValidationException(tr("Las plantillas solo se aplican mientras no hay leads."))
         tenant.prepareStatement("DELETE FROM crm_stages").use { it.executeUpdate() }
         // The old stages are gone: the exit automation starts over.
         tenant.prepareStatement("UPDATE crm_settings SET exit_enabled = FALSE, exit_stage_ids = '{}' WHERE id = 1").use { it.executeUpdate() }
@@ -120,7 +121,7 @@ object CrmRepository {
         } else {
             tenant.prepareStatement("UPDATE crm_interests SET name = ? WHERE id = ?").use { it.setString(1, name); it.setObject(2, id); it.executeUpdate() }
         }
-        if (updated != 1) throw CrmValidationException("Ese interes ya no existe.")
+        if (updated != 1) throw CrmValidationException(tr("Ese interes ya no existe."))
     }
 
     // The leads of a deleted interest go back to the reception inbox.
@@ -618,7 +619,7 @@ object CrmRepository {
     /** [moveLead] without the automations; true when the lead really changed stage (or closed state). */
     private fun applyMove(tenant: Connection, lead: CrmLead, stage: CrmStage, stages: List<CrmStage>, actor: CrmActor): Boolean {
         // Archived leads sit outside the stages (a stage change would mix them back into the pipeline).
-        if (lead.archivedAt != null) throw CrmValidationException("Restaura el lead antes de moverlo.")
+        if (lead.archivedAt != null) throw CrmValidationException(tr("Restaura el lead antes de moverlo."))
         if (stage.id == lead.stageId && lead.closedAt == null == (stage.kind == StageKind.Open)) return false
         tenant.prepareStatement(
             """
@@ -674,7 +675,7 @@ object CrmRepository {
 
     fun activity(tenant: Connection, leadId: UUID, limit: Int): List<CrmActivity> = tenant.prepareStatement(
         """
-        SELECT a.kind, a.body, fs.name, ts.name, a.author, a.created_at, a.id
+        SELECT a.kind, a.body, fs.name, ts.name, a.author, a.created_at, a.id, a.user_id
         FROM crm_activity a
         LEFT JOIN crm_stages fs ON fs.id = a.from_stage_id
         LEFT JOIN crm_stages ts ON ts.id = a.to_stage_id
@@ -688,7 +689,7 @@ object CrmRepository {
         query.executeQuery().use { rows ->
             buildList {
                 while (rows.next()) add(
-                    CrmActivity(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getTimestamp(6).toInstant(), rows.getObject(7, UUID::class.java))
+                    CrmActivity(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getTimestamp(6).toInstant(), rows.getObject(7, UUID::class.java), rows.getObject(8, UUID::class.java))
                 )
             }
         }

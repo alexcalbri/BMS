@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -18,18 +20,18 @@ import java.util.UUID
 
 /** Types a custom lead field can have: the form field types of the app ([uiType]). */
 enum class CrmFieldType(val id: String, val label: String) {
-    Text("text", "Texto"),
-    Textarea("textarea", "Texto largo"),
-    Number("number", "Numero"),
-    Email("email", "Correo"),
-    Phone("phone", "Telefono"),
-    Url("url", "Enlace"),
-    Date("date", "Fecha"),
-    Boolean("boolean", "Si / No"),
-    Dropdown("dropdown", "Lista desplegable"),
-    Files("files", "Archivos y carpetas"),
+    Text("text", msg("Texto")),
+    Textarea("textarea", msg("Texto largo")),
+    Number("number", msg("Numero")),
+    Email("email", msg("Correo")),
+    Phone("phone", msg("Telefono")),
+    Url("url", msg("Enlace")),
+    Date("date", msg("Fecha")),
+    Boolean("boolean", msg("Si / No")),
+    Dropdown("dropdown", msg("Lista desplegable")),
+    Files("files", msg("Archivos y carpetas")),
     // Not a value: a button of the lead detail that sends a template or runs manual automations (see CrmButtons).
-    Button("button", "Boton");
+    Button("button", msg("Boton"));
 
     val uiType get() = id
 
@@ -68,8 +70,8 @@ data class CrmFieldInput(
 object CrmFields {
     // Built-in attachments field of every lead.
     const val Documents = "documents"
-    const val DocumentsLabel = "Documentos"
-    const val Section = "Campos personalizados"
+    val DocumentsLabel = msg("Documentos")
+    val Section = msg("Campos personalizados")
     private const val MaxFields = 60
     private const val MaxOptions = 100
 
@@ -97,10 +99,10 @@ object CrmFields {
 
     /** Creates ([id] null) or edits a field. The type of an existing field never changes. */
     fun save(tenant: Connection, id: UUID?, input: CrmFieldInput, existing: List<CrmField>): CrmField {
-        if (existing.any { it.label.equals(input.label, ignoreCase = true) && it.id != id }) throw CrmValidationException("Ya existe el campo ${input.label}.")
+        if (existing.any { it.label.equals(input.label, ignoreCase = true) && it.id != id }) throw CrmValidationException(tr("Ya existe el campo {0}.", input.label))
         val options = JsonArray(input.options.map { JsonPrimitive(it) }).toString()
         if (id == null) {
-            if (existing.size >= MaxFields) throw CrmValidationException("El CRM admite hasta $MaxFields campos personalizados.")
+            if (existing.size >= MaxFields) throw CrmValidationException(tr("El CRM admite hasta {0} campos personalizados.", MaxFields))
             val field = CrmField(UUID.randomUUID(), uniqueKey(input.label, existing.map { it.key }.toSet()), input.label, input.type, input.options, input.multiple, input.required, input.position, input.sectionId, input.config)
             tenant.prepareStatement(
                 "INSERT INTO crm_field_definitions (id, field_key, label, field_type, options, multiple, required, position, section_id, config) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, CAST(? AS jsonb))"
@@ -119,7 +121,7 @@ object CrmFields {
             }
             return field
         }
-        val current = existing.firstOrNull { it.id == id } ?: throw CrmValidationException("Ese campo ya no existe.")
+        val current = existing.firstOrNull { it.id == id } ?: throw CrmValidationException(tr("Ese campo ya no existe."))
         tenant.prepareStatement(
             "UPDATE crm_field_definitions SET label = ?, options = CAST(? AS jsonb), multiple = ?, required = ?, position = ?, section_id = ?, config = CAST(? AS jsonb) WHERE id = ?"
         ).use { update ->
@@ -191,21 +193,21 @@ object CrmFields {
         manualAutomations: List<CrmAutomation> = emptyList(),
     ): CrmFieldInput {
         val label = values["label"].orEmpty().trim()
-        if (label.isEmpty()) throw CrmValidationException("Escribe el nombre del campo.")
-        if (label.length > 80) throw CrmValidationException("El nombre admite hasta 80 caracteres.")
-        val type = editing?.type ?: CrmFieldType.byLabel(values["type"].orEmpty()) ?: throw CrmValidationException("Elige el tipo del campo.")
+        if (label.isEmpty()) throw CrmValidationException(tr("Escribe el nombre del campo."))
+        if (label.length > 80) throw CrmValidationException(tr("El nombre admite hasta 80 caracteres."))
+        val type = editing?.type ?: CrmFieldType.byLabel(values["type"].orEmpty()) ?: throw CrmValidationException(tr("Elige el tipo del campo."))
         val options = if (type == CrmFieldType.Dropdown) {
             values["options"].orEmpty().lines().map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { it.lowercase() }
         } else emptyList()
-        if (type == CrmFieldType.Dropdown && options.isEmpty()) throw CrmValidationException("Escribe las opciones de la lista, una por linea.")
-        if (options.size > MaxOptions) throw CrmValidationException("La lista admite hasta $MaxOptions opciones.")
-        options.firstOrNull { it.length > 120 }?.let { throw CrmValidationException("Cada opcion admite hasta 120 caracteres.") }
+        if (type == CrmFieldType.Dropdown && options.isEmpty()) throw CrmValidationException(tr("Escribe las opciones de la lista, una por linea."))
+        if (options.size > MaxOptions) throw CrmValidationException(tr("La lista admite hasta {0} opciones.", MaxOptions))
+        options.firstOrNull { it.length > 120 }?.let { throw CrmValidationException(tr("Cada opcion admite hasta 120 caracteres.")) }
         val position = values["position"].orEmpty().trim().ifEmpty { "0" }.toIntOrNull()?.takeIf { it in 0..999 }
-            ?: throw CrmValidationException("La posicion debe ser un numero de 0 a 999.")
+            ?: throw CrmValidationException(tr("La posicion debe ser un numero de 0 a 999."))
         // "section" is the name of a section; empty or "Campos personalizados": no section.
         val sectionName = values["section"].orEmpty().trim()
         val section = if (sectionName.isEmpty() || sectionName == Section) null
-            else sections.firstOrNull { it.name == sectionName } ?: throw CrmValidationException("Esa seccion ya no existe.")
+            else sections.firstOrNull { it.name == sectionName } ?: throw CrmValidationException(tr("Esa seccion ya no existe."))
         return CrmFieldInput(
             label = label,
             type = type,
@@ -248,8 +250,8 @@ object CrmFields {
                         is JsonPrimitive -> setOfNotNull(previous.contentOrNull)
                         else -> emptySet()
                     }
-                    chosen.firstOrNull { it !in field.options && it !in kept }?.let { throw CrmValidationException("$label: la opcion $it no existe.") }
-                    if (!field.multiple && chosen.size > 1) throw CrmValidationException("$label admite una sola opcion.")
+                    chosen.firstOrNull { it !in field.options && it !in kept }?.let { throw CrmValidationException(tr("{0}: la opcion {1} no existe.", label, it)) }
+                    if (!field.multiple && chosen.size > 1) throw CrmValidationException(tr("{0} admite una sola opcion.", label))
                     when {
                         chosen.isEmpty() -> null
                         field.multiple -> JsonArray(chosen.map { JsonPrimitive(it) })
@@ -258,7 +260,7 @@ object CrmFields {
                 }
                 else -> raw.takeIf { it.isNotEmpty() }?.let { text -> JsonPrimitive(validText(field, text)) }
             }
-            if (field.required && value == null) throw CrmValidationException("Completa el campo $label.")
+            if (field.required && value == null) throw CrmValidationException(tr("Completa el campo {0}.", label))
             put(field.key, value)
         }
     }
@@ -266,13 +268,13 @@ object CrmFields {
     private fun validText(field: CrmField, text: String): String {
         val label = field.label
         val max = if (field.type == CrmFieldType.Textarea) 5000 else 500
-        if (text.length > max) throw CrmValidationException("$label admite hasta $max caracteres.")
+        if (text.length > max) throw CrmValidationException(tr("{0} admite hasta {1} caracteres.", label, max))
         when (field.type) {
             CrmFieldType.Number -> text.replace(',', '.').toBigDecimalOrNull()?.let { return it.stripTrailingZeros().toPlainString() }
-                ?: throw CrmValidationException("$label debe ser un numero.")
-            CrmFieldType.Email -> if (!text.matches(Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))) throw CrmValidationException("$label: escribe un correo valido.")
-            CrmFieldType.Url -> if (!text.startsWith("https://") && !text.startsWith("http://")) throw CrmValidationException("$label: el enlace debe empezar con https://.")
-            CrmFieldType.Date -> runCatching { LocalDate.parse(text) }.getOrElse { throw CrmValidationException("$label: usa el formato AAAA-MM-DD.") }
+                ?: throw CrmValidationException(tr("{0} debe ser un numero.", label))
+            CrmFieldType.Email -> if (!text.matches(Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))) throw CrmValidationException(tr("{0}: escribe un correo valido.", label))
+            CrmFieldType.Url -> if (!text.startsWith("https://") && !text.startsWith("http://")) throw CrmValidationException(tr("{0}: el enlace debe empezar con https://.", label))
+            CrmFieldType.Date -> runCatching { LocalDate.parse(text) }.getOrElse { throw CrmValidationException(tr("{0}: usa el formato AAAA-MM-DD.", label)) }
             else -> Unit
         }
         return text
@@ -284,7 +286,7 @@ object CrmFields {
         return keys.filter { (key, _) -> key in values }.associate { (key, label) ->
             val ids = UiFieldValues.files(values[key].orEmpty()).mapNotNull { runCatching { UUID.fromString(it.id) }.getOrNull() }.distinct()
             val required = fields.firstOrNull { it.key == key }?.required == true
-            if (required && ids.isEmpty()) throw CrmValidationException("Adjunta al menos un archivo en $label.")
+            if (required && ids.isEmpty()) throw CrmValidationException(tr("Adjunta al menos un archivo en {0}.", label))
             key to ids
         }
     }

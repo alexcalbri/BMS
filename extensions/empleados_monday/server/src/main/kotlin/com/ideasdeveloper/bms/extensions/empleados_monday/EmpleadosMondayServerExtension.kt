@@ -15,6 +15,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.ui.UiNode
 import java.sql.Connection
@@ -37,8 +38,8 @@ object EmpleadosMondayServerExtension : ServerExtension, EmpleadosImportSource {
         module = "empleados",
         displayName = "Importacion de empleados desde monday",
         description = "Importa tableros de monday (por ejemplo un horario del equipo) como empleados, sedes y horarios habituales del modulo Empleados: lee el tablero con el token de la empresa y mapea sus columnas.",
-        version = "1.0.1",
-        minModuleVersion = "0.1.0",
+        version = "1.1.0",
+        minModuleVersion = "0.2.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/empleados_monday",
@@ -95,10 +96,10 @@ object EmpleadosMondayServerExtension : ServerExtension, EmpleadosImportSource {
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            UninstallItem(null, "Token de la API de monday (se borra)", count(tenant, "SELECT count(*) FROM ${EmpleadosMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
-            UninstallItem(HistoryOption, "Importaciones de monday (trabajos)", count(tenant, "SELECT count(*) FROM ${EmpleadosMondayJobs.JobsTable}"), UninstallDefault.Delete),
-            UninstallItem(HistoryOption, "Filas leidas de monday", count(tenant, "SELECT count(*) FROM ${EmpleadosMondayJobs.RowsTable}"), UninstallDefault.Delete),
-            UninstallItem(null, "Empleados importados (se conservan)", count(tenant, "SELECT count(*) FROM empleados_employees WHERE import_key LIKE 'monday:%'"), "keep"),
+            UninstallItem(null, tr("Token de la API de monday (se borra)"), count(tenant, "SELECT count(*) FROM ${EmpleadosMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
+            UninstallItem(HistoryOption, tr("Importaciones de monday (trabajos)"), count(tenant, "SELECT count(*) FROM ${EmpleadosMondayJobs.JobsTable}"), UninstallDefault.Delete),
+            UninstallItem(HistoryOption, tr("Filas leidas de monday"), count(tenant, "SELECT count(*) FROM ${EmpleadosMondayJobs.RowsTable}"), UninstallDefault.Delete),
+            UninstallItem(null, tr("Empleados importados (se conservan)"), count(tenant, "SELECT count(*) FROM empleados_employees WHERE import_key LIKE 'monday:%'"), "keep"),
         )
     }
 

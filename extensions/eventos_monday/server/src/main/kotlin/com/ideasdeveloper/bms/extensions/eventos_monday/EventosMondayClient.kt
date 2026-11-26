@@ -1,6 +1,9 @@
 package com.ideasdeveloper.bms.extensions.eventos_monday
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.net.PinnedHost
+import java.net.URI
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -8,7 +11,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import org.slf4j.LoggerFactory
-import java.net.URI
 
 data class MondayBoard(val id: String, val name: String, val workspace: String, val items: Int?)
 
@@ -24,7 +26,7 @@ data class MondayPage(val items: List<MondayItem>, val cursor: String)
  * Authorization; ningun mensaje de error ni registro lo incluye. Aqui no hay archivos ni subelementos.
  */
 object EventosMondayClient {
-    const val MainWorkspace = "Espacio principal"
+    val MainWorkspace = msg("Espacio principal")
     const val MaxItems = 20_000
     const val PageSize = 25
     /** Tope de lectura de una respuesta: pasado esto se trata como complejidad y la pagina se reduce. */
@@ -153,14 +155,14 @@ object EventosMondayClient {
     // ---- Red ----
 
     private fun requireToken(token: String) {
-        if (token.isBlank()) throw EventosMondayException("Escribe el token de la API de monday.")
+        if (token.isBlank()) throw EventosMondayException(tr("Escribe el token de la API de monday."))
     }
 
     private fun requireBoard(boardId: String) {
-        if (!isBoardId(boardId)) throw EventosMondayException("El id del tablero debe ser un numero.")
+        if (!isBoardId(boardId)) throw EventosMondayException(tr("El id del tablero debe ser un numero."))
     }
 
-    private fun notFound(boardId: String) = EventosMondayException("monday no devolvio el tablero $boardId (revisa el id y los permisos del token).")
+    private fun notFound(boardId: String) = EventosMondayException(tr("monday no devolvio el tablero {0} (revisa el id y los permisos del token).", boardId))
 
     private fun query(token: String, query: String, deadline: Long? = null): JsonObject {
         val payload = JsonObject(mapOf("query" to JsonPrimitive(query))).toString().toByteArray(Charsets.UTF_8)
@@ -178,11 +180,11 @@ object EventosMondayClient {
         } catch (failure: Exception) {
             // Solo el tipo de fallo: el mensaje de la excepcion podria incluir la solicitud.
             log.warn("No se pudo contactar monday: {}", failure.javaClass.simpleName)
-            throw EventosMondayException("No se pudo contactar monday.", transient = true)
+            throw EventosMondayException(tr("No se pudo contactar monday."), transient = true)
         }
-        if (text.length > MaxBytes) throw EventosMondayException("monday respondio algo demasiado grande (mas de 5 MB).", kind = MondayErrorKind.TooLarge)
+        if (text.length > MaxBytes) throw EventosMondayException(tr("monday respondio algo demasiado grande (mas de 5 MB)."), kind = MondayErrorKind.TooLarge)
         val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
-        if (status == 401 || status == 403) throw EventosMondayException("monday rechazo el token.")
+        if (status == 401 || status == 403) throw EventosMondayException(tr("monday rechazo el token."))
         body?.get("errors").arr().firstOrNull()?.let {
             val code = it.obj()?.get("extensions").obj()?.get("code").str()
             val message = it.obj()?.get("message").str()
@@ -190,8 +192,8 @@ object EventosMondayClient {
             throw EventosMondayException("monday: ${message.take(EventosMondayReading.MaxMessage)}", transient = kind == MondayErrorKind.Transient, kind = kind)
         }
         if (status == 429 || status >= 500) {
-            throw EventosMondayException("monday respondio HTTP $status.", transient = true, kind = EventosMondayReading.classify(status, "", ""))
+            throw EventosMondayException(tr("monday respondio HTTP {0}.", status), transient = true, kind = EventosMondayReading.classify(status, "", ""))
         }
-        return body?.get("data").obj() ?: throw EventosMondayException("monday respondio HTTP $status.")
+        return body?.get("data").obj() ?: throw EventosMondayException(tr("monday respondio HTTP {0}.", status))
     }
 }

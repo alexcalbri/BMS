@@ -1,18 +1,13 @@
 package com.ideasdeveloper.bms.modules.membresia
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.McpTool
-import com.ideasdeveloper.bms.server.modules.ModuleJobContext
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
+import com.ideasdeveloper.bms.server.modules.ModuleJobContext
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiNode
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.sql.Connection
@@ -22,6 +17,12 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import org.slf4j.LoggerFactory
 
 /**
  * Una extension que importa miembros desde otra herramienta (por ejemplo Monday). El modulo pone la pantalla Importar,
@@ -156,15 +157,15 @@ object MembresiaImportApply {
     /** Resumen previo a aplicar: conteos, planes que se crean, campos de Clientes y problemas por fila. */
     fun summary(rows: List<ImportedMember>, existing: List<Plan>): ImportSummary {
         val problems = rows.flatMap { row ->
-            val who = row.name.trim().ifEmpty { "Fila ${row.key}" }
+            val who = row.name.trim().ifEmpty { tr("Fila {0}", row.key) }
             buildList {
-                if (row.name.isBlank()) add("$who: sin nombre.")
-                if (row.planName.isBlank()) add("$who: sin plan.")
-                if (row.startsOn == null || row.endsOn == null) add("$who: sin fechas de inicio y fin.")
-                else if (row.endsOn.isBefore(row.startsOn)) add("$who: el fin es anterior al inicio.")
+                if (row.name.isBlank()) add(tr("{0}: sin nombre.", who))
+                if (row.planName.isBlank()) add(tr("{0}: sin plan.", who))
+                if (row.startsOn == null || row.endsOn == null) add(tr("{0}: sin fechas de inicio y fin.", who))
+                else if (row.endsOn.isBefore(row.startsOn)) add(tr("{0}: el fin es anterior al inicio.", who))
             }
         }
-        val listed = if (problems.size > MaxProblemsListed) problems.take(MaxProblemsListed) + "y ${problems.size - MaxProblemsListed} problemas más." else problems
+        val listed = if (problems.size > MaxProblemsListed) problems.take(MaxProblemsListed) + tr("y {0} problemas más.", problems.size - MaxProblemsListed) else problems
         return ImportSummary(
             members = rows.size,
             newPlans = proposePlans(rows, existing),
@@ -308,19 +309,19 @@ object MembresiaImportApply {
         val name = row.name.trim()
         val startsOn = row.startsOn
         val endsOn = row.endsOn
-        if (name.isEmpty()) return ImportOutcome.Skipped("Sin nombre.")
-        if (startsOn == null || endsOn == null) return ImportOutcome.Skipped("Sin fechas de inicio y fin.")
-        if (row.key.isBlank() || row.key.length > 120) return ImportOutcome.Skipped("Clave de importación no válida.")
-        val plan = plans[planKey(row.planName)] ?: return ImportOutcome.Skipped("El plan \"${normalizePlanName(row.planName)}\" no existe.")
+        if (name.isEmpty()) return ImportOutcome.Skipped(tr("Sin nombre."))
+        if (startsOn == null || endsOn == null) return ImportOutcome.Skipped(tr("Sin fechas de inicio y fin."))
+        if (row.key.isBlank() || row.key.length > 120) return ImportOutcome.Skipped(tr("Clave de importación no válida."))
+        val plan = plans[planKey(row.planName)] ?: return ImportOutcome.Skipped(tr("El plan \"{0}\" no existe.", normalizePlanName(row.planName)))
         val dateErrors = MembresiaRules.validateDates(startsOn, endsOn, today, checkStart = false)
         if (dateErrors.isNotEmpty()) return ImportOutcome.Skipped(dateErrors.first())
         val amount = (row.amount ?: plan.price).setScale(2, RoundingMode.HALF_UP)
-        if (!MembresiaRules.validAmount(amount)) return ImportOutcome.Skipped("Monto fuera de rango.")
+        if (!MembresiaRules.validAmount(amount)) return ImportOutcome.Skipped(tr("Monto fuera de rango."))
 
         val applied = try {
             MembresiaRepository.inTransaction(tenant) { write(tenant, row, name, plan, fieldKeys, amount, startsOn, endsOn, author, today) }
         } catch (failure: MembresiaValidationException) {
-            return ImportOutcome.Skipped(failure.errors.firstOrNull() ?: "Fila no válida.")
+            return ImportOutcome.Skipped(failure.errors.firstOrNull() ?: tr("Fila no válida."))
         }
         if (applied.customerChanged) effect("avisar a Clientes del cliente ${applied.customerId}") { access.customerChanged(tenant, applied.customerId) }
         if (applied.isNew) {
@@ -381,7 +382,7 @@ object MembresiaImportApply {
             }
         }
         if (existing != null) {
-            if (!existing.third) throw MembresiaValidationException(listOf("El cliente ya no está disponible."))
+            if (!existing.third) throw MembresiaValidationException(listOf(tr("El cliente ya no está disponible.")))
             // Ya importada: no se toca nada de la membresia; solo visitas nuevas.
             importVisits(tenant, existing.first, existing.second, importKey, row.visits, author)
             return Applied(existing.first, existing.second, isNew = false, customerChanged = false)

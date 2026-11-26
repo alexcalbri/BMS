@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.session
 
+import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +34,8 @@ object SessionStore {
         expiresAt = TimeSource.Monotonic.markNow() + response.expiresInSeconds.seconds
         _expired.value = false
         _session.value = response
+        // El idioma del servidor (usuario o empresa) manda sobre el del dispositivo.
+        AppLanguage.applyServer(response.language, response.companyLanguage, response.userLanguage)
         if (keepSignedIn) {
             PersistentSessionStore.save(response)
         } else {

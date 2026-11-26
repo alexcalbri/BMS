@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
@@ -93,14 +94,14 @@ fun CompanyUsersSection(
         modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-    Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
+    Text(tr("Usuarios y permisos"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
     Text(description, color = AppTheme.colors.muted)
     // El alta es independiente de la lista: empieza cerrada para ver los usuarios primero.
-    CollapsibleSection("Nuevo usuario", primaryColor, subtitle = "Usuario, nombre, correo, contrasena y permisos") {
+    CollapsibleSection(tr("Nuevo usuario"), primaryColor, subtitle = tr("Usuario, nombre, correo, contrasena y permisos")) {
         OutlinedTextField(
             value = newUsername,
             onValueChange = { newUsername = it },
-            label = { Text("Usuario") },
+            label = { Text(tr("Usuario")) },
             singleLine = true,
             enabled = !isLoading,
             modifier = Modifier.fillMaxWidth(),
@@ -109,7 +110,7 @@ fun CompanyUsersSection(
         OutlinedTextField(
             value = newDisplayName,
             onValueChange = { newDisplayName = it },
-            label = { Text("Nombre completo") },
+            label = { Text(tr("Nombre completo")) },
             singleLine = true,
             enabled = !isLoading,
             modifier = Modifier.fillMaxWidth(),
@@ -117,7 +118,7 @@ fun CompanyUsersSection(
         OutlinedTextField(
             value = newEmail,
             onValueChange = { newEmail = it.trim() },
-            label = { Text("Correo") },
+            label = { Text(tr("Correo")) },
             singleLine = true,
             enabled = !isLoading,
             modifier = Modifier.fillMaxWidth(),
@@ -125,7 +126,7 @@ fun CompanyUsersSection(
         OutlinedTextField(
             value = newPassword,
             onValueChange = { newPassword = it },
-            label = { Text("Contrasena inicial") },
+            label = { Text(tr("Contrasena inicial")) },
             singleLine = true,
             enabled = !isLoading,
             modifier = Modifier.fillMaxWidth(),
@@ -178,7 +179,7 @@ fun CompanyUsersSection(
                         newDisplayName = ""
                         newEmail = ""
                         selectedPermissions = emptySet()
-                        message = "Usuario creado."
+                        message = tr("Usuario creado.")
                     } catch (exception: CompanyException) {
                         error = exception.message
                     } finally {
@@ -188,7 +189,7 @@ fun CompanyUsersSection(
             },
             colors = accentButtonColors(),
         ) {
-            Text("Crear usuario")
+            Text(tr("Crear usuario"))
         }
     }
     message?.let { Text(it, color = AppTheme.colors.success) }
@@ -204,9 +205,9 @@ fun CompanyUsersSection(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(user.displayName?.let { "$it (${user.username})" } ?: user.username, fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
-            Text(user.email ?: "Sin correo: lo completa al iniciar sesion", color = AppTheme.colors.muted)
-            if (user.userCode.isNotBlank()) CopyableCode(label = "Codigo de usuario", code = user.userCode)
-            Text(if (user.isActive) "Activo" else "Inactivo", color = AppTheme.colors.muted)
+            Text(user.email ?: tr("Sin correo: lo completa al iniciar sesion"), color = AppTheme.colors.muted)
+            if (user.userCode.isNotBlank()) CopyableCode(label = tr("Codigo de usuario"), code = user.userCode)
+            Text(if (user.isActive) tr("Activo") else tr("Inactivo"), color = AppTheme.colors.muted)
             if (editingUserId == user.userId) {
                 UserEditForm(
                     user = user,
@@ -230,9 +231,9 @@ fun CompanyUsersSection(
                                 users = users.map { if (it.userId == updated.userId) updated else it }
                                 editingUserId = null
                                 message = if (user.isBusinessOwner && request.password.isNotEmpty()) {
-                                    "Datos actualizados. Tus sesiones se cerraron: inicia sesion con la contrasena nueva."
+                                    tr("Datos actualizados. Tus sesiones se cerraron: inicia sesion con la contrasena nueva.")
                                 } else {
-                                    "Usuario actualizado."
+                                    tr("Usuario actualizado.")
                                 }
                             } catch (exception: CompanyException) {
                                 // Los errores de contrasena actual se muestran junto a su campo.
@@ -252,9 +253,9 @@ fun CompanyUsersSection(
             } else {
                 Text(
                     if (user.isBusinessOwner) {
-                        "Business owner: tiene todos los permisos"
+                        tr("Business owner: tiene todos los permisos")
                     } else {
-                        "Permisos: ${user.permissions.map { id -> permissionTitles[id] ?: id }.ifEmpty { listOf("sin permisos") }.joinToString()}"
+                        tr("Permisos: {0}", user.permissions.map { id -> permissionTitles[id] ?: id }.ifEmpty { listOf(tr("sin permisos")) }.joinToString())
                     },
                     color = AppTheme.colors.text,
                 )
@@ -267,7 +268,7 @@ fun CompanyUsersSection(
                         message = null
                     },
                 ) {
-                    Text("Editar")
+                    Text(tr("Editar"))
                 }
             }
         }
@@ -303,15 +304,15 @@ private fun UserEditForm(
         (!email.trim().equals(user.email.orEmpty().trim(), ignoreCase = true) || password.isNotEmpty() || currentPasswordError != null)
     val renamed = username.trim() != user.username
     val passwordProblem = when {
-        password.isNotEmpty() && password.length < 12 -> "Minimo 12 caracteres."
-        user.isBusinessOwner && renamed && password.isEmpty() -> "Para cambiar el usuario del business owner escribe una contrasena nueva."
+        password.isNotEmpty() && password.length < 12 -> tr("Minimo 12 caracteres.")
+        user.isBusinessOwner && renamed && password.isEmpty() -> tr("Para cambiar el usuario del business owner escribe una contrasena nueva.")
         else -> null
     }
 
     OutlinedTextField(
         value = username,
         onValueChange = { username = it.trim() },
-        label = { Text("Usuario") },
+        label = { Text(tr("Usuario")) },
         singleLine = true,
         enabled = !busy,
         modifier = Modifier.fillMaxWidth(),
@@ -319,7 +320,7 @@ private fun UserEditForm(
     OutlinedTextField(
         value = displayName,
         onValueChange = { displayName = it },
-        label = { Text("Nombre completo") },
+        label = { Text(tr("Nombre completo")) },
         singleLine = true,
         enabled = !busy,
         modifier = Modifier.fillMaxWidth(),
@@ -327,20 +328,20 @@ private fun UserEditForm(
     OutlinedTextField(
         value = email,
         onValueChange = { email = it.trim() },
-        label = { Text("Correo") },
+        label = { Text(tr("Correo")) },
         singleLine = true,
         enabled = !busy,
         modifier = Modifier.fillMaxWidth(),
     )
     if (needsCurrentPassword) {
-        Text("Para cambiar el correo o la contrasena, confirma tu contrasena actual.", color = AppTheme.colors.muted)
+        Text(tr("Para cambiar el correo o la contrasena, confirma tu contrasena actual."), color = AppTheme.colors.muted)
         OutlinedTextField(
             value = currentPassword,
             onValueChange = {
                 currentPassword = it
                 onCurrentPasswordEdited()
             },
-            label = { Text("Contrasena actual") },
+            label = { Text(tr("Contrasena actual")) },
             singleLine = true,
             enabled = !busy,
             visualTransformation = PasswordVisualTransformation(),
@@ -352,7 +353,7 @@ private fun UserEditForm(
     OutlinedTextField(
         value = password,
         onValueChange = { password = it },
-        label = { Text("Contrasena nueva") },
+        label = { Text(tr("Contrasena nueva")) },
         singleLine = true,
         enabled = !busy,
         visualTransformation = PasswordVisualTransformation(),
@@ -360,9 +361,9 @@ private fun UserEditForm(
         supportingText = {
             Text(
                 passwordProblem ?: if (user.isBusinessOwner) {
-                    "Vacia mantiene la actual. Si la cambias se cierran las sesiones del business owner en todas sus empresas."
+                    tr("Vacia mantiene la actual. Si la cambias se cierran las sesiones del business owner en todas sus empresas.")
                 } else {
-                    "Vacia mantiene la actual. Si la cambias se cierran las sesiones del usuario."
+                    tr("Vacia mantiene la actual. Si la cambias se cierran las sesiones del usuario.")
                 }
             )
         },
@@ -371,9 +372,9 @@ private fun UserEditForm(
     if (!user.isBusinessOwner) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = active, onCheckedChange = { active = it }, enabled = !busy)
-            Text(if (active) "Activo: puede iniciar sesion" else "Inactivo: no puede iniciar sesion", color = AppTheme.colors.text)
+            Text(if (active) tr("Activo: puede iniciar sesion") else tr("Inactivo: no puede iniciar sesion"), color = AppTheme.colors.text)
         }
-        Text("Permisos", fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
+        Text(tr("Permisos"), fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
         permissions.forEach { permission ->
             PermissionCheckbox(
                 permission = permission,
@@ -405,10 +406,10 @@ private fun UserEditForm(
             },
             colors = accentButtonColors(),
         ) {
-            Text("Guardar")
+            Text(tr("Guardar"))
         }
         OutlinedButton(enabled = !busy, onClick = onCancel) {
-            Text("Cancelar")
+            Text(tr("Cancelar"))
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.company.application
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.server.modules.CompanyFiles
 import com.ideasdeveloper.bms.server.security.ScramSha256
@@ -26,6 +27,8 @@ import com.ideasdeveloper.bms.server.modules.ModuleRegistry
 import com.ideasdeveloper.bms.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.bms.server.modules.RemoteModulePackage
 import com.ideasdeveloper.bms.ModuleVersion
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.GitHubLocation
 import com.ideasdeveloper.bms.server.modules.ModuleBuildException
 import com.ideasdeveloper.bms.server.modules.ModulePackageBuilder
@@ -89,17 +92,17 @@ class CompanyProvisioningService(
         val companyId = UUID.randomUUID()
 
         if (code == ServerWorkspace.Code) {
-            throw CompanyProvisioningException("El codigo ${ServerWorkspace.Code} esta reservado para el espacio del servidor.")
+            throw CompanyProvisioningException(tr("El codigo {0} esta reservado para el espacio del servidor.", ServerWorkspace.Code))
         }
         validate(code, companyName, ownerUsername, ownerPassword, request)
-        UserProfileRules.problem(ownerName, ownerEmail)?.let { throw CompanyProvisioningException("Business owner: $it") }
+        UserProfileRules.problem(ownerName, ownerEmail)?.let { throw CompanyProvisioningException(tr("Business owner: {0}", it)) }
 
         central.connection.use { connection ->
             if (connection.exists("companies", "code", code)) {
-                throw CompanyProvisioningException("Ya existe una empresa con ese codigo.")
+                throw CompanyProvisioningException(tr("Ya existe una empresa con ese codigo."))
             }
             if (connection.exists("companies", "database_name", databaseName)) {
-                throw CompanyProvisioningException("Ya existe una base de datos registrada para ese codigo.")
+                throw CompanyProvisioningException(tr("Ya existe una base de datos registrada para ese codigo."))
             }
         }
 
@@ -112,10 +115,10 @@ class CompanyProvisioningService(
             adminConnection(provisioningRole).use { admin ->
                 admin.autoCommit = true
                 if (admin.existsDatabase(databaseName)) {
-                    throw CompanyProvisioningException("La base de datos de la empresa ya existe.")
+                    throw CompanyProvisioningException(tr("La base de datos de la empresa ya existe."))
                 }
                 if (admin.existsRole(ownerUsername) || roleUsedInAnyCompany(ownerUsername)) {
-                    throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
+                    throw CompanyProvisioningException(tr("El usuario PostgreSQL del business owner ya existe."))
                 }
 
                 admin.createStatement().use { statement ->
@@ -246,18 +249,18 @@ class CompanyProvisioningService(
         val companyName = request.name.trim()
         val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (companyName.isBlank()) {
-            throw CompanyProvisioningException("El nombre de la empresa es obligatorio.")
+            throw CompanyProvisioningException(tr("El nombre de la empresa es obligatorio."))
         }
         if (!colorPattern.matches(request.primaryColor) ||
             !colorPattern.matches(request.secondaryColor) ||
             !colorPattern.matches(request.accentColor)
         ) {
-            throw CompanyProvisioningException("Los colores deben usar formato hexadecimal #RRGGBB.")
+            throw CompanyProvisioningException(tr("Los colores deben usar formato hexadecimal #RRGGBB."))
         }
 
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
-                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+                ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
 
         central.connection.use { connection ->
@@ -277,7 +280,7 @@ class CompanyProvisioningService(
                     update.setString(5, request.accentColor)
                     update.setString(6, normalizedCompanyCode)
                     if (update.executeUpdate() != 1) {
-                        throw CompanyProvisioningException("No se pudo actualizar la empresa.")
+                        throw CompanyProvisioningException(tr("No se pudo actualizar la empresa."))
                     }
                 }
                 insertAudit(
@@ -316,7 +319,7 @@ class CompanyProvisioningService(
         rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
-                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+                ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
 
         central.connection.use { connection ->
@@ -374,23 +377,23 @@ class CompanyProvisioningService(
         val code = newCode.trim()
         val source = sourceCode.trim()
         rejectServerWorkspace(source)
-        if (code == ServerWorkspace.Code) throw CompanyProvisioningException("El codigo ${ServerWorkspace.Code} esta reservado para el espacio del servidor.")
+        if (code == ServerWorkspace.Code) throw CompanyProvisioningException(tr("El codigo {0} esta reservado para el espacio del servidor.", ServerWorkspace.Code))
         if (!companyCodePattern.matches(code)) {
-            throw CompanyProvisioningException("El codigo debe iniciar con una letra minuscula y usar solo letras minusculas, numeros o guion bajo (hasta 63).")
+            throw CompanyProvisioningException(tr("El codigo debe iniciar con una letra minuscula y usar solo letras minusculas, numeros o guion bajo (hasta 63)."))
         }
         val databaseName = "bms_$code"
         val (sourceCompany, ownerGroup) = central.connection.use { connection ->
-            if (connection.exists("companies", "code", code)) throw CompanyProvisioningException("Ya existe una empresa con ese codigo.")
-            if (connection.exists("companies", "database_name", databaseName)) throw CompanyProvisioningException("Ya existe una base de datos registrada para ese codigo.")
-            val row = findCompany(connection, source) ?: throw CompanyProvisioningException("La empresa a duplicar no existe o esta desactivada.")
+            if (connection.exists("companies", "code", code)) throw CompanyProvisioningException(tr("Ya existe una empresa con ese codigo."))
+            if (connection.exists("companies", "database_name", databaseName)) throw CompanyProvisioningException(tr("Ya existe una base de datos registrada para ese codigo."))
+            val row = findCompany(connection, source) ?: throw CompanyProvisioningException(tr("La empresa a duplicar no existe o esta desactivada."))
             row to ownerGroup(connection, source)
         }
         val sourceTenant = loginDatabases.tenantConfig(sourceCompany.databaseName)
-            ?: throw CompanyProvisioningException("La empresa a duplicar no tiene conexion tenant configurada.")
+            ?: throw CompanyProvisioningException(tr("La empresa a duplicar no tiene conexion tenant configurada."))
         val newOwnerInput = newOwner?.let { input ->
             val username = input.username.trim()
             validate(code, sourceCompany.name, username, input.password, CreateCompanyRequest(code, sourceCompany.name, username, input.password))
-            UserProfileRules.problem(input.name.trim(), input.email.trim())?.let { throw CompanyProvisioningException("Business owner: $it") }
+            UserProfileRules.problem(input.name.trim(), input.email.trim())?.let { throw CompanyProvisioningException(tr("Business owner: {0}", it)) }
             input.copy(username = username, name = input.name.trim(), email = input.email.trim())
         }
 
@@ -405,7 +408,7 @@ class CompanyProvisioningService(
                 """.trimIndent()
             ).use { query ->
                 query.executeQuery().use { rows ->
-                    if (!rows.next()) throw CompanyProvisioningException("La empresa a duplicar no tiene business owner.")
+                    if (!rows.next()) throw CompanyProvisioningException(tr("La empresa a duplicar no tiene business owner."))
                     val userId = rows.getObject(1, UUID::class.java)
                     val credentials = tenant.prepareStatement(
                         "SELECT password_salt, password_hash, iterations FROM application_user_credentials WHERE user_id = ?"
@@ -429,13 +432,13 @@ class CompanyProvisioningService(
         try {
             adminConnection(provisioningRole).use { admin ->
                 admin.autoCommit = true
-                if (admin.existsDatabase(databaseName)) throw CompanyProvisioningException("La base de datos de la empresa ya existe.")
+                if (admin.existsDatabase(databaseName)) throw CompanyProvisioningException(tr("La base de datos de la empresa ya existe."))
                 if (newOwnerInput != null) {
                     if (admin.existsRole(owner.role) || roleUsedInAnyCompany(owner.role)) {
-                        throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
+                        throw CompanyProvisioningException(tr("El usuario PostgreSQL del business owner ya existe."))
                     }
                 } else if (!admin.existsRole(owner.role)) {
-                    throw CompanyProvisioningException("No existe el usuario PostgreSQL del business owner.")
+                    throw CompanyProvisioningException(tr("No existe el usuario PostgreSQL del business owner."))
                 }
                 admin.createStatement().use { statement ->
                     silenceStatementLog(statement)
@@ -545,14 +548,14 @@ class CompanyProvisioningService(
             databaseName = databaseName,
             businessOwnerUsername = owner.role,
             enabledModules = loadCompanyModules(databaseName).filter { it.enabled }.map { it.moduleId },
-            settingsNotCopied = failures,
+            settingsNotCopied = failures.map { tr(it) },
         )
     }
 
     private fun ownerGroup(connection: Connection, companyCode: String): UUID =
         connection.prepareStatement("SELECT owner_group FROM companies WHERE code = ?").use { query ->
             query.setString(1, companyCode)
-            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else throw CompanyProvisioningException("Empresa no encontrada.") }
+            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else throw CompanyProvisioningException(tr("Empresa no encontrada.")) }
         }
 
     /**
@@ -565,7 +568,7 @@ class CompanyProvisioningService(
         rejectServerWorkspace(code)
         targetCode?.trim()?.let { rejectServerWorkspace(it) }
         central.connection.use { connection ->
-            findCompanyAnyState(connection, code) ?: throw CompanyProvisioningException("Empresa no encontrada.")
+            findCompanyAnyState(connection, code) ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
             val updated = if (targetCode == null) {
                 connection.prepareStatement("UPDATE companies SET owner_group = id WHERE code = ?").use { update ->
                     update.setString(1, code)
@@ -573,8 +576,8 @@ class CompanyProvisioningService(
                 }
             } else {
                 val target = targetCode.trim()
-                if (target == code) throw CompanyProvisioningException("Elige otra empresa para vincular.")
-                findCompanyAnyState(connection, target) ?: throw CompanyProvisioningException("La empresa a vincular no existe.")
+                if (target == code) throw CompanyProvisioningException(tr("Elige otra empresa para vincular."))
+                findCompanyAnyState(connection, target) ?: throw CompanyProvisioningException(tr("La empresa a vincular no existe."))
                 connection.prepareStatement(
                     "UPDATE companies SET owner_group = (SELECT owner_group FROM companies WHERE code = ?) WHERE code = ?"
                 ).use { update ->
@@ -583,7 +586,7 @@ class CompanyProvisioningService(
                     update.executeUpdate()
                 }
             }
-            if (updated != 1) throw CompanyProvisioningException("No se pudo actualizar la empresa.")
+            if (updated != 1) throw CompanyProvisioningException(tr("No se pudo actualizar la empresa."))
             insertAudit(
                 connection, provisioningRole, if (targetCode == null) "company.unlinked" else "company.linked", code, null,
                 """{"linkedTo":"${targetCode.orEmpty().escapeJson()}"}""",
@@ -611,10 +614,10 @@ class CompanyProvisioningService(
         rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
-                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+                ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
         if (company.isActive) {
-            throw CompanyProvisioningException("Primero debes desactivar la empresa antes de eliminarla.")
+            throw CompanyProvisioningException(tr("Primero debes desactivar la empresa antes de eliminarla."))
         }
 
         val tenantConfig = loginDatabases.tenantConfig(company.databaseName)
@@ -676,7 +679,7 @@ class CompanyProvisioningService(
                 connection.prepareStatement("DELETE FROM companies WHERE code = ? AND is_active = FALSE").use { delete ->
                     delete.setString(1, normalizedCompanyCode)
                     if (delete.executeUpdate() != 1) {
-                        throw CompanyProvisioningException("No se pudo eliminar la empresa desactivada.")
+                        throw CompanyProvisioningException(tr("No se pudo eliminar la empresa desactivada."))
                     }
                 }
                 connection.commit()
@@ -702,15 +705,15 @@ class CompanyProvisioningService(
      * account (AccountService). Runs as the first server owner's role, which can change company roles.
      */
     fun setBusinessOwnerPasswordByEmailCode(companyCode: String, password: String) {
-        val role = firstServerOwnerRole() ?: throw CompanyProvisioningException("El servidor no tiene un dueno activo.")
+        val role = firstServerOwnerRole() ?: throw CompanyProvisioningException(tr("El servidor no tiene un dueno activo."))
         changeBusinessOwnerPassword(companyCode, password, role, "company.owner_password_recovered")
     }
 
     /** New password of a server owner who proved with an email code that they own the account. */
     fun setServerOwnerPasswordByEmailCode(userId: UUID, password: String) {
-        val role = serverOwnerRole(userId) ?: throw CompanyProvisioningException("El usuario ya no es dueno del servidor.")
+        val role = serverOwnerRole(userId) ?: throw CompanyProvisioningException(tr("El usuario ya no es dueno del servidor."))
         if (password.length < 16 || password.any { it !in ' '..'~' }) {
-            throw CompanyProvisioningException("La contrasena del dueno del servidor debe tener al menos 16 caracteres ASCII.")
+            throw CompanyProvisioningException(tr("La contrasena del dueno del servidor debe tener al menos 16 caracteres ASCII."))
         }
         // Any role may change its own password.
         adminConnection(role).use { admin ->
@@ -735,14 +738,14 @@ class CompanyProvisioningService(
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         if (password.length < 12) {
-            throw CompanyProvisioningException("La contrasena del business owner debe tener al menos 12 caracteres.")
+            throw CompanyProvisioningException(tr("La contrasena del business owner debe tener al menos 12 caracteres."))
         }
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
-                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+                ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
         val tenantConfig = loginDatabases.tenantConfig(company.databaseName)
-            ?: throw CompanyProvisioningException("La empresa no tiene conexion tenant configurada.")
+            ?: throw CompanyProvisioningException(tr("La empresa no tiene conexion tenant configurada."))
         val (ownerId, ownerRole) = tenantRuntimeConnection(tenantConfig).use { tenant ->
             tenant.prepareStatement(
                 """
@@ -754,7 +757,7 @@ class CompanyProvisioningService(
             ).use { query ->
                 query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) to rows.getString(2) else null }
             }
-        } ?: throw CompanyProvisioningException("La empresa no tiene business owner.")
+        } ?: throw CompanyProvisioningException(tr("La empresa no tiene business owner."))
 
         adminConnection(provisioningRole).use { admin ->
             admin.autoCommit = true
@@ -797,11 +800,11 @@ class CompanyProvisioningService(
             if (failure.sqlState == "42P01") false
             else {
                 log.warn("No se pudo verificar la unicidad del usuario en una empresa", failure)
-                throw CompanyProvisioningException("No se pudo verificar la unicidad del usuario")
+                throw CompanyProvisioningException(tr("No se pudo verificar la unicidad del usuario"))
             }
         } catch (failure: Exception) {
             log.warn("No se pudo verificar la unicidad del usuario en una empresa", failure)
-            throw CompanyProvisioningException("No se pudo verificar la unicidad del usuario")
+            throw CompanyProvisioningException(tr("No se pudo verificar la unicidad del usuario"))
         }
 
     /**
@@ -840,23 +843,23 @@ class CompanyProvisioningService(
         val displayName = request.displayName.trim()
         val email = request.email.trim()
         val password = request.password
-        UserProfileRules.problem(displayName, email)?.let { throw CompanyProvisioningException("Business owner: $it") }
+        UserProfileRules.problem(displayName, email)?.let { throw CompanyProvisioningException(tr("Business owner: {0}", it)) }
         if (!postgresRolePattern.matches(username)) {
-            throw CompanyProvisioningException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+            throw CompanyProvisioningException(tr("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
         }
         val renamed = username != owner.role
         if (renamed && password.isEmpty()) {
-            throw CompanyProvisioningException("Para cambiar el usuario del business owner escribe tambien una contrasena nueva.")
+            throw CompanyProvisioningException(tr("Para cambiar el usuario del business owner escribe tambien una contrasena nueva."))
         }
         if (password.isNotEmpty() && password.length < 12) {
-            throw CompanyProvisioningException("La contrasena del business owner debe tener al menos 12 caracteres.")
+            throw CompanyProvisioningException(tr("La contrasena del business owner debe tener al menos 12 caracteres."))
         }
         val tenants = companyTenants()
         val ownerTenants = tenants.filter { tenant -> ownerRoleIn(tenant, owner.role) }
         if (renamed) {
             val taken = adminConnection(provisioningRole).use { it.existsRole(username) } ||
                 tenants.any { tenant -> roleUsedInTenant(tenant, username) }
-            if (taken) throw CompanyProvisioningException("Ya existe un usuario con ese nombre.")
+            if (taken) throw CompanyProvisioningException(tr("Ya existe un usuario con ese nombre."))
         }
 
         adminConnection(provisioningRole).use { admin ->
@@ -923,14 +926,14 @@ class CompanyProvisioningService(
 
     /** The business owner edits their own data; runs as the first server owner's role, like password recovery. */
     fun updateBusinessOwnerBySelf(companyCode: String, request: UpdateBusinessOwnerRequest): BusinessOwnerResponse {
-        val role = firstServerOwnerRole() ?: throw CompanyProvisioningException("El servidor no tiene un dueno activo.")
+        val role = firstServerOwnerRole() ?: throw CompanyProvisioningException(tr("El servidor no tiene un dueno activo."))
         return updateBusinessOwner(companyCode, request, role)
     }
 
     private fun ownerOf(companyCode: String): OwnerRef {
         rejectServerWorkspace(companyCode)
         val company = central.connection.use { connection -> findCompanyAnyState(connection, companyCode) }
-            ?: throw CompanyProvisioningException("Empresa no encontrada.")
+            ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         val tenant = loginDatabases.tenantConfig(company.databaseName) ?: tenantConfig(company.databaseName)
         return tenantRuntimeConnection(tenant).use { connection ->
             connection.prepareStatement(
@@ -945,7 +948,7 @@ class CompanyProvisioningService(
                     if (rows.next()) OwnerRef(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), rows.getString(4)) else null
                 }
             }
-        } ?: throw CompanyProvisioningException("La empresa no tiene business owner.")
+        } ?: throw CompanyProvisioningException(tr("La empresa no tiene business owner."))
     }
 
     // Tenant databases of every company, active or not, and of the server workspace.
@@ -993,17 +996,17 @@ class CompanyProvisioningService(
         val normalizedCompanyCode = companyCode.trim()
         val normalizedModuleId = moduleId.trim()
         val definition = modules.singleOrNull { it.id == normalizedModuleId }
-            ?: throw CompanyProvisioningException("Modulo no reconocido o no instalado en el servidor.")
+            ?: throw CompanyProvisioningException(tr("Modulo no reconocido o no instalado en el servidor."))
         if (definition.locked && !enabled) {
-            throw CompanyProvisioningException("El modulo ${definition.displayName} es base y no puede deshabilitarse.")
+            throw CompanyProvisioningException(tr("El modulo {0} es base y no puede deshabilitarse.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
         }
 
         val company = central.connection.use { connection ->
             findCompany(connection, normalizedCompanyCode)
-                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+                ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
         val tenantConfig = loginDatabases.tenantConfig(company.databaseName)
-            ?: throw CompanyProvisioningException("La empresa no tiene conexion tenant configurada.")
+            ?: throw CompanyProvisioningException(tr("La empresa no tiene conexion tenant configurada."))
 
         tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
             applyModuleMigrations(tenant, definition)
@@ -1089,8 +1092,8 @@ class CompanyProvisioningService(
         val comparable = installed && !definition.locked && catalogVersion != null
         return ServerModuleResponse(
             moduleId = definition.id,
-            displayName = definition.displayName,
-            description = definition.description,
+            displayName = trIn(I18n.moduleNamespace(definition.id), definition.displayName),
+            description = trIn(I18n.moduleNamespace(definition.id), definition.description),
             version = installedVersion,
             latestVersion = remotePackage?.definition?.version,
             locked = definition.locked,
@@ -1123,7 +1126,7 @@ class CompanyProvisioningService(
     // Name of the server shown to server owners instead of a company name.
     fun updateServerName(name: String, provisioningRole: String): ServerNameResponse {
         val normalized = name.trim()
-        if (normalized.isEmpty() || normalized.length > 80) throw CompanyProvisioningException("El nombre del servidor debe tener entre 1 y 80 caracteres.")
+        if (normalized.isEmpty() || normalized.length > 80) throw CompanyProvisioningException(tr("El nombre del servidor debe tener entre 1 y 80 caracteres."))
         central.connection.use { connection ->
             connection.prepareStatement(
                 """
@@ -1145,7 +1148,7 @@ class CompanyProvisioningService(
     fun updateServerModuleCatalog(catalogUrl: String): ServerModuleCatalogResponse {
         val normalized = catalogUrl.trim()
         if (normalized.isNotBlank() && !normalized.startsWith("https://") && !normalized.startsWith("http://")) {
-            throw CompanyProvisioningException("La URL del catalogo debe iniciar con http:// o https://.")
+            throw CompanyProvisioningException(tr("La URL del catalogo debe iniciar con http:// o https://."))
         }
         central.connection.use { connection ->
             connection.prepareStatement(
@@ -1175,7 +1178,7 @@ class CompanyProvisioningService(
         val normalizedModuleId = moduleId.trim()
         val remotePackages = syncRemoteAvailableModules()
         val definition = moduleRegistry.availableDefinition(normalizedModuleId)
-            ?: throw CompanyProvisioningException("Modulo no encontrado en el catalogo configurado.")
+            ?: throw CompanyProvisioningException(tr("Modulo no encontrado en el catalogo configurado."))
         val remotePackage = remotePackages[definition.id]
         if (installStates[definition.id]?.status in setOf(InstallStatus.Installing, InstallStatus.Restarting)) {
             return moduleResponse(definition, remotePackage)
@@ -1200,10 +1203,10 @@ class CompanyProvisioningService(
         }
 
         val builder = modulePackageBuilder
-            ?: throw CompanyProvisioningException("Este servidor no puede compilar modulos: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh.")
+            ?: throw CompanyProvisioningException(tr("Este servidor no puede compilar modulos: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh."))
         val source = remotePackage?.source
-            ?: throw CompanyProvisioningException("${definition.displayName} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.")
-        installStates[definition.id] = ModuleInstallState(InstallStatus.Installing, "En cola para compilar")
+            ?: throw CompanyProvisioningException(tr("{0} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
+        installStates[definition.id] = ModuleInstallState(InstallStatus.Installing) { tr("En cola para compilar") }
         installQueue?.add(PackageInstallQueue.Module, definition.id)
         installQueue?.queued()
         buildExecutor.execute { buildAndInstall(definition, builder, source) }
@@ -1215,13 +1218,13 @@ class CompanyProvisioningService(
         val id = moduleId.trim()
         val remote = syncRemoteAvailableModules()[id]
         val source = remote?.source
-            ?: throw CompanyProvisioningException("El modulo '$id' no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.", "NOT_FOUND")
+            ?: throw CompanyProvisioningException(tr("El modulo '{0}' no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.", id), "NOT_FOUND")
         val builder = modulePackageBuilder
-            ?: throw CompanyProvisioningException("Este servidor no puede revisar modulos: falta la carpeta compiler/ de la instalacion.", "BUILDER_UNAVAILABLE")
+            ?: throw CompanyProvisioningException(tr("Este servidor no puede revisar modulos: falta la carpeta compiler/ de la instalacion."), "BUILDER_UNAVAILABLE")
         return try {
             builder.inspect(id, source)
         } catch (failure: ModuleBuildException) {
-            throw CompanyProvisioningException(failure.message ?: "No se pudo descargar el modulo.", "PACKAGE_UNAVAILABLE")
+            throw CompanyProvisioningException(failure.message ?: tr("No se pudo descargar el modulo."), "PACKAGE_UNAVAILABLE")
         }
     }
 
@@ -1241,28 +1244,28 @@ class CompanyProvisioningService(
         val id = moduleId.trim()
         val text = confirmationText.trim()
         if (text.length < MinModuleConfirmationLength) {
-            throw CompanyProvisioningException("Escribe la confirmacion con tus palabras (al menos $MinModuleConfirmationLength caracteres).", "CONFIRMATION_REQUIRED")
+            throw CompanyProvisioningException(tr("Escribe la confirmacion con tus palabras (al menos {0} caracteres).", MinModuleConfirmationLength), "CONFIRMATION_REQUIRED")
         }
         if (!Regex("[A-Fa-f0-9]{64}").matches(expectedPackageSha256.trim()) || !Regex("[a-f0-9]{40}").matches(expectedCommit.trim().lowercase())) {
-            throw CompanyProvisioningException("Indica el hash (64 hex) y el commit (40 hex) que revisaste.", "EXPECTED_REQUIRED")
+            throw CompanyProvisioningException(tr("Indica el hash (64 hex) y el commit (40 hex) que revisaste."), "EXPECTED_REQUIRED")
         }
         val inspection = inspectServerModule(id)
         if (!inspection.packageSha256.equals(expectedPackageSha256.trim(), ignoreCase = true) ||
             !inspection.commit.equals(expectedCommit.trim(), ignoreCase = true)
         ) {
             throw CompanyProvisioningException(
-                "El modulo cambio desde que lo revisaste (ahora: commit ${inspection.commit}, hash ${inspection.packageSha256}). Revisalo otra vez.",
+                tr("El modulo cambio desde que lo revisaste (ahora: commit {0}, hash {1}). Revisalo otra vez.", inspection.commit, inspection.packageSha256),
                 "PACKAGE_CHANGED",
             )
         }
         if (inspection.signed) {
-            throw CompanyProvisioningException("El modulo '$id' esta firmado; no necesita autorizacion.", "ALREADY_SIGNED")
+            throw CompanyProvisioningException(tr("El modulo '{0}' esta firmado; no necesita autorizacion.", id), "ALREADY_SIGNED")
         }
         inspection.signatureProblem?.let {
-            throw CompanyProvisioningException("El modulo '$id' trae una firma que no vale ($it); no se puede autorizar.", "SIGNATURE_INVALID")
+            throw CompanyProvisioningException(tr("El modulo '{0}' trae una firma que no vale ({1}); no se puede autorizar.", id, it), "SIGNATURE_INVALID")
         }
         val builder = modulePackageBuilder
-            ?: throw CompanyProvisioningException("Este servidor no puede autorizar modulos: falta la carpeta compiler/ de la instalacion.", "BUILDER_UNAVAILABLE")
+            ?: throw CompanyProvisioningException(tr("Este servidor no puede autorizar modulos: falta la carpeta compiler/ de la instalacion."), "BUILDER_UNAVAILABLE")
         builder.authorizeUnsigned(inspection.packageSha256, id, inspection.commit, actorRole, text)
         recordAudit(
             actorRole, "module.package.authorize_unsigned", null, id,
@@ -1301,12 +1304,12 @@ class CompanyProvisioningService(
      */
     fun setServerModuleUsage(moduleId: String, enabled: Boolean, provisioningRole: String): ServerModuleResponse {
         val definition = modules.singleOrNull { it.id == moduleId.trim() }
-            ?: throw CompanyProvisioningException("Modulo no reconocido o no instalado en el servidor.")
+            ?: throw CompanyProvisioningException(tr("Modulo no reconocido o no instalado en el servidor."))
         if (enabled) {
             setModuleEnabled(ensureServerWorkspace(provisioningRole), definition.id, true, provisioningRole)
         } else {
             if (definition.locked) {
-                throw CompanyProvisioningException("${definition.displayName} es un modulo base y siempre esta activo en el espacio del servidor.")
+                throw CompanyProvisioningException(tr("{0} es un modulo base y siempre esta activo en el espacio del servidor.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
             }
             serverWorkspaceRow()?.let { setModuleEnabled(it.code, definition.id, false, provisioningRole) }
         }
@@ -1321,7 +1324,7 @@ class CompanyProvisioningService(
         val databaseName = ServerWorkspace.DatabaseName
         central.connection.use { connection ->
             if (connection.exists("companies", "code", code)) {
-                throw CompanyProvisioningException("Ya existe una empresa con el codigo $code; cambia su codigo para crear el espacio del servidor.")
+                throw CompanyProvisioningException(tr("Ya existe una empresa con el codigo {0}; cambia su codigo para crear el espacio del servidor.", code))
             }
         }
         adminConnection(provisioningRole).use { admin ->
@@ -1408,7 +1411,7 @@ class CompanyProvisioningService(
 
     private fun rejectServerWorkspace(companyCode: String) {
         if (companyCode == ServerWorkspace.Code && serverWorkspaceRow()?.code == companyCode) {
-            throw CompanyProvisioningException("El espacio del servidor no se administra como una empresa.")
+            throw CompanyProvisioningException(tr("El espacio del servidor no se administra como una empresa."))
         }
     }
 
@@ -1443,6 +1446,11 @@ class CompanyProvisioningService(
                         log.error("Account throttle migration failed for company {}", companyCode, failure)
                     }
                     try {
+                        applyOutboundMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Outbound migration failed for company {}", companyCode, failure)
+                    }
+                    try {
                         applyNotificationsMigration(tenant)
                     } catch (failure: Exception) {
                         log.error("Notifications migration failed for company {}", companyCode, failure)
@@ -1457,6 +1465,11 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("Company mail migration failed for company {}", companyCode, failure)
                     }
+                    try {
+                        applyLanguageMigrations(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Language migrations failed for company {}", companyCode, failure)
+                    }
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1467,10 +1480,9 @@ class CompanyProvisioningService(
                                 applyModuleMigrations(tenant, definition)
                             } catch (failure: Exception) {
                                 log.error("Migrations of module {} failed for company {}", definition.id, companyCode, failure)
-                                installStates[definition.id] = ModuleInstallState(
-                                    InstallStatus.Attention,
-                                    "Una migracion fallo en la empresa $companyCode: ${failure.message}",
-                                )
+                                installStates[definition.id] = ModuleInstallState(InstallStatus.Attention) {
+                                    tr("Una migracion fallo en la empresa {0}: {1}", companyCode, failure.message)
+                                }
                             }
                         }
                 }
@@ -1497,7 +1509,7 @@ class CompanyProvisioningService(
         val moduleId = definition.id
         try {
             val built = builder.build(moduleId, source) { step ->
-                installStates[moduleId] = ModuleInstallState(InstallStatus.Installing, step)
+                installStates[moduleId] = ModuleInstallState(InstallStatus.Installing) { tr(step) }
             }
             central.connection.use { connection ->
                 upsertServerModule(
@@ -1509,7 +1521,7 @@ class CompanyProvisioningService(
                 )
             }
             log.info("Module {} {} built from {}@{}; the server restarts to load it once nothing else is being built.", moduleId, built.version, source.repo, source.ref)
-            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting, "Compilado; el servidor se reinicia para cargar ${definition.displayName} cuando termine lo que queda en cola")
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting) { tr("Compilado; el servidor se reinicia para cargar {0} cuando termine lo que queda en cola", trIn(I18n.moduleNamespace(definition.id), definition.displayName)) }
             finishBuild(moduleId, needsRestart = true)
         } catch (failure: ModuleBuildException) {
             log.warn("Module {} could not be built: {}", moduleId, failure.message)
@@ -1517,7 +1529,7 @@ class CompanyProvisioningService(
             finishBuild(moduleId, needsRestart = false)
         } catch (failure: Exception) {
             log.error("Module {} installation failed", moduleId, failure)
-            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, "Error inesperado: ${failure.message}")
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed) { tr("Error inesperado: {0}", failure.message) }
             finishBuild(moduleId, needsRestart = false)
         }
     }
@@ -1547,7 +1559,7 @@ class CompanyProvisioningService(
         queue.pending().filter { it.kind == PackageInstallQueue.Module }.forEach { entry ->
             if (!queue.attempt(entry.kind, entry.id)) {
                 log.warn("Module {} is not installed again: it was tried {} times.", entry.id, PackageInstallQueue.MaxAttempts)
-                installStates[entry.id] = ModuleInstallState(InstallStatus.Failed, "No se pudo instalar tras varios intentos; vuelve a pedirlo.")
+                installStates[entry.id] = ModuleInstallState(InstallStatus.Failed) { tr("No se pudo instalar tras varios intentos; vuelve a pedirlo.") }
                 return@forEach
             }
             try {
@@ -1556,7 +1568,7 @@ class CompanyProvisioningService(
                 if (installStates[entry.id]?.status != InstallStatus.Installing) queue.done(entry.kind, entry.id)
             } catch (failure: Exception) {
                 log.warn("Pending install of module {} was dropped: {}", entry.id, failure.message)
-                installStates[entry.id] = ModuleInstallState(InstallStatus.Failed, failure.message ?: "No se pudo reanudar la instalacion.")
+                installStates[entry.id] = ModuleInstallState(InstallStatus.Failed, failure.message ?: tr("No se pudo reanudar la instalacion."))
                 queue.done(entry.kind, entry.id)
             }
         }
@@ -1565,13 +1577,13 @@ class CompanyProvisioningService(
     fun deleteServerModule(moduleId: String) {
         val normalizedModuleId = moduleId.trim()
         val definition = moduleRegistry.definition(normalizedModuleId)
-            ?: throw CompanyProvisioningException("Modulo no reconocido o no instalado en el servidor.")
+            ?: throw CompanyProvisioningException(tr("Modulo no reconocido o no instalado en el servidor."))
         if (definition.locked) {
-            throw CompanyProvisioningException("El modulo ${definition.displayName} es base y no puede eliminarse del servidor.")
+            throw CompanyProvisioningException(tr("El modulo {0} es base y no puede eliminarse del servidor.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
         }
         val activeCompanyCount = countCompaniesWithModuleEnabled(definition.id)
         if (activeCompanyCount > 0) {
-            throw CompanyProvisioningException("No se puede eliminar ${definition.displayName}; esta activo en $activeCompanyCount empresa(s) o en el espacio del servidor.")
+            throw CompanyProvisioningException(tr("No se puede eliminar {0}; esta activo en {1} empresa(s) o en el espacio del servidor.", trIn(I18n.moduleNamespace(definition.id), definition.displayName), activeCompanyCount))
         }
 
         central.connection.use { connection ->
@@ -1580,7 +1592,7 @@ class CompanyProvisioningService(
                 connection.prepareStatement("DELETE FROM server_modules WHERE module_id = ? AND locked = FALSE").use { delete ->
                     delete.setString(1, definition.id)
                     if (delete.executeUpdate() != 1) {
-                        throw CompanyProvisioningException("No se pudo eliminar ${definition.displayName} del catalogo activo.")
+                        throw CompanyProvisioningException(tr("No se pudo eliminar {0} del catalogo activo.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
                     }
                 }
                 moduleRegistry.remove(definition.id)
@@ -1707,22 +1719,22 @@ class CompanyProvisioningService(
         request: CreateCompanyRequest,
     ) {
         if (!companyCodePattern.matches(code)) {
-            throw CompanyProvisioningException("El codigo debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+            throw CompanyProvisioningException(tr("El codigo debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
         }
         if (companyName.isBlank()) {
-            throw CompanyProvisioningException("El nombre de la empresa es obligatorio.")
+            throw CompanyProvisioningException(tr("El nombre de la empresa es obligatorio."))
         }
         if (!postgresRolePattern.matches(ownerUsername)) {
-            throw CompanyProvisioningException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+            throw CompanyProvisioningException(tr("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
         }
         if (ownerPassword.length < 12) {
-            throw CompanyProvisioningException("La contrasena del business owner debe tener al menos 12 caracteres.")
+            throw CompanyProvisioningException(tr("La contrasena del business owner debe tener al menos 12 caracteres."))
         }
         if (!colorPattern.matches(request.primaryColor) ||
             !colorPattern.matches(request.secondaryColor) ||
             !colorPattern.matches(request.accentColor)
         ) {
-            throw CompanyProvisioningException("Los colores deben usar formato hexadecimal #RRGGBB.")
+            throw CompanyProvisioningException(tr("Los colores deben usar formato hexadecimal #RRGGBB."))
         }
     }
 
@@ -1772,6 +1784,18 @@ class CompanyProvisioningService(
         applyNotificationsMigration(connection)
         applyExtensionsMigration(connection)
         applyCompanyMailMigration(connection)
+        applyLanguageMigrations(connection)
+    }
+
+    // Language of each user (core V006) and the cache of translated user texts (tenant V010), I18N.md;
+    // also brought to existing companies at startup.
+    private fun applyLanguageMigrations(connection: Connection) {
+        val userLanguage = "database/core/migrations/V006__add_application_user_language.sql"
+        applyMigration(connection, "core", userLanguage, Files.readString(Path.of(config.migrationsRoot).resolve(userLanguage)))
+        grantColumnsIfMissing(connection, config.runtimeUser, "application_users", "UPDATE", listOf("language"))
+        val translations = "database/tenant/migrations/V010__create_text_translations.sql"
+        applyMigration(connection, "tenant", translations, Files.readString(Path.of(config.migrationsRoot).resolve(translations)))
+        grantIfMissing(connection, config.runtimeUser, "text_translations", listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
     }
 
     // SMTP de la empresa (tenant V007); tambien se aplica a las empresas existentes al arrancar.
@@ -1847,7 +1871,7 @@ class CompanyProvisioningService(
         val owner = connection.prepareStatement("SELECT tableowner FROM pg_tables WHERE schemaname = current_schema() AND tablename = ?").use { query ->
             query.setString(1, table)
             query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-        } ?: throw CompanyProvisioningException("La tabla $table no existe")
+        } ?: throw CompanyProvisioningException(tr("La tabla {0} no existe", table))
         val current = connection.createStatement().use { statement ->
             statement.executeQuery("SELECT current_user").use { rows -> rows.next(); rows.getString(1) }
         }
@@ -1955,7 +1979,7 @@ class CompanyProvisioningService(
     private fun migrationSql(module: ServerModule, relativePath: String): String =
         module.javaClass.classLoader.getResourceAsStream(relativePath)?.use { String(it.readAllBytes(), Charsets.UTF_8) }
             ?: Path.of(config.migrationsRoot).resolve(relativePath).takeIf { Files.isRegularFile(it) }?.let(Files::readString)
-            ?: throw CompanyProvisioningException("No se encontro la migracion $relativePath del modulo ${module.definition.id}.")
+            ?: throw CompanyProvisioningException(tr("No se encontro la migracion {0} del modulo {1}.", relativePath, module.definition.id))
 
     private fun applyMigration(connection: Connection, module: String, relativePath: String, content: String) {
         val sql = content.trim()
@@ -1988,7 +2012,7 @@ class CompanyProvisioningService(
                 query.executeQuery().use { rows ->
                     if (rows.next()) {
                         if (rows.getString(1) !in acceptedChecksums) {
-                            throw CompanyProvisioningException("La migracion $version ya fue aplicada con otro checksum.")
+                            throw CompanyProvisioningException(tr("La migracion {0} ya fue aplicada con otro checksum.", version))
                         }
                         connection.commit()
                         return
@@ -2194,14 +2218,14 @@ class CompanyProvisioningService(
      */
     fun applyExtensionMigrations(companyCode: String, extension: com.ideasdeveloper.bms.server.extensions.ServerExtension) {
         if (extension.migrationPaths.isEmpty() && extension.runtimeTables.isEmpty()) return
-        val provisioningRole = firstServerOwnerRole() ?: throw CompanyProvisioningException("No hay un server owner activo para aplicar migraciones.")
+        val provisioningRole = firstServerOwnerRole() ?: throw CompanyProvisioningException(tr("No hay un server owner activo para aplicar migraciones."))
         val databaseName = central.connection.use { connection ->
             connection.prepareStatement("SELECT database_name FROM companies WHERE code = ?").use { query ->
                 query.setString(1, companyCode)
                 query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
             }
-        } ?: throw CompanyProvisioningException("La empresa $companyCode no existe.")
-        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: throw CompanyProvisioningException("La base de datos de $companyCode no esta configurada.")
+        } ?: throw CompanyProvisioningException(tr("La empresa {0} no existe.", companyCode))
+        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: throw CompanyProvisioningException(tr("La base de datos de {0} no esta configurada.", companyCode))
         val migrationModule = "ext:${extension.manifest.id}"
         tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
             // A migration of a package must not hang installs or startup (pg_sleep, long locks).
@@ -2211,7 +2235,7 @@ class CompanyProvisioningService(
             }
             extension.migrationPaths.forEach { path ->
                 val sql = extension.javaClass.classLoader.getResourceAsStream(path)?.use { String(it.readBytes(), Charsets.UTF_8) }
-                    ?: throw CompanyProvisioningException("Falta la migracion $path de la extension ${extension.manifest.id}.")
+                    ?: throw CompanyProvisioningException(tr("Falta la migracion {0} de la extension {1}.", path, extension.manifest.id))
                 applyMigration(tenant, migrationModule, path, sql)
             }
             if (extension.runtimeTables.isNotEmpty()) {
@@ -2313,7 +2337,7 @@ class CompanyProvisioningService(
     private fun ModuleDefinition.toCompanyModuleResponse(enabled: Boolean): CompanyModuleResponse =
         CompanyModuleResponse(
             moduleId = id,
-            displayName = displayName,
+            displayName = trIn(I18n.moduleNamespace(id), displayName),
             enabled = enabled,
             locked = locked,
         )
@@ -2327,4 +2351,12 @@ private object InstallStatus {
     const val Attention = "attention"
 }
 
-private data class ModuleInstallState(val status: String, val message: String)
+/**
+ * State of a module install shown to the server owner. The message is rendered when it is shown, in the
+ * viewer's language ([text] runs then); install work runs in the background, without a request language.
+ */
+private class ModuleInstallState(val status: String, private val text: () -> String) {
+    constructor(status: String, message: String) : this(status, { message })
+
+    val message: String get() = text()
+}

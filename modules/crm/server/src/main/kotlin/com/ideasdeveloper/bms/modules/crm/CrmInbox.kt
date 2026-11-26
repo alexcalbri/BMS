@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
 import com.ideasdeveloper.bms.server.modules.MailException
@@ -56,16 +58,20 @@ data class CrmMessage(
 /** Turns inbound contacts into leads and keeps the conversation of each lead. */
 object CrmInbox {
     val channelLabels = linkedMapOf(
-        "form" to "Formulario",
-        "email" to "Correo",
+        "form" to msg("Formulario"),
+        "email" to msg("Correo"),
         "whatsapp" to "WhatsApp",
         "messenger" to "Messenger",
         "instagram" to "Instagram",
         "encuentra24" to "Encuentra24",
-        "import" to "Importacion",
+        "import" to msg("Importacion"),
     )
 
+    /** The name stored with the lead (activity, source): always Spanish. */
     fun label(channel: String) = channelLabels[channel] ?: channel
+
+    /** The name of the channel in the language of who reads it. */
+    fun shownLabel(channel: String) = channelLabels[channel]?.let { tr(it) } ?: channel
 
     /**
      * Finds the person by channel identity, email or phone (in that order) and adds the message to
@@ -417,20 +423,20 @@ object CrmEmailChannel : CrmChannel {
     override val label = "Correo"
 
     override fun unavailable(context: CrmChannelContext, lead: CrmLead): String? = when {
-        lead.email.isBlank() -> "El lead no tiene correo."
-        CrmMail.smtp(context.tenant, context.serverMail) == null -> "Configura el correo de la empresa (SMTP)."
+        lead.email.isBlank() -> tr("El lead no tiene correo.")
+        CrmMail.smtp(context.tenant, context.serverMail) == null -> tr("Configura el correo de la empresa (SMTP).")
         else -> null
     }
 
     override fun send(context: CrmChannelContext, lead: CrmLead, email: CrmEmail): String? {
-        val smtp = CrmMail.smtp(context.tenant, context.serverMail) ?: throw CrmChannelException("Configura el correo de la empresa (SMTP).")
-        if (email.subject.isBlank()) throw CrmChannelException("Escribe el asunto del correo.")
+        val smtp = CrmMail.smtp(context.tenant, context.serverMail) ?: throw CrmChannelException(tr("Configura el correo de la empresa (SMTP)."))
+        if (email.subject.isBlank()) throw CrmChannelException(tr("Escribe el asunto del correo."))
         try {
             MailSender.sendHtml(smtp, lead.email, email.subject, email.html, email.text)
         } catch (failure: MailException) {
             // El mensaje de MailException ya es generico; el detalle tecnico queda en la causa.
             org.slf4j.LoggerFactory.getLogger(CrmEmailChannel::class.java).warn("CRM: no se pudo enviar el correo: {}", failure.cause?.message ?: failure.message)
-            throw CrmChannelException(failure.message ?: "No se pudo enviar el correo.")
+            throw CrmChannelException(failure.message ?: tr("No se pudo enviar el correo."))
         }
         return null
     }

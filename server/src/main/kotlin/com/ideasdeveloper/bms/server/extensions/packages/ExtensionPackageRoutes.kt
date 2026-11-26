@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.server.extensions.packages
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -36,8 +38,8 @@ data class ExtensionUrlRequest(
     val url: String = "",
 )
 
-internal const val UploadDisabledMessage =
-    "La instalacion de extensiones por ZIP/URL esta deshabilitada; activala con EXTENSION_UPLOAD_ENABLED."
+internal val UploadDisabledMessage =
+    msg("La instalacion de extensiones por ZIP/URL esta deshabilitada; activala con EXTENSION_UPLOAD_ENABLED.")
 
 /**
  * Paquetes externos de extensiones, solo para el dueno del servidor.
@@ -59,7 +61,7 @@ fun Route.extensionPackageRoutes(
     suspend fun ApplicationCall.uploadOwner(message: String): String? {
         val role = owner(message) ?: return null
         if (!uploadEnabled) {
-            respond(HttpStatusCode.Forbidden, CompanyErrorResponse("FEATURE_DISABLED", UploadDisabledMessage))
+            respond(HttpStatusCode.Forbidden, CompanyErrorResponse("FEATURE_DISABLED", tr(UploadDisabledMessage)))
             return null
         }
         return role
@@ -74,22 +76,22 @@ fun Route.extensionPackageRoutes(
             "PAYLOAD_TOO_LARGE" -> HttpStatusCode.PayloadTooLarge
             else -> HttpStatusCode.BadRequest
         }
-        respond(status, CompanyErrorResponse(failure.code, failure.message ?: "No se pudo completar la operacion."))
+        respond(status, CompanyErrorResponse(failure.code, failure.message ?: tr("No se pudo completar la operacion.")))
     }
 
     get("/server/extensions/catalog") {
-        call.owner("Debes iniciar sesion como server_owner para consultar el catalogo de extensiones.") ?: return@get
+        call.owner(tr("Debes iniciar sesion como server_owner para consultar el catalogo de extensiones.")) ?: return@get
         call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.catalog() })
     }
 
     get("/server/extensions/{id}/status") {
-        call.owner("Debes iniciar sesion como server_owner para consultar extensiones.") ?: return@get
+        call.owner(tr("Debes iniciar sesion como server_owner para consultar extensiones.")) ?: return@get
         val id = call.parameters["id"].orEmpty()
         call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.status(id) })
     }
 
     get("/server/extensions/{id}/inspect") {
-        call.owner("Debes iniciar sesion como server_owner para revisar paquetes de extensiones.") ?: return@get
+        call.owner(tr("Debes iniciar sesion como server_owner para revisar paquetes de extensiones.")) ?: return@get
         val id = call.parameters["id"].orEmpty()
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.inspect(id) })
@@ -99,7 +101,7 @@ fun Route.extensionPackageRoutes(
     }
 
     post("/server/extensions/{id}/install") {
-        val role = call.owner("Debes iniciar sesion como server_owner para instalar extensiones.") ?: return@post
+        val role = call.owner(tr("Debes iniciar sesion como server_owner para instalar extensiones.")) ?: return@post
         val id = call.parameters["id"].orEmpty()
         try {
             call.respond(HttpStatusCode.Accepted, withContext(Dispatchers.IO) { service.install(id, role) })
@@ -109,12 +111,12 @@ fun Route.extensionPackageRoutes(
     }
 
     post("/server/extensions/{id}/authorize-unsigned") {
-        val role = call.owner("Debes iniciar sesion como server_owner para autorizar paquetes sin firma.") ?: return@post
+        val role = call.owner(tr("Debes iniciar sesion como server_owner para autorizar paquetes sin firma.")) ?: return@post
         val id = call.parameters["id"].orEmpty()
         val request = try {
             call.receive<AuthorizeUnsignedRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@post
         }
         try {
@@ -126,7 +128,7 @@ fun Route.extensionPackageRoutes(
 
     // ZIP subido: revisa y guarda el archivo (no instala). Multipart con los campos id y file.
     post("/server/extensions/upload") {
-        call.uploadOwner("Debes iniciar sesion como server_owner para subir paquetes de extensiones.") ?: return@post
+        call.uploadOwner(tr("Debes iniciar sesion como server_owner para subir paquetes de extensiones.")) ?: return@post
         var id = ""
         var fileName: String? = null
         var bytes: ByteArray? = null
@@ -145,16 +147,16 @@ fun Route.extensionPackageRoutes(
                 part.dispose()
             }
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un formulario multipart con los campos id y file."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un formulario multipart con los campos id y file.")))
             return@post
         }
         val uploaded = bytes
         when {
             tooLarge -> call.respond(
                 HttpStatusCode.PayloadTooLarge,
-                CompanyErrorResponse("PAYLOAD_TOO_LARGE", "El ZIP es demasiado grande (maximo ${ExtensionPackageService.MaxZipBytes / 1024 / 1024} MB)."),
+                CompanyErrorResponse("PAYLOAD_TOO_LARGE", tr("El ZIP es demasiado grande (maximo {0} MB).", ExtensionPackageService.MaxZipBytes / 1024 / 1024)),
             )
-            id.isEmpty() || uploaded == null -> call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Indica el id de la extension y sube un archivo ZIP."))
+            id.isEmpty() || uploaded == null -> call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Indica el id de la extension y sube un archivo ZIP.")))
             else -> try {
                 call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.inspectZip(id, fileName, uploaded) })
             } catch (failure: ExtensionPackageServiceException) {
@@ -165,11 +167,11 @@ fun Route.extensionPackageRoutes(
 
     // Paquete desde una URL https: la descarga (anclada anti-SSRF), la revisa y la guarda (no instala).
     post("/server/extensions/from-url") {
-        call.uploadOwner("Debes iniciar sesion como server_owner para instalar paquetes desde una URL.") ?: return@post
+        call.uploadOwner(tr("Debes iniciar sesion como server_owner para instalar paquetes desde una URL.")) ?: return@post
         val request = try {
             call.receive<ExtensionUrlRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido con id y url."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido con id y url.")))
             return@post
         }
         try {
@@ -181,12 +183,12 @@ fun Route.extensionPackageRoutes(
 
     // Autoriza por hash un paquete sin firma ya revisado (ZIP o URL).
     post("/server/extensions/staged/{token}/authorize-unsigned") {
-        val role = call.uploadOwner("Debes iniciar sesion como server_owner para autorizar paquetes sin firma.") ?: return@post
+        val role = call.uploadOwner(tr("Debes iniciar sesion como server_owner para autorizar paquetes sin firma.")) ?: return@post
         val token =call.parameters["token"].orEmpty()
         val request = try {
             call.receive<AuthorizeUnsignedRequest>()
         } catch (_: BadRequestException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             return@post
         }
         try {
@@ -198,7 +200,7 @@ fun Route.extensionPackageRoutes(
 
     // Instala el paquete ya revisado (ZIP o URL); exige firma o hash autorizado.
     post("/server/extensions/staged/{token}/install") {
-        val role = call.uploadOwner("Debes iniciar sesion como server_owner para instalar extensiones.") ?: return@post
+        val role = call.uploadOwner(tr("Debes iniciar sesion como server_owner para instalar extensiones.")) ?: return@post
         val token =call.parameters["token"].orEmpty()
         try {
             call.respond(HttpStatusCode.Accepted, withContext(Dispatchers.IO) { service.installStaged(token, role) })
@@ -208,7 +210,7 @@ fun Route.extensionPackageRoutes(
     }
 
     delete("/server/extensions/{id}") {
-        val role = call.owner("Debes iniciar sesion como server_owner para quitar extensiones.") ?: return@delete
+        val role = call.owner(tr("Debes iniciar sesion como server_owner para quitar extensiones.")) ?: return@delete
         val id = call.parameters["id"].orEmpty()
         try {
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.remove(id, role) })

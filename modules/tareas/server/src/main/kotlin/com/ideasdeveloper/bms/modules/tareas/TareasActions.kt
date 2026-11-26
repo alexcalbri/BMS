@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import com.ideasdeveloper.bms.ui.UiFileRef
 import com.ideasdeveloper.bms.ui.UiJson
@@ -22,9 +24,9 @@ data class BoardForm(val name: String, val description: String, val visibility: 
  * Nothing here touches the database: the service applies the rules afterwards.
  */
 object TareasActions {
-    const val NoGroup = "Sin grupo"
-    const val NoReviewer = "Sin revisor"
-    const val AllOption = "Todos"
+    val NoGroup = msg("Sin grupo")
+    val NoReviewer = msg("Sin revisor")
+    val AllOption = msg("Todos")
     private const val MaxBodyChars = 1_000_000
 
     /** Values of a form body: strings as they come and a JSON array (multiple dropdown) as its encoded text. */
@@ -43,12 +45,12 @@ object TareasActions {
 
     /** Like [bodyValues] but a body that is too big or not a JSON object is an error for the user. */
     fun formValues(body: String): Map<String, String> {
-        if (body.length > MaxBodyChars) throw TareasValidationException(InvalidForm)
-        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw TareasValidationException(InvalidForm)
+        if (body.length > MaxBodyChars) throw TareasValidationException(tr(InvalidForm))
+        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw TareasValidationException(tr(InvalidForm))
         return bodyValues(parsed.toString())
     }
 
-    const val InvalidForm = "Formulario demasiado grande o no válido."
+    val InvalidForm = msg("Formulario demasiado grande o no válido.")
 
     fun uuid(text: String?): UUID? = text?.trim()?.takeIf { it.isNotEmpty() }?.let { runCatching { UUID.fromString(it) }.getOrNull() }
 
@@ -59,23 +61,23 @@ object TareasActions {
         return try {
             LocalDate.parse(clean)
         } catch (_: DateTimeParseException) {
-            throw TareasValidationException("La fecha debe tener el formato AAAA-MM-DD.")
+            throw TareasValidationException(tr("La fecha debe tener el formato AAAA-MM-DD."))
         }
     }
 
     fun priority(text: String?): TaskPriority {
         if (text.isNullOrBlank()) return TaskPriority.Medium
-        return TaskPriority.fromLabel(text) ?: throw TareasValidationException("Prioridad no válida: $text.")
+        return TaskPriority.fromLabel(text) ?: throw TareasValidationException(tr("Prioridad no válida: {0}.", text))
     }
 
     fun status(text: String?): TaskStatus =
-        TaskStatus.fromLabel(text) ?: throw TareasValidationException("Estado no válido: ${text.orEmpty()}.")
+        TaskStatus.fromLabel(text) ?: throw TareasValidationException(tr("Estado no válido: {0}.", text.orEmpty()))
 
     /** Labels of the users (as the screens show them) to ids; an unknown label is an error. */
     fun userIds(labels: Collection<String>, users: List<TareasUser>): List<UUID> =
         labels.map { it.trim() }.filter { it.isNotEmpty() }.map { label ->
             users.firstOrNull { it.label.equals(label, ignoreCase = true) }?.id
-                ?: throw TareasValidationException("Persona no válida: $label. Elige solo personas de la lista.")
+                ?: throw TareasValidationException(tr("Persona no válida: {0}. Elige solo personas de la lista.", label))
         }.distinct()
 
     fun reviewerId(label: String?, users: List<TareasUser>): UUID? {
@@ -88,7 +90,7 @@ object TareasActions {
         val clean = label?.trim().orEmpty()
         if (clean.isEmpty() || clean.equals(NoGroup, ignoreCase = true)) return null
         return groups.firstOrNull { !it.archived && it.name.equals(clean, ignoreCase = true) }?.id
-            ?: throw TareasValidationException("El grupo \"$clean\" no existe en el tablero.")
+            ?: throw TareasValidationException(tr("El grupo \"{0}\" no existe en el tablero.", clean))
     }
 
     /**
@@ -107,7 +109,7 @@ object TareasActions {
         val customerId = when {
             !canSeeCustomers -> existing?.customerId
             customerText.isEmpty() -> null
-            else -> uuid(values["customer_id"]) ?: throw TareasValidationException("Elige el cliente de la lista de sugerencias.")
+            else -> uuid(values["customer_id"]) ?: throw TareasValidationException(tr("Elige el cliente de la lista de sugerencias."))
         }
         val input = TaskInput(
             boardId = boardId,
@@ -127,12 +129,12 @@ object TareasActions {
 
     fun boardForm(values: Map<String, String>, users: List<TareasUser>): BoardForm {
         val name = values["name"].orEmpty().trim()
-        if (name.isEmpty()) throw TareasValidationException("El nombre del tablero es obligatorio.")
-        if (name.length > 120) throw TareasValidationException("El nombre del tablero admite hasta 120 caracteres.")
+        if (name.isEmpty()) throw TareasValidationException(tr("El nombre del tablero es obligatorio."))
+        if (name.length > 120) throw TareasValidationException(tr("El nombre del tablero admite hasta 120 caracteres."))
         val description = values["description"].orEmpty().trim()
-        if (description.length > 2000) throw TareasValidationException("La descripción admite hasta 2000 caracteres.")
+        if (description.length > 2000) throw TareasValidationException(tr("La descripción admite hasta 2000 caracteres."))
         val visibility = values["visibility"]?.takeIf { it.isNotBlank() }?.let {
-            BoardVisibility.fromLabel(it) ?: throw TareasValidationException("Visibilidad no válida: $it.")
+            BoardVisibility.fromLabel(it) ?: throw TareasValidationException(tr("Visibilidad no válida: {0}.", it))
         } ?: BoardVisibility.Company
         return BoardForm(name, description, visibility, userIds(UiFieldValues.options(values["members"].orEmpty()), users))
     }

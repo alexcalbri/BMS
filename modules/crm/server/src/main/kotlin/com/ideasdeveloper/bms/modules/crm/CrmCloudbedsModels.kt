@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.util.UUID

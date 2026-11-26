@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.server.modules.StoredFileRef
@@ -40,12 +41,12 @@ object CrmAttachments {
      */
     fun upload(tenant: Connection, files: ModuleFiles, name: String, path: String, contentType: String, content: InputStream, uploadedBy: String): UiFileRef {
         val fileName = cleanName(name)
-        if (fileName.isEmpty()) throw CrmValidationException("El archivo no tiene nombre.")
+        if (fileName.isEmpty()) throw CrmValidationException(tr("El archivo no tiene nombre."))
         val type = contentType.take(200).ifBlank { "application/octet-stream" }
         val stored = try {
             files.put(fileName, type, content, MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw CrmValidationException("$fileName supera el maximo de ${MaxFileBytes / (1024 * 1024)} MB.")
+            throw CrmValidationException(tr("{0} supera el maximo de {1} MB.", fileName, MaxFileBytes / (1024 * 1024)))
         }
         val ref = UiFileRef(UUID.randomUUID().toString(), fileName, cleanPath(path), stored.size)
         try {
@@ -90,12 +91,12 @@ object CrmAttachments {
             query.setObject(1, leadId)
             query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
         }
-        if (count >= MaxFilesPerLead) throw CrmValidationException("el lead ya tiene $MaxFilesPerLead archivos")
+        if (count >= MaxFilesPerLead) throw CrmValidationException(tr("el lead ya tiene {0} archivos", MaxFilesPerLead))
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         val stored = try {
             files.put(fileName, type, content, MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw CrmValidationException("supera ${MaxFileBytes / (1024 * 1024)} MB")
+            throw CrmValidationException(tr("supera {0} MB", MaxFileBytes / (1024 * 1024)))
         }
         try {
             tenant.prepareStatement(
@@ -164,7 +165,7 @@ object CrmAttachments {
             query.setObject(1, leadId)
             query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
         }
-        if (total + pending.size > MaxFilesPerLead) throw CrmValidationException("Un lead admite hasta $MaxFilesPerLead archivos.")
+        if (total + pending.size > MaxFilesPerLead) throw CrmValidationException(tr("Un lead admite hasta {0} archivos.", MaxFilesPerLead))
         val addedFiles = tenant.prepareStatement(
             "UPDATE crm_attachments SET lead_id = ?, field_key = ? WHERE lead_id IS NULL AND field_key IS NULL AND deleted_at IS NULL AND id = ANY(?) RETURNING file_name, id, size_bytes"
         ).use { update ->

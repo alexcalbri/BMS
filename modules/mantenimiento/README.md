@@ -211,3 +211,12 @@ queda "no disponible" y no rompe nada.
 `MantenimientoModel` (tipos y validaciones), `MantenimientoScope` (permisos y transiciones, puros), `PlanSchedule` (recurrencia, pura),
 `MantenimientoRepository` (SQL), `MantenimientoNotify`, `MantenimientoJobs`, `MantenimientoBridge`, `MantenimientoTareasSync`,
 `MantenimientoPurchases`, `MantenimientoImport` (contrato para extensiones), `MantenimientoMcpTools` y `MantenimientoServerModule`.
+
+## Languages (0.2.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, confirmations, notices, permissions and the module description) is available in
+Spanish (source) and English: the code writes `tr("Texto en espanol")` and the English catalog is
+`server/src/main/resources/modules/mantenimiento/i18n/en.json`. Customer data, names typed by users (assets, plans, properties),
+history and notes already stored, the job and import logs, the MCP tools (names, descriptions and results) and the values the app
+sends back (`op`, ids, filter and option values such as "Todos", "Sin activo" or the status and priority labels) are not translated.
+Notices to staff are written in each recipient's language.

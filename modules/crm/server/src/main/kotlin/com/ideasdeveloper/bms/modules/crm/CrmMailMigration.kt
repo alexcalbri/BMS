@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CompanyMail
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
 import com.ideasdeveloper.bms.server.security.SecretBox

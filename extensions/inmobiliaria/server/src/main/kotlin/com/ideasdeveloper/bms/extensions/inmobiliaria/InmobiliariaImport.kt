@@ -9,6 +9,8 @@ import com.ideasdeveloper.bms.modules.crm.CrmImportRecord
 import com.ideasdeveloper.bms.modules.crm.CrmRepository
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
 import com.ideasdeveloper.bms.modules.crm.CrmUser
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import java.math.BigDecimal
 import java.sql.Connection
@@ -68,7 +70,7 @@ object InmobiliariaImportRules {
             "negotiation", "en negociacion", "under contract", "pending" -> PropertyStatus.Negotiation
             "withdrawn", "retirada", "off market" -> PropertyStatus.Withdrawn
             "intake", "captacion", "upcoming", "new listing" -> PropertyStatus.Intake
-            else -> PropertyStatus.parse(raw) ?: throw InmobiliariaException("No se reconoce el estado '${raw.orEmpty().trim()}'.")
+            else -> PropertyStatus.parse(raw) ?: throw InmobiliariaException(tr("No se reconoce el estado '{0}'.", raw.orEmpty().trim()))
         }
     }
 
@@ -80,10 +82,10 @@ object InmobiliariaImportRules {
     }
 
     /** Fecha AAAA-MM-DD o MM/DD/AAAA (se ignora una hora que venga detras). Vacio = nulo; lanza [InmobiliariaException] si no se entiende. */
-    fun parseDate(raw: String?, label: String = "La fecha"): LocalDate? {
+    fun parseDate(raw: String?, label: String = msg("La fecha")): LocalDate? {
         val text = raw.orEmpty().trim().takeWhile { !it.isWhitespace() && it != 'T' }
         if (text.isEmpty()) return null
-        val invalid = InmobiliariaException("$label debe tener el formato AAAA-MM-DD o MM/DD/AAAA.")
+        val invalid = InmobiliariaException(tr("{0} debe tener el formato AAAA-MM-DD o MM/DD/AAAA.", tr(label)))
         return try {
             when {
                 isoDate.matches(text) -> LocalDate.parse(text)
@@ -162,7 +164,7 @@ object InmobiliariaImportRules {
         stages.firstOrNull { it.name.equals(name, ignoreCase = true) }?.let { return StagePick.Use(it) }
         val outcome = stageOutcome(name)
         val first = stages.firstOrNull { it.outcome == outcome } ?: return StagePick.Create(name, outcome)
-        return StagePick.Use(first, if (outcome == DealOutcome.Open) "La etapa '$name' no existe: se uso '${first.name}'." else null)
+        return StagePick.Use(first, if (outcome == DealOutcome.Open) tr("La etapa '{0}' no existe: se uso '{1}'.", name, first.name) else null)
     }
 
     /** Que hacer con la propiedad al crear una transaccion importada. */
@@ -220,59 +222,59 @@ object InmobiliariaImport {
     val kinds: List<CrmImportKind> = listOf(
         CrmImportKind(
             KindProperty,
-            "Propiedades",
+            msg("Propiedades"),
             listOf(
-                CrmImportField("title", "Titulo", required = true),
-                CrmImportField("code", "Codigo", hint = "Referencia unica (ERE-0123); vacio genera uno"),
-                CrmImportField("kind", "Tipo", hint = "Terreno, Casa, Condominio, Lote en desarrollo, Comercial"),
-                CrmImportField("zone", "Zona"),
-                CrmImportField("development", "Desarrollo"),
-                CrmImportField("status", "Estado", hint = "FOR SALE, REDUCED, SOLD; vacio = En venta"),
-                CrmImportField("agent", "Agente", hint = "Nombre o correo de un usuario del CRM"),
-                CrmImportField("owner_name", "Vendedor (nombre)"),
-                CrmImportField("owner_email", "Vendedor (correo)", hint = "Enlaza al cliente que tenga ese correo"),
-                CrmImportField("owner_phone", "Vendedor (telefono)"),
-                CrmImportField("lot_area", "Area del lote (m2)"),
-                CrmImportField("built_area", "Area construida (m2)"),
-                CrmImportField("bedrooms", "Habitaciones"),
-                CrmImportField("bathrooms", "Banos"),
-                CrmImportField("price", "Precio"),
-                CrmImportField("previous_price", "Precio anterior"),
-                CrmImportField("currency", "Moneda", hint = "Codigo de 3 letras (USD)"),
-                CrmImportField("description", "Descripcion"),
-                CrmImportField("notes", "Notas"),
-                CrmImportField("link_website", "Enlace sitio web", hint = "Solo http o https"),
-                CrmImportField("link_website_es", "Enlace sitio ES"),
-                CrmImportField("link_craigslist", "Enlace Craigslist"),
-                CrmImportField("link_encuentra24", "Enlace Encuentra24"),
-                CrmImportField("link_drive", "Enlace Google Drive"),
-                CrmImportField("link_other", "Otro enlace"),
-                CrmImportField("intake", "Es captacion", hint = "true/si/yes/1 deja en Captacion si no hay estado (solo al crear)"),
+                CrmImportField("title", msg("Titulo"), required = true),
+                CrmImportField("code", msg("Codigo"), hint = msg("Referencia unica (ERE-0123); vacio genera uno")),
+                CrmImportField("kind", msg("Tipo"), hint = msg("Terreno, Casa, Condominio, Lote en desarrollo, Comercial")),
+                CrmImportField("zone", msg("Zona")),
+                CrmImportField("development", msg("Desarrollo")),
+                CrmImportField("status", msg("Estado"), hint = msg("FOR SALE, REDUCED, SOLD; vacio = En venta")),
+                CrmImportField("agent", msg("Agente"), hint = msg("Nombre o correo de un usuario del CRM")),
+                CrmImportField("owner_name", msg("Vendedor (nombre)")),
+                CrmImportField("owner_email", msg("Vendedor (correo)"), hint = msg("Enlaza al cliente que tenga ese correo")),
+                CrmImportField("owner_phone", msg("Vendedor (telefono)")),
+                CrmImportField("lot_area", msg("Area del lote (m2)")),
+                CrmImportField("built_area", msg("Area construida (m2)")),
+                CrmImportField("bedrooms", msg("Habitaciones")),
+                CrmImportField("bathrooms", msg("Banos")),
+                CrmImportField("price", msg("Precio")),
+                CrmImportField("previous_price", msg("Precio anterior")),
+                CrmImportField("currency", msg("Moneda"), hint = msg("Codigo de 3 letras (USD)")),
+                CrmImportField("description", msg("Descripcion")),
+                CrmImportField("notes", msg("Notas")),
+                CrmImportField("link_website", msg("Enlace sitio web"), hint = msg("Solo http o https")),
+                CrmImportField("link_website_es", msg("Enlace sitio ES")),
+                CrmImportField("link_craigslist", msg("Enlace Craigslist")),
+                CrmImportField("link_encuentra24", msg("Enlace Encuentra24")),
+                CrmImportField("link_drive", msg("Enlace Google Drive")),
+                CrmImportField("link_other", msg("Otro enlace")),
+                CrmImportField("intake", msg("Es captacion"), hint = msg("true/si/yes/1 deja en Captacion si no hay estado (solo al crear)")),
             ),
         ),
         CrmImportKind(
             KindDeal,
-            "Transacciones",
+            msg("Transacciones"),
             listOf(
-                CrmImportField("property", "Propiedad", required = true, hint = "Clave de importacion, codigo o titulo exacto"),
-                CrmImportField("buyer_name", "Comprador (nombre)"),
-                CrmImportField("buyer_email", "Comprador (correo)", hint = "Enlaza al lead abierto con ese correo"),
-                CrmImportField("stage", "Etapa", hint = "Una abierta desconocida usa la primera abierta; Closed/Cerrada = ganada, Canceled = perdida (solo se crea si no hay ninguna)"),
-                CrmImportField("agreed_price", "Precio acordado"),
-                CrmImportField("commission_pct", "Comision (%)"),
-                CrmImportField("commission_amount", "Comision (monto)"),
-                CrmImportField("estimated_close_on", "Cierre estimado", hint = "AAAA-MM-DD o MM/DD/AAAA"),
-                CrmImportField("closed_on", "Cierre real", hint = "AAAA-MM-DD o MM/DD/AAAA"),
-                CrmImportField("comments", "Comentarios"),
-                CrmImportField("seller", "Vendedor", hint = "Nombres separados por coma"),
-                CrmImportField("seller_agent", "Agente del vendedor"),
-                CrmImportField("seller_lawyer", "Abogado del vendedor"),
-                CrmImportField("seller_referral", "Referido del vendedor"),
-                CrmImportField("buyer", "Comprador"),
-                CrmImportField("buyer_agent", "Agente del comprador"),
-                CrmImportField("buyer_lawyer", "Abogado del comprador"),
-                CrmImportField("agents", "Agentes", hint = "Un nombre igual al de un usuario del CRM queda como agente interno"),
-                CrmImportField("brokers", "Corredores"),
+                CrmImportField("property", msg("Propiedad"), required = true, hint = msg("Clave de importacion, codigo o titulo exacto")),
+                CrmImportField("buyer_name", msg("Comprador (nombre)")),
+                CrmImportField("buyer_email", msg("Comprador (correo)"), hint = msg("Enlaza al lead abierto con ese correo")),
+                CrmImportField("stage", msg("Etapa"), hint = msg("Una abierta desconocida usa la primera abierta; Closed/Cerrada = ganada, Canceled = perdida (solo se crea si no hay ninguna)")),
+                CrmImportField("agreed_price", msg("Precio acordado")),
+                CrmImportField("commission_pct", msg("Comision (%)")),
+                CrmImportField("commission_amount", msg("Comision (monto)")),
+                CrmImportField("estimated_close_on", msg("Cierre estimado"), hint = msg("AAAA-MM-DD o MM/DD/AAAA")),
+                CrmImportField("closed_on", msg("Cierre real"), hint = msg("AAAA-MM-DD o MM/DD/AAAA")),
+                CrmImportField("comments", msg("Comentarios")),
+                CrmImportField("seller", msg("Vendedor"), hint = msg("Nombres separados por coma")),
+                CrmImportField("seller_agent", msg("Agente del vendedor")),
+                CrmImportField("seller_lawyer", msg("Abogado del vendedor")),
+                CrmImportField("seller_referral", msg("Referido del vendedor")),
+                CrmImportField("buyer", msg("Comprador")),
+                CrmImportField("buyer_agent", msg("Agente del comprador")),
+                CrmImportField("buyer_lawyer", msg("Abogado del comprador")),
+                CrmImportField("agents", msg("Agentes"), hint = msg("Un nombre igual al de un usuario del CRM queda como agente interno")),
+                CrmImportField("brokers", msg("Corredores")),
             ),
         ),
     )
@@ -314,10 +316,10 @@ object InmobiliariaImport {
      */
     fun importRecords(tenant: Connection, actor: CrmActor, kind: String, records: List<CrmImportRecord>): CrmImportOutcome {
         if (kind != KindProperty && kind != KindDeal) {
-            return CrmImportOutcome(0, 0, records.size, listOf("Tipo de importacion desconocido: '$kind'."), records.map { it.importKey })
+            return CrmImportOutcome(0, 0, records.size, listOf(tr("Tipo de importacion desconocido: '{0}'.", kind)), records.map { it.importKey })
         }
         if (records.size > InmobiliariaImportRules.MaxBatch) {
-            return CrmImportOutcome(0, 0, records.size, listOf("Lote demasiado grande."), records.map { it.importKey })
+            return CrmImportOutcome(0, 0, records.size, listOf(tr("Lote demasiado grande.")), records.map { it.importKey })
         }
         var created = 0
         var updated = 0
@@ -337,7 +339,7 @@ object InmobiliariaImport {
                 if (key.isEmpty() || key.length > MaxKey) {
                     skipped++
                     failedKeys += record.importKey
-                    problems += "${key.take(40).ifEmpty { "(sin clave)" }}: la clave de importacion debe tener entre 1 y $MaxKey caracteres."
+                    problems += tr("{0}: la clave de importacion debe tener entre 1 y {1} caracteres.", key.take(40).ifEmpty { tr("(sin clave)") }, MaxKey)
                     continue
                 }
                 val warnings = mutableListOf<String>()
@@ -352,7 +354,7 @@ object InmobiliariaImport {
                     runCatching { tenant.rollback(savepoint) }
                     skipped++
                     failedKeys += key
-                    problems += "$key: " + (if (failure is InmobiliariaException) failure.message.orEmpty() else "No se pudo guardar el registro.")
+                    problems += "$key: " + (if (failure is InmobiliariaException) failure.message.orEmpty() else tr("No se pudo guardar el registro."))
                 }
             }
         }
@@ -384,15 +386,15 @@ object InmobiliariaImport {
     private fun parsePropertyFields(values: Map<String, String>, warnings: MutableList<String>): ParsedProperty {
         fun text(field: String) = values[field].orEmpty().trim()
         val title = text("title")
-        if (title.isEmpty()) throw InmobiliariaException("Falta el titulo.")
+        if (title.isEmpty()) throw InmobiliariaException(tr("Falta el titulo."))
         val kindText = text("kind")
         val kind = PropertyKind.parse(kindText)
-        if (kindText.isNotEmpty() && kind == null) warnings += "No se reconoce el tipo '$kindText'."
+        if (kindText.isNotEmpty() && kind == null) warnings += tr("No se reconoce el tipo '{0}'.", kindText)
         val links = mutableListOf<LinkInput>()
         for ((field, label) in InmobiliariaImportRules.LinkFields) {
             val url = text(field)
             if (url.isEmpty()) continue
-            if (InmobiliariaInput.isValidUrl(url)) links += LinkInput(label, url) else warnings += "El enlace '$label' no es una direccion http o https valida y se omitio."
+            if (InmobiliariaInput.isValidUrl(url)) links += LinkInput(label, url) else warnings += tr("El enlace '{0}' no es una direccion http o https valida y se omitio.", label)
         }
         return ParsedProperty(
             title = title,
@@ -400,12 +402,12 @@ object InmobiliariaImport {
             kind = kind,
             zone = text("zone"),
             development = text("development"),
-            lot = InmobiliariaInput.parseArea(text("lot_area"), "El area del lote"),
-            built = InmobiliariaInput.parseArea(text("built_area"), "El area construida"),
+            lot = InmobiliariaInput.parseArea(text("lot_area"), msg("El area del lote")),
+            built = InmobiliariaInput.parseArea(text("built_area"), msg("El area construida")),
             bedrooms = InmobiliariaInput.parseBedrooms(text("bedrooms")),
             bathrooms = InmobiliariaInput.parseBathrooms(text("bathrooms")),
-            price = InmobiliariaInput.parseMoney(text("price"), "El precio"),
-            previous = InmobiliariaInput.parseMoney(text("previous_price"), "El precio anterior"),
+            price = InmobiliariaInput.parseMoney(text("price"), msg("El precio")),
+            previous = InmobiliariaInput.parseMoney(text("previous_price"), msg("El precio anterior")),
             currency = text("currency").uppercase().ifEmpty { null },
             description = text("description"),
             intake = InmobiliariaImportRules.isTrue(text("intake")),
@@ -445,7 +447,7 @@ object InmobiliariaImport {
         if (existing == null) {
             existing = findDuplicate(c, parsed)
             if (existing != null && !InmobiliariaStore.setImportKey(c.tenant, existing.id, key)) {
-                warnings += "Fusionada con ${existing.code.ifEmpty { existing.title }}."
+                warnings += tr("Fusionada con {0}.", existing.code.ifEmpty { existing.title })
             }
         }
 
@@ -459,7 +461,7 @@ object InmobiliariaImport {
         if (existing == null) return createImportedProperty(c, key, parsed, agent?.id, owner, notes, warnings)
 
         if (parsed.code != null && !parsed.code.equals(existing.code, ignoreCase = true) && InmobiliariaStore.codeTaken(c.tenant, parsed.code, existing.id)) {
-            throw InmobiliariaException("El codigo ${parsed.code} ya lo tiene otra propiedad.")
+            throw InmobiliariaException(tr("El codigo {0} ya lo tiene otra propiedad.", parsed.code))
         }
         // Lo que la fuente trae vacio no borra lo que ya hay.
         val fields = PropertyFields(
@@ -477,7 +479,7 @@ object InmobiliariaImport {
             val current = InmobiliariaStore.links(c.tenant, existing.id).map { LinkInput(it.label, it.url) }
             val merged = InmobiliariaImportRules.mergeLinks(current, parsed.links)
             val capped = InmobiliariaImportRules.capLinks(merged)
-            if (capped.size < merged.size) warnings += "Una propiedad admite hasta ${InmobiliariaService.MaxLinks} enlaces: se omitieron ${merged.size - capped.size}."
+            if (capped.size < merged.size) warnings += tr("Una propiedad admite hasta {0} enlaces: se omitieron {1}.", InmobiliariaService.MaxLinks, merged.size - capped.size)
             InmobiliariaService.replaceLinks(s, existing.id, capped)
         }
         return false
@@ -488,7 +490,7 @@ object InmobiliariaImport {
         if (parsed.statusText.isEmpty()) return
         val reading = InmobiliariaImportRules.readStatus(parsed.statusText, false)
         if (reading.unknown) {
-            warnings += "No se reconoce el estado '${parsed.statusText}': se dejo el que tenia."
+            warnings += tr("No se reconoce el estado '{0}': se dejo el que tenia.", parsed.statusText)
             return
         }
         val hasWon = InmobiliariaStore.wonDealCount(c.tenant, existing.id, null) > 0
@@ -497,15 +499,15 @@ object InmobiliariaImport {
         try {
             InmobiliariaService.changeStatus(c.session, existing.id, reading.status)
         } catch (failure: InmobiliariaException) {
-            warnings += "No se cambio el estado: ${failure.message.orEmpty()}"
+            warnings += tr("No se cambio el estado: {0}", failure.message.orEmpty())
         }
     }
 
     private fun createImportedProperty(c: Context, key: String, parsed: ParsedProperty, agentId: UUID?, owner: UUID?, notes: String, warnings: MutableList<String>): Boolean {
         val s = c.session
         val reading = InmobiliariaImportRules.readStatus(parsed.statusText, parsed.intake)
-        if (reading.unknown) warnings += "No se reconoce el estado '${parsed.statusText}': se uso ${reading.status.label}."
-        if (parsed.code != null && InmobiliariaStore.codeTaken(c.tenant, parsed.code)) throw InmobiliariaException("El codigo ${parsed.code} ya lo tiene otra propiedad.")
+        if (reading.unknown) warnings += tr("No se reconoce el estado '{0}': se uso {1}.", parsed.statusText, reading.status.display)
+        if (parsed.code != null && InmobiliariaStore.codeTaken(c.tenant, parsed.code)) throw InmobiliariaException(tr("El codigo {0} ya lo tiene otra propiedad.", parsed.code))
         val fields = PropertyFields(
             code = parsed.code, title = parsed.title, kind = parsed.kind ?: PropertyKind.Other, zone = parsed.zone, development = parsed.development,
             listingAgentId = agentId, ownerCustomerId = owner, lotAreaM2 = parsed.lot, builtAreaM2 = parsed.built, bedrooms = parsed.bedrooms,
@@ -528,8 +530,8 @@ object InmobiliariaImport {
         val matches = InmobiliariaStore.searchProperties(c.tenant, PropertyFilter(text = ref), 50, 0).items.filter { it.title.equals(ref, ignoreCase = true) }
         return when (matches.size) {
             1 -> matches.first()
-            0 -> throw InmobiliariaException("No se encontro la propiedad '$ref'.")
-            else -> throw InmobiliariaException("Hay varias propiedades con el titulo '$ref': usa su clave de importacion o su codigo.")
+            0 -> throw InmobiliariaException(tr("No se encontro la propiedad '{0}'.", ref))
+            else -> throw InmobiliariaException(tr("Hay varias propiedades con el titulo '{0}': usa su clave de importacion o su codigo.", ref))
         }
     }
 
@@ -577,11 +579,11 @@ object InmobiliariaImport {
         val s = c.session
         val existing = InmobiliariaStore.findDealByImportKey(c.tenant, key)
 
-        val agreedPrice = InmobiliariaInput.parseMoney(text("agreed_price"), "El precio acordado")
-        val commissionPct = InmobiliariaInput.parsePercent(text("commission_pct"), "El porcentaje de comision")
-        val commissionAmount = InmobiliariaInput.parseMoney(text("commission_amount"), "La comision")
-        val estimatedClose = InmobiliariaImportRules.parseDate(text("estimated_close_on"), "El cierre estimado")
-        val closedOn = InmobiliariaImportRules.parseDate(text("closed_on"), "El cierre real")
+        val agreedPrice = InmobiliariaInput.parseMoney(text("agreed_price"), msg("El precio acordado"))
+        val commissionPct = InmobiliariaInput.parsePercent(text("commission_pct"), msg("El porcentaje de comision"))
+        val commissionAmount = InmobiliariaInput.parseMoney(text("commission_amount"), msg("La comision"))
+        val estimatedClose = InmobiliariaImportRules.parseDate(text("estimated_close_on"), msg("El cierre estimado"))
+        val closedOn = InmobiliariaImportRules.parseDate(text("closed_on"), msg("El cierre real"))
         val stage = resolveStage(c, text("stage"), warnings)
         val buyer = resolveBuyer(c, values)
 
@@ -606,7 +608,7 @@ object InmobiliariaImport {
             if (stage.outcome == DealOutcome.Won && stage.id != existing.stageId) {
                 val soldOn = InmobiliariaStore.findProperty(c.tenant, existing.propertyId)?.soldOn
                 val resolved = InmobiliariaImportRules.closedOnFor(closedOn, soldOn)
-                if (resolved.defaulted) warnings += "La venta no trae fecha de cierre: se uso hoy."
+                if (resolved.defaulted) warnings += tr("La venta no trae fecha de cierre: se uso hoy.")
                 close = resolved.date
             }
             warnings += InmobiliariaService.moveDeal(s, existing.id, stage.id, close, external = false).warnings
@@ -629,15 +631,15 @@ object InmobiliariaImport {
     ): Boolean {
         val s = c.session
         val ref = values["property"].orEmpty().trim()
-        if (ref.isEmpty()) throw InmobiliariaException("Falta la propiedad.")
+        if (ref.isEmpty()) throw InmobiliariaException(tr("Falta la propiedad."))
         val property = resolveProperty(c, ref)
         // Sin etapa el servicio usa la primera abierta.
         val outcome = stage?.outcome ?: DealOutcome.Open
         val hasWon = InmobiliariaStore.wonDealCount(c.tenant, property.id, null) > 0
         val plan = InmobiliariaImportRules.planDeal(property.status, outcome, hasWon)
-        if (plan == InmobiliariaImportRules.DealPlan.RejectWon) throw InmobiliariaException("La propiedad ${property.code} ya tiene una transaccion ganada.")
+        if (plan == InmobiliariaImportRules.DealPlan.RejectWon) throw InmobiliariaException(tr("La propiedad {0} ya tiene una transaccion ganada.", property.code))
         val effects = plan == InmobiliariaImportRules.DealPlan.Normal
-        if (!effects) warnings += "La propiedad esta ${property.status.label.lowercase()}: la transaccion se creo sin cambiar la propiedad."
+        if (!effects) warnings += tr("La propiedad esta {0}: la transaccion se creo sin cambiar la propiedad.", property.status.display.lowercase())
         val result = InmobiliariaService.createDeal(
             s,
             DealDraft(
@@ -651,7 +653,7 @@ object InmobiliariaImport {
         warnings += result.warnings
         if (outcome == DealOutcome.Won) {
             val resolved = InmobiliariaImportRules.closedOnFor(closedOn, property.soldOn)
-            if (resolved.defaulted) warnings += "La venta no trae fecha de cierre: se uso hoy."
+            if (resolved.defaulted) warnings += tr("La venta no trae fecha de cierre: se uso hoy.")
             warnings += InmobiliariaService.moveDeal(s, result.deal.id, result.deal.stageId, resolved.date, applyPropertyEffects = effects, external = false).warnings
         }
         return true

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.sql.ResultSet
 import java.util.UUID
@@ -47,7 +49,7 @@ object HotspotNetworks {
     const val UserCode = "codigo_usuario"
 
     // Labels shown by the configuration select, by stored mode.
-    private val modeLabels = linkedMapOf(Form to "Formulario", CustomerCode to "Codigo de cliente", UserCode to "Codigo de usuario")
+    private val modeLabels = linkedMapOf(Form to msg("Formulario"), CustomerCode to msg("Codigo de cliente"), UserCode to msg("Codigo de usuario"))
     // Form key of the checkbox of each access source.
     fun sourceKey(sourceId: String) = "source_$sourceId"
     // Same alphabet as customers_generate_code() in the Clientes migration V004.
@@ -83,37 +85,37 @@ object HotspotNetworks {
         crmIntegration: Boolean = true,
     ): HotspotNetwork {
         val ssid = values["ssid"].orEmpty().trim()
-        if (ssid.isEmpty()) throw HotspotValidationException("El nombre de la red (SSID) es obligatorio.")
+        if (ssid.isEmpty()) throw HotspotValidationException(tr("El nombre de la red (SSID) es obligatorio."))
         if (ssid.toByteArray(Charsets.UTF_8).size > 32 || ssid.any { it.isISOControl() }) {
-            throw HotspotValidationException("El nombre de la red (SSID) admite hasta 32 bytes y no puede tener caracteres de control.")
+            throw HotspotValidationException(tr("El nombre de la red (SSID) admite hasta 32 bytes y no puede tener caracteres de control."))
         }
         val modeLabel = values["accessMode"].orEmpty().trim()
         val mode = modeLabels.entries.firstOrNull { it.value == modeLabel || it.key == modeLabel }?.key
-            ?: throw HotspotValidationException("Elige el tipo de acceso de la red.")
+            ?: throw HotspotValidationException(tr("Elige el tipo de acceso de la red."))
         if (mode == UserCode && !usersIntegration) {
-            throw HotspotValidationException("Activa la integracion Usuarios para usar el acceso por codigo de usuario.")
+            throw HotspotValidationException(tr("Activa la integracion Usuarios para usar el acceso por codigo de usuario."))
         }
         if (mode == CustomerCode && !crmIntegration) {
-            throw HotspotValidationException("Activa la integracion con CRM para usar el acceso por codigo de cliente.")
+            throw HotspotValidationException(tr("Activa la integracion con CRM para usar el acceso por codigo de cliente."))
         }
         val chosen = if (mode == CustomerCode) sources.filter { values[sourceKey(it)] == "true" }.sorted() else emptyList()
         if (mode == CustomerCode && chosen.isEmpty()) {
-            throw HotspotValidationException("Elige quien puede conectarse con codigo de cliente en esta red.")
+            throw HotspotValidationException(tr("Elige quien puede conectarse con codigo de cliente en esta red."))
         }
         // Blank inherits the general configuration.
         fun minutes(key: String, range: IntRange, label: String): Int? {
             val text = values[key].orEmpty().trim()
             if (text.isEmpty()) return null
             return text.toIntOrNull()?.takeIf { it in range }
-                ?: throw HotspotValidationException("$label debe estar entre ${range.first} y ${range.last} minutos, o vacio para usar el general.")
+                ?: throw HotspotValidationException(tr("{0} debe estar entre {1} y {2} minutos, o vacio para usar el general.", tr(label), range.first, range.last))
         }
         return HotspotNetwork(
             id = id,
             ssid = ssid,
             accessMode = mode,
             accessSources = chosen,
-            accessMinutes = minutes("accessMinutes", 1..10080, "El tiempo de acceso de la red"),
-            reconnectMinutes = minutes("reconnectMinutes", 0..525600, "El tiempo para reconectar de la red"),
+            accessMinutes = minutes("accessMinutes", 1..10080, msg("El tiempo de acceso de la red")),
+            reconnectMinutes = minutes("reconnectMinutes", 0..525600, msg("El tiempo para reconectar de la red")),
             shared = values["shared"] == "true",
         )
     }
@@ -155,7 +157,7 @@ object HotspotNetworks {
             query.setObject(2, network.id)
             query.executeQuery().use { it.next() }
         }
-        if (taken) throw HotspotValidationException("La red ${network.ssid} ya esta configurada.")
+        if (taken) throw HotspotValidationException(tr("La red {0} ya esta configurada.", network.ssid))
         connection.prepareStatement(
             """
             INSERT INTO hotspot_networks (id, ssid, access_mode, access_sources, access_minutes, reconnect_minutes, shared)

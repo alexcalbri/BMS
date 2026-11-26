@@ -1,11 +1,16 @@
 package com.ideasdeveloper.bms.extensions.tareas_monday
 
+import com.ideasdeveloper.bms.modules.tareas.ImportSummary
 import com.ideasdeveloper.bms.modules.tareas.ImportedCheck
 import com.ideasdeveloper.bms.modules.tareas.ImportedComment
-import com.ideasdeveloper.bms.modules.tareas.ImportSummary
 import com.ideasdeveloper.bms.modules.tareas.ImportedTask
 import com.ideasdeveloper.bms.modules.tareas.TaskPriority
 import com.ideasdeveloper.bms.modules.tareas.TaskStatus
+import com.ideasdeveloper.bms.server.i18n.msg
+import java.text.Normalizer
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -14,10 +19,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
-import java.text.Normalizer
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneOffset
 
 /** Columna de un tablero de monday (su id estable, su titulo y su tipo: status, people, timeline...). */
 data class MondayColumn(val id: String, val title: String, val type: String)
@@ -75,13 +76,13 @@ object MondayTarget {
 
     // En el orden en que se muestran en el formulario de mapeo.
     val all = listOf(
-        Definition(Status, "Estado"),
-        Definition(Priority, "Prioridad"),
-        Definition(Due, "Fecha limite"),
-        Definition(Assignees, "Responsables"),
-        Definition(Collaborators, "Colaboradores (tambien responsables)"),
-        Definition(Reviewer, "Revisor"),
-        Definition(Detail, "Detalle"),
+        Definition(Status, msg("Estado")),
+        Definition(Priority, msg("Prioridad")),
+        Definition(Due, msg("Fecha limite")),
+        Definition(Assignees, msg("Responsables")),
+        Definition(Collaborators, msg("Colaboradores (tambien responsables)")),
+        Definition(Reviewer, msg("Revisor")),
+        Definition(Detail, msg("Detalle")),
     )
 }
 

@@ -1,0 +1,11 @@
+{
+  "Anuncios de Encuentra24 vinculados a los leads": "Encuentra24 listings linked to the leads",
+  "Conexion con Encuentra24 y su API key (se borran)": "Encuentra24 connection and its API key (deleted)",
+  "El slug lleva letras minusculas, numeros y guiones (como en la URL de la empresa).": "The slug uses lowercase letters, numbers and hyphens (as in the company URL).",
+  "Encuentra24": "Encuentra24",
+  "Falta la API key o el slug de Encuentra24.": "The Encuentra24 API key or slug is missing.",
+  "Importa como leads los mensajes, chats y llamadas de los anuncios de Encuentra24 y deja el anuncio en los intereses del lead.": "Imports the messages, chats and calls from Encuentra24 listings as leads and keeps the listing in the lead's interests.",
+  "Leads y mensajes importados (se conservan)": "Imported leads and messages (kept)",
+  "Para activar Encuentra24 escribe la API key y el slug de la empresa.": "To turn on Encuentra24, enter the API key and the company slug.",
+  "Ya hay una importacion de Encuentra24 en curso; intenta en unos minutos.": "An Encuentra24 import is already running; try again in a few minutes."
+}

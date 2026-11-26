@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.security.SecretDecryptionException
 import com.ideasdeveloper.bms.server.security.SecretsUnavailableException
@@ -68,9 +69,9 @@ object CompanyMail {
         return try {
             toSettings(row) { secrets.open(tenant, it) }?.let { CompanyMailResult.Ok(it) } ?: CompanyMailResult.Unset
         } catch (failure: SecretsUnavailableException) {
-            CompanyMailResult.Broken("No se puede leer la contrasena del correo: falta la llave maestra.", failure)
+            CompanyMailResult.Broken(tr("No se puede leer la contrasena del correo: falta la llave maestra."), failure)
         } catch (failure: SecretDecryptionException) {
-            CompanyMailResult.Broken("No se puede leer la contrasena del correo guardada (revisa BMS_MASTER_KEY).", failure)
+            CompanyMailResult.Broken(tr("No se puede leer la contrasena del correo guardada (revisa BMS_MASTER_KEY)."), failure)
         }
     }
 
@@ -123,17 +124,17 @@ object CompanyMail {
         input: CompanyMailInput,
         resolve: (String) -> List<java.net.InetAddress> = { name -> java.net.InetAddress.getAllByName(name).toList() },
     ) {
-        if (input.port !in 1..65535) throw MailException("El puerto debe estar entre 1 y 65535.")
-        if (input.security.trim().lowercase() !in Securities) throw MailException("La seguridad debe ser una de: starttls, ssl, none.")
-        if (input.host.length > 255 || input.username.length > 255 || input.from.length > 255) throw MailException("Servidor, usuario y remitente admiten hasta 255 caracteres.")
+        if (input.port !in 1..65535) throw MailException(tr("El puerto debe estar entre 1 y 65535."))
+        if (input.security.trim().lowercase() !in Securities) throw MailException(tr("La seguridad debe ser una de: starttls, ssl, none."))
+        if (input.host.length > 255 || input.username.length > 255 || input.from.length > 255) throw MailException(tr("Servidor, usuario y remitente admiten hasta 255 caracteres."))
         if (input.from.any { it == '\r' || it == '\n' } || input.username.any { it == '\r' || it == '\n' }) {
-            throw MailException("El usuario y el remitente no pueden tener saltos de linea.")
+            throw MailException(tr("El usuario y el remitente no pueden tener saltos de linea."))
         }
-        if (input.password != null && input.password.startsWith(SecretBox.SealedPrefix)) throw MailException("La contrasena no puede empezar por ${SecretBox.SealedPrefix}.")
+        if (input.password != null && input.password.startsWith(SecretBox.SealedPrefix)) throw MailException(tr("La contrasena no puede empezar por {0}.", SecretBox.SealedPrefix))
         // Sin servidor se limpia la configuracion; el remitente solo se exige con servidor.
-        if (input.from.isNotBlank() && !fromPattern.matches(input.from.trim())) throw MailException("El remitente no es un correo valido.")
+        if (input.from.isNotBlank() && !fromPattern.matches(input.from.trim())) throw MailException(tr("El remitente no es un correo valido."))
         if (input.host.isBlank()) return
-        if (input.from.isBlank()) throw MailException("Escribe la direccion de correo desde la que se envia.")
+        if (input.from.isBlank()) throw MailException(tr("Escribe la direccion de correo desde la que se envia."))
         MailHostGuard.check(input.host.trim(), input.port, resolve = resolve)
     }
 

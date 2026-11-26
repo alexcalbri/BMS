@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.shell.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -38,7 +39,7 @@ fun CollapsibleSection(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(role = Role.Button, onClickLabel = if (open) "Cerrar $title" else "Abrir $title", onClick = onToggle)
+                .clickable(role = Role.Button, onClickLabel = if (open) tr("Cerrar {0}", title) else tr("Abrir {0}", title), onClick = onToggle)
                 .padding(vertical = 4.dp),
         ) {
             Text("${if (open) "▾" else "▸"}  $title", style = MaterialTheme.typography.titleMedium, color = color)

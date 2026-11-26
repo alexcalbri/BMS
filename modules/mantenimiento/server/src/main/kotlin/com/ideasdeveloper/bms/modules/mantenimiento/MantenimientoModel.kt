@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -7,9 +9,9 @@ import java.util.UUID
 
 /** Tipo de orden: preventiva (por plan), correctiva (avería o a mano) o proyecto (con aprobación). */
 enum class OrderKind(val id: String, val label: String) {
-    Preventive("preventive", "Preventiva"),
-    Corrective("corrective", "Correctiva"),
-    Project("project", "Proyecto");
+    Preventive("preventive", msg("Preventiva")),
+    Corrective("corrective", msg("Correctiva")),
+    Project("project", msg("Proyecto"));
 
     companion object {
         fun fromId(id: String?): OrderKind? = entries.firstOrNull { it.id == id?.trim()?.lowercase() }
@@ -24,14 +26,14 @@ enum class OrderKind(val id: String, val label: String) {
 
 /** Estados fijos de una orden: filtros, tablero y agentes dependen de ellos. */
 enum class OrderStatus(val id: String, val label: String) {
-    Requested("requested", "Pendiente de aprobación"),
-    Quoting("quoting", "En cotización"),
-    Open("open", "Abierta"),
-    InProgress("in_progress", "En curso"),
-    OnHold("on_hold", "En espera"),
-    Done("done", "Completada"),
-    Rejected("rejected", "Rechazada"),
-    Cancelled("cancelled", "Cancelada");
+    Requested("requested", msg("Pendiente de aprobación")),
+    Quoting("quoting", msg("En cotización")),
+    Open("open", msg("Abierta")),
+    InProgress("in_progress", msg("En curso")),
+    OnHold("on_hold", msg("En espera")),
+    Done("done", msg("Completada")),
+    Rejected("rejected", msg("Rechazada")),
+    Cancelled("cancelled", msg("Cancelada"));
 
     /** Sigue necesitando trabajo o decisión: ni completada, ni rechazada, ni cancelada. */
     val isActive: Boolean get() = this != Done && this != Rejected && this != Cancelled
@@ -50,10 +52,10 @@ enum class OrderStatus(val id: String, val label: String) {
 }
 
 enum class OrderPriority(val id: String, val label: String) {
-    Urgent("urgent", "Urgente"),
-    High("high", "Alta"),
-    Medium("medium", "Media"),
-    Low("low", "Baja");
+    Urgent("urgent", msg("Urgente")),
+    High("high", msg("Alta")),
+    Medium("medium", msg("Media")),
+    Low("low", msg("Baja"));
 
     companion object {
         fun fromId(id: String?): OrderPriority? = entries.firstOrNull { it.id == id?.trim()?.lowercase() }
@@ -66,10 +68,10 @@ enum class OrderPriority(val id: String, val label: String) {
 }
 
 enum class PlanFrequency(val id: String, val label: String) {
-    Monthly("monthly", "Mensual"),
-    Quarterly("quarterly", "Trimestral"),
-    Yearly("yearly", "Anual"),
-    EveryNDays("every_n_days", "Cada cierto número de días");
+    Monthly("monthly", msg("Mensual")),
+    Quarterly("quarterly", msg("Trimestral")),
+    Yearly("yearly", msg("Anual")),
+    EveryNDays("every_n_days", msg("Cada cierto número de días"));
 
     companion object {
         fun fromId(id: String?): PlanFrequency? = entries.firstOrNull { it.id == id?.trim()?.lowercase() }
@@ -83,8 +85,8 @@ enum class PlanFrequency(val id: String, val label: String) {
 
 /** Calendario fijo (la fecha avanza sola) o desde el último cierre (la próxima fecha sale de cerrar la orden). */
 enum class ScheduleMode(val id: String, val label: String) {
-    Fixed("fixed", "Calendario fijo"),
-    Floating("floating", "Desde el último cierre");
+    Fixed("fixed", msg("Calendario fijo")),
+    Floating("floating", msg("Desde el último cierre"));
 
     companion object {
         fun fromId(id: String?): ScheduleMode? = entries.firstOrNull { it.id == id?.trim()?.lowercase() }
@@ -268,14 +270,14 @@ private val MaxAmount = BigDecimal("999999999999.99")
 private val CurrencyPattern = Regex("^[A-Z]{3}$")
 
 private fun MutableList<String>.checkDate(label: String, date: LocalDate?) {
-    if (date != null && (date.isBefore(MinDate) || date.isAfter(MaxDate))) add("$label debe estar entre $MinDate y $MaxDate.")
+    if (date != null && (date.isBefore(MinDate) || date.isAfter(MaxDate))) add(tr("{0} debe estar entre {1} y {2}.", label, MinDate, MaxDate))
 }
 
 private fun MutableList<String>.checkAmount(label: String, amount: BigDecimal?) {
     if (amount == null) return
-    if (amount.signum() < 0) add("$label no puede ser negativo.")
-    else if (amount > MaxAmount) add("$label es demasiado grande.")
-    else if (amount.stripTrailingZeros().scale() > 2) add("$label admite hasta 2 decimales.")
+    if (amount.signum() < 0) add(tr("{0} no puede ser negativo.", label))
+    else if (amount > MaxAmount) add(tr("{0} es demasiado grande.", label))
+    else if (amount.stripTrailingZeros().scale() > 2) add(tr("{0} admite hasta 2 decimales.", label))
 }
 
 /** Lo que un formulario o un agente envía para crear o editar una orden (estado y responsable se cambian aparte al editar). */
@@ -298,17 +300,17 @@ data class OrderInput(
 ) {
     /** Mensajes para el usuario; vacío si la entrada es válida. */
     fun validate(): List<String> = buildList {
-        if (title.isBlank()) add("El título es obligatorio.")
-        else if (title.trim().length > MaxTitle) add("El título admite hasta $MaxTitle caracteres.")
-        if (description.length > MaxDescription) add("La descripción admite hasta $MaxDescription caracteres.")
-        if (department.trim().length > MaxDepartment) add("El departamento admite hasta $MaxDepartment caracteres.")
-        if (quotedBy.trim().length > MaxPerson) add("El nombre de quien cotizó admite hasta $MaxPerson caracteres.")
-        if (resolution.length > MaxResolution) add("La resolución admite hasta $MaxResolution caracteres.")
-        if (!CurrencyPattern.matches(quoteCurrency.trim())) add("La moneda de la cotización debe tener 3 letras mayúsculas, por ejemplo USD.")
-        if (!CurrencyPattern.matches(costCurrency.trim())) add("La moneda del costo debe tener 3 letras mayúsculas, por ejemplo USD.")
-        checkAmount("La cotización", quoteAmount)
-        checkAmount("El costo", costAmount)
-        checkDate("La fecha límite", dueDate)
+        if (title.isBlank()) add(tr("El título es obligatorio."))
+        else if (title.trim().length > MaxTitle) add(tr("El título admite hasta {0} caracteres.", MaxTitle))
+        if (description.length > MaxDescription) add(tr("La descripción admite hasta {0} caracteres.", MaxDescription))
+        if (department.trim().length > MaxDepartment) add(tr("El departamento admite hasta {0} caracteres.", MaxDepartment))
+        if (quotedBy.trim().length > MaxPerson) add(tr("El nombre de quien cotizó admite hasta {0} caracteres.", MaxPerson))
+        if (resolution.length > MaxResolution) add(tr("La resolución admite hasta {0} caracteres.", MaxResolution))
+        if (!CurrencyPattern.matches(quoteCurrency.trim())) add(tr("La moneda de la cotización debe tener 3 letras mayúsculas, por ejemplo USD."))
+        if (!CurrencyPattern.matches(costCurrency.trim())) add(tr("La moneda del costo debe tener 3 letras mayúsculas, por ejemplo USD."))
+        checkAmount(tr("La cotización"), quoteAmount)
+        checkAmount(tr("El costo"), costAmount)
+        checkDate(tr("La fecha límite"), dueDate)
     }
 
     companion object {
@@ -337,20 +339,20 @@ data class PlanInput(
 ) {
     /** [requireNextDue] es false al editar un plan "desde el último cierre" que espera su próxima fecha. */
     fun validate(requireNextDue: Boolean = true): List<String> = buildList {
-        if (title.isBlank()) add("El título es obligatorio.")
-        else if (title.trim().length > MaxTitle) add("El título admite hasta $MaxTitle caracteres.")
-        if (description.length > MaxDescription) add("La descripción admite hasta $MaxDescription caracteres.")
+        if (title.isBlank()) add(tr("El título es obligatorio."))
+        else if (title.trim().length > MaxTitle) add(tr("El título admite hasta {0} caracteres.", MaxTitle))
+        if (description.length > MaxDescription) add(tr("La descripción admite hasta {0} caracteres.", MaxDescription))
         if (frequency == PlanFrequency.EveryNDays) {
-            if (intervalDays == null || intervalDays !in 1..MaxIntervalDays) add("Indica cada cuántos días se repite (de 1 a $MaxIntervalDays).")
+            if (intervalDays == null || intervalDays !in 1..MaxIntervalDays) add(tr("Indica cada cuántos días se repite (de 1 a {0}).", MaxIntervalDays))
         } else if (intervalDays != null) {
-            add("Los días solo se indican con la frecuencia \"${PlanFrequency.EveryNDays.label}\".")
+            add(tr("Los días solo se indican con la frecuencia \"{0}\".", tr(PlanFrequency.EveryNDays.label)))
         }
-        if (leadDays !in 0..MaxLeadDays) add("Los días de anticipación van de 0 a $MaxLeadDays.")
-        if (requireNextDue && nextDue == null) add("La próxima fecha es obligatoria.")
-        checkDate("La próxima fecha", nextDue)
-        if (checklist.size > MaxChecklistItems) add("La lista de comprobación admite hasta $MaxChecklistItems elementos.")
-        if (checklist.any { it.isBlank() }) add("Un elemento de la lista de comprobación está vacío.")
-        if (checklist.any { it.trim().length > MaxChecklistText }) add("Cada elemento de la lista admite hasta $MaxChecklistText caracteres.")
+        if (leadDays !in 0..MaxLeadDays) add(tr("Los días de anticipación van de 0 a {0}.", MaxLeadDays))
+        if (requireNextDue && nextDue == null) add(tr("La próxima fecha es obligatoria."))
+        checkDate(tr("La próxima fecha"), nextDue)
+        if (checklist.size > MaxChecklistItems) add(tr("La lista de comprobación admite hasta {0} elementos.", MaxChecklistItems))
+        if (checklist.any { it.isBlank() }) add(tr("Un elemento de la lista de comprobación está vacío."))
+        if (checklist.any { it.trim().length > MaxChecklistText }) add(tr("Cada elemento de la lista admite hasta {0} caracteres.", MaxChecklistText))
     }
 
     companion object {
@@ -371,11 +373,11 @@ data class AssetInput(
     val notes: String = "",
 ) {
     fun validate(): List<String> = buildList {
-        if (name.isBlank()) add("El nombre del activo es obligatorio.")
-        else if (name.trim().length > MaxName) add("El nombre del activo admite hasta $MaxName caracteres.")
-        if (category.trim().length > MaxCategory) add("La categoría admite hasta $MaxCategory caracteres.")
-        if (location.trim().length > MaxLocation) add("La ubicación admite hasta $MaxLocation caracteres.")
-        if (notes.length > MaxNotes) add("Las notas admiten hasta $MaxNotes caracteres.")
+        if (name.isBlank()) add(tr("El nombre del activo es obligatorio."))
+        else if (name.trim().length > MaxName) add(tr("El nombre del activo admite hasta {0} caracteres.", MaxName))
+        if (category.trim().length > MaxCategory) add(tr("La categoría admite hasta {0} caracteres.", MaxCategory))
+        if (location.trim().length > MaxLocation) add(tr("La ubicación admite hasta {0} caracteres.", MaxLocation))
+        if (notes.length > MaxNotes) add(tr("Las notas admiten hasta {0} caracteres.", MaxNotes))
     }
 
     companion object {

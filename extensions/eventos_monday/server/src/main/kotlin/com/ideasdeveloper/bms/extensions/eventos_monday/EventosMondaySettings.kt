@@ -1,17 +1,19 @@
 package com.ideasdeveloper.bms.extensions.eventos_monday
 
-import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.modules.eventos.ImportedEvent
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.security.SecretDecryptionException
 import com.ideasdeveloper.bms.server.security.SecretsUnavailableException
-import kotlinx.serialization.json.Json
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
+import kotlinx.serialization.json.Json
 
 /** Id de la extension (el mismo de extension.json y de EventosImportSource.sourceId). */
 const val EventosMondayId = "eventos_monday"
@@ -37,7 +39,7 @@ class EventosMondayException(
  */
 object EventosMondaySettings {
     const val Table = "ext_eventos_monday__settings"
-    const val UnavailableMessage = "No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."
+    val UnavailableMessage = msg("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
 
     /** La extension esta activa en la empresa (tenant_extensions.status = enabled); sin la tabla o la fila, no. */
     fun extensionEnabled(tenant: Connection): Boolean = try {
@@ -76,7 +78,7 @@ object EventosMondaySettings {
             try {
                 secrets.seal(tenant, it)
             } catch (failure: SecretsUnavailableException) {
-                throw EventosMondayException(UnavailableMessage)
+                throw EventosMondayException(tr(UnavailableMessage))
             }
         }
         tenant.prepareStatement(
@@ -146,15 +148,15 @@ object EventosMondayJobs {
     const val JobsTable = "ext_eventos_monday__jobs"
     const val RowsTable = "ext_eventos_monday__rows"
     const val PeopleTable = "ext_eventos_monday__people"
-    const val OpenJobMessage = "Ya hay una importacion en curso o por revisar; aplicala, cancelala o espera a que termine."
+    val OpenJobMessage = msg("Ya hay una importacion en curso o por revisar; aplicala, cancelala o espera a que termine.")
     private val json = Json { ignoreUnknownKeys = true }
 
     // ---- Cola ----
 
     /** Pone en cola la lectura de un tablero. Solo hay una importacion en curso a la vez. */
     fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, createdBy: UUID?): UUID {
-        if (!EventosMondayClient.isBoardId(boardId)) throw EventosMondayException("El id del tablero debe ser un numero.")
-        if (recent(tenant, 20).any { it.open }) throw EventosMondayException(OpenJobMessage)
+        if (!EventosMondayClient.isBoardId(boardId)) throw EventosMondayException(tr("El id del tablero debe ser un numero."))
+        if (recent(tenant, 20).any { it.open }) throw EventosMondayException(tr(OpenJobMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
@@ -169,7 +171,7 @@ object EventosMondayJobs {
             }
         } catch (failure: SQLException) {
             // El indice unico parcial deja una sola importacion abierta por empresa (dos peticiones a la vez).
-            if (failure.sqlState == "23505") throw EventosMondayException(OpenJobMessage)
+            if (failure.sqlState == "23505") throw EventosMondayException(tr(OpenJobMessage))
             throw failure
         }
         return id

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -25,9 +27,12 @@ data class CrmRunRow(
 
 /** Tenant database access of the automations (crm_automations and crm_automation_runs). */
 object CrmAutomationStore {
+    /** The label of a run status in the viewer's language. */
+    fun statusLabel(status: String): String = statusLabels[status]?.let { tr(it) } ?: status
+
     val statusLabels = mapOf(
-        "pending" to "En cola", "running" to "En curso", "done" to "Hecha", "failed" to "Fallo", "missing_data" to "Faltan datos",
-        "warned" to "Aviso de datos", "skipped" to "Omitida",
+        "pending" to msg("En cola"), "running" to msg("En curso"), "done" to msg("Hecha"), "failed" to msg("Fallo"), "missing_data" to msg("Faltan datos"),
+        "warned" to msg("Aviso de datos"), "skipped" to msg("Omitida"),
     )
 
     private const val Columns = "id, name, enabled, trigger_type, trigger_config::text, conditions::text, actions::text, warn_before_minutes, notify_user_ids::text, position"
@@ -96,11 +101,11 @@ object CrmAutomationStore {
                 statement.setString(8, CrmAutomationJson.ids(automation.notifyUserIds).toString())
                 statement.setInt(9, automation.position)
                 statement.setObject(10, automation.id)
-                if (statement.executeUpdate() != 1) throw CrmValidationException("Esa automatizacion ya no existe.")
+                if (statement.executeUpdate() != 1) throw CrmValidationException(tr("Esa automatizacion ya no existe."))
             }
         } catch (failure: SQLException) {
             // crm_automations_name_idx: two rules with the same name.
-            if (failure.sqlState == "23505") throw CrmValidationException("Ya existe la automatizacion ${automation.name.trim()}.")
+            if (failure.sqlState == "23505") throw CrmValidationException(tr("Ya existe la automatizacion {0}.", automation.name.trim()))
             throw failure
         }
     }
