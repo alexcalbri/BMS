@@ -33,9 +33,13 @@ CREATE TABLE IF NOT EXISTS server_admin_companies (
 
 -- A user is never both server owner and server administrator, and an administrator's login is
 -- never the name of a PostgreSQL role (it could otherwise be mistaken for a database login).
+-- Both triggers take the same transaction-scoped advisory lock on the user id first, so two
+-- concurrent transactions cannot insert the same user as owner and as administrator (each would
+-- otherwise not see the other's uncommitted row).
 CREATE OR REPLACE FUNCTION server_admins_check_identity() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('bms.server_identity:' || NEW.user_id::text, 0));
     IF EXISTS (SELECT 1 FROM server_owners WHERE user_id = NEW.user_id) THEN
         RAISE EXCEPTION 'A server owner cannot be a server administrator' USING ERRCODE = '23514';
     END IF;
@@ -52,6 +56,7 @@ $$;
 CREATE OR REPLACE FUNCTION server_owners_check_identity() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('bms.server_identity:' || NEW.user_id::text, 0));
     IF EXISTS (SELECT 1 FROM server_admins WHERE user_id = NEW.user_id) THEN
         RAISE EXCEPTION 'A server administrator cannot be a server owner' USING ERRCODE = '23514';
     END IF;
@@ -66,6 +71,21 @@ CREATE TRIGGER server_admins_identity BEFORE INSERT OR UPDATE OF user_id ON serv
 DROP TRIGGER IF EXISTS server_owners_identity ON server_owners;
 CREATE TRIGGER server_owners_identity BEFORE INSERT OR UPDATE OF user_id ON server_owners
     FOR EACH ROW EXECUTE FUNCTION server_owners_check_identity();
+
+-- Workspace staff accounts whose credentials a server administrator controls: created by them, or
+-- given a password or a new email (where password recovery goes) by them. user_id is
+-- application_users.id in the server workspace database, so there is no foreign key to it. When that
+-- administrator is deactivated, deleted or loses server.workspace, these accounts are deactivated and
+-- their sessions revoked. A password or email set later by the owner moves the row to the owner.
+CREATE TABLE IF NOT EXISTS server_workspace_staff (
+    user_id UUID PRIMARY KEY,
+    created_by UUID NOT NULL REFERENCES application_users (id),
+    created_by_kind TEXT NOT NULL CHECK (created_by_kind IN ('server_owner', 'server_admin')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS server_workspace_staff_created_by_idx ON server_workspace_staff (created_by);
 
 -- Who made each audited change: the administrator (or owner, business owner, system), never the
 -- role that executed it.

@@ -197,6 +197,8 @@ fun Application.module() {
         requestRestart = ::restartToLoadModules,
         companyFiles = companyFiles,
         installQueue = installQueue,
+        // A resumed install runs with the current rights of who asked for it (SERVER_ADMINS.md §8).
+        queuedActors = com.ideasdeveloper.bms.server.admins.QueuedInstallActors(loginDatabases.admins::queuedInstallActor),
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without
     // delaying startup.
@@ -278,10 +280,15 @@ fun Application.module() {
         authorizations = unsignedAuthorizations,
         requestRestart = ::restartToLoadModules,
         // The services pass the login of who acted (owner or administrator); the audit names that user.
-        audit = { login, action, company, module, details -> companyProvisioning.recordAudit(loginDatabases.admins.auditActorFor(login), action, company, module, details) },
+        // A blank login is the system (a queued install dropped while nobody acted).
+        audit = { login, action, company, module, details ->
+            val actor = if (login.isBlank()) com.ideasdeveloper.bms.server.admins.AuditActor.system() else loginDatabases.admins.auditActorFor(login)
+            companyProvisioning.recordAudit(actor, action, company, module, details)
+        },
         installQueue = installQueue,
         moduleLoaded = { id -> moduleRegistry.definition(id) != null },
         modulePending = { id -> companyProvisioning.moduleInstallPending(id) },
+        queuedActors = com.ideasdeveloper.bms.server.admins.QueuedInstallActors(loginDatabases.admins::queuedInstallActor),
     )
     val packageExtensions = extensionPackages.loadInstalled(
         moduleClassLoader = { id -> moduleRegistry.module(id)?.javaClass?.classLoader },
@@ -330,12 +337,15 @@ fun Application.module() {
     val passwordAttempts = com.ideasdeveloper.bms.server.auth.application.PasswordAttemptLimiter()
     // Server administrators (SERVER_ADMINS.md): who is behind a central session, read live on every request.
     val serverActors = ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions)
+    // Built below (it needs the account services); administrators' workspace staff are closed through it.
+    lateinit var companySelfServiceRef: CompanySelfService
     val serverAdmins = com.ideasdeveloper.bms.server.admins.ServerAdminService(
         store = loginDatabases.admins,
         loginTaken = companyProvisioning::loginNameTaken,
         revokeCompanySessions = { userId -> loginDatabases.revokeCompanySessionsOpenedBy(userId) },
         audit = { actor, action, details -> companyProvisioning.recordAudit(actor, action, null, null, details) },
         passwordAttempts = passwordAttempts,
+        deactivateWorkspaceStaff = { adminUserId, by, reason -> companySelfServiceRef.deactivateWorkspaceStaffOf(adminUserId, by, reason) },
     )
     val accountService = AccountService(
         central = DatabaseFactory.getDataSource(),
@@ -382,8 +392,7 @@ fun Application.module() {
         passwordAttempts = passwordAttempts,
         secrets = secretBox,
         serverActors = serverActors,
-        auditor = { actor, action, company, details -> companyProvisioning.recordAudit(actor, action, company, null, details) },
-    )
+    ).also { companySelfServiceRef = it }
     monitor.subscribe(ApplicationStopped) {
         moduleJobs.stop()
         moduleAccessService.close()

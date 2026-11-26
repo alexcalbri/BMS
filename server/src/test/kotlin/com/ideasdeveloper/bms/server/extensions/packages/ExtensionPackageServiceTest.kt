@@ -8,6 +8,7 @@ import java.nio.file.Files
 import java.util.concurrent.Executor
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -144,6 +145,9 @@ class ExtensionPackageServiceTest {
         var installing = emptySet<String>()
         val tasks = ArrayDeque<Runnable>()
         val store = FakeStore()
+        val audit = mutableListOf<List<String?>>()
+        // Logins that may still install extension packages now (null: no re-check).
+        var allowed: Set<String>? = null
         fun service(queue: com.ideasdeveloper.bms.server.modules.PackageInstallQueue) = ExtensionPackageService(
             store = store,
             packagesRoot = Files.createTempDirectory("ext-packages"),
@@ -152,11 +156,16 @@ class ExtensionPackageServiceTest {
             builder = builderRef,
             authorizations = FakeAuthorizations(),
             requestRestart = { error("con cola no se reinicia por paquete") },
-            audit = { _, _, _, _, _ -> },
+            audit = { role, action, company, module, details -> audit += listOf(role, action, company, module, details) },
             executor = Executor { tasks.addLast(it) },
             installQueue = queue,
             moduleLoaded = { it in loaded },
             modulePending = { it in installing },
+            queuedActors = com.ideasdeveloper.bms.server.admins.QueuedInstallActors { login, permission ->
+                assertEquals(com.ideasdeveloper.bms.server.admins.ServerPermission.ExtensionsInstall, permission)
+                val now = allowed
+                if (now == null || login in now) com.ideasdeveloper.bms.server.admins.AuditActor.system(login) else null
+            },
         )
         private val packagesList = packages
         private val builderRef = builder
@@ -238,6 +247,50 @@ class ExtensionPackageServiceTest {
         assertEquals("pending_restart", h.store.find("monday_import")?.status)
         assertEquals(1, h.restarts)
         assertEquals(emptyList(), afterRestart.pending())
+    }
+
+    @Test
+    fun `a resumed install runs only while who queued it may still install extensions`() {
+        val h = QueueHarness(listOf(remote("monday_import"), remote("cloudbeds")))
+        h.loaded = emptySet()
+        h.installing = setOf("crm")
+        val queue = h.newQueue()
+        val service = h.service(queue)
+        service.install("monday_import", "ana")
+        service.install("cloudbeds", "owner_role")
+        assertEquals(listOf("ana", "owner_role"), queue.pending().map { it.actor })
+
+        // After the restart ana (an administrator) no longer has server.extensions.install.
+        h.loaded = setOf("crm")
+        h.installing = emptySet()
+        h.allowed = setOf("owner_role")
+        val afterRestart = h.newQueue()
+        h.service(afterRestart).resumePendingInstalls()
+        h.runAll()
+        assertNull(h.store.find("monday_import"), "the install of a requester without the permission must not run")
+        assertEquals("pending_restart", h.store.find("cloudbeds")?.status)
+        assertEquals(emptyList(), afterRestart.pending())
+        val dropped = h.audit.single { it[1] == ExtensionPackageAudit.InstallDropped }
+        assertEquals("", dropped[0], "the system records the dropped install")
+        assertTrue("\"requestedBy\":\"ana\"" in dropped[4].orEmpty(), dropped[4])
+    }
+
+    @Test
+    fun `reading the status does not release a waiting install whose requester lost the permission`() {
+        val h = QueueHarness(listOf(remote("monday_import")))
+        h.loaded = setOf("crm")
+        h.installing = setOf("crm")
+        val queue = h.newQueue()
+        val service = h.service(queue)
+        service.install("monday_import", "ana")
+        // The module finished; whoever reads the status (any reader) would release it, but ana lost the right.
+        h.installing = emptySet()
+        h.allowed = emptySet()
+        assertEquals("error", service.status("monday_import").status)
+        h.runAll()
+        assertNull(h.store.find("monday_import"))
+        assertEquals(emptyList(), queue.pending())
+        assertEquals(1, h.audit.count { it[1] == ExtensionPackageAudit.InstallDropped })
     }
 
     @Test

@@ -61,11 +61,15 @@ class ServerRouteMatrixTest {
         UUID.randomUUID(), "ana", ServerActorKind.Admin, permissions, false, setOf(inScope), "owner_role", mustChange,
     )
 
-    // Tokens: owner, gone, all (every permission), none, must, p:<permission id>.
+    // Tokens: owner, gone, all (every permission), allco (every permission but server.workspace, every
+    // company), none, must, p:<permission id>.
     private val resolver = ServerActorResolver { token ->
         when {
             token == "owner" -> ServerActorLookup.Found(ServerActor(UUID.randomUUID(), "owner_role", ServerActorKind.Owner, emptySet(), true, emptySet(), "owner_role"))
             token == "all" -> ServerActorLookup.Found(admin(ServerPermission.entries.toSet()))
+            token == "allco" -> ServerActorLookup.Found(
+                ServerActor(UUID.randomUUID(), "ana", ServerActorKind.Admin, ServerPermission.entries.toSet() - ServerPermission.Workspace, true, emptySet(), "owner_role"),
+            )
             token == "none" -> ServerActorLookup.Found(admin(emptySet()))
             token == "must" -> ServerActorLookup.PasswordChangeRequired(admin(ServerPermission.entries.toSet(), mustChange = true))
             token.startsWith("p:") -> ServerActorLookup.Found(admin(setOfNotNull(ServerPermission.of(token.removePrefix("p:")))))
@@ -202,6 +206,16 @@ class ServerRouteMatrixTest {
                         assertTrue(out.blocked(), "$key: out-of-scope company got ${out.status} ${out.code}")
                         assertTrue(call(key, "owner", company = outOfScope).through(), "$key: the owner has no scope")
                     }
+                    if (policy.company != CompanyFrom.None) {
+                        // The server workspace is never a company of a scope: an administrator with every
+                        // company and every company permission is refused there unless the policy names
+                        // server.workspace (path and X-Company-Code alike); the owner is not affected.
+                        listOf("servidor", "SERVIDOR").forEach { workspace ->
+                            val allCompanies = call(key, "allco", company = workspace)
+                            assertTrue(allCompanies.blocked(), "$key: an all-company administrator reached the workspace '$workspace' (${allCompanies.status} ${allCompanies.code})")
+                        }
+                        assertTrue(call(key, "owner", company = "servidor").through(), "$key: the owner still reaches the workspace")
+                    }
                     if (policy.workspace != null) {
                         val workspace = "servidor"
                         assertTrue(call(key, "p:${policy.permission.id}", company = workspace).blocked(), "$key: the workspace needs ${policy.workspace.id}")
@@ -217,7 +231,10 @@ class ServerRouteMatrixTest {
         assertEquals(com.ideasdeveloper.bms.ServerPermissionIds.All, ServerPermission.entries.map { it.id })
         val infos = ServerPermission.entries.map { it.info() }
         assertEquals(
-            setOf("server.companies.owner_password", "server.companies.enter", "server.modules.authorize_unsigned", "server.extensions.authorize_unsigned"),
+            setOf(
+                "server.companies.owner_password", "server.companies.enter", "server.modules.authorize_unsigned",
+                "server.extensions.authorize_unsigned", "server.workspace",
+            ),
             infos.filter { it.risk == "high" }.map { it.id }.toSet(),
         )
         // No permission is about administrators or server owners.
@@ -252,6 +269,23 @@ class ServerRouteMatrixTest {
             .forEach { (key, policy) -> assertEquals(CompanyFrom.Path, (policy as RoutePolicy.Requires).company, key) }
         ServerRoutePolicies.all.filter { (key, _) -> key.contains("/companies/current") }
             .forEach { (key, policy) -> assertEquals(CompanyFrom.Header, (policy as RoutePolicy.Requires).company, key) }
+    }
+
+    @Test
+    fun theWorkspaceIsNeverInAnAdministratorsScope() {
+        val everything = ServerActor(UUID.randomUUID(), "ana", ServerActorKind.Admin, ServerPermission.entries.toSet(), true, emptySet(), "owner_role")
+        assertTrue(everything.mayActOn("acme"))
+        assertTrue(!everything.mayActOn("servidor") && !everything.mayActOn(" Servidor "))
+        val listed = ServerActor(UUID.randomUUID(), "ana", ServerActorKind.Admin, ServerPermission.entries.toSet(), false, setOf("servidor"), "owner_role")
+        assertTrue(!listed.mayActOn("servidor"), "a stored scope row for the workspace does not count")
+        assertTrue(ServerActor(UUID.randomUUID(), "o", ServerActorKind.Owner, emptySet(), true, emptySet(), "o").mayActOn("servidor"))
+        assertTrue(!com.ideasdeveloper.bms.server.extensions.ServerAdminScope(null).includes("servidor"))
+        // The refusal about a related company does not name it.
+        val refusal = ServerPermissionException.outOfScope(ServerPermission.CompaniesEdit)
+        assertEquals("SERVER_PERMISSION_REQUIRED", refusal.code)
+        assertTrue(refusal.companyCode == null && "otra" !in refusal.message.orEmpty())
+        // server.workspace allows creating staff accounts: it is high risk and says so.
+        assertEquals("high", ServerPermission.Workspace.info().risk)
     }
 
     @Test

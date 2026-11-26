@@ -9,6 +9,8 @@ import com.ideasdeveloper.bms.server.admins.ServerAdminStore
 import com.ideasdeveloper.bms.server.admins.ServerPermission
 import com.ideasdeveloper.bms.server.auth.application.AuthenticationService
 import com.ideasdeveloper.bms.server.company.application.ProvisioningAudit
+import com.ideasdeveloper.bms.server.company.application.auditDetails
+import com.ideasdeveloper.bms.server.auth.application.PasswordAttemptLimiter
 import com.ideasdeveloper.bms.server.auth.application.SessionService
 import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.application.UserProfileRules
@@ -45,6 +47,8 @@ class LoginDatabases(
     private val runtimePassword: String,
     private val tenantJdbcUrlPrefix: String,
     private val lifetimeSeconds: Long,
+    // Failed server sign-ins per login (owner and administrators), in memory; see authenticateOnServer.
+    private val serverLoginAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(maxFailures = ServerLoginMaxFailures, window = ServerLoginWindow),
 ) : AutoCloseable {
     private val configurations = Json.decodeFromString<List<TenantDatabaseConfig>>(tenantConfiguration)
         .also { entries -> require(entries.map { it.databaseName }.distinct().size == entries.size) }
@@ -55,6 +59,8 @@ class LoginDatabases(
     private val tenantDatabaseNamePattern = Regex("[a-z][a-z0-9_]{0,62}")
 
     private val tokens = SessionTokenGenerator()
+    private fun serverLoginKey(login: String) = "server-login/" + login.trim().lowercase()
+
     // Server administrators (control V015): read live on every sign-in, switch and company-session check.
     val admins = ServerAdminStore(central)
     private val serverScope = scope(central, centralDatabase, centralUrl, true)
@@ -137,9 +143,81 @@ class LoginDatabases(
         } ?: return null
         val origin = tenantScope(databases.second) ?: return null
         origin.ownerBySession(token) ?: return null
+        // A session descended from a switcher session is itself a switcher session: the opener is
+        // re-checked (for both companies, owner group included) and the new session is tracked too,
+        // so it is re-checked on every use and revoked with its opener.
+        val openerId = openerOf(tokens.hash(token), fromCode)
+        val opener = openerId?.let { id ->
+            val who = serverSwitcher(id)
+            val allowed = when (who) {
+                is Switcher.ServerOwner -> true
+                is Switcher.ServerAdmin -> who.mayEnter(fromCode) && who.mayEnter(toCode)
+                else -> false
+            }
+            if (!allowed) {
+                if (who !is Switcher.ServerAdmin || !who.mayEnter(fromCode)) runCatching { origin.revoke(token) }
+                return null
+            }
+            who
+        }
         val target = tenantScope(databases.first) ?: return null
         val targetOwner = target.businessOwner()?.takeIf { it.isActive } ?: return null
-        return target.respond(targetOwner, toCode)
+        if (opener == null) return target.respond(targetOwner, toCode)
+        val user = when (opener) {
+            is Switcher.ServerOwner -> opener.user
+            is Switcher.ServerAdmin -> opener.user
+            else -> return null
+        }
+        return target.respond(targetOwner, toCode, serverOwnerAccess = true)?.also { opened ->
+            trackCompanySession(target, opened, user, admin = opener is Switcher.ServerAdmin, toCode, targetOwner.postgresRole, fromCode)
+        }
+    }
+
+    /**
+     * Records the company session [opened] (of [toCode]) as opened from the switcher by [opener] and
+     * audits it, in one transaction. The row outlives the session by [SwitcherRowMarginSeconds], so it
+     * never expires while the session can still be used; rows are pruned only a day after that. If
+     * the row cannot be written the session is revoked: untracked it would be a plain business owner
+     * session nobody re-checks.
+     */
+    private fun trackCompanySession(target: Scope, opened: LoginSuccessResponse, opener: ApplicationUser, admin: Boolean, toCode: String, ownerRole: String, fromCode: String?) {
+        val actorId = java.util.UUID.fromString(opener.id.toString())
+        try {
+            central.connection.use { connection ->
+                connection.autoCommit = false
+                try {
+                    connection.prepareStatement(
+                        """
+                        INSERT INTO server_owner_company_sessions (token_hash, server_owner_user_id, company_code, expires_at)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP + make_interval(secs => ?))
+                        """.trimIndent()
+                    ).use { insert ->
+                        insert.setString(1, tokens.hash(opened.accessToken))
+                        insert.setObject(2, actorId)
+                        insert.setString(3, toCode)
+                        insert.setLong(4, lifetimeSeconds.coerceAtLeast(opened.expiresInSeconds) + SwitcherRowMarginSeconds)
+                        insert.executeUpdate()
+                    }
+                    val actor = AuditActor(opener.postgresRole, actorId, if (admin) AuditActor.ServerAdminKind else AuditActor.ServerOwnerKind)
+                    ProvisioningAudit.insert(
+                        connection, actor, if (admin) "server_admin.entered_company" else "server_owner.entered_company", toCode, null,
+                        auditDetails("businessOwnerUsername" to ownerRole, "from" to fromCode),
+                    )
+                    connection.prepareStatement(
+                        "DELETE FROM server_owner_company_sessions WHERE expires_at <= CURRENT_TIMESTAMP - INTERVAL '1 day'"
+                    ).use { it.executeUpdate() }
+                    connection.commit()
+                } catch (failure: Throwable) {
+                    runCatching { connection.rollback() }
+                    throw failure
+                } finally {
+                    runCatching { connection.autoCommit = true }
+                }
+            }
+        } catch (failure: Throwable) {
+            target.revoke(opened.accessToken)
+            throw failure
+        }
     }
 
     // Who is behind a session for the company switcher.
@@ -195,10 +273,14 @@ class LoginDatabases(
         }
     }
 
-    // Who opened the company session [tokenHash] of [companyCode] from the switcher, or null for any other session.
+    /**
+     * Who opened the company session [tokenHash] of [companyCode] from the switcher, or null for any
+     * other session. Not filtered by expiry: the session's own expiry decides whether it works, and a
+     * row is never deleted while its session can be used (see [trackCompanySession]).
+     */
     private fun openerOf(tokenHash: String, companyCode: String): java.util.UUID? = central.connection.use { connection ->
         connection.prepareStatement(
-            "SELECT server_owner_user_id FROM server_owner_company_sessions WHERE token_hash = ? AND company_code = ? AND expires_at > CURRENT_TIMESTAMP"
+            "SELECT server_owner_user_id FROM server_owner_company_sessions WHERE token_hash = ? AND company_code = ?"
         ).use { query ->
             query.setString(1, tokenHash)
             query.setString(2, companyCode)
@@ -238,7 +320,7 @@ class LoginDatabases(
     fun revokeCompanySessionsOpenedBy(userId: java.util.UUID): Int {
         val rows = central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT token_hash, company_code FROM server_owner_company_sessions WHERE server_owner_user_id = ? AND expires_at > CURRENT_TIMESTAMP"
+                "SELECT token_hash, company_code FROM server_owner_company_sessions WHERE server_owner_user_id = ?"
             ).use { query ->
                 query.setObject(1, userId)
                 query.executeQuery().use { result -> buildList { while (result.next()) add(result.getString(1) to result.getString(2)) } }
@@ -293,53 +375,13 @@ class LoginDatabases(
                     val target = activeDatabase(toCode)?.let { tenantScope(it) } ?: return null
                     val owner = target.businessOwner()?.takeIf { it.isActive } ?: return null
                     target.respond(owner, toCode, serverOwnerAccess = true)?.also { opened ->
-                        val actorId = java.util.UUID.fromString(user.id.toString())
-                        try {
-                            central.connection.use { connection ->
-                                connection.autoCommit = false
-                                try {
-                                    connection.prepareStatement(
-                                        """
-                                        INSERT INTO server_owner_company_sessions (token_hash, server_owner_user_id, company_code, expires_at)
-                                        VALUES (?, ?, ?, CURRENT_TIMESTAMP + make_interval(secs => ?))
-                                        """.trimIndent()
-                                    ).use { insert ->
-                                        insert.setString(1, tokens.hash(opened.accessToken))
-                                        insert.setObject(2, actorId)
-                                        insert.setString(3, toCode)
-                                        insert.setLong(4, opened.expiresInSeconds)
-                                        insert.executeUpdate()
-                                    }
-                                    val actor = AuditActor(user.postgresRole, actorId, if (admin == null) AuditActor.ServerOwnerKind else AuditActor.ServerAdminKind)
-                                    ProvisioningAudit.insert(
-                                        connection, actor, if (admin == null) "server_owner.entered_company" else "server_admin.entered_company", toCode, null,
-                                        """{"businessOwnerUsername":"${owner.postgresRole}"}""",
-                                    )
-                                    connection.prepareStatement("DELETE FROM server_owner_company_sessions WHERE expires_at <= CURRENT_TIMESTAMP").use { it.executeUpdate() }
-                                    connection.commit()
-                                } catch (failure: Throwable) {
-                                    runCatching { connection.rollback() }
-                                    throw failure
-                                } finally {
-                                    runCatching { connection.autoCommit = true }
-                                }
-                            }
-                        } catch (failure: Throwable) {
-                            // Without its row the session would be a plain business owner session nobody re-checks.
-                            target.revoke(opened.accessToken)
-                            throw failure
-                        }
+                        trackCompanySession(target, opened, user, admin = admin != null, toCode, owner.postgresRole, fromCode)
                     }
                 } ?: return null
-                // Leaving a company: that session is not needed any more.
+                // Leaving a company: that session is not needed any more. Its switcher row stays until it
+                // is pruned (after expiry), so the token keeps being re-checked even if the revoke failed.
                 if (fromCode != null) {
                     activeDatabase(fromCode)?.let { tenantScope(it) }?.revoke(token)
-                    central.connection.use { connection ->
-                        connection.prepareStatement("DELETE FROM server_owner_company_sessions WHERE token_hash = ?").use {
-                            it.setString(1, tokens.hash(token))
-                            it.executeUpdate()
-                        }
-                    }
                 }
                 response
             }
@@ -348,20 +390,15 @@ class LoginDatabases(
 
     /**
      * Cierra una sesion: la revoca en su base ([fromCode] null: el servidor) para que el token deje
-     * de servir de inmediato. Es idempotente. Tambien borra la sesion de dueno-en-empresa si la hay.
+     * de servir de inmediato. Es idempotente. La fila del selector (si la hay) se conserva hasta su poda.
      * Devuelve false solo si [fromCode] no corresponde a una empresa activa.
      */
     fun logout(fromCode: String?, token: String): Boolean {
         val scope = if (fromCode == null) serverScope else activeDatabase(fromCode)?.let { tenantScope(it) } ?: return false
         scope.revoke(token)
-        if (fromCode != null) {
-            central.connection.use { connection ->
-                connection.prepareStatement("DELETE FROM server_owner_company_sessions WHERE token_hash = ?").use {
-                    it.setString(1, tokens.hash(token))
-                    it.executeUpdate()
-                }
-            }
-        }
+        // The switcher row (if any) is NOT deleted here: X-Company-Code is the caller's, and deleting
+        // the row of a session of another company would turn it into an untracked business owner
+        // session. Rows are pruned only after their session expired.
         return true
     }
 
@@ -456,16 +493,29 @@ class LoginDatabases(
         private fun authenticateOnServer(credentials: LoginCredentials): ApplicationUser? {
             val name = credentials.username.trim()
             val user = if (name.isEmpty() || credentials.password.isEmpty()) null else users.findByPostgresRole(name)?.takeIf { it.isActive }
-            if (user != null && isOwner(user)) {
-                ServerAdminPasswords.spendDummyCheck(credentials.password)
-                return user.takeIf { postgresCredentials.verify(credentials) }
-            }
-            val admin = user?.let { activeAdmin(it) }
-            if (admin == null) {
+            // Per-login throttle (owner and administrators): after too many failures the login is
+            // refused without checking the password until the window ends. It throttles, never locks:
+            // nothing is stored, attempts while throttled do not extend the window, and the right
+            // password works again once it ends. Only existing users are counted (bounded memory).
+            val throttleKey = user?.let { serverLoginKey(it.postgresRole) }
+            if (throttleKey != null && serverLoginAttempts.isBlocked(throttleKey)) {
                 ServerAdminPasswords.spendDummyCheck(credentials.password)
                 return null
             }
-            return user.takeIf { ServerAdminPasswords.verify(credentials.password, admin.passwordHash) }
+            val result = if (user != null && isOwner(user)) {
+                ServerAdminPasswords.spendDummyCheck(credentials.password)
+                user.takeIf { postgresCredentials.verify(credentials) }
+            } else {
+                val admin = user?.let { activeAdmin(it) }
+                if (admin == null) {
+                    ServerAdminPasswords.spendDummyCheck(credentials.password)
+                    null
+                } else {
+                    user.takeIf { ServerAdminPasswords.verify(credentials.password, admin.passwordHash) }
+                }
+            }
+            if (result == null && throttleKey != null) serverLoginAttempts.recordFailure(throttleKey)
+            return result
         }
 
         // The active user of a valid session of this database.
@@ -628,4 +678,11 @@ class LoginDatabases(
 }
 
 const val ServerNameSetting = "server.name"
+
+/** Failed server sign-ins of one login allowed per [ServerLoginWindow] before it is throttled. */
+const val ServerLoginMaxFailures = 10
+val ServerLoginWindow: java.time.Duration = java.time.Duration.ofMinutes(5)
+
+/** How long a switcher row outlives the company session it tracks (clock differences, rounding). */
+const val SwitcherRowMarginSeconds = 3600L
 const val DefaultServerName = "Servidor"

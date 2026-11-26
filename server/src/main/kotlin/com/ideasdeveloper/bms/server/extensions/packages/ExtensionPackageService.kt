@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.server.extensions.packages
 
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.admins.QueuedInstallActors
+import com.ideasdeveloper.bms.server.admins.ServerPermission
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.ModuleVersion
 import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
@@ -99,6 +101,8 @@ object ExtensionPackageAudit {
     const val Install = "extension.package.install"
     const val AuthorizeUnsigned = "extension.package.authorize_unsigned"
     const val Remove = "extension.package.remove"
+    /** A queued install not resumed: who asked for it may no longer install extension packages. */
+    const val InstallDropped = "extension.package.install_dropped"
 }
 
 /**
@@ -127,6 +131,8 @@ class ExtensionPackageService(
     private val moduleLoaded: (moduleId: String) -> Boolean = { true },
     /** Si el modulo se esta instalando o espera el reinicio que lo carga: sus extensiones esperan por el. */
     private val modulePending: (moduleId: String) -> Boolean = { false },
+    /** Re-checks who asked for a queued install when it resumes: it runs only with their current rights. */
+    private val queuedActors: QueuedInstallActors = QueuedInstallActors.Unchecked,
 ) {
     private val log = LoggerFactory.getLogger(ExtensionPackageService::class.java)
 
@@ -167,10 +173,16 @@ class ExtensionPackageService(
 
     fun status(id: String): ExtensionPackageStatus = status(id, store.find(id))
 
+    /**
+     * The extension waited for its module and the module is ready: it is installed now. Called from
+     * [status], so any reader of the status can trigger it; the install is therefore evaluated with
+     * the CURRENT rights of whoever queued it (never the caller's), and dropped if they lost them.
+     */
     private fun releaseWaiting(id: String) {
         val actor = installQueue?.pending()?.firstOrNull { it.kind == PackageInstallQueue.Extension && it.id == id }?.actor
         states.remove(id)
         if (actor == null) return
+        if (!mayResume(id, actor)) return
         try {
             install(id, actor)
         } catch (failure: Exception) {
@@ -201,6 +213,23 @@ class ExtensionPackageService(
             installedVersion = stored.version.takeIf { stored.status != "removed" },
             restartRequired = stored.status == "pending_restart",
         )
+    }
+
+    // Whether the queued install of [id] asked for by [actor] may run now; if not it is dropped and audited.
+    private fun mayResume(id: String, actor: String): Boolean {
+        if (queuedActors.current(actor, ServerPermission.ExtensionsInstall) != null) return true
+        log.warn("Pending install of extension package {} was dropped: {} may no longer install extensions.", id, actor)
+        installQueue?.done(PackageInstallQueue.Extension, id)
+        states[id] = InstallState("error", tr("La instalacion pendiente se cancelo: quien la pidio ya no puede instalar extensiones."))
+        runCatching {
+            // Blank actor: the system records it (nobody acted now).
+            audit("", ExtensionPackageAudit.InstallDropped, null, null, buildJsonObject {
+                put("extensionId", id)
+                put("requestedBy", actor)
+                put("reason", "requester_not_allowed")
+            }.toString())
+        }.onFailure { log.error("Audit entry {} could not be written", ExtensionPackageAudit.InstallDropped, it) }
+        return false
     }
 
     // Si el catalogo no se pudo leer, el fallo es de GitHub y no de la extension: se dice asi y no "no esta en el catalogo".
@@ -258,6 +287,7 @@ class ExtensionPackageService(
                 states[entry.id] = InstallState("error", tr("No se pudo instalar tras varios intentos; vuelve a pedirlo."))
                 return@forEach
             }
+            if (!mayResume(entry.id, entry.actor)) return@forEach
             try {
                 install(entry.id, entry.actor)
             } catch (failure: Exception) {

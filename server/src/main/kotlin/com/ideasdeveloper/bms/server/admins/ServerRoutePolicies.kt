@@ -1,7 +1,6 @@
 package com.ideasdeveloper.bms.server.admins
 
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
-import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -183,7 +182,13 @@ fun ApplicationCall.checkServerGate(lookup: ServerActorLookup, policy: RoutePoli
                 }
                 when {
                     company == null -> actor.require(policy.permission)
-                    policy.workspace != null && company == ServerWorkspace.Code -> actor.require(policy.workspace)
+                    // The server workspace is never "a company in scope": only a policy that names the
+                    // workspace permission opens it (an all-company administrator included).
+                    isServerWorkspace(company) -> when {
+                        actor.isOwner -> Unit
+                        policy.workspace != null -> actor.require(policy.workspace)
+                        else -> throw ServerPermissionException(policy.permission, company)
+                    }
                     else -> actor.requireCompany(policy.permission, company)
                 }
             }

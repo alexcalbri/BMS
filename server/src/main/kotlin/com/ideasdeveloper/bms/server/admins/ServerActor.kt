@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.server.admins
 
 import com.ideasdeveloper.bms.ServerRoles
+import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.i18n.tr
 import java.util.UUID
 
@@ -50,8 +51,13 @@ class ServerActor(
 
     fun has(permission: ServerPermission): Boolean = isOwner || permission in permissions
 
-    /** Whether the actor may act on [companyCode] (its scope; the owner and all-company administrators on any). */
-    fun mayActOn(companyCode: String): Boolean = isOwner || allCompanies || companyCode in companies
+    /**
+     * Whether the actor may act on [companyCode] (its scope; the owner and all-company administrators
+     * on any). The server workspace is never a company of an administrator's scope: it needs
+     * server.workspace, which the route policy names explicitly.
+     */
+    fun mayActOn(companyCode: String): Boolean =
+        isOwner || (!isServerWorkspace(companyCode) && (allCompanies || companyCode in companies))
 
     /** Null: every company. Otherwise the companies of an administrator's scope. */
     val companyScope: Set<String>? get() = if (isOwner || allCompanies) null else companies
@@ -72,14 +78,29 @@ class ServerActor(
     val audit: AuditActor get() = AuditActor(login, userId, kind.value)
 }
 
-/** 403: [permission] null means the action is for the server owner only. */
-class ServerPermissionException(val permission: ServerPermission?, val companyCode: String? = null) : Exception(
-    when {
+/** The server workspace code, however it is written (it is never a company of a scope). */
+fun isServerWorkspace(companyCode: String): Boolean = companyCode.trim().equals(ServerWorkspace.Code, ignoreCase = true)
+
+/**
+ * 403: [permission] null means the action is for the server owner only. [companyCode] is the
+ * company the caller named; a refusal about another company (one the caller did not name) uses
+ * [ServerPermissionException.outOfScope], which does not say which company it was.
+ */
+class ServerPermissionException(
+    val permission: ServerPermission?,
+    val companyCode: String? = null,
+    message: String = when {
         permission == null -> tr("Solo el dueno del servidor puede hacerlo.")
         companyCode != null -> tr("La empresa {0} no esta en tu alcance.", companyCode)
         else -> tr("Necesitas el permiso {0}.", permission.id)
     },
-) {
+) : Exception(message) {
+    companion object {
+        /** A related company (shares the business owner or its owner group) is out of scope; it is not named. */
+        fun outOfScope(permission: ServerPermission) =
+            ServerPermissionException(permission, null, tr("Una empresa de este business owner no esta en tu alcance."))
+    }
+
     val code: String get() = if (permission == null) "SERVER_OWNER_REQUIRED" else "SERVER_PERMISSION_REQUIRED"
 }
 
@@ -99,4 +120,24 @@ sealed interface ServerActorLookup {
 /** Resolves the server actor behind a session token (the central session of an owner or administrator). */
 fun interface ServerActorResolver {
     fun resolve(accessToken: String): ServerActorLookup
+}
+
+/**
+ * Who asked for a queued package install (modules and extension packages), re-checked when the
+ * install resumes (after a restart, or when an extension stops waiting for its module): a resumed
+ * install runs with the CURRENT rights of whoever asked, never with more.
+ */
+fun interface QueuedInstallActors {
+    /**
+     * The actor to run the install of [login] as, or null when it may not run any more (an
+     * administrator deactivated, deleted, waiting for a password change or without [permission], or
+     * a login that is no longer an owner or administrator). A blank [login] is a request without a
+     * person (older queue entries, background work): it runs as the system, as before.
+     */
+    fun current(login: String, permission: ServerPermission): AuditActor?
+
+    companion object {
+        /** No re-check (tests, servers without administrators): everything resumes as before. */
+        val Unchecked = QueuedInstallActors { login, _ -> if (login.isBlank()) AuditActor.system() else AuditActor.system(login) }
+    }
 }

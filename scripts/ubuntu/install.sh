@@ -691,7 +691,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_us
 GRANT SELECT, INSERT, UPDATE, DELETE ON company_links TO :"db_user";
 -- Server administrators (control V015): created by the owner from the app; no PostgreSQL role.
 GRANT INSERT (id, postgres_role, is_active, display_name, email) ON application_users TO :"db_user";
-GRANT SELECT, INSERT, UPDATE, DELETE ON server_admins, server_admin_permissions, server_admin_companies TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON server_admins, server_admin_permissions, server_admin_companies, server_workspace_staff TO :"db_user";
 REVOKE INSERT ON core_update_requests FROM :"db_user";
 GRANT SELECT ON core_update_requests TO :"db_user";
 GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";

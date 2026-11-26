@@ -227,10 +227,9 @@ class JdbcCoreUpdateStore(private val central: DataSource) : CoreUpdateStore {
             owner -> com.ideasdeveloper.bms.server.admins.AuditActor.ServerOwnerKind
             else -> com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind
         }
-        // Las versiones ya pasaron la validacion semver, no necesitan escape.
         ProvisioningAudit.insert(
             connection, com.ideasdeveloper.bms.server.admins.AuditActor(requestedBy, userId, kind), "server.core_update_requested", null, null,
-            "{\"from\":\"${row.fromVersion}\",\"to\":\"${row.targetVersion}\",\"requestId\":${row.id}}",
+            auditDetails("from" to row.fromVersion, "to" to row.targetVersion, "requestId" to row.id),
         )
     }
 

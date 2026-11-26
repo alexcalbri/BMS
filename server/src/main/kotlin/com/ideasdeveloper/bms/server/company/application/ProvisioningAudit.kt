@@ -1,8 +1,31 @@
 package com.ideasdeveloper.bms.server.company.application
 
 import com.ideasdeveloper.bms.server.admins.AuditActor
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.Json
 import java.sql.Connection
 import java.util.UUID
+
+/**
+ * Details of an audit row as a JSON object built by kotlinx (never by hand): strings, booleans,
+ * numbers, lists of strings and null values; anything else is written as its text.
+ */
+fun auditDetails(vararg pairs: Pair<String, Any?>): String = JsonObject(
+    pairs.associate { (key, value) ->
+        key to when (value) {
+            null -> JsonNull
+            is JsonElement -> value
+            is Boolean -> JsonPrimitive(value)
+            is Number -> JsonPrimitive(value)
+            is Collection<*> -> JsonArray(value.map { JsonPrimitive(it?.toString()) })
+            else -> JsonPrimitive(value.toString())
+        }
+    },
+).toString()
 
 /**
  * Writes provisioning_audit_log rows with who acted ([AuditActor]): actor_role is the actor's
@@ -25,7 +48,30 @@ object ProvisioningAudit {
         return found
     }
 
+    /**
+     * [details] as jsonb accepts it: it must be one JSON object (anything else is refused, so a
+     * hand-built text cannot slip through), and NUL characters, which jsonb rejects even escaped,
+     * become U+FFFD. Raw control characters cannot reach it: they are escaped when re-encoded.
+     */
+    fun normalizedDetails(details: String): String {
+        val parsed = Json.parseToJsonElement(details)
+        require(parsed is JsonObject) { "Audit details must be a JSON object" }
+        return withoutNul(parsed).toString()
+    }
+
+    private fun withoutNul(element: JsonElement): JsonElement = when (element) {
+        is JsonObject -> JsonObject(element.entries.associate { (key, value) -> key.replace('\u0000', '\uFFFD') to withoutNul(value) })
+        is JsonArray -> JsonArray(element.map(::withoutNul))
+        is JsonPrimitive -> if (element.isString && '\u0000' in element.content) JsonPrimitive(element.content.replace('\u0000', '\uFFFD')) else element
+    }
+
+    /**
+     * Inserts the row on [connection], inside the caller's transaction when it has one: a failed
+     * insert then rolls the audited change back with it. Never swallow its exception for an
+     * administrator's action.
+     */
     fun insert(connection: Connection, actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) {
+        val json = normalizedDetails(details)
         val withActor = hasActorColumns(connection)
         val columns = if (withActor) ", actor_user_id, actor_kind" else ""
         val values = if (withActor) ", CAST(? AS uuid), CAST(? AS text)" else ""
@@ -43,7 +89,7 @@ object ProvisioningAudit {
             insert.setString(index++, action)
             insert.setString(index++, companyCode)
             insert.setString(index++, moduleId)
-            insert.setString(index++, details)
+            insert.setString(index++, json)
             if (withActor) {
                 insert.setUuid(index++, actor.userId)
                 insert.setString(index++, actor.kind)

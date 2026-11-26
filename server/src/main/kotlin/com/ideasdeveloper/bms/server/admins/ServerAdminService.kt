@@ -24,6 +24,9 @@ class ServerAdminService(
     private val revokeCompanySessions: (UUID) -> Unit,
     private val audit: (actor: AuditActor, action: String, details: String) -> Unit,
     private val passwordAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(),
+    // Deactivates the workspace staff accounts whose credentials the administrator knows and revokes
+    // their sessions (CompanySelfService.deactivateWorkspaceStaffOf), audited as the owner.
+    private val deactivateWorkspaceStaff: (adminUserId: UUID, by: AuditActor, reason: String) -> Unit = { _, _, _ -> },
 ) {
     private val loginPattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val tokens = SessionTokenGenerator()
@@ -73,6 +76,10 @@ class ServerAdminService(
         store.setPermissions(admin.userId, granted)
         if (allCompanies != null || companies != null) setScope(by, admin, allCompanies ?: admin.allCompanies, companies ?: admin.companies.toList())
         audit(by.audit, "server_admin.permissions_updated", details(admin.userId, admin.login, "permissions" to granted.ids(), "previous" to admin.permissions.ids()))
+        // Without server.workspace the staff accounts they created (or gave a password) stop working too.
+        if (ServerPermission.Workspace in admin.permissions && ServerPermission.Workspace !in granted) {
+            deactivateWorkspaceStaff(admin.userId, by.audit, "workspace_permission_removed")
+        }
         return require(id).response()
     }
 
@@ -98,6 +105,8 @@ class ServerAdminService(
         store.setActive(admin.userId, active)
         if (!active) endSessions(admin.userId)
         audit(by.audit, if (active) "server_admin.activated" else "server_admin.deactivated", details(admin.userId, admin.login))
+        // Reactivating does not bring the staff accounts back: the owner decides that per account.
+        if (!active) deactivateWorkspaceStaff(admin.userId, by.audit, "admin_deactivated")
         return require(id).response()
     }
 
@@ -107,6 +116,7 @@ class ServerAdminService(
         // First nothing of theirs may keep working: deactivate, then end every session they hold.
         store.setActive(admin.userId, false)
         endSessions(admin.userId)
+        deactivateWorkspaceStaff(admin.userId, by.audit, "admin_deleted")
         store.delete(admin.userId)
         audit(by.audit, "server_admin.deleted", details(admin.userId, admin.login))
     }

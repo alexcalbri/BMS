@@ -20,11 +20,11 @@ enum class ServerPermission(
 ) {
     CompaniesView(ServerPermissionIds.CompaniesView, "companies", msg("Ver empresas"), msg("Ver la lista de empresas: codigo, nombre, estado y modulos."), false, true),
     CompaniesCreate(ServerPermissionIds.CompaniesCreate, "companies", msg("Crear empresas"), msg("Crear empresas y duplicar las empresas de su alcance. Las empresas que crea pasan a su alcance."), false, true),
-    CompaniesEdit(ServerPermissionIds.CompaniesEdit, "companies", msg("Editar empresas"), msg("Editar el perfil de la empresa y ver y editar el nombre, usuario y correo de su business owner."), false, true),
+    CompaniesEdit(ServerPermissionIds.CompaniesEdit, "companies", msg("Editar empresas"), msg("Editar el perfil de la empresa y ver su business owner y cambiar su nombre visible. Cambiar el usuario, el correo o la contrasena del business owner necesita tambien el permiso de cambiar su contrasena."), false, true),
     CompaniesStatus(ServerPermissionIds.CompaniesStatus, "companies", msg("Activar y desactivar empresas"), msg("Activar o desactivar una empresa."), false, true),
     CompaniesModules(ServerPermissionIds.CompaniesModules, "companies", msg("Modulos de las empresas"), msg("Activar o desactivar modulos en una empresa."), false, true),
     CompaniesExtensions(ServerPermissionIds.CompaniesExtensions, "companies", msg("Extensiones de las empresas"), msg("Instalar, configurar, activar y desinstalar extensiones dentro de una empresa."), false, true),
-    CompaniesOwnerPassword(ServerPermissionIds.CompaniesOwnerPassword, "companies", msg("Cambiar la contrasena del business owner"), msg("Poner una contrasena nueva al business owner. Riesgo alto: equivale a tomar el control de la empresa."), true, true),
+    CompaniesOwnerPassword(ServerPermissionIds.CompaniesOwnerPassword, "companies", msg("Cambiar la contrasena del business owner"), msg("Poner una contrasena nueva al business owner y cambiar su usuario o su correo (con el que se recupera la contrasena). Riesgo alto: equivale a tomar el control de la empresa."), true, true),
     CompaniesEnter(ServerPermissionIds.CompaniesEnter, "companies", msg("Entrar a empresas"), msg("Entrar a una empresa desde el selector y trabajar en ella como su business owner. Riesgo alto: acceso completo a los datos de la empresa."), true, true),
     ModulesView(ServerPermissionIds.ModulesView, "modules", msg("Ver modulos del servidor"), msg("Ver los modulos instalados y disponibles y su estado."), false, false),
     ModulesInstall(ServerPermissionIds.ModulesInstall, "modules", msg("Instalar modulos"), msg("Instalar, actualizar y revisar modulos del catalogo configurado."), false, false),
@@ -36,7 +36,7 @@ enum class ServerPermission(
     LogsView(ServerPermissionIds.LogsView, "server", msg("Ver errores del servidor"), msg("Ver los errores recientes del servidor."), false, false),
     AuditView(ServerPermissionIds.AuditView, "server", msg("Ver el registro de auditoria"), msg("Ver el registro de auditoria: las filas de sus empresas y las propias; las del servidor solo con todas las empresas."), false, true),
     Settings(ServerPermissionIds.Settings, "server", msg("Ajustes del servidor"), msg("Cambiar el nombre del servidor."), false, false),
-    Workspace(ServerPermissionIds.Workspace, "server", msg("Espacio del servidor"), msg("Crear el espacio del servidor, activar sus modulos y administrar su perfil, correo y usuarios."), false, false);
+    Workspace(ServerPermissionIds.Workspace, "server", msg("Espacio del servidor"), msg("Crear el espacio del servidor, activar sus modulos y administrar su perfil, correo y usuarios. Riesgo alto: permite crear cuentas de personal del espacio con cualquier permiso de sus modulos (se desactivan si el administrador se desactiva, se borra o pierde este permiso)."), true, false);
 
     fun info(): ServerPermissionInfo = ServerPermissionInfo(id, tr(GroupTitles.getValue(group)), tr(title), tr(description), if (highRisk) "high" else "normal", scoped)
 

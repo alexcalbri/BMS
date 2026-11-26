@@ -72,6 +72,25 @@ class ModulePackageSignatureGateTest {
     }
 
     @Test
+    fun anAdministratorAlwaysGetsTheEnforcedGate() = withRoot { root ->
+        val dir = moduleDir(root)
+        val authorizations = MemoryAuthorizations()
+        val permissive = builder(root, authorizations, signatureEnforced = false)
+        // MODULE_SIGNATURE_ENFORCED=false does not let an administrator install unsigned code.
+        val failure = assertFailsWith<ModuleBuildException> { permissive.verify("crm", dir, requireAuthorization = true) }
+        assertTrue(failure.message!!.contains("no esta firmado"))
+        // The same hash-bound authorization as the enforced mode (server.modules.authorize_unsigned) opens it.
+        val hash = ExtensionTreeHash.compute(dir)
+        authorizations.authorize(hash, "crm", "a".repeat(40), "ana", "revise el codigo")
+        assertEquals(hash, permissive.verify("crm", dir, requireAuthorization = true))
+        // A changed package is a different hash: the authorization does not carry over.
+        Files.writeString(dir.resolve("extra.txt"), "codigo nuevo")
+        assertFailsWith<ModuleBuildException> { permissive.verify("crm", dir, requireAuthorization = true) }
+        // The owner (and background work) keep the permissive mode of develop servers.
+        assertEquals(ExtensionTreeHash.compute(dir), permissive.verify("crm", dir))
+    }
+
+    @Test
     fun signedPackageChangedAfterSigningIsRejected() = withRoot { root ->
         val dir = moduleDir(root)
         val hash = ExtensionTreeHash.compute(dir)

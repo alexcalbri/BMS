@@ -14,6 +14,7 @@ import com.ideasdeveloper.bms.server.admins.ServerActorResolver
 import com.ideasdeveloper.bms.server.admins.ServerPermission
 import com.ideasdeveloper.bms.server.admins.ServerPermissionException
 import com.ideasdeveloper.bms.server.admins.serverActor
+import com.ideasdeveloper.bms.server.auth.application.EmailChangeRule
 import com.ideasdeveloper.bms.server.app.RecentServerErrors
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
 import com.ideasdeveloper.bms.server.app.ServerLogsResponse
@@ -909,8 +910,18 @@ fun Route.companyRoutes(
         val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@get
         val service = provisioning
             ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
+        val code = call.parameters["code"].orEmpty()
         try {
-            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.businessOwner(call.parameters["code"].orEmpty()) })
+            call.respond(
+                HttpStatusCode.OK,
+                withContext(Dispatchers.IO) {
+                    // Same scope rule as editing: the owner's other companies and owner group must be in scope.
+                    requireOwnerInScope(actor, service, code)
+                    service.businessOwner(code)
+                },
+            )
+        } catch (refusal: ServerPermissionException) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse(refusal.code, refusal.message.orEmpty()))
         } catch (exception: CompanyProvisioningException) {
             call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BUSINESS_OWNER_NOT_FOUND", exception.message ?: tr("Business owner no encontrado.")))
         } catch (exception: SQLException) {
@@ -932,8 +943,13 @@ fun Route.companyRoutes(
             call.respond(
                 HttpStatusCode.OK,
                 withContext(Dispatchers.IO) {
-                    // A new password, and a new user (which needs one), is the high-risk owner_password permission.
-                    if (request.password.isNotEmpty() || request.username.trim() != service.businessOwner(code).username) {
+                    // A new password, a new user (which needs one) or a new email (password recovery by
+                    // email code goes to it) is the high-risk owner_password permission: each one is a way
+                    // to take over the company. With only companies.edit the display name may change.
+                    val current = service.businessOwner(code)
+                    if (request.password.isNotEmpty() || request.username.trim() != current.username ||
+                        EmailChangeRule.isChange(current.email, request.email)
+                    ) {
                         actor.requireCompany(ServerPermission.CompaniesOwnerPassword, code)
                     }
                     requireOwnerInScope(actor, service, code)
@@ -1035,8 +1051,9 @@ private fun modulePackageStatus(exception: CompanyProvisioningException): HttpSt
  */
 private fun requireOwnerInScope(actor: ServerActor, service: CompanyProvisioningService, code: String) {
     val scope = actor.companyScope ?: return
-    (service.companiesSharingOwner(code) + service.ownerGroupOf(code)).firstOrNull { it !in scope }?.let {
-        throw ServerPermissionException(ServerPermission.CompaniesEdit, it)
+    // The refusal does not name the other company: the caller may not even know it exists.
+    if ((service.companiesSharingOwner(code) + service.ownerGroupOf(code)).any { it !in scope }) {
+        throw ServerPermissionException.outOfScope(ServerPermission.CompaniesEdit)
     }
 }
 

@@ -83,9 +83,13 @@ data class ExtensionActor(
     val serverAdmin: ServerAdminScope? = null,
 )
 
-/** Company scope of a server administrator acting on extensions; [companies] null means every company. */
+/**
+ * Company scope of a server administrator acting on extensions; [companies] null means every
+ * company. The server workspace is never part of it.
+ */
 data class ServerAdminScope(val companies: Set<String>?) {
-    fun includes(companyCode: String): Boolean = companies == null || companyCode in companies
+    fun includes(companyCode: String): Boolean =
+        !com.ideasdeveloper.bms.server.admins.isServerWorkspace(companyCode) && (companies == null || companyCode in companies)
 }
 
 /**
@@ -761,12 +765,14 @@ class ExtensionService(
         storage.rowForUpdate(tenant, extensionId)?.takeIf { it.status != ExtensionStatus.Removed }
             ?: throw ExtensionException("extension_not_installed", tr("La extension no esta instalada en esta empresa."), ExtensionException.Kind.NotFound)
 
-    // The audit never changes the outcome of what already happened: a failure is logged, not thrown.
+    // A failed audit of an owner's, business owner's or the system's change is logged, not thrown.
+    // An administrator's action is never left unaudited silently: the failure reaches the caller.
     private fun audit(actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) {
         try {
             auditor(actor, action, companyCode, moduleId, details)
         } catch (failure: Exception) {
             log.error("Audit entry {} could not be written: {}", action, failure.javaClass.simpleName)
+            if (actor.kind == AuditActor.ServerAdminKind) throw failure
         }
     }
 

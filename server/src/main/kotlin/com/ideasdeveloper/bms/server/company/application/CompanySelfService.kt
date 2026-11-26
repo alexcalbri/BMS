@@ -88,8 +88,6 @@ class CompanySelfService(
     private val secrets: SecretBox? = null,
     // Server administrators with server.workspace also manage the server workspace (SERVER_ADMINS.md §3).
     private val serverActors: ServerActorResolver? = null,
-    // Audit of changes made in the server workspace by the owner or an administrator.
-    private val auditor: ((actor: AuditActor, action: String, companyCode: String, details: String) -> Unit)? = null,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
     private val tokenGenerator = SessionTokenGenerator()
@@ -120,6 +118,9 @@ class CompanySelfService(
         if (name.isBlank()) {
             throw CompanySelfException(tr("El nombre de la empresa es obligatorio."))
         }
+        if (com.ideasdeveloper.bms.server.auth.application.UserProfileRules.hasControlCharacters(name)) {
+            throw CompanySelfException(tr("El nombre no puede tener caracteres de control."))
+        }
         if (!colorPattern.matches(request.primaryColor) ||
             !colorPattern.matches(request.secondaryColor) ||
             !colorPattern.matches(request.accentColor)
@@ -131,25 +132,28 @@ class CompanySelfService(
             throw CompanySelfException(tr("El idioma no es valido."))
         }
 
-        central.connection.use { connection ->
-            connection.prepareStatement(
-                """
-                UPDATE companies
-                SET name = ?, logo_url = ?, primary_color = ?, secondary_color = ?, accent_color = ?
-                WHERE code = ? AND is_active = TRUE
-                """.trimIndent()
-            ).use { update ->
-                update.setString(1, name)
-                update.setString(2, logoUrl)
-                update.setString(3, request.primaryColor)
-                update.setString(4, request.secondaryColor)
-                update.setString(5, request.accentColor)
-                update.setString(6, context.companyCode)
-                update.executeUpdate()
+        // In the workspace the change and its audit row are one central transaction.
+        context.audited("server_workspace.profile_updated", auditDetails("name" to name, "defaultLanguage" to language)) { audit ->
+            fun write(connection: java.sql.Connection) {
+                connection.prepareStatement(
+                    """
+                    UPDATE companies
+                    SET name = ?, logo_url = ?, primary_color = ?, secondary_color = ?, accent_color = ?
+                    WHERE code = ? AND is_active = TRUE
+                    """.trimIndent()
+                ).use { update ->
+                    update.setString(1, name)
+                    update.setString(2, logoUrl)
+                    update.setString(3, request.primaryColor)
+                    update.setString(4, request.secondaryColor)
+                    update.setString(5, request.accentColor)
+                    update.setString(6, context.companyCode)
+                    update.executeUpdate()
+                }
+                if (language != null) setCompanyLanguage(connection, context.companyCode, language)
             }
-            if (language != null) setCompanyLanguage(connection, context.companyCode, language)
+            if (audit != null) write(audit) else central.connection.use { write(it) }
         }
-        context.audit("server_workspace.profile_updated", """{"name":"${name.escapeJson()}"}""")
 
         return profile(companyCode, accessToken)
     }
@@ -254,10 +258,11 @@ class CompanySelfService(
             throw CompanyMailRejectedException(tr("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."))
         }
         try {
-            tenantConnection(context.tenant).use { connection ->
-                CompanyMail.save(connection, box ?: MasterKeySecretBox(null), input)
-                context.audit("server_workspace.mail_updated", "{}")
-                return CompanyMail.load(connection)
+            return context.audited("server_workspace.mail_updated", auditDetails("host" to input.host)) {
+                tenantConnection(context.tenant).use { connection ->
+                    CompanyMail.save(connection, box ?: MasterKeySecretBox(null), input)
+                    CompanyMail.load(connection)
+                }
             }
         } catch (failure: SecretsUnavailableException) {
             throw CompanyMailRejectedException(tr("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."))
@@ -293,49 +298,54 @@ class CompanySelfService(
 
         val userId = UUID.randomUUID()
         val passwordHash = ApplicationPasswordHasher.hash(request.password)
-        tenantConnection(context.tenant).use { connection ->
-            syncPermissionCatalog(connection)
-            validatePermissions(connection, request.permissions)
-            connection.autoCommit = false
-            try {
-                if (connection.existsUser(username)) {
-                    throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
+        val details = auditDetails("username" to username, "userId" to userId.toString(), "permissions" to request.permissions.sorted())
+        // In the workspace: audit row and who created the account (server_workspace_staff) go in the
+        // central transaction, written before the account exists and committed right after it.
+        return context.audited("server_workspace.user_created", details) { audit ->
+            audit?.let { recordStaffCredentials(it, userId, context.serverActor) }
+            tenantConnection(context.tenant).use { connection ->
+                syncPermissionCatalog(connection)
+                validatePermissions(connection, request.permissions)
+                connection.autoCommit = false
+                try {
+                    if (connection.existsUser(username)) {
+                        throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
+                    }
+                    // Sign-in also accepts a PostgreSQL role's password for the same name.
+                    if (connection.existsRole(username)) {
+                        throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
+                    }
+                    connection.prepareStatement(
+                        "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
+                    ).use { insert ->
+                        insert.setObject(1, userId)
+                        insert.setString(2, username)
+                        insert.setString(3, request.displayName.trim())
+                        insert.setString(4, request.email.trim())
+                        insert.executeUpdate()
+                    }
+                    connection.prepareStatement(
+                        """
+                        INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
+                        VALUES (?, ?, ?, ?)
+                        """.trimIndent()
+                    ).use { insert ->
+                        insert.setObject(1, userId)
+                        insert.setString(2, passwordHash.salt)
+                        insert.setString(3, passwordHash.hash)
+                        insert.setInt(4, passwordHash.iterations)
+                        insert.executeUpdate()
+                    }
+                    replaceUserPermissions(connection, userId, request.permissions)
+                    connection.commit()
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                } finally {
+                    connection.autoCommit = true
                 }
-                // Sign-in also accepts a PostgreSQL role's password for the same name.
-                if (connection.existsRole(username)) {
-                    throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
-                }
-                connection.prepareStatement(
-                    "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
-                ).use { insert ->
-                    insert.setObject(1, userId)
-                    insert.setString(2, username)
-                    insert.setString(3, request.displayName.trim())
-                    insert.setString(4, request.email.trim())
-                    insert.executeUpdate()
-                }
-                connection.prepareStatement(
-                    """
-                    INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
-                    VALUES (?, ?, ?, ?)
-                    """.trimIndent()
-                ).use { insert ->
-                    insert.setObject(1, userId)
-                    insert.setString(2, passwordHash.salt)
-                    insert.setString(3, passwordHash.hash)
-                    insert.setInt(4, passwordHash.iterations)
-                    insert.executeUpdate()
-                }
-                replaceUserPermissions(connection, userId, request.permissions)
-                connection.commit()
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
-            } finally {
-                connection.autoCommit = true
+                loadUser(connection, userId) ?: throw CompanySelfException(tr("No se pudo cargar el usuario creado."))
             }
-            context.audit("server_workspace.user_created", """{"username":"${username.escapeJson()}","userId":"$userId"}""")
-            return loadUser(connection, userId) ?: throw CompanySelfException(tr("No se pudo cargar el usuario creado."))
         }
     }
 
@@ -354,24 +364,26 @@ class CompanySelfService(
         if (targetUserId == context.businessOwnerUserId) {
             throw CompanySelfException(tr("No puedes quitar permisos del business_owner desde este flujo."))
         }
-        tenantConnection(context.tenant).use { connection ->
-            syncPermissionCatalog(connection)
-            validatePermissions(connection, request.permissions)
-            connection.autoCommit = false
-            try {
-                if (!connection.userExists(targetUserId)) {
-                    throw CompanySelfException(tr("Usuario no encontrado."))
+        val details = auditDetails("userId" to targetUserId.toString(), "permissions" to request.permissions.sorted())
+        return context.audited("server_workspace.user_permissions_updated", details) {
+            tenantConnection(context.tenant).use { connection ->
+                syncPermissionCatalog(connection)
+                validatePermissions(connection, request.permissions)
+                connection.autoCommit = false
+                try {
+                    if (!connection.userExists(targetUserId)) {
+                        throw CompanySelfException(tr("Usuario no encontrado."))
+                    }
+                    replaceUserPermissions(connection, targetUserId, request.permissions)
+                    connection.commit()
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                } finally {
+                    connection.autoCommit = true
                 }
-                replaceUserPermissions(connection, targetUserId, request.permissions)
-                connection.commit()
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
-            } finally {
-                connection.autoCommit = true
+                loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
             }
-            context.audit("server_workspace.user_permissions_updated", """{"userId":"$targetUserId"}""")
-            return loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
     }
 
@@ -439,69 +451,84 @@ class CompanySelfService(
             return tenantConnection(context.tenant).use { connection -> loadUser(connection, targetUserId) }
                 ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
-        tenantConnection(context.tenant).use { connection ->
-            syncPermissionCatalog(connection)
-            validatePermissions(connection, request.permissions)
-            connection.autoCommit = false
-            try {
-                val current = connection.prepareStatement("SELECT postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
-                    query.setObject(1, targetUserId)
-                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
-                } ?: throw CompanySelfException(tr("Usuario no encontrado."))
-                if (connection.isBusinessOwner(targetUserId)) {
-                    throw CompanySelfException(tr("Solo el business owner o el dueno del servidor pueden editar al business owner."))
-                }
-                if (username != current.first) {
-                    if (connection.existsUser(username)) throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
-                    // Sign-in also accepts a PostgreSQL role's password for the same name.
-                    if (connection.existsRole(username)) throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
-                }
-                connection.prepareStatement(
-                    "UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?, is_active = ? WHERE id = ?"
-                ).use { update ->
-                    update.setString(1, username)
-                    update.setString(2, displayName)
-                    update.setString(3, email)
-                    update.setBoolean(4, request.isActive)
-                    update.setObject(5, targetUserId)
-                    update.executeUpdate()
-                }
-                replaceUserPermissions(connection, targetUserId, request.permissions)
-                if (password.isNotEmpty()) {
-                    val hash = ApplicationPasswordHasher.hash(password)
-                    connection.prepareStatement(
-                        """
-                        INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT (user_id) DO UPDATE SET password_salt = EXCLUDED.password_salt,
-                            password_hash = EXCLUDED.password_hash, iterations = EXCLUDED.iterations
-                        """.trimIndent()
-                    ).use { upsert ->
-                        upsert.setObject(1, targetUserId)
-                        upsert.setString(2, hash.salt)
-                        upsert.setString(3, hash.hash)
-                        upsert.setInt(4, hash.iterations)
-                        upsert.executeUpdate()
-                    }
-                }
-                // A new password or a deactivated user closes the user's open sessions.
-                if (password.isNotEmpty() || (current.second && !request.isActive)) {
-                    connection.prepareStatement(
-                        "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
-                    ).use { revoke ->
-                        revoke.setObject(1, targetUserId)
-                        revoke.executeUpdate()
-                    }
-                }
-                connection.commit()
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
-            } finally {
-                connection.autoCommit = true
+        // Whoever sets a password, or the email that password recovery goes to, controls the account
+        // from now on: in the workspace it follows that server user (closed with them).
+        val emailChanged = tenantConnection(context.tenant).use { connection ->
+            connection.prepareStatement("SELECT email FROM application_users WHERE id = ?").use { query ->
+                query.setObject(1, targetUserId)
+                query.executeQuery().use { rows -> rows.next() && com.ideasdeveloper.bms.server.auth.application.EmailChangeRule.isChange(rows.getString(1), email) }
             }
-            context.audit("server_workspace.user_updated", """{"userId":"$targetUserId","passwordChanged":${password.isNotEmpty()}}""")
-            return loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
+        }
+        val takesCredentials = password.isNotEmpty() || emailChanged
+        val details = auditDetails(
+            "userId" to targetUserId.toString(), "username" to username, "active" to request.isActive,
+            "passwordChanged" to password.isNotEmpty(), "emailChanged" to emailChanged, "permissions" to request.permissions.sorted(),
+        )
+        return context.audited("server_workspace.user_updated", details) { audit ->
+            if (audit != null && takesCredentials) recordStaffCredentials(audit, targetUserId, context.serverActor)
+            tenantConnection(context.tenant).use { connection ->
+                syncPermissionCatalog(connection)
+                validatePermissions(connection, request.permissions)
+                connection.autoCommit = false
+                try {
+                    val current = connection.prepareStatement("SELECT postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
+                        query.setObject(1, targetUserId)
+                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
+                    } ?: throw CompanySelfException(tr("Usuario no encontrado."))
+                    if (connection.isBusinessOwner(targetUserId)) {
+                        throw CompanySelfException(tr("Solo el business owner o el dueno del servidor pueden editar al business owner."))
+                    }
+                    if (username != current.first) {
+                        if (connection.existsUser(username)) throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
+                        // Sign-in also accepts a PostgreSQL role's password for the same name.
+                        if (connection.existsRole(username)) throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
+                    }
+                    connection.prepareStatement(
+                        "UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?, is_active = ? WHERE id = ?"
+                    ).use { update ->
+                        update.setString(1, username)
+                        update.setString(2, displayName)
+                        update.setString(3, email)
+                        update.setBoolean(4, request.isActive)
+                        update.setObject(5, targetUserId)
+                        update.executeUpdate()
+                    }
+                    replaceUserPermissions(connection, targetUserId, request.permissions)
+                    if (password.isNotEmpty()) {
+                        val hash = ApplicationPasswordHasher.hash(password)
+                        connection.prepareStatement(
+                            """
+                            INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT (user_id) DO UPDATE SET password_salt = EXCLUDED.password_salt,
+                                password_hash = EXCLUDED.password_hash, iterations = EXCLUDED.iterations
+                            """.trimIndent()
+                        ).use { upsert ->
+                            upsert.setObject(1, targetUserId)
+                            upsert.setString(2, hash.salt)
+                            upsert.setString(3, hash.hash)
+                            upsert.setInt(4, hash.iterations)
+                            upsert.executeUpdate()
+                        }
+                    }
+                    // A new password or a deactivated user closes the user's open sessions.
+                    if (password.isNotEmpty() || (current.second && !request.isActive)) {
+                        connection.prepareStatement(
+                            "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+                        ).use { revoke ->
+                            revoke.setObject(1, targetUserId)
+                            revoke.executeUpdate()
+                        }
+                    }
+                    connection.commit()
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                } finally {
+                    connection.autoCommit = true
+                }
+                loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
+            }
         }
     }
 
@@ -835,14 +862,107 @@ class CompanySelfService(
         val serverActor: AuditActor? = null,
     )
 
-    // Audits a change made in the server workspace; company changes by their own owner are not audited here.
-    private fun BusinessOwnerContext.audit(action: String, details: String) {
-        val actor = serverActor ?: return
-        runCatching { auditor?.invoke(actor, action, companyCode, details) }
-            .onFailure { LoggerFactory.getLogger(CompanySelfService::class.java).error("Audit entry {} could not be written", action, it) }
+    /**
+     * Runs [change] with its audit row when the owner or an administrator acts in the server
+     * workspace: the row is inserted first in an open central transaction (passed to [change] for
+     * more central rows), the change commits its own work, then the central transaction commits. A
+     * failed audit insert stops the change, and an audit failure is never swallowed. A company's
+     * changes by its own business owner are not audited here ([change] gets null).
+     */
+    private fun <T> BusinessOwnerContext.audited(action: String, details: String, change: (java.sql.Connection?) -> T): T {
+        val actor = serverActor ?: return change(null)
+        return central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                ProvisioningAudit.insert(connection, actor, action, companyCode, null, details)
+                change(connection).also { connection.commit() }
+            } catch (failure: Throwable) {
+                runCatching { connection.rollback() }
+                throw failure
+            } finally {
+                runCatching { connection.autoCommit = true }
+            }
+        }
     }
 
-    private fun String.escapeJson(): String = replace("\\", "\\\\").replace("\"", "\\\"")
+    /**
+     * Records that [by] knows the credentials of workspace staff account [userId] (it created the
+     * account or set its password), on the central transaction [connection]. A server user without
+     * a central id (cannot happen for administrators) clears the row instead.
+     */
+    private fun recordStaffCredentials(connection: java.sql.Connection, userId: UUID, by: AuditActor?) {
+        val creator = by?.userId
+        if (creator == null || by.kind !in setOf(AuditActor.ServerOwnerKind, AuditActor.ServerAdminKind)) {
+            connection.prepareStatement("DELETE FROM server_workspace_staff WHERE user_id = ?").use { delete ->
+                delete.setObject(1, userId)
+                delete.executeUpdate()
+            }
+            return
+        }
+        connection.prepareStatement(
+            """
+            INSERT INTO server_workspace_staff (user_id, created_by, created_by_kind) VALUES (?, ?, ?)
+            ON CONFLICT (user_id) DO UPDATE SET created_by = EXCLUDED.created_by, created_by_kind = EXCLUDED.created_by_kind, updated_at = CURRENT_TIMESTAMP
+            """.trimIndent()
+        ).use { upsert ->
+            upsert.setObject(1, userId)
+            upsert.setObject(2, creator)
+            upsert.setString(3, by.kind)
+            upsert.executeUpdate()
+        }
+    }
+
+    /**
+     * An administrator was deactivated, deleted or lost server.workspace: the workspace staff
+     * accounts whose credentials they know (server_workspace_staff) are deactivated and their
+     * sessions revoked, audited as [by] (the owner). Returns how many accounts it closed.
+     */
+    fun deactivateWorkspaceStaffOf(adminUserId: UUID, by: AuditActor, reason: String): Int {
+        val staff: List<UUID> = try {
+            central.connection.use { connection ->
+                connection.prepareStatement("SELECT user_id FROM server_workspace_staff WHERE created_by = ? ORDER BY user_id").use { query ->
+                    query.setObject(1, adminUserId)
+                    query.executeQuery().use { rows -> buildList<UUID> { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+                }
+            }
+        } catch (failure: SQLException) {
+            // Before control V015 there is no such table: nobody to close.
+            if (failure.sqlState == "42P01") return 0 else throw failure
+        }
+        if (staff.isEmpty()) return 0
+        val workspace = central.connection.use { connection ->
+            connection.prepareStatement("SELECT code, database_name FROM companies WHERE is_server_workspace").use { query ->
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+            }
+        } ?: return 0
+        val tenant = loginDatabases.tenantConfig(workspace.second)
+            ?: throw CompanySelfException(tr("El espacio del servidor no tiene conexion configurada."))
+        val context = BusinessOwnerContext(workspace.first, workspace.second, tenant, CompanyProfileResponse(workspace.first, workspace.first, null, "#000000", "#000000", "#000000"), null, null, by)
+        val details = auditDetails("adminUserId" to adminUserId.toString(), "userIds" to staff.map { it.toString() }, "reason" to reason)
+        return context.audited("server_workspace.staff_deactivated", details) {
+            tenantConnection(tenant).use { connection ->
+                connection.autoCommit = false
+                try {
+                    val ids = connection.createArrayOf("uuid", staff.toTypedArray())
+                    val closed = connection.prepareStatement("UPDATE application_users SET is_active = FALSE WHERE id = ANY (?) AND is_active").use { update ->
+                        update.setArray(1, ids)
+                        update.executeUpdate()
+                    }
+                    connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ANY (?) AND revoked_at IS NULL").use { revoke ->
+                        revoke.setArray(1, ids)
+                        revoke.executeUpdate()
+                    }
+                    connection.commit()
+                    closed
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                } finally {
+                    connection.autoCommit = true
+                }
+            }
+        }
+    }
 
 }
 

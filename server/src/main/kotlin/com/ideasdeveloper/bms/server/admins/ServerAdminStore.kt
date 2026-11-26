@@ -285,6 +285,38 @@ class ServerAdminStore(private val central: DataSource) {
         AuditActor.system(login)
     }
 
+    /**
+     * The actor a queued install asked for by [login] runs as now (see [QueuedInstallActors]): an
+     * active owner, or an active administrator who no longer must change the password and still
+     * holds [permission]; null otherwise. Fails closed (null) when the database cannot answer.
+     */
+    fun queuedInstallActor(login: String, permission: ServerPermission): AuditActor? {
+        if (login.isBlank()) return AuditActor.system()
+        return try {
+            central.connection.use { connection ->
+                val user = connection.prepareStatement(
+                    """
+                    SELECT users.id, users.is_active, EXISTS (SELECT 1 FROM server_owners owners WHERE owners.user_id = users.id)
+                    FROM application_users users WHERE users.postgres_role = ?
+                    """.trimIndent()
+                ).use { query ->
+                    query.setString(1, login)
+                    query.executeQuery().use { rows -> if (rows.next()) Triple(rows.getObject(1, UUID::class.java), rows.getBoolean(2), rows.getBoolean(3)) else null }
+                } ?: return@use null
+                val (id, userActive, owner) = user
+                when {
+                    !userActive -> null
+                    owner -> AuditActor.owner(login, id)
+                    else -> find(connection, id)
+                        ?.takeIf { it.usable && !it.mustChangePassword && permission in it.permissions }
+                        ?.let { AuditActor(login, id, AuditActor.ServerAdminKind) }
+                }
+            }
+        } catch (_: SQLException) {
+            null
+        }
+    }
+
     /** Whether [login] is already used by a central user (owner, administrator or a removed administrator). */
     fun centralLoginTaken(login: String): Boolean = central.connection.use { connection ->
         connection.prepareStatement("SELECT 1 FROM application_users WHERE postgres_role = ?").use { query ->
