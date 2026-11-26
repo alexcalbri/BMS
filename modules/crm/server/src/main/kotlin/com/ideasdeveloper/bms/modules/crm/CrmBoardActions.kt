@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiBoardAction
 import com.ideasdeveloper.bms.ui.UiFieldOption
 import com.ideasdeveloper.bms.ui.UiRequest
@@ -39,8 +40,8 @@ object CrmBoardActions {
     /** Parses the comma list of ids; more than [CrmBulkActions.MaxSelected] entries, or none, is an error. */
     fun parseCards(raw: String?): Cards {
         val parts = raw.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
-        if (parts.isEmpty()) throw CrmActionNotice("Marca al menos un lead.", warning = true)
-        if (parts.size > CrmBulkActions.MaxSelected) throw CrmActionNotice("Selecciona hasta ${CrmBulkActions.MaxSelected} leads a la vez.")
+        if (parts.isEmpty()) throw CrmActionNotice(tr("Marca al menos un lead."), warning = true)
+        if (parts.size > CrmBulkActions.MaxSelected) throw CrmActionNotice(tr("Selecciona hasta {0} leads a la vez.", CrmBulkActions.MaxSelected))
         val ids = parts.mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() }
         return Cards(ids.distinct(), parts.size - ids.size)
     }
@@ -49,7 +50,7 @@ object CrmBoardActions {
     fun checkValue(id: String, value: String?, allowed: Collection<String>): String {
         if (id != Move && id != Assign) return ""
         val chosen = value.orEmpty().trim()
-        if (chosen.isEmpty() || chosen !in allowed) throw CrmActionNotice(if (id == Move) "Elige la etapa." else "Elige el usuario.")
+        if (chosen.isEmpty() || chosen !in allowed) throw CrmActionNotice(if (id == Move) tr("Elige la etapa.") else tr("Elige el usuario."))
         return chosen
     }
 
@@ -82,13 +83,13 @@ object CrmBoardActions {
             UiRequest(CrmScreens.UiRoute + "/pipeline", params = keep + ("op" to "action") + ("action" to id), confirm = confirm)
         return ids.map { id ->
             when (id) {
-                Move -> UiBoardAction(id, "Mover a...", request(id), options = context.stages.map { UiFieldOption(it.name, it.name) })
-                AssignMe -> UiBoardAction(id, "Asignarme", request(id))
-                Assign -> UiBoardAction(id, "Asignar a...", request(id), options = context.users.map { UiFieldOption(it.name, it.name) })
-                Unassign -> UiBoardAction(id, "Quitar asignados", request(id))
-                Archive -> UiBoardAction(id, "Archivar", request(id))
-                Restore -> UiBoardAction(id, "Restaurar", request(id))
-                else -> UiBoardAction(id, "Eliminar", request(id, "Se eliminaran los leads elegidos. No se puede deshacer."), tone = UiTone.Danger)
+                Move -> UiBoardAction(id, tr("Mover a..."), request(id), options = context.stages.map { UiFieldOption(it.name, context.stageLabel(it.name)) })
+                AssignMe -> UiBoardAction(id, tr("Asignarme"), request(id))
+                Assign -> UiBoardAction(id, tr("Asignar a..."), request(id), options = context.users.map { UiFieldOption(it.name, it.name) })
+                Unassign -> UiBoardAction(id, tr("Quitar asignados"), request(id))
+                Archive -> UiBoardAction(id, tr("Archivar"), request(id))
+                Restore -> UiBoardAction(id, tr("Restaurar"), request(id))
+                else -> UiBoardAction(id, tr("Eliminar"), request(id, tr("Se eliminaran los leads elegidos. No se puede deshacer.")), tone = UiTone.Danger)
             }
         }
     }

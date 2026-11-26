@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -30,7 +32,7 @@ object CrmStay {
     const val StartAlias = "targetStart"
     const val EndAlias = "targetEnd"
 
-    private const val NotChosen = "Sin elegir"
+    private val NotChosen = msg("Sin elegir")
 
     fun load(tenant: Connection): CrmStayMapping = tenant.prepareStatement(
         "SELECT stay_start_field, stay_end_field FROM crm_settings WHERE id = 1"
@@ -58,9 +60,9 @@ object CrmStay {
 
     /** One line for the screens: which fields are the check-in and the check-out. */
     fun summary(mapping: CrmStayMapping, fields: List<CrmField>): String {
-        fun label(key: String) = fields.firstOrNull { it.key == key }?.label ?: "sin elegir"
+        fun label(key: String) = fields.firstOrNull { it.key == key }?.label ?: tr("sin elegir")
         val effective = effective(mapping, fields)
-        return "Ingreso: ${label(effective.startKey)}. Salida: ${label(effective.endKey)}."
+        return tr("Ingreso: {0}. Salida: {1}.", label(effective.startKey), label(effective.endKey))
     }
 
     /** Reads the "Fechas de estadia" form (labels of date fields). */
@@ -69,10 +71,10 @@ object CrmStay {
             val label = values[name].orEmpty().trim()
             if (label.isEmpty() || label == NotChosen) return ""
             return fields.firstOrNull { it.type == CrmFieldType.Date && it.label == label }?.key
-                ?: throw CrmValidationException("El campo $label ya no existe o no es de tipo fecha.")
+                ?: throw CrmValidationException(tr("El campo {0} ya no existe o no es de tipo fecha.", label))
         }
         val mapping = CrmStayMapping(key("start"), key("end"))
-        if (mapping.startKey.isNotEmpty() && mapping.startKey == mapping.endKey) throw CrmValidationException("El ingreso y la salida deben ser campos distintos.")
+        if (mapping.startKey.isNotEmpty() && mapping.startKey == mapping.endKey) throw CrmValidationException(tr("El ingreso y la salida deben ser campos distintos."))
         return mapping
     }
 
@@ -102,7 +104,7 @@ object CrmStay {
         val end = dateOf(custom, mapping.endKey)
         if (start != null && end != null && end.isBefore(start)) {
             fun label(key: String, default: String) = fields.firstOrNull { it.key == key }?.label ?: default
-            throw CrmValidationException("${label(mapping.endKey, "La fecha de salida")} no puede ser anterior a ${label(mapping.startKey, "la fecha de ingreso")}.")
+            throw CrmValidationException(tr("{0} no puede ser anterior a {1}.", label(mapping.endKey, tr("La fecha de salida")), label(mapping.startKey, tr("la fecha de ingreso"))))
         }
         return start to end
     }
@@ -144,12 +146,12 @@ object CrmStay {
         fun move(alias: String, key: String, what: String) {
             val raw = result.remove(alias) ?: return
             if (raw.isBlank() && key.isEmpty()) return
-            if (key.isEmpty()) throw CrmValidationException("El CRM no tiene un campo de $what: elige uno en Configuracion > Integraciones > Fechas de estadia.")
+            if (key.isEmpty()) throw CrmValidationException(tr("El CRM no tiene un campo de {0}: elige uno en Configuracion > Integraciones > Fechas de estadia.", what))
             // The field named in the form wins over the old name.
             result.putIfAbsent(key, raw)
         }
-        move(StartAlias, mapping.startKey, "fecha de ingreso")
-        move(EndAlias, mapping.endKey, "fecha de salida")
+        move(StartAlias, mapping.startKey, tr("fecha de ingreso"))
+        move(EndAlias, mapping.endKey, tr("fecha de salida"))
         return result
     }
 
@@ -212,9 +214,9 @@ object CrmStay {
 
     /** The sentence the notices add when a change cleared the stay dates of [leads] leads ("" for none). */
     fun lostNote(leads: Int): String =
-        if (leads <= 0) "" else " $leads lead(s) perdieron sus fechas de estadia (Cloudbeds, el hotspot y la salida automatica ya no las ven)."
+        if (leads <= 0) "" else tr(" {0} lead(s) perdieron sus fechas de estadia (Cloudbeds, el hotspot y la salida automatica ya no las ven).", leads)
 
-    const val ConfirmClear = "Cambiar el mapeo puede borrar las fechas de estadia que usan Cloudbeds, el hotspot y la salida automatica. Continuar?"
+    val ConfirmClear = msg("Cambiar el mapeo puede borrar las fechas de estadia que usan Cloudbeds, el hotspot y la salida automatica. Continuar?")
 
     // ---- Imports ----
 

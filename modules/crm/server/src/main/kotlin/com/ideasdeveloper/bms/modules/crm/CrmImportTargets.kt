@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -37,12 +38,12 @@ object CrmImportTargets {
     /** Every target of a column, value -> label, for the mapping dropdowns (the fixed fields first). */
     fun options(crmFields: List<CrmField>, customerFields: List<CustomerField>): LinkedHashMap<String, String> {
         val options = LinkedHashMap(CrmImportParse.fields)
-        options[Files] = "Archivos del lead (${CrmFields.DocumentsLabel})"
+        options[Files] = tr("Archivos del lead ({0})", CrmFields.DocumentsLabel)
         // A button holds no value: it is not a place to import into.
-        crmFields.filter { it.type != CrmFieldType.Button }.forEach { options[CrmPrefix + it.key] = "Campo del CRM: ${it.label}" }
-        customerFields.forEach { options[CustomerPrefix + it.key] = "Campo del cliente: ${it.label}" }
-        options[NewCrm] = "Crear campo en el CRM"
-        options[NewCustomer] = "Crear campo del cliente"
+        crmFields.filter { it.type != CrmFieldType.Button }.forEach { options[CrmPrefix + it.key] = tr("Campo del CRM: {0}", it.label) }
+        customerFields.forEach { options[CustomerPrefix + it.key] = tr("Campo del cliente: {0}", it.label) }
+        options[NewCrm] = tr("Crear campo en el CRM")
+        options[NewCustomer] = tr("Crear campo del cliente")
         return options
     }
 
@@ -146,7 +147,7 @@ object CrmImportTargets {
                 customerFields.firstOrNull { it.label.equals(label, ignoreCase = true) }?.let { return@mapValues CustomerPrefix + it.key }
                 val field = createCustomerField(tenant, label, customerType(finalType, finalMultiple), options, customerFields)
                 customerFields = customerFields + field
-                created += "$label (cliente)"
+                created += tr("{0} (cliente)", label)
                 CustomerPrefix + field.key
             } else {
                 crmFields.firstOrNull { it.label.equals(label, ignoreCase = true) }?.let { return@mapValues CrmPrefix + it.key }
@@ -160,7 +161,7 @@ object CrmImportTargets {
                     }
                 }
                 crmFields = crmFields + field
-                created += "$label (CRM)"
+                created += tr("{0} (CRM)", label)
                 CrmPrefix + field.key
             }
         }
@@ -261,7 +262,7 @@ object CrmImportTargets {
             val values = customerValues.mapNotNull { (key, text) ->
                 val field = customerFields.firstOrNull { it.key == key } ?: return@mapNotNull null
                 val value = customerValue(text, field)
-                if (value == null && text.isNotBlank()) problems += "${field.label}: valor no valido"
+                if (value == null && text.isNotBlank()) problems += tr("{0}: valor no valido", field.label)
                 value?.let { key to it }
             }.toMap()
             if (values.isNotEmpty()) {

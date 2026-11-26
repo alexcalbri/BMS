@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -19,12 +21,12 @@ import java.util.UUID
 // execution in CrmAutomationEngine; everything here can be tested without them.
 
 enum class CrmTriggerType(val id: String, val label: String) {
-    LeadCreated("lead_created", "Lead creado"),
-    StageChanged("stage_changed", "Cambio a una etapa"),
-    FieldChanged("field_changed", "Cambio de un campo"),
-    MessageReceived("message_received", "Mensaje nuevo entrante"),
-    Date("date", "Fecha"),
-    Manual("manual", "Manual (boton)");
+    LeadCreated("lead_created", msg("Lead creado")),
+    StageChanged("stage_changed", msg("Cambio a una etapa")),
+    FieldChanged("field_changed", msg("Cambio de un campo")),
+    MessageReceived("message_received", msg("Mensaje nuevo entrante")),
+    Date("date", msg("Fecha")),
+    Manual("manual", msg("Manual (boton)"));
 
     companion object {
         fun byId(id: String) = entries.firstOrNull { it.id == id }
@@ -42,14 +44,14 @@ data class CrmTrigger(
 )
 
 enum class CrmConditionKind(val id: String, val label: String) {
-    StageIn("stage_in", "La etapa es una de"),
-    InterestIn("interest_in", "El interes es uno de"),
-    FieldEquals("field_equals", "Un campo es igual a"),
-    FieldNotEquals("field_not_equals", "Un campo es distinto de"),
-    FieldEmpty("field_empty", "Un campo esta vacio"),
-    FieldFilled("field_filled", "Un campo esta lleno"),
-    HasEmail("has_email", "Tiene correo"),
-    HasPhone("has_phone", "Tiene telefono");
+    StageIn("stage_in", msg("La etapa es una de")),
+    InterestIn("interest_in", msg("El interes es uno de")),
+    FieldEquals("field_equals", msg("Un campo es igual a")),
+    FieldNotEquals("field_not_equals", msg("Un campo es distinto de")),
+    FieldEmpty("field_empty", msg("Un campo esta vacio")),
+    FieldFilled("field_filled", msg("Un campo esta lleno")),
+    HasEmail("has_email", msg("Tiene correo")),
+    HasPhone("has_phone", msg("Tiene telefono"));
 
     val usesField get() = this == FieldEquals || this == FieldNotEquals || this == FieldEmpty || this == FieldFilled
     val usesValue get() = this == FieldEquals || this == FieldNotEquals
@@ -71,12 +73,12 @@ data class CrmCondition(
 )
 
 enum class CrmActionKind(val id: String, val label: String) {
-    SendTemplate("send_template", "Enviar una plantilla al correo del lead"),
-    SetStage("set_stage", "Cambiar la etapa"),
-    SetField("set_field", "Fijar un campo"),
-    Notify("notify", "Avisar a usuarios"),
-    CloudbedsReserve("cloudbeds_reserve", "Cloudbeds: crear la reserva"),
-    CloudbedsCheckIn("cloudbeds_checkin", "Cloudbeds: hacer el check-in");
+    SendTemplate("send_template", msg("Enviar una plantilla al correo del lead")),
+    SetStage("set_stage", msg("Cambiar la etapa")),
+    SetField("set_field", msg("Fijar un campo")),
+    Notify("notify", msg("Avisar a usuarios")),
+    CloudbedsReserve("cloudbeds_reserve", msg("Cloudbeds: crear la reserva")),
+    CloudbedsCheckIn("cloudbeds_checkin", msg("Cloudbeds: hacer el check-in"));
 
     val isCloudbeds get() = this == CloudbedsReserve || this == CloudbedsCheckIn
 
@@ -88,9 +90,9 @@ enum class CrmActionKind(val id: String, val label: String) {
 
 /** Who a "notify" action tells. */
 enum class CrmNotifyWho(val id: String, val label: String) {
-    Assigned("assigned", "Asignados del lead"),
-    Users("users", "Usuarios elegidos"),
-    SeeAll("see_all", "Quienes ven todos los leads");
+    Assigned("assigned", msg("Asignados del lead")),
+    Users("users", msg("Usuarios elegidos")),
+    SeeAll("see_all", msg("Quienes ven todos los leads"));
 
     companion object {
         fun byId(id: String) = entries.firstOrNull { it.id == id }
@@ -138,7 +140,7 @@ class CrmAutomationRefs(
     companion object {
         /** The follow-up date of the lead, usable as the date of a rule and as a field to set. */
         const val FollowUpField = "follow_up_on"
-        const val FollowUpLabel = "Fecha de seguimiento"
+        val FollowUpLabel = msg("Fecha de seguimiento")
     }
 
     fun stage(text: String): UUID? = stages.firstOrNull { it.id.toString() == text || it.name.equals(text.trim(), ignoreCase = true) }?.id
@@ -154,9 +156,9 @@ class CrmAutomationRefs(
     }
 
     fun fieldLabel(key: String): String =
-        if (key == FollowUpField) FollowUpLabel else fields.firstOrNull { it.key == key }?.label ?: key
+        if (key == FollowUpField) tr(FollowUpLabel) else fields.firstOrNull { it.key == key }?.label ?: key
 
-    fun stageName(id: UUID?): String = stages.firstOrNull { it.id == id }?.name ?: "etapa eliminada"
+    fun stageName(id: UUID?): String = stages.firstOrNull { it.id == id }?.name ?: tr("etapa eliminada")
 }
 
 /** JSON of the columns trigger_config, conditions, actions and notify_user_ids. */
@@ -317,40 +319,40 @@ object CrmAutomationRules {
     /** Throws [CrmValidationException] in Spanish. [others] are the saved automations (names are unique). */
     fun validate(automation: CrmAutomation, refs: CrmAutomationRefs, others: List<CrmAutomation> = emptyList()) {
         val name = automation.name.trim()
-        if (name.isEmpty() || name.length > 120) throw CrmValidationException("El nombre debe tener entre 1 y 120 caracteres.")
-        if (others.any { it.id != automation.id && it.name.trim().equals(name, ignoreCase = true) }) throw CrmValidationException("Ya existe la automatizacion $name.")
+        if (name.isEmpty() || name.length > 120) throw CrmValidationException(tr("El nombre debe tener entre 1 y 120 caracteres."))
+        if (others.any { it.id != automation.id && it.name.trim().equals(name, ignoreCase = true) }) throw CrmValidationException(tr("Ya existe la automatizacion {0}.", name))
         validateTrigger(automation.trigger, refs)
-        if (automation.conditions.size > MaxConditions) throw CrmValidationException("Una automatizacion admite hasta $MaxConditions condiciones.")
+        if (automation.conditions.size > MaxConditions) throw CrmValidationException(tr("Una automatizacion admite hasta {0} condiciones.", MaxConditions))
         automation.conditions.forEach { validateCondition(it, refs) }
-        if (automation.actions.isEmpty()) throw CrmValidationException("Agrega al menos una accion.")
-        if (automation.actions.size > MaxActions) throw CrmValidationException("Una automatizacion admite hasta $MaxActions acciones.")
+        if (automation.actions.isEmpty()) throw CrmValidationException(tr("Agrega al menos una accion."))
+        if (automation.actions.size > MaxActions) throw CrmValidationException(tr("Una automatizacion admite hasta {0} acciones.", MaxActions))
         automation.actions.forEachIndexed { index, action -> validateAction(action, index + 1, refs) }
-        if (automation.warnBeforeMinutes !in 0..MaxWarnMinutes) throw CrmValidationException("El aviso anticipado va de 0 a $MaxWarnMinutes minutos (30 dias).")
+        if (automation.warnBeforeMinutes !in 0..MaxWarnMinutes) throw CrmValidationException(tr("El aviso anticipado va de 0 a {0} minutos (30 dias).", MaxWarnMinutes))
         if (automation.warnBeforeMinutes > 0 && automation.trigger.type != CrmTriggerType.Date) {
-            throw CrmValidationException("El aviso anticipado solo existe en las reglas de fecha.")
+            throw CrmValidationException(tr("El aviso anticipado solo existe en las reglas de fecha."))
         }
-        automation.notifyUserIds.firstOrNull { id -> refs.users.none { it.id == id } }?.let { throw CrmValidationException("Uno de los usuarios a avisar ya no tiene acceso al CRM.") }
+        automation.notifyUserIds.firstOrNull { id -> refs.users.none { it.id == id } }?.let { throw CrmValidationException(tr("Uno de los usuarios a avisar ya no tiene acceso al CRM.")) }
     }
 
     private fun validateTrigger(trigger: CrmTrigger, refs: CrmAutomationRefs) {
         when (trigger.type) {
             CrmTriggerType.StageChanged -> {
-                val stage = trigger.stageId ?: throw CrmValidationException("Elige la etapa del disparador.")
-                if (refs.stages.none { it.id == stage }) throw CrmValidationException("La etapa del disparador ya no existe.")
+                val stage = trigger.stageId ?: throw CrmValidationException(tr("Elige la etapa del disparador."))
+                if (refs.stages.none { it.id == stage }) throw CrmValidationException(tr("La etapa del disparador ya no existe."))
             }
             CrmTriggerType.FieldChanged -> {
-                if (trigger.field.isEmpty()) throw CrmValidationException("Elige el campo del disparador.")
+                if (trigger.field.isEmpty()) throw CrmValidationException(tr("Elige el campo del disparador."))
                 if (trigger.field != CrmAutomationRefs.FollowUpField && refs.fields.none { it.key == trigger.field && it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }) {
-                    throw CrmValidationException("El campo del disparador ya no existe.")
+                    throw CrmValidationException(tr("El campo del disparador ya no existe."))
                 }
             }
             CrmTriggerType.Date -> {
-                if (trigger.field.isEmpty()) throw CrmValidationException("Elige el campo de fecha del disparador.")
+                if (trigger.field.isEmpty()) throw CrmValidationException(tr("Elige el campo de fecha del disparador."))
                 if (trigger.field != CrmAutomationRefs.FollowUpField && refs.fields.none { it.key == trigger.field && it.type == CrmFieldType.Date }) {
-                    throw CrmValidationException("El disparador de fecha necesita un campo de tipo fecha o la fecha de seguimiento.")
+                    throw CrmValidationException(tr("El disparador de fecha necesita un campo de tipo fecha o la fecha de seguimiento."))
                 }
-                if (trigger.offsetDays !in -60..60) throw CrmValidationException("Los dias antes o despues van de -60 a 60.")
-                if (trigger.hour !in 0..23) throw CrmValidationException("La hora debe ser un numero de 0 a 23.")
+                if (trigger.offsetDays !in -60..60) throw CrmValidationException(tr("Los dias antes o despues van de -60 a 60."))
+                if (trigger.hour !in 0..23) throw CrmValidationException(tr("La hora debe ser un numero de 0 a 23."))
             }
             else -> Unit
         }
@@ -359,40 +361,40 @@ object CrmAutomationRules {
     private fun validateCondition(condition: CrmCondition, refs: CrmAutomationRefs) {
         when (condition.kind) {
             CrmConditionKind.StageIn -> {
-                if (condition.stageIds.isEmpty()) throw CrmValidationException("Elige al menos una etapa en la condicion.")
-                if (condition.stageIds.any { id -> refs.stages.none { it.id == id } }) throw CrmValidationException("Una etapa de las condiciones ya no existe.")
+                if (condition.stageIds.isEmpty()) throw CrmValidationException(tr("Elige al menos una etapa en la condicion."))
+                if (condition.stageIds.any { id -> refs.stages.none { it.id == id } }) throw CrmValidationException(tr("Una etapa de las condiciones ya no existe."))
             }
             CrmConditionKind.InterestIn -> {
-                if (condition.interestIds.isEmpty() && !condition.noInterest) throw CrmValidationException("Elige al menos un interes en la condicion.")
-                if (condition.interestIds.any { id -> refs.interests.none { it.id == id } }) throw CrmValidationException("Un interes de las condiciones ya no existe.")
+                if (condition.interestIds.isEmpty() && !condition.noInterest) throw CrmValidationException(tr("Elige al menos un interes en la condicion."))
+                if (condition.interestIds.any { id -> refs.interests.none { it.id == id } }) throw CrmValidationException(tr("Un interes de las condiciones ya no existe."))
             }
             else -> if (condition.kind.usesField) {
                 if (refs.fields.none { it.key == condition.field && it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }) {
-                    throw CrmValidationException("El campo de una condicion ya no existe.")
+                    throw CrmValidationException(tr("El campo de una condicion ya no existe."))
                 }
-                if (condition.kind.usesValue && condition.value.isEmpty()) throw CrmValidationException("Escribe el valor de la condicion.")
+                if (condition.kind.usesValue && condition.value.isEmpty()) throw CrmValidationException(tr("Escribe el valor de la condicion."))
             }
         }
     }
 
     private fun validateAction(action: CrmAction, number: Int, refs: CrmAutomationRefs) {
-        val where = "Accion $number"
+        val where = tr("Accion {0}", number)
         when (action.kind) {
             CrmActionKind.SendTemplate -> {
-                val template = action.templateId ?: throw CrmValidationException("$where: elige la plantilla.")
-                if (refs.templates.none { it.id == template }) throw CrmValidationException("$where: la plantilla ya no existe.")
+                val template = action.templateId ?: throw CrmValidationException(tr("{0}: elige la plantilla.", where))
+                if (refs.templates.none { it.id == template }) throw CrmValidationException(tr("{0}: la plantilla ya no existe.", where))
             }
             CrmActionKind.SetStage -> {
-                val stage = action.stageId ?: throw CrmValidationException("$where: elige la etapa.")
-                if (refs.stages.none { it.id == stage }) throw CrmValidationException("$where: la etapa ya no existe.")
+                val stage = action.stageId ?: throw CrmValidationException(tr("{0}: elige la etapa.", where))
+                if (refs.stages.none { it.id == stage }) throw CrmValidationException(tr("{0}: la etapa ya no existe.", where))
             }
             CrmActionKind.SetField -> {
-                if (action.field.isEmpty()) throw CrmValidationException("$where: elige el campo.")
+                if (action.field.isEmpty()) throw CrmValidationException(tr("{0}: elige el campo.", where))
                 if (action.field == CrmAutomationRefs.FollowUpField) {
-                    if (action.value.isNotEmpty()) runCatching { LocalDate.parse(action.value) }.getOrElse { throw CrmValidationException("$where: la fecha de seguimiento usa el formato AAAA-MM-DD.") }
+                    if (action.value.isNotEmpty()) runCatching { LocalDate.parse(action.value) }.getOrElse { throw CrmValidationException(tr("{0}: la fecha de seguimiento usa el formato AAAA-MM-DD.", where)) }
                 } else {
                     val field = refs.fields.firstOrNull { it.key == action.field && it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }
-                        ?: throw CrmValidationException("$where: el campo ya no existe.")
+                        ?: throw CrmValidationException(tr("{0}: el campo ya no existe.", where))
                     try {
                         CrmFields.parseValues(mapOf(field.key to action.value), listOf(field.copy(required = false)))
                     } catch (failure: CrmValidationException) {
@@ -401,13 +403,13 @@ object CrmAutomationRules {
                 }
             }
             CrmActionKind.Notify -> {
-                if (action.who == CrmNotifyWho.Users && action.userIds.isEmpty()) throw CrmValidationException("$where: elige a quien avisar.")
-                if (action.userIds.any { id -> refs.users.none { it.id == id } }) throw CrmValidationException("$where: un usuario ya no tiene acceso al CRM.")
-                if (action.title.length > 120) throw CrmValidationException("$where: el titulo admite hasta 120 caracteres.")
-                if (action.text.length > 500) throw CrmValidationException("$where: el texto admite hasta 500 caracteres.")
+                if (action.who == CrmNotifyWho.Users && action.userIds.isEmpty()) throw CrmValidationException(tr("{0}: elige a quien avisar.", where))
+                if (action.userIds.any { id -> refs.users.none { it.id == id } }) throw CrmValidationException(tr("{0}: un usuario ya no tiene acceso al CRM.", where))
+                if (action.title.length > 120) throw CrmValidationException(tr("{0}: el titulo admite hasta 120 caracteres.", where))
+                if (action.text.length > 500) throw CrmValidationException(tr("{0}: el texto admite hasta 500 caracteres.", where))
             }
             CrmActionKind.CloudbedsReserve, CrmActionKind.CloudbedsCheckIn ->
-                if (!refs.cloudbedsReady) throw CrmValidationException("$where: activa Cloudbeds en Configuracion > Integraciones para usar esta accion.")
+                if (!refs.cloudbedsReady) throw CrmValidationException(tr("{0}: activa Cloudbeds en Configuracion > Integraciones para usar esta accion.", where))
         }
     }
 
@@ -423,11 +425,10 @@ object CrmAutomationRules {
     /** The notice for a rule that answers every incoming message: it can reply only once a day per lead. Null for the rest. */
     fun messageReplyNotice(automation: CrmAutomation): String? =
         if (automation.trigger.type == CrmTriggerType.MessageReceived && automation.actions.any { it.kind == CrmActionKind.SendTemplate }) {
-            "Con \"mensaje nuevo\" y \"enviar plantilla\" la regla responde como maximo una vez al dia por lead (y automatizaciones en total, 3 correos por hora por lead), para no cruzarse con respuestas automaticas."
+            tr("Con \"mensaje nuevo\" y \"enviar plantilla\" la regla responde como maximo una vez al dia por lead (y automatizaciones en total, 3 correos por hora por lead), para no cruzarse con respuestas automaticas.")
         } else null
 
-    const val DuplicateWelcomeWarning = "Esta regla envia un correo por una fecha de la estadia y la bienvenida de Cloudbeds tambien esta activa: " +
-        "el huesped puede recibir dos correos."
+    val DuplicateWelcomeWarning = msg("Esta regla envia un correo por una fecha de la estadia y la bienvenida de Cloudbeds tambien esta activa: el huesped puede recibir dos correos.")
 }
 
 /** Conditions of an automation against a lead. */
@@ -474,14 +475,14 @@ object CrmAutomationConditions {
     }
 
     fun label(condition: CrmCondition, refs: CrmAutomationRefs): String = when (condition.kind) {
-        CrmConditionKind.StageIn -> "etapa en ${condition.stageIds.joinToString { refs.stageName(it) }}"
-        CrmConditionKind.InterestIn -> "interes en ${(condition.interestIds.map { id -> refs.interests.firstOrNull { it.id == id }?.name ?: "interes eliminado" } + listOfNotNull(CrmForms.NoInterest.takeIf { condition.noInterest })).joinToString()}"
+        CrmConditionKind.StageIn -> tr("etapa en {0}", condition.stageIds.joinToString { refs.stageName(it) })
+        CrmConditionKind.InterestIn -> tr("interes en {0}", (condition.interestIds.map { id -> refs.interests.firstOrNull { it.id == id }?.name ?: tr("interes eliminado") } + listOfNotNull(CrmForms.NoInterest.takeIf { condition.noInterest })).joinToString())
         CrmConditionKind.FieldEquals -> "${refs.fieldLabel(condition.field)} = ${condition.value}"
-        CrmConditionKind.FieldNotEquals -> "${refs.fieldLabel(condition.field)} distinto de ${condition.value}"
-        CrmConditionKind.FieldEmpty -> "${refs.fieldLabel(condition.field)} vacio"
-        CrmConditionKind.FieldFilled -> "${refs.fieldLabel(condition.field)} lleno"
-        CrmConditionKind.HasEmail -> "tiene correo"
-        CrmConditionKind.HasPhone -> "tiene telefono"
+        CrmConditionKind.FieldNotEquals -> tr("{0} distinto de {1}", refs.fieldLabel(condition.field), condition.value)
+        CrmConditionKind.FieldEmpty -> tr("{0} vacio", refs.fieldLabel(condition.field))
+        CrmConditionKind.FieldFilled -> tr("{0} lleno", refs.fieldLabel(condition.field))
+        CrmConditionKind.HasEmail -> tr("tiene correo")
+        CrmConditionKind.HasPhone -> tr("tiene telefono")
     }
 }
 
@@ -508,23 +509,23 @@ object CrmAutomationRequirements {
     val CheckInStatuses = setOf("confirmed", "not_confirmed")
 
     fun missing(action: CrmAction, facts: CrmLeadFacts, labels: CrmStayLabels = CrmStayLabels(), reservedBefore: Boolean = false): List<String> = when (action.kind) {
-        CrmActionKind.SendTemplate -> if (CrmContacts.isEmail(facts.email)) emptyList() else listOf("correo del lead")
+        CrmActionKind.SendTemplate -> if (CrmContacts.isEmail(facts.email)) emptyList() else listOf(tr("correo del lead"))
         CrmActionKind.CloudbedsReserve -> buildList {
-            if (!facts.cloudbedsReady) add("integracion de Cloudbeds activa")
+            if (!facts.cloudbedsReady) add(tr("integracion de Cloudbeds activa"))
             if (facts.startDate == null) add(labels.start)
             if (facts.endDate == null) add(labels.end)
             if (facts.chosenRooms.isEmpty()) {
-                add("habitacion elegida en Cloudbeds")
+                add(tr("habitacion elegida en Cloudbeds"))
             } else if (facts.startDate != null && facts.endDate != null && facts.chosenRooms.any { it.first != facts.startDate || it.second != facts.endDate }) {
-                add("habitacion elegida para las fechas del lead (${facts.startDate} a ${facts.endDate})")
+                add(tr("habitacion elegida para las fechas del lead ({0} a {1})", facts.startDate, facts.endDate))
             }
-            if (!CrmContacts.isEmail(facts.email)) add("correo del lead")
-            if (!facts.guestCountry) add("pais por defecto del huesped (Integraciones > Cloudbeds)")
+            if (!CrmContacts.isEmail(facts.email)) add(tr("correo del lead"))
+            if (!facts.guestCountry) add(tr("pais por defecto del huesped (Integraciones > Cloudbeds)"))
         }
         CrmActionKind.CloudbedsCheckIn -> buildList {
-            if (!facts.cloudbedsReady) add("integracion de Cloudbeds activa")
+            if (!facts.cloudbedsReady) add(tr("integracion de Cloudbeds activa"))
             // A reserve earlier in the same chain creates the reservation the check-in needs.
-            if (!reservedBefore && facts.reservationStatuses.none { it in CheckInStatuses }) add("reserva de Cloudbeds pendiente de check-in")
+            if (!reservedBefore && facts.reservationStatuses.none { it in CheckInStatuses }) add(tr("reserva de Cloudbeds pendiente de check-in"))
         }
         CrmActionKind.SetStage, CrmActionKind.SetField, CrmActionKind.Notify -> emptyList()
     }
@@ -612,7 +613,7 @@ object CrmAutomationSchedule {
         return DueQuery(sql, params)
     }
 
-    fun whenText(at: ZonedDateTime): String = "el ${whenFormat.format(at)} (${at.zone})"
+    fun whenText(at: ZonedDateTime): String = tr("el {0} ({1})", whenFormat.format(at), at.zone)
 }
 
 /** run_key of crm_automation_runs: which executions are the same one. */
@@ -664,25 +665,25 @@ object CrmRunStates {
 /** One line per rule for the screens and agents. */
 object CrmAutomationSummary {
     fun trigger(trigger: CrmTrigger, refs: CrmAutomationRefs): String = when (trigger.type) {
-        CrmTriggerType.StageChanged -> "Cuando un lead pasa a ${refs.stageName(trigger.stageId)}"
-        CrmTriggerType.FieldChanged -> "Cuando cambia ${refs.fieldLabel(trigger.field)}"
+        CrmTriggerType.StageChanged -> tr("Cuando un lead pasa a {0}", refs.stageName(trigger.stageId))
+        CrmTriggerType.FieldChanged -> tr("Cuando cambia {0}", refs.fieldLabel(trigger.field))
         CrmTriggerType.Date -> {
             val days = trigger.offsetDays
             val offset = when {
-                days == 0 -> "El dia de"
-                days < 0 -> "${-days} dia(s) antes de"
-                else -> "$days dia(s) despues de"
+                days == 0 -> tr("El dia de")
+                days < 0 -> tr("{0} dia(s) antes de", -days)
+                else -> tr("{0} dia(s) despues de", days)
             }
-            "$offset ${refs.fieldLabel(trigger.field)}, a las ${trigger.hour.toString().padStart(2, '0')}:00"
+            tr("{0} {1}, a las {2}:00", offset, refs.fieldLabel(trigger.field), trigger.hour.toString().padStart(2, '0'))
         }
-        else -> trigger.type.label
+        else -> tr(trigger.type.label)
     }
 
     fun action(action: CrmAction, refs: CrmAutomationRefs): String = when (action.kind) {
-        CrmActionKind.SendTemplate -> "Enviar ${refs.templates.firstOrNull { it.id == action.templateId }?.name ?: "plantilla eliminada"}"
-        CrmActionKind.SetStage -> "Pasar a ${refs.stageName(action.stageId)}"
-        CrmActionKind.SetField -> "Fijar ${refs.fieldLabel(action.field)} = ${action.value.ifEmpty { "(vacio)" }}"
-        CrmActionKind.Notify -> "Avisar a ${action.who.label.lowercase()}"
-        else -> action.kind.label
+        CrmActionKind.SendTemplate -> tr("Enviar {0}", refs.templates.firstOrNull { it.id == action.templateId }?.name ?: tr("plantilla eliminada"))
+        CrmActionKind.SetStage -> tr("Pasar a {0}", refs.stageName(action.stageId))
+        CrmActionKind.SetField -> tr("Fijar {0} = {1}", refs.fieldLabel(action.field), action.value.ifEmpty { tr("(vacio)") })
+        CrmActionKind.Notify -> tr("Avisar a {0}", tr(action.who.label).lowercase())
+        else -> tr(action.kind.label)
     }
 }

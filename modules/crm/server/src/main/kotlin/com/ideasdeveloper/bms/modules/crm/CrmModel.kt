@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import com.ideasdeveloper.bms.ui.UiTone
 import kotlinx.serialization.json.JsonElement
@@ -13,9 +15,9 @@ import java.util.UUID
 class CrmValidationException(message: String) : Exception(message)
 
 enum class StageKind(val id: String, val label: String) {
-    Open("open", "Abierta"),
-    Won("won", "Ganada"),
-    Lost("lost", "Perdida");
+    Open("open", msg("Abierta")),
+    Won("won", msg("Ganada")),
+    Lost("lost", msg("Perdida"));
 
     companion object {
         fun fromId(id: String): StageKind = entries.firstOrNull { it.id == id } ?: Open
@@ -25,11 +27,11 @@ enum class StageKind(val id: String, val label: String) {
 
 // Stage colors are tones: the app paints them with the user's theme.
 enum class StageTone(val id: String, val label: String) {
-    Info(UiTone.Info, "Azul"),
-    Warning(UiTone.Warning, "Amarillo"),
-    Danger(UiTone.Danger, "Rojo"),
-    Success(UiTone.Success, "Verde"),
-    Neutral(UiTone.Neutral, "Gris");
+    Info(UiTone.Info, msg("Azul")),
+    Warning(UiTone.Warning, msg("Amarillo")),
+    Danger(UiTone.Danger, msg("Rojo")),
+    Success(UiTone.Success, msg("Verde")),
+    Neutral(UiTone.Neutral, msg("Gris"));
 
     companion object {
         fun fromId(id: String): StageTone = entries.firstOrNull { it.id == id } ?: Neutral
@@ -214,8 +216,8 @@ data class CrmLeadInput(
 data class CrmStageInput(val name: String, val kind: StageKind, val tone: StageTone, val position: Int)
 
 object CrmForms {
-    const val NoInterest = "Sin interes (recepcion)"
-    const val Unassigned = "Sin asignar"
+    val NoInterest = msg("Sin interes (recepcion)")
+    val Unassigned = msg("Sin asignar")
     private const val MaxText = 5000
 
     /**
@@ -239,25 +241,25 @@ object CrmForms {
         val values = CrmStay.withAliases(rawValues, mapping)
         fun text(key: String, max: Int, label: String): String {
             val value = values[key].orEmpty().trim()
-            if (value.length > max) throw CrmValidationException("$label admite hasta $max caracteres.")
+            if (value.length > max) throw CrmValidationException(tr("{0} admite hasta {1} caracteres.", label, max))
             return value
         }
-        val name = text("name", 200, "El nombre")
-        if (name.isEmpty()) throw CrmValidationException("Escribe el nombre del lead.")
+        val name = text("name", 200, tr("El nombre"))
+        if (name.isEmpty()) throw CrmValidationException(tr("Escribe el nombre del lead."))
         // Email and phone are optional (chats and calls often bring only one); a typed email must be valid.
-        val email = text("email", 254, "El correo")
+        val email = text("email", 254, tr("El correo"))
         if (email.isNotEmpty() && !email.matches(Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))) throw CrmValidationException("Escribe un correo valido o dejalo vacio.")
-        val phone = text("phone", 40, "El telefono")
+        val phone = text("phone", 40, tr("El telefono"))
         val stageName = values["stage"].orEmpty()
         val stage = stages.firstOrNull { it.name == stageName } ?: stages.firstOrNull()
-            ?: throw CrmValidationException("Crea al menos una etapa en Configuracion.")
+            ?: throw CrmValidationException(tr("Crea al menos una etapa en Configuracion."))
         val interestName = values["interest"].orEmpty()
         val interest = if (!interestsEnabled || interestName.isBlank() || interestName == NoInterest) null else {
-            interests.firstOrNull { it.name == interestName } ?: throw CrmValidationException("Ese interes ya no existe.")
+            interests.firstOrNull { it.name == interestName } ?: throw CrmValidationException(tr("Ese interes ya no existe."))
         }
         // "owner" is a multiple dropdown (a JSON array of names); an old client sends one plain name.
         val owners = UiFieldValues.options(values["owner"].orEmpty()).filter { it.isNotBlank() && it != Unassigned }.distinct().map { ownerName ->
-            users.firstOrNull { it.name == ownerName } ?: throw CrmValidationException("Ese usuario ya no puede tener leads.")
+            users.firstOrNull { it.name == ownerName } ?: throw CrmValidationException(tr("Ese usuario ya no puede tener leads."))
         }
         val custom = CrmFields.parseValues(values, fields, stored)
         // The internal copy of the dates comes from the mapped fields; the end cannot be before the start.
@@ -269,14 +271,14 @@ object CrmForms {
             stageId = stage.id,
             interestId = interest?.id,
             ownerUserIds = owners.map { it.id },
-            source = text("source", 120, "El origen"),
-            language = text("language", 40, "El idioma"),
-            message = text("message", MaxText, "El mensaje"),
-            details = text("details", MaxText, "Los detalles"),
+            source = text("source", 120, tr("El origen")),
+            language = text("language", 40, tr("El idioma")),
+            message = text("message", MaxText, tr("El mensaje")),
+            details = text("details", MaxText, tr("Los detalles")),
             targetStart = targetStart,
             targetEnd = targetEnd,
             estimatedValue = money(values["estimatedValue"]),
-            followUpOn = date(values["followUpOn"], "La fecha de seguimiento"),
+            followUpOn = date(values["followUpOn"], tr("La fecha de seguimiento")),
             custom = custom,
             files = CrmFields.parseFiles(values, fields),
         )
@@ -284,17 +286,17 @@ object CrmForms {
 
     fun parseStage(values: Map<String, String>): CrmStageInput {
         val name = values["name"].orEmpty().trim()
-        if (name.isEmpty() || name.length > 60) throw CrmValidationException("El nombre de la etapa debe tener entre 1 y 60 caracteres.")
+        if (name.isEmpty() || name.length > 60) throw CrmValidationException(tr("El nombre de la etapa debe tener entre 1 y 60 caracteres."))
         val kind = StageKind.fromLabel(values["kind"].orEmpty()) ?: StageKind.Open
         val tone = StageTone.fromLabel(values["tone"].orEmpty()) ?: StageTone.Neutral
         val position = values["position"].orEmpty().trim().ifEmpty { "0" }.toIntOrNull()?.takeIf { it in 0..999 }
-            ?: throw CrmValidationException("La posicion debe ser un numero entre 0 y 999.")
+            ?: throw CrmValidationException(tr("La posicion debe ser un numero entre 0 y 999."))
         return CrmStageInput(name, kind, tone, position)
     }
 
     fun parseInterestName(values: Map<String, String>): String {
         val name = values["name"].orEmpty().trim()
-        if (name.isEmpty() || name.length > 60) throw CrmValidationException("El nombre del interes debe tener entre 1 y 60 caracteres.")
+        if (name.isEmpty() || name.length > 60) throw CrmValidationException(tr("El nombre del interes debe tener entre 1 y 60 caracteres."))
         return name
     }
 
@@ -304,8 +306,8 @@ object CrmForms {
 
     fun note(values: Map<String, String>): String {
         val body = values["note"].orEmpty().trim()
-        if (body.isEmpty()) throw CrmValidationException("Escribe la nota.")
-        if (body.length > MaxText) throw CrmValidationException("La nota admite hasta $MaxText caracteres.")
+        if (body.isEmpty()) throw CrmValidationException(tr("Escribe la nota."))
+        if (body.length > MaxText) throw CrmValidationException(tr("La nota admite hasta {0} caracteres.", MaxText))
         return body
     }
 
@@ -315,7 +317,7 @@ object CrmForms {
         return try {
             LocalDate.parse(value)
         } catch (failure: DateTimeParseException) {
-            throw CrmValidationException("$label debe tener el formato AAAA-MM-DD.")
+            throw CrmValidationException(tr("{0} debe tener el formato AAAA-MM-DD.", label))
         }
     }
 
@@ -323,7 +325,7 @@ object CrmForms {
         val value = raw.orEmpty().trim().replace(",", "")
         if (value.isEmpty()) return null
         val amount = value.toBigDecimalOrNull()?.takeIf { it.signum() >= 0 && it.scale() <= 2 && it < BigDecimal("1000000000000") }
-            ?: throw CrmValidationException("El valor estimado debe ser un numero positivo con hasta 2 decimales.")
+            ?: throw CrmValidationException(tr("El valor estimado debe ser un numero positivo con hasta 2 decimales."))
         return amount
     }
 }
@@ -336,29 +338,29 @@ object CrmTemplates {
 
     val all = listOf(
         Template(
-            "general", "General",
+            "general", msg("General"),
             listOf(
                 stage("Nuevo", StageKind.Open, StageTone.Info, 0),
                 stage("Contactado", StageKind.Open, StageTone.Warning, 1),
-                stage("En seguimiento", StageKind.Open, StageTone.Danger, 2),
+                stage(tr("En seguimiento"), StageKind.Open, StageTone.Danger, 2),
                 stage("Ganado", StageKind.Won, StageTone.Success, 3),
                 stage("Perdido", StageKind.Lost, StageTone.Neutral, 4),
             ),
         ),
         // Tourism / hospitality: the flow used to answer and book surf, yoga or event inquiries.
         Template(
-            "turismo", "Turismo y hospedaje",
+            "turismo", msg("Turismo y hospedaje"),
             listOf(
                 stage("Nuevo", StageKind.Open, StageTone.Info, 0),
                 stage("Respondido", StageKind.Open, StageTone.Warning, 1),
-                stage("En comunicacion", StageKind.Open, StageTone.Danger, 2),
+                stage(tr("En comunicacion"), StageKind.Open, StageTone.Danger, 2),
                 stage("Reservado", StageKind.Won, StageTone.Success, 3),
                 stage("Frio", StageKind.Lost, StageTone.Neutral, 4),
-                stage("Huesped anterior", StageKind.Won, StageTone.Success, 5),
+                stage(tr("Huesped anterior"), StageKind.Won, StageTone.Success, 5),
             ),
         ),
         Template(
-            "inmobiliaria", "Bienes raices",
+            "inmobiliaria", msg("Bienes raices"),
             listOf(
                 stage("Nuevo", StageKind.Open, StageTone.Info, 0),
                 stage("Contactado", StageKind.Open, StageTone.Warning, 1),
@@ -376,9 +378,9 @@ object CrmTemplates {
 // Follow-up badge of an open lead: overdue, today or upcoming.
 fun followUpState(followUpOn: LocalDate?, today: LocalDate): Pair<String, String>? = when {
     followUpOn == null -> null
-    followUpOn.isBefore(today) -> "Seguimiento vencido $followUpOn" to UiTone.Danger
-    followUpOn == today -> "Seguimiento hoy" to UiTone.Warning
-    else -> "Seguimiento $followUpOn" to UiTone.Info
+    followUpOn.isBefore(today) -> tr("Seguimiento vencido {0}", followUpOn) to UiTone.Danger
+    followUpOn == today -> tr("Seguimiento hoy") to UiTone.Warning
+    else -> tr("Seguimiento {0}", followUpOn) to UiTone.Info
 }
 
 /** What restoring an archived lead does; decided without the database so it can be tested. */

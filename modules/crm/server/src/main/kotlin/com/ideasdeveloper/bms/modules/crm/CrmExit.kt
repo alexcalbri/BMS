@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.time.DateTimeException
@@ -133,19 +134,19 @@ object CrmExit {
      */
     fun parse(enabled: Boolean, hourText: String, timeZone: String, chosenStageIds: Set<UUID>, stages: List<CrmStage>): CrmExitAutomation {
         val hour = hourText.trim().ifEmpty { DefaultHour.toString() }.toIntOrNull()?.takeIf { it in 0..23 }
-            ?: throw CrmValidationException("La hora debe ser un numero entre 0 y 23.")
+            ?: throw CrmValidationException(tr("La hora debe ser un numero entre 0 y 23."))
         val zone = timeZone.trim()
-        if (zone.length > 64) throw CrmValidationException("La zona horaria es demasiado larga.")
+        if (zone.length > 64) throw CrmValidationException(tr("La zona horaria es demasiado larga."))
         if (zone.isNotEmpty()) {
             try {
                 ZoneId.of(zone)
             } catch (failure: DateTimeException) {
-                throw CrmValidationException("La zona horaria no existe. Usa un nombre como America/Panama.")
+                throw CrmValidationException(tr("La zona horaria no existe. Usa un nombre como America/Panama."))
             }
         }
         val known = stages.map { it.id }.toSet()
         val chosen = chosenStageIds.filter { it in known }.toSet()
-        if (enabled && chosen.isEmpty()) throw CrmValidationException("Elige al menos una etapa de origen.")
+        if (enabled && chosen.isEmpty()) throw CrmValidationException(tr("Elige al menos una etapa de origen."))
         return CrmExitAutomation(enabled, hour, zone, chosen)
     }
 

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.util.UUID
 
@@ -23,8 +25,8 @@ object CrmSpam {
     private val leet = mapOf('4' to 'a', '@' to 'a', '3' to 'e', '1' to 'i', '!' to 'i', '0' to 'o', '$' to 's', '5' to 's', '7' to 't')
 
     val channelLabels = linkedMapOf(
-        "form" to "Formularios",
-        "email" to "Correo",
+        "form" to msg("Formularios"),
+        "email" to msg("Correo"),
         "whatsapp" to "WhatsApp",
         "messenger" to "Messenger",
         "instagram" to "Instagram",
@@ -113,11 +115,11 @@ object CrmSpam {
     fun parse(values: Map<String, String>): CrmSpamSettings {
         fun list(key: String) = values[key].orEmpty().split('\n', ',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
         val words = list("words")
-        if (words.any { it.length > 40 }) throw CrmValidationException("Cada palabra admite hasta 40 caracteres.")
+        if (words.any { it.length > 40 }) throw CrmValidationException(tr("Cada palabra admite hasta 40 caracteres."))
         val domains = list("blockedDomains").map { it.removePrefix("@") }
-        if (domains.any { !it.matches(Regex("^[a-z0-9.-]+\\.[a-z]{2,}$")) }) throw CrmValidationException("Escribe dominios como ejemplo.com.")
+        if (domains.any { !it.matches(Regex("^[a-z0-9.-]+\\.[a-z]{2,}$")) }) throw CrmValidationException(tr("Escribe dominios como ejemplo.com."))
         val maxLinks = values["maxLinks"].orEmpty().trim().ifEmpty { "1" }.toIntOrNull()?.takeIf { it in 0..50 }
-            ?: throw CrmValidationException("El maximo de enlaces debe ser un numero entre 0 y 50.")
+            ?: throw CrmValidationException(tr("El maximo de enlaces debe ser un numero entre 0 y 50."))
         return CrmSpamSettings(
             words = words,
             maxLinks = maxLinks,

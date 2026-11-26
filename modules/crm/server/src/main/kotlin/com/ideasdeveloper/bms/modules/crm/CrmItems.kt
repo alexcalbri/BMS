@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -30,13 +32,15 @@ data class CrmItem(
 )
 
 object CrmItems {
+    fun statusLabel(status: String): String = statusLabels[status]?.let { tr(it) } ?: status
+
     val statusLabels = linkedMapOf(
-        "interested" to "Interesado",
-        "offered" to "Ofrecida",
-        "chosen" to "Elegida",
-        "discarded" to "Descartada",
-        "sold" to "Vendida",
-        "booked" to "Reservada",
+        "interested" to msg("Interesado"),
+        "offered" to msg("Ofrecida"),
+        "chosen" to msg("Elegida"),
+        "discarded" to msg("Descartada"),
+        "sold" to msg("Vendida"),
+        "booked" to msg("Reservada"),
     )
 
     fun list(tenant: Connection, leadId: UUID, source: String? = null): List<CrmItem> = tenant.prepareStatement(

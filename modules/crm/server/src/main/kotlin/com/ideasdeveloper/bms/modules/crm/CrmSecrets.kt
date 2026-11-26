@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.security.SecretDecryptionException
 import com.ideasdeveloper.bms.server.security.SecretMigration
@@ -16,7 +18,7 @@ object CrmSecrets {
     @Volatile
     var box: SecretBox? = null
 
-    const val UnavailableMessage = "No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."
+    val UnavailableMessage = msg("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
 
     // Un secreto cifrado que no se puede abrir (llave maestra ausente o distinta) se lee como "unreadable:" + el valor crudo:
     // asi nunca se confunde con vacio y un guardado posterior lo reescribe tal cual en vez de borrarlo.
@@ -57,11 +59,11 @@ object CrmSecrets {
     fun seal(tenant: Connection, value: String?): String? {
         if (value.isNullOrEmpty()) return value
         if (isUnreadable(value)) return value.removePrefix(UnreadablePrefix)
-        val secrets = box ?: throw CrmValidationException(UnavailableMessage)
+        val secrets = box ?: throw CrmValidationException(tr(UnavailableMessage))
         return try {
             secrets.seal(tenant, value)
         } catch (failure: SecretsUnavailableException) {
-            throw CrmValidationException(UnavailableMessage)
+            throw CrmValidationException(tr(UnavailableMessage))
         }
     }
 

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.util.UUID
 
@@ -28,9 +30,9 @@ object CrmFieldSections {
 
     /** The built-in sections in their original order: key and fixed name. */
     val system = listOf(
-        Customer to "Datos del cliente",
-        Followup to "Seguimiento",
-        Message to "Mensaje y detalles",
+        Customer to msg("Datos del cliente"),
+        Followup to msg("Seguimiento"),
+        Message to msg("Mensaje y detalles"),
         Documents to CrmFields.DocumentsLabel,
     )
 
@@ -59,17 +61,17 @@ object CrmFieldSections {
     /** Reads the section form of Configuracion (custom sections only). */
     fun parse(values: Map<String, String>, existing: List<CrmFieldSection>, id: UUID?): CrmFieldSectionInput {
         val name = values["sectionName"].orEmpty().trim()
-        if (name.isEmpty()) throw CrmValidationException("Escribe el nombre de la seccion.")
-        if (name.length > 60) throw CrmValidationException("El nombre admite hasta 60 caracteres.")
-        if (reserved.any { it.equals(name, ignoreCase = true) }) throw CrmValidationException("$name ya es una seccion de la ficha del lead: elige otro nombre.")
-        if (existing.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw CrmValidationException("Ya existe la seccion $name.")
+        if (name.isEmpty()) throw CrmValidationException(tr("Escribe el nombre de la seccion."))
+        if (name.length > 60) throw CrmValidationException(tr("El nombre admite hasta 60 caracteres."))
+        if (reserved.any { it.equals(name, ignoreCase = true) }) throw CrmValidationException(tr("{0} ya es una seccion de la ficha del lead: elige otro nombre.", name))
+        if (existing.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw CrmValidationException(tr("Ya existe la seccion {0}.", name))
         return CrmFieldSectionInput(name)
     }
 
     /** Creates ([id] null, at the end) or renames a custom section. Built-in sections keep their name. */
     fun save(tenant: Connection, id: UUID?, input: CrmFieldSectionInput, existing: List<CrmFieldSection>): CrmFieldSection {
         if (id == null) {
-            if (existing.count { !it.isSystem } >= MaxCustomSections) throw CrmValidationException("El CRM admite hasta $MaxCustomSections secciones propias.")
+            if (existing.count { !it.isSystem } >= MaxCustomSections) throw CrmValidationException(tr("El CRM admite hasta {0} secciones propias.", MaxCustomSections))
             val section = CrmFieldSection(UUID.randomUUID(), input.name, (existing.maxOfOrNull { it.position } ?: -1) + 1)
             tenant.prepareStatement("INSERT INTO crm_field_sections (id, name, position) VALUES (?, ?, ?)").use { insert ->
                 insert.setObject(1, section.id)
@@ -79,8 +81,8 @@ object CrmFieldSections {
             }
             return section
         }
-        val current = existing.firstOrNull { it.id == id } ?: throw CrmValidationException("Esa seccion ya no existe.")
-        if (current.isSystem) throw CrmValidationException("${current.name} es una seccion fija de la ficha: no se renombra.")
+        val current = existing.firstOrNull { it.id == id } ?: throw CrmValidationException(tr("Esa seccion ya no existe."))
+        if (current.isSystem) throw CrmValidationException(tr("{0} es una seccion fija de la ficha: no se renombra.", current.name))
         tenant.prepareStatement("UPDATE crm_field_sections SET name = ? WHERE id = ?").use { update ->
             update.setString(1, input.name)
             update.setObject(2, id)
@@ -91,7 +93,7 @@ object CrmFieldSections {
 
     /** Refuses the built-in sections: they are part of the form. */
     fun checkDeletable(section: CrmFieldSection) {
-        if (section.isSystem) throw CrmValidationException("${section.name} es una seccion fija de la ficha: no se elimina.")
+        if (section.isSystem) throw CrmValidationException(tr("{0} es una seccion fija de la ficha: no se elimina.", section.name))
     }
 
     /** Deletes a custom section; its fields stay, without section (foreign key ON DELETE SET NULL). */

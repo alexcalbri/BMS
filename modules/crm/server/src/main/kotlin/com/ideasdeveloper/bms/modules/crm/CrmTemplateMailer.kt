@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -140,7 +141,7 @@ object CrmTemplateMailer {
 
     /** Lines "{variable} - description" for the editor: the fixed ones, then one per custom field and customer field. */
     fun variableHelp(fields: List<CrmField>, customerFields: List<CustomerField>): String =
-        (CrmMail.placeholders.entries.map { (key, label) -> "{$key} - $label" } +
-            fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }.map { "{campo:${it.key}} - Campo del lead: ${it.label}" } +
-            customerFields.map { "{cliente:${it.key}} - Campo del cliente: ${it.label}" }).joinToString("\n")
+        (CrmMail.placeholders.entries.map { (key, label) -> "{$key} - ${tr(label)}" } +
+            fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }.map { tr("{campo:{0}} - Campo del lead: {1}", it.key, it.label) } +
+            customerFields.map { tr("{cliente:{0}} - Campo del cliente: {1}", it.key, it.label) }).joinToString("\n")
 }

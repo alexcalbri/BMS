@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 /**
  * Canales de respuesta de Meta (WhatsApp, Messenger e Instagram). Quedan en el CRM porque CrmChannels los lista; el envio y los
  * ajustes los hace la extension "meta" por [CrmHost]. Sin la extension activa en la empresa, ningun canal esta disponible.
@@ -10,8 +11,8 @@ object CrmWhatsAppChannel : CrmChannel {
 
     override fun unavailable(context: CrmChannelContext, lead: CrmLead): String? = when {
         CrmExtensions.inactive(context.tenant, CrmExtensionIds.Meta) != null -> CrmExtensions.inactiveMessage(CrmExtensionIds.Meta)
-        !CrmHost.metaSettings(context.tenant).whatsAppReady -> "Configura WhatsApp en Integraciones."
-        CrmContacts.normalizePhone(lead.phone).isEmpty() -> "El lead no tiene un telefono valido."
+        !CrmHost.metaSettings(context.tenant).whatsAppReady -> tr("Configura WhatsApp en Integraciones.")
+        CrmContacts.normalizePhone(lead.phone).isEmpty() -> tr("El lead no tiene un telefono valido.")
         else -> null
     }
 
@@ -29,14 +30,14 @@ class CrmPageChannel(override val id: String, override val label: String) : CrmC
         val settings = CrmHost.metaSettings(context.tenant)
         return when {
             CrmExtensions.inactive(context.tenant, CrmExtensionIds.Meta) != null -> CrmExtensions.inactiveMessage(CrmExtensionIds.Meta)
-            !settings.ready(id) -> if (settings.sharedTokens) "Conecta la pagina de Facebook en Integraciones." else "Configura el token de $label en Integraciones."
-            CrmInbox.identity(context.tenant, lead.customerId, id) == null -> "El lead no ha escrito por $label."
+            !settings.ready(id) -> if (settings.sharedTokens) tr("Conecta la pagina de Facebook en Integraciones.") else tr("Configura el token de {0} en Integraciones.", label)
+            CrmInbox.identity(context.tenant, lead.customerId, id) == null -> tr("El lead no ha escrito por {0}.", label)
             else -> null
         }
     }
 
     override fun send(context: CrmChannelContext, lead: CrmLead, email: CrmEmail): String? {
-        val recipient = CrmInbox.identity(context.tenant, lead.customerId, id) ?: throw CrmChannelException("El lead no ha escrito por $label.")
+        val recipient = CrmInbox.identity(context.tenant, lead.customerId, id) ?: throw CrmChannelException(tr("El lead no ha escrito por {0}.", label))
         return try {
             CrmExtensions.inactive(context.tenant, CrmExtensionIds.Meta)?.let { throw CrmMetaException(it) }
             CrmHost.metaSendPage(CrmHost.metaSettings(context.tenant), recipient, email.text, id).also { CrmHost.metaLog(context.tenant, "enviado", "$label $recipient") }

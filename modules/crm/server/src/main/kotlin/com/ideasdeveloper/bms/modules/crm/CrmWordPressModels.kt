@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -55,11 +56,11 @@ data class WpListing(
         get() = listOfNotNull(
             propertyTypes.joinToString().ifEmpty { null },
             statuses.joinToString().ifEmpty { null },
-            beds.ifEmpty { null }?.let { "$it hab." },
-            baths.ifEmpty { null }?.let { "$it banos" },
+            beds.ifEmpty { null }?.let { tr("{0} hab.", it) },
+            baths.ifEmpty { null }?.let { tr("{0} banos", it) },
             sqft.ifEmpty { null }?.let { "$it m2" },
             city.ifEmpty { null },
-            mls.ifEmpty { null }?.let { "MLS $it" },
+            mls.ifEmpty { null }?.let { tr("MLS {0}", it) },
         ).joinToString(" - ")
 
     val priceValue: BigDecimal? get() = price.filter { it.isDigit() || it == '.' }.toBigDecimalOrNull()
@@ -80,7 +81,7 @@ data class WpListing(
             val priceText = if (price.isEmpty()) "" else listOf(item["price_prefix"].str(), price, item["price_postfix"].str()).filter { it.isNotEmpty() }.joinToString(" ")
             return WpListing(
                 id = id,
-                title = item["title"].str().ifEmpty { "Propiedad $id" },
+                title = item["title"].str().ifEmpty { tr("Propiedad {0}", id) },
                 url = item["url"].str(),
                 price = price,
                 priceText = priceText,

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import org.w3c.dom.Element
 import java.io.ByteArrayInputStream
 import java.time.LocalDate
@@ -21,24 +23,24 @@ object CrmImportParse {
 
     // CRM fields a column can feed, with the labels shown in the mapping.
     val fields = linkedMapOf(
-        "" to "No importar",
-        "name" to "Nombre",
-        "email" to "Correo",
-        "phone" to "Telefono",
-        "stage" to "Etapa",
-        "interest" to "Interes",
-        "owner" to "Asignados (una o varias personas)",
-        "source" to "Origen",
-        "language" to "Idioma",
-        "message" to "Mensaje",
-        "details" to "Detalles",
-        "note" to "Nota",
-        "followUpOn" to "Proximo seguimiento",
-        "targetStart" to "Fecha de ingreso (campo de estadia)",
-        "targetEnd" to "Fecha de salida (campo de estadia)",
-        "dates" to "Rango de fechas (ingreso - salida)",
-        "estimatedValue" to "Valor estimado",
-        "createdAt" to "Fecha de creacion",
+        "" to msg("No importar"),
+        "name" to msg("Nombre"),
+        "email" to msg("Correo"),
+        "phone" to msg("Telefono"),
+        "stage" to msg("Etapa"),
+        "interest" to msg("Interes"),
+        "owner" to msg("Asignados (una o varias personas)"),
+        "source" to msg("Origen"),
+        "language" to msg("Idioma"),
+        "message" to msg("Mensaje"),
+        "details" to msg("Detalles"),
+        "note" to msg("Nota"),
+        "followUpOn" to msg("Proximo seguimiento"),
+        "targetStart" to msg("Fecha de ingreso (campo de estadia)"),
+        "targetEnd" to msg("Fecha de salida (campo de estadia)"),
+        "dates" to msg("Rango de fechas (ingreso - salida)"),
+        "estimatedValue" to msg("Valor estimado"),
+        "createdAt" to msg("Fecha de creacion"),
     )
 
     // ---- CSV ----
@@ -46,7 +48,7 @@ object CrmImportParse {
     /** CSV separated by comma, semicolon or tab (detected on the header), with quotes, BOM and multiline cells. */
     fun csv(text: String): CrmTable {
         val clean = text.removePrefix("﻿")
-        if (clean.isBlank()) throw CrmImportException("El archivo esta vacio.")
+        if (clean.isBlank()) throw CrmImportException(tr("El archivo esta vacio."))
         val firstLine = clean.lineSequence().first()
         val separator = listOf(',', ';', '\t').maxBy { candidate -> firstLine.count { it == candidate } }
         val records = mutableListOf<List<String>>()
@@ -64,7 +66,7 @@ object CrmImportParse {
                     if (char == '\r' && clean.getOrNull(index + 1) == '\n') index++
                     row += cell.toString(); cell.clear()
                     records += row; row = mutableListOf()
-                    if (records.size > MaxRows + 1) throw CrmImportException("El archivo tiene mas de $MaxRows filas.")
+                    if (records.size > MaxRows + 1) throw CrmImportException(tr("El archivo tiene mas de {0} filas.", MaxRows))
                 }
                 else -> cell.append(char)
             }
@@ -86,7 +88,7 @@ object CrmImportParse {
 
     /** First sheet of an XLSX file (shared strings, inline strings, numbers; DTDs rejected; sizes limited). */
     fun xlsx(bytes: ByteArray): CrmTable {
-        if (bytes.size > MaxBytes) throw CrmImportException("El archivo supera los 20 MB.")
+        if (bytes.size > MaxBytes) throw CrmImportException(tr("El archivo supera los 20 MB."))
         val entries = mutableMapOf<String, ByteArray>()
         var expanded = 0L
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
@@ -94,13 +96,13 @@ object CrmImportParse {
                 if (entry.name in setOf("xl/sharedStrings.xml", "xl/workbook.xml", "xl/_rels/workbook.xml.rels") || entry.name.startsWith("xl/worksheets/sheet")) {
                     val content = zip.readNBytes(MaxBytes + 1)
                     expanded += content.size
-                    if (content.size > MaxBytes || expanded > 4L * MaxBytes) throw CrmImportException("El archivo XLSX es demasiado grande al descomprimirlo.")
+                    if (content.size > MaxBytes || expanded > 4L * MaxBytes) throw CrmImportException(tr("El archivo XLSX es demasiado grande al descomprimirlo."))
                     entries[entry.name] = content
                 }
             }
         }
         val builder = secureXml()
-        fun parse(name: String) = entries[name]?.let { runCatching { builder.parse(ByteArrayInputStream(it)) }.getOrElse { throw CrmImportException("El XLSX no es valido ($name).") } }
+        fun parse(name: String) = entries[name]?.let { runCatching { builder.parse(ByteArrayInputStream(it)) }.getOrElse { throw CrmImportException(tr("El XLSX no es valido ({0}).", name)) } }
         val shared = parse("xl/sharedStrings.xml")?.getElementsByTagName("si")?.let { nodes ->
             (0 until nodes.length).map { nodes.item(it).textContent }
         }.orEmpty()
@@ -112,10 +114,10 @@ object CrmImportParse {
         }
         val sheetName = target?.removePrefix("/xl/")?.removePrefix("xl/")?.let { "xl/$it" }?.takeIf { it in entries }
             ?: entries.keys.filter { it.startsWith("xl/worksheets/sheet") }.minOrNull()
-            ?: throw CrmImportException("El XLSX no tiene hojas.")
+            ?: throw CrmImportException(tr("El XLSX no tiene hojas."))
         val sheet = parse(sheetName)!!
         val rows = sheet.getElementsByTagName("row")
-        if (rows.length > MaxRows + 1) throw CrmImportException("El archivo tiene mas de $MaxRows filas.")
+        if (rows.length > MaxRows + 1) throw CrmImportException(tr("El archivo tiene mas de {0} filas.", MaxRows))
         val records = (0 until rows.length).map { r ->
             val cells = (rows.item(r) as Element).getElementsByTagName("c")
             val values = sortedMapOf<Int, String>()
@@ -146,7 +148,7 @@ object CrmImportParse {
 
     /** Turns raw records into a table: the header is the first record with at least two cells (title lines before it are ignored) and a repeated header is skipped. */
     fun table(records: List<List<String>>): CrmTable {
-        if (records.isEmpty()) throw CrmImportException("El archivo no tiene filas.")
+        if (records.isEmpty()) throw CrmImportException(tr("El archivo no tiene filas."))
         val (headerIndex, names) = header(records)
         val header = records[headerIndex].map { it.trim() }
         val rows = mutableListOf<Map<String, String>>()
@@ -161,7 +163,7 @@ object CrmImportParse {
     fun header(records: List<List<String>>): Pair<Int, List<String>> {
         val headerIndex = records.indexOfFirst { record -> record.count { it.isNotBlank() } >= 2 }.coerceAtLeast(0)
         val header = records[headerIndex].map { it.trim() }
-        return headerIndex to unique(header.mapIndexed { index, name -> name.ifEmpty { "Columna ${index + 1}" } })
+        return headerIndex to unique(header.mapIndexed { index, name -> name.ifEmpty { tr("Columna {0}", index + 1) } })
     }
 
     private fun unique(names: List<String>): List<String> {

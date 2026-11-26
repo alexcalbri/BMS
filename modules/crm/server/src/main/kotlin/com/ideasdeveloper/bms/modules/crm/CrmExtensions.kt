@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.extensions.ExtensionAccess
 import com.ideasdeveloper.bms.server.extensions.ExtensionManifest
 import com.ideasdeveloper.bms.server.extensions.ExtensionSource
@@ -100,7 +101,7 @@ object CrmExtensions {
     fun isEnabled(tenant: Connection, id: String): Boolean = status(tenant, id) == ExtensionStatus.Enabled
 
     /** Mensaje de las acciones y trabajos cuando la extension no esta activa en la empresa. */
-    fun inactiveMessage(id: String) = "La extension ${displayName(id)} no esta activa en esta empresa."
+    fun inactiveMessage(id: String) = tr("La extension {0} no esta activa en esta empresa.", displayName(id))
 
     /** El mensaje de [inactiveMessage] si la extension no esta activa, o nulo. */
     fun inactive(tenant: Connection, id: String): String? = if (isEnabled(tenant, id)) null else inactiveMessage(id)
@@ -108,9 +109,9 @@ object CrmExtensions {
     /** Lo que muestran las pantallas de integraciones cuando la extension no esta activa; nulo si lo esta. */
     fun missingNodes(tenant: Connection, id: String): List<UiNode>? = when (status(tenant, id)) {
         ExtensionStatus.Enabled -> null
-        ExtensionStatus.Installed, ExtensionStatus.Disabled -> listOf(notice(id, "La extension ${displayName(id)} esta desactivada. Activala desde Empresa > Extensiones."))
-        ExtensionStatus.Incompatible -> listOf(notice(id, "La extension ${displayName(id)} es incompatible con esta version del CRM. Revisala desde Empresa > Extensiones."))
-        else -> listOf(notice(id, "Instala la extension ${displayName(id)} desde Empresa > Extensiones."))
+        ExtensionStatus.Installed, ExtensionStatus.Disabled -> listOf(notice(id, tr("La extension {0} esta desactivada. Activala desde Empresa > Extensiones.", displayName(id))))
+        ExtensionStatus.Incompatible -> listOf(notice(id, tr("La extension {0} es incompatible con esta version del CRM. Revisala desde Empresa > Extensiones.", displayName(id))))
+        else -> listOf(notice(id, tr("Instala la extension {0} desde Empresa > Extensiones.", displayName(id))))
     }
 
     private fun notice(id: String, text: String): UiNode = UiCard(listOf(UiText(text, tone = UiTone.Warning)), title = displayName(id))
