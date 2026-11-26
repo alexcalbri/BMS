@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.compras_monday
 
+import com.ideasdeveloper.bms.server.i18n.msg
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -18,7 +19,7 @@ object ComprasMondayRetry {
     const val MaxAttempts = 5
     const val MaxPages = 250
     const val MinPageSize = 10
-    const val TooHeavyMessage = "Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas."
+    val TooHeavyMessage = msg("Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas.")
 
     /** Pagina siguiente tras una respuesta demasiado grande o de complejidad excesiva: 100 -> 50 -> 25 -> 10 (null: ya no se puede bajar). */
     fun smallerPage(current: Int): Int? = when {
@@ -65,7 +66,7 @@ private fun JsonElement?.str() = (this as? JsonPrimitive)?.contentOrNull?.trim()
 
 /** Lectura de las respuestas de la API de monday y (de)serializacion de las filas preparadas. Todo puro, sin red. */
 object ComprasMondayParse {
-    const val MainWorkspace = "Espacio principal"
+    val MainWorkspace = msg("Espacio principal")
     private const val MaxText = 2_000
     private val json = Json { ignoreUnknownKeys = true }
     private val numericId = Regex("^[0-9]{1,20}$")
