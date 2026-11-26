@@ -19,6 +19,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.time.LocalDate
 import java.util.UUID
@@ -33,7 +34,7 @@ object Encuentra24ServerExtension : ServerExtension, Encuentra24Provider {
         module = "crm",
         displayName = "Encuentra24",
         description = "Importa como leads los mensajes, chats y llamadas de los anuncios de Encuentra24 y deja el anuncio en los intereses del lead.",
-        version = "1.0.0",
+        version = "1.1.0",
         minModuleVersion = "0.27.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -81,9 +82,9 @@ object Encuentra24ServerExtension : ServerExtension, Encuentra24Provider {
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            CrmExtensions.item(null, "Conexion con Encuentra24 y su API key (se borran)", CrmExtensions.count(tenant, "SELECT count(*) FROM ${Encuentra24SettingsStore.Table} WHERE enabled OR coalesce(api_key, '') <> ''"), "delete"),
-            CrmExtensions.item(AdsOption, "Anuncios de Encuentra24 vinculados a los leads", CrmExtensions.count(tenant, "SELECT count(*) FROM crm_lead_items WHERE source = ?", CrmEncuentra24Ads.Source), UninstallDefault.Keep),
-            CrmExtensions.item(null, "Leads y mensajes importados (se conservan)", CrmExtensions.count(tenant, "SELECT count(*) FROM crm_messages WHERE channel = ?", CrmEncuentra24Ads.Source), "keep"),
+            CrmExtensions.item(null, tr("Conexion con Encuentra24 y su API key (se borran)"), CrmExtensions.count(tenant, "SELECT count(*) FROM ${Encuentra24SettingsStore.Table} WHERE enabled OR coalesce(api_key, '') <> ''"), "delete"),
+            CrmExtensions.item(AdsOption, tr("Anuncios de Encuentra24 vinculados a los leads"), CrmExtensions.count(tenant, "SELECT count(*) FROM crm_lead_items WHERE source = ?", CrmEncuentra24Ads.Source), UninstallDefault.Keep),
+            CrmExtensions.item(null, tr("Leads y mensajes importados (se conservan)"), CrmExtensions.count(tenant, "SELECT count(*) FROM crm_messages WHERE channel = ?", CrmEncuentra24Ads.Source), "keep"),
         )
     }
 

@@ -5,6 +5,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmEncuentra24Settings
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmValidationException
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.sql.Timestamp
 import java.time.Instant
@@ -32,10 +33,10 @@ object Encuentra24SettingsStore {
         val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !host.isSecretPlaceholder(it) } ?: current.apiKey
         val slug = values["slug"].orEmpty().trim().lowercase().ifEmpty { null }
         if (slug != null && !slug.matches(Regex("^[a-z0-9][a-z0-9-]{0,99}$"))) {
-            throw CrmValidationException("El slug lleva letras minusculas, numeros y guiones (como en la URL de la empresa).")
+            throw CrmValidationException(tr("El slug lleva letras minusculas, numeros y guiones (como en la URL de la empresa)."))
         }
         val enabled = values["enabled"] == "true"
-        if (enabled && (key.isNullOrBlank() || slug == null)) throw CrmValidationException("Para activar Encuentra24 escribe la API key y el slug de la empresa.")
+        if (enabled && (key.isNullOrBlank() || slug == null)) throw CrmValidationException(tr("Para activar Encuentra24 escribe la API key y el slug de la empresa."))
         // Upsert: si la fila no existe (extension recien instalada) se crea aqui en vez de perder el guardado.
         tenant.prepareStatement(
             """
