@@ -43,6 +43,9 @@ import androidx.compose.ui.platform.LocalUriHandler
 import com.ideasdeveloper.bms.app.core.theme.appFieldColors
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.ServerPermission
+import com.ideasdeveloper.bms.app.features.auth.data.can
+import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
 import com.ideasdeveloper.bms.app.features.extensions.data.ExtensionApi
 import com.ideasdeveloper.bms.app.core.platform.PickedFile
@@ -106,6 +109,10 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
     // Cambia para recargar el catalogo (boton Actualizar o tras una accion).
     var reloadTick by remember { mutableStateOf(0) }
     val canWork = serverUrl != null && !token.isNullOrBlank()
+    // Instalar y quitar paquetes del catalogo y autorizar paquetes sin firma son permisos distintos; subir un ZIP o instalar desde una URL es solo del dueno.
+    val canManage = session.can(ServerPermission.ExtensionsInstall)
+    val canAuthorize = session.can(ServerPermission.ExtensionsAuthorizeUnsigned)
+    val isOwner = session.isServerOwner
     val compiling = entries.any { it.status == "installing" }
 
     // Un solo cliente HTTP por seccion (tambien para el sondeo); se cierra al salir o si cambia el servidor.
@@ -177,7 +184,7 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
         error?.let { Text(it, color = colors.danger) }
         message?.let { Text(it, color = colors.success) }
         // Instalar desde un ZIP o una URL, sin pasar por el catalogo.
-        ManualInstallPanel(
+        if (isOwner) ManualInstallPanel(
             canWork = canWork,
             stageZip = { id, file -> withApi { uploadPackage(it, id, file.name, file.bytes ?: ByteArray(0)) } },
             stageUrl = { id, url -> withApi { packageFromUrl(it, id, url) } },
@@ -197,6 +204,8 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
                     PackageCard(
                         entry = entry,
                         canWork = canWork,
+                        canManage = canManage,
+                        canAuthorize = canAuthorize,
                         busy = busyId == entry.id || entry.status == "installing",
                         onAuthorizeUnsigned = { dialog = PackageDialog.AuthorizeUnsigned(entry) },
                         onInstall = { dialog = PackageDialog.Install(entry) },
@@ -254,6 +263,8 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
 private fun PackageCard(
     entry: ExtensionPackageEntry,
     canWork: Boolean,
+    canManage: Boolean,
+    canAuthorize: Boolean,
     busy: Boolean,
     onAuthorizeUnsigned: () -> Unit,
     onInstall: () -> Unit,
@@ -305,7 +316,7 @@ private fun PackageCard(
             Text(tr("Reinicia el servidor para cargar el paquete."), style = MaterialTheme.typography.bodySmall, color = colors.warning)
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            if (!entry.signed && !installed) {
+            if (canAuthorize && !entry.signed && !installed) {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onAuthorizeUnsigned() },
@@ -313,13 +324,13 @@ private fun PackageCard(
                     border = BorderStroke(1.dp, colors.warning),
                 ) { Text(tr("Autorizar paquete sin firma")) }
             }
-            if (!installed) {
+            if (canManage && !installed) {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onInstall() },
                     colors = accentButtonColors(),
                 ) { Text(if (entry.status == "installing") tr("Instalando...") else if (entry.status == "error") tr("Reintentar") else tr("Instalar")) }
-            } else {
+            } else if (canManage) {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onRemove() },

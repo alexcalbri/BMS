@@ -62,6 +62,8 @@ import com.ideasdeveloper.bms.app.features.company.data.CompanySwitch
 import com.ideasdeveloper.bms.app.features.company.data.OwnedCompany
 import com.ideasdeveloper.bms.app.features.company.data.SwitchTargetsResponse
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.ServerPermission
+import com.ideasdeveloper.bms.app.features.auth.data.can
 import com.ideasdeveloper.bms.app.features.modules.data.CreateCustomerFieldRequest
 import com.ideasdeveloper.bms.app.features.modules.data.CreateCustomerRequest
 import com.ideasdeveloper.bms.app.features.modules.data.CustomerFieldResponse
@@ -122,7 +124,7 @@ fun ServerDrivenModuleScreen(
     var loading by remember(moduleId) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val switchCompanyCode = session?.companyCode
-    val canSwitchCompany = session?.role == "server_owner" ||
+    val canSwitchCompany = session.can(ServerPermission.CompaniesEnter) ||
         (session?.role == "business_owner" && switchCompanyCode != null)
     var switchTargets by remember(serverUrl, session?.accessToken, switchCompanyCode) {
         mutableStateOf<SwitchTargetsResponse?>(null)

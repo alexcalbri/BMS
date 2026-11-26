@@ -48,6 +48,11 @@ import kotlinx.coroutines.launch
 import com.ideasdeveloper.bms.app.core.version.ClientVersion
 import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.ServerPermission
+import com.ideasdeveloper.bms.app.features.auth.data.can
+import com.ideasdeveloper.bms.app.features.auth.data.isServerLevel
+import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
+import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.bms.app.features.shell.ui.toComposeColor
@@ -65,27 +70,29 @@ fun DashboardScreen(
     onCompanySwitched: () -> Unit = {},
 ) {
     // Determina si el usuario puede entrar a la administracion de empresa.
-    val canSeeEmpresa = session?.role in setOf("server_owner", "business_owner")
-    val canManageServerModules = session?.role == "server_owner"
-    // Obtiene los modulos activos que el servidor envio durante el inicio de sesion.
-    val enabledModules = session?.enabledModules.orEmpty()
+    // El administrador del servidor entra por su permiso; el dueno siempre puede.
+    val canSeeEmpresa = session?.role == "business_owner" || session.can(ServerPermission.CompaniesView)
+    // Los modulos del espacio del servidor se usan con permisos implicitos completos: solo el dueno, nunca un administrador.
+    val enabledModules = if (session?.role == "server_admin") emptyList() else session?.enabledModules.orEmpty()
     // Carga la identidad visual de la empresa para pintar el dashboard; cambia al cambiar de empresa.
     val savedIdentity by CompanyIdentityStore.identity.collectAsState()
     val companyIdentity = savedIdentity ?: CompanyIdentityStore.current()
     val scope = rememberCoroutineScope()
     val companyCode = session?.companyCode
-    val isServerOwner = session?.role == "server_owner"
-    // Business owners and server owners (also inside a company they entered) can switch.
-    val canSwitch = isServerOwner || (session?.role == "business_owner" && companyCode != null)
+    // Pasar a otra empresa: el dueno, el administrador con permiso de entrar y el business owner (tambien dentro de una empresa a la que entro el servidor).
+    val canSwitch = session.can(ServerPermission.CompaniesEnter) || (session?.role == "business_owner" && companyCode != null)
+    val canRenameServer = session.can(ServerPermission.Settings)
+    // Version del Core del servidor: administradores y auditoria solo existen desde 0.11.0.
+    var serverAdminsSupported by remember { mutableStateOf(false) }
     var targets by remember(session?.accessToken) { mutableStateOf<SwitchTargetsResponse?>(null) }
     var companyMessage by remember { mutableStateOf<String?>(null) }
     var switching by remember { mutableStateOf(false) }
     var renamingServer by remember { mutableStateOf(false) }
 
-    LaunchedEffect(session?.accessToken) {
+    LaunchedEffect(session?.accessToken, session?.serverPermissions) {
         val url = serverUrl ?: return@LaunchedEffect
         val active = session ?: return@LaunchedEffect
-        if (!canSwitch) return@LaunchedEffect
+        if (!canSwitch && !canRenameServer) return@LaunchedEffect
         targets = runCatching {
             val api = CompanyApi(url)
             try { api.switchTargets(active.accessToken, companyCode) } finally { api.close() }
@@ -109,13 +116,15 @@ fun DashboardScreen(
 
     val titleMenu = targets?.takeIf { !switching }?.let { options ->
         val items = buildList {
-            options.serverName?.let { name ->
-                add(TopBarMenuItem(name, caption = tr("Servidor"), current = companyCode == null) { switchTo(null) })
+            if (canSwitch) {
+                options.serverName?.let { name ->
+                    add(TopBarMenuItem(name, caption = tr("Servidor"), current = companyCode == null) { switchTo(null) })
+                }
+                options.companies.forEach { company ->
+                    add(TopBarMenuItem(company.name, caption = company.code, current = company.code == companyCode) { switchTo(company) })
+                }
             }
-            options.companies.forEach { company ->
-                add(TopBarMenuItem(company.name, caption = company.code, current = company.code == companyCode) { switchTo(company) })
-            }
-            if (isServerOwner && companyCode == null) add(TopBarMenuItem(tr("Cambiar nombre del servidor...")) { renamingServer = true })
+            if (canRenameServer && session.isServerLevel && companyCode == null) add(TopBarMenuItem(tr("Cambiar nombre del servidor...")) { renamingServer = true })
         }
         // Una sola empresa sin servidor no tiene a donde cambiar.
         items.takeIf { it.count { item -> !item.current } > 0 }
@@ -148,9 +157,12 @@ fun DashboardScreen(
     var versionNotice by remember { mutableStateOf<String?>(null) }
     var coreUpdateAvailable by remember { mutableStateOf(false) }
 
-    LaunchedEffect(serverUrl, session?.role) {
-        if (session?.role == "server_owner" && !serverUrl.isNullOrBlank()) {
+    LaunchedEffect(serverUrl, session?.role, session?.serverPermissions) {
+        if (session.isServerLevel && !serverUrl.isNullOrBlank()) {
             val version = VersionApi(serverUrl).use { it.version() }
+            serverAdminsSupported = version?.coreVersion?.let { isCoreAtLeast(it, 0, 11, 0) } == true
+            // El aviso de actualizaciones y su boton son para quien puede actualizar el Core.
+            if (!session.can(ServerPermission.CoreUpdate)) return@LaunchedEffect
             val notices = buildList {
                 version?.latestCoreVersion?.takeIf { it.isNotBlank() && it != version.coreVersion }?.let { add("Core $it") }
                 version?.latestAppVersion?.takeIf { it.isNotBlank() && it != ClientVersion }?.let { add("App $it") }
@@ -244,15 +256,28 @@ fun DashboardScreen(
                 if (canSeeEmpresa) {
                     add(DashboardCardData(tr("Empresa"), tr("Administra la configuracion base de la empresa"), "E", "empresa"))
                 }
-                if (canManageServerModules) {
+                if (session.can(ServerPermission.ModulesView) || session.can(ServerPermission.ExtensionsInstall)) {
                     add(DashboardCardData(tr("Modulos del servidor"), tr("Administra los modulos instalados en este servidor"), "M", "server-modules"))
+                }
+                if (session.can(ServerPermission.Workspace)) {
                     add(DashboardCardData(tr("Empresa del servidor"), tr("Configura la empresa del servidor y su personal sin crear una empresa"), "S", "server-staff"))
+                }
+                if (session.can(ServerPermission.LogsView)) {
                     add(DashboardCardData(tr("Errores del servidor"), tr("Consulta los errores recientes del servidor para diagnosticar fallos"), "!", "server-logs"))
+                }
+                if (session.can(ServerPermission.CoreUpdate)) {
                     add(DashboardCardData(tr("Actualizar servidor"), tr("Actualiza el Core y la webapp del servidor desde la app"), "U", "server-update"))
+                }
+                // Administradores y auditoria existen desde el Core 0.11.0; los administradores solo los gestiona el dueno.
+                if (serverAdminsSupported && session.isServerOwner) {
+                    add(DashboardCardData(tr("Administradores del servidor"), tr("Crea administradores con permisos limitados y elige a que empresas llegan"), "A", "server-admins"))
+                }
+                if (serverAdminsSupported && session.can(ServerPermission.AuditView)) {
+                    add(DashboardCardData(tr("Registro de auditoria"), tr("Consulta quien hizo que en el servidor y en las empresas"), "R", "server-audit"))
                 }
                 // Modulos activos recibidos desde el servidor.
                 enabledModules
-                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" && it != "server-logs" && it != "server-update" }
+                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" && it != "server-logs" && it != "server-update" && it != "server-admins" && it != "server-audit" }
                     .forEach { moduleId ->
                         val module = moduleId.toDashboardModule()
                         add(DashboardCardData(module.title, module.description, module.iconText, moduleId))
