@@ -72,6 +72,10 @@ quedan. Nunca se borran desarrollos, lotes, titulares, clientes ni adjuntos impo
 - Subelementos, actualizaciones (comentarios) ni archivos de Drive o Dropbox (enlaces); solo se importan archivos alojados en monday.
 - Mas de 5 000 elementos por tablero.
 
+## Version 1.1.0 (bilingue)
+
+- Bilingue espanol/ingles: los textos de la pantalla Importar y de los mensajes usan el catalogo en ingles (necesita Core 0.10.0). Lo que viene de monday (nombres de tableros, columnas, elementos, propietarios) no se traduce.
+
 ## Version 1.0.1 (rendimiento)
 
 - Lectura adaptativa: ante un error de complejidad de monday (o una respuesta mayor a 5 MB) la pagina baja a la mitad (minimo 10) y se reintenta en la misma corrida; un cursor vencido relee el tablero desde cero una sola vez. No se piden subelementos ni actualizaciones.
@@ -80,3 +84,7 @@ quedan. Nunca se borran desarrollos, lotes, titulares, clientes ni adjuntos impo
 - El resumen de la vista previa lee las filas de 500 en 500.
 - Migracion `V002__rows_pending_idx.sql`: indice parcial de filas pendientes.
 - El tamano de pagina vigente y las relecturas por cursor vencido se guardan en el trabajo (`page_size`, `restarts`, migracion `V002`); los reintentos por fallos pasajeros esperan 2, 4, 8, 16 y 30 minutos como tope. Con 10 por pagina y aun muy pesado, el trabajo falla con un mensaje claro.
+
+## Idiomas
+
+Bilingue espanol/ingles (1.1.0, necesita Core 0.10.0): los textos del codigo usan `tr("Texto en espanol")` y el catalogo ingles esta en `server/src/main/resources/extensions/propietarios_monday/i18n/en.json`. Los valores que se guardan o se comparan (opciones de columna, ids, estados guardados) siguen en espanol.

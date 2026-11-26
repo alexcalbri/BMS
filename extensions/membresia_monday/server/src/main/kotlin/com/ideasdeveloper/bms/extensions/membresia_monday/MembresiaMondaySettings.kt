@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.extensions.membresia_monday
 
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.security.SecretDecryptionException
 import com.ideasdeveloper.bms.server.security.SecretsUnavailableException
@@ -14,7 +16,7 @@ import java.sql.SQLException
  */
 object MembresiaMondaySettings {
     const val Table = "ext_membresia_monday__settings"
-    const val UnavailableMessage = "No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."
+    val UnavailableMessage = msg("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
 
     /** La extension esta activa en la empresa (tenant_extensions.status = enabled); sin la tabla o la fila, no. */
     fun extensionEnabled(tenant: Connection): Boolean = try {
@@ -53,7 +55,7 @@ object MembresiaMondaySettings {
             try {
                 secrets.seal(tenant, it)
             } catch (failure: SecretsUnavailableException) {
-                throw MembresiaMondayException(UnavailableMessage)
+                throw MembresiaMondayException(tr(UnavailableMessage))
             }
         }
         tenant.prepareStatement(

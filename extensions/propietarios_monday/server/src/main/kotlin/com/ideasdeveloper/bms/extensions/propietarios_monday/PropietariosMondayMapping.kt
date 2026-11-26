@@ -4,6 +4,7 @@ import com.ideasdeveloper.bms.modules.propietarios.ImportedLot
 import com.ideasdeveloper.bms.modules.propietarios.ImportedOwner
 import com.ideasdeveloper.bms.modules.propietarios.LotImportSummary
 import com.ideasdeveloper.bms.modules.propietarios.LotStatus
+import com.ideasdeveloper.bms.server.i18n.msg
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -49,18 +50,18 @@ object MondayTarget {
 
     // En el orden en que se muestran en el formulario de mapeo.
     val all = listOf(
-        Definition(Owner, "Propietario"),
-        Definition(Lot, "Numero de lote"),
-        Definition(Property, "Propiedad (nombre)"),
-        Definition(Register, "Numero de registro"),
-        Definition(Type, "Tipo de propiedad"),
-        Definition(Area, "Area (m2)"),
-        Definition(Email, "Correo (uno o varios)"),
-        Definition(Phone, "Telefono"),
-        Definition(Status, "Estado del lote"),
-        Definition(Location, "Ubicacion (mapa)"),
-        Definition(Start, "Fecha de inicio de la titularidad"),
-        Definition(Share, "Porcentaje de propiedad"),
+        Definition(Owner, msg("Propietario")),
+        Definition(Lot, msg("Numero de lote")),
+        Definition(Property, msg("Propiedad (nombre)")),
+        Definition(Register, msg("Numero de registro")),
+        Definition(Type, msg("Tipo de propiedad")),
+        Definition(Area, msg("Area (m2)")),
+        Definition(Email, msg("Correo (uno o varios)")),
+        Definition(Phone, msg("Telefono")),
+        Definition(Status, msg("Estado del lote")),
+        Definition(Location, msg("Ubicacion (mapa)")),
+        Definition(Start, msg("Fecha de inicio de la titularidad")),
+        Definition(Share, msg("Porcentaje de propiedad")),
     )
 }
 

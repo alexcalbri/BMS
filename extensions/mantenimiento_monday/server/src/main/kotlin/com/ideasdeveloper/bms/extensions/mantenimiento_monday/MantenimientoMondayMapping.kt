@@ -9,6 +9,8 @@ import com.ideasdeveloper.bms.modules.mantenimiento.OrderKind
 import com.ideasdeveloper.bms.modules.mantenimiento.OrderPriority
 import com.ideasdeveloper.bms.modules.mantenimiento.OrderStatus
 import com.ideasdeveloper.bms.modules.mantenimiento.PlanFrequency
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -75,7 +77,7 @@ object MondayDestination {
 
     fun isValidKind(kind: String?) = kind == KindCorrective || kind == KindProject
 
-    fun label(target: String) = if (target == Plans) "Plantillas preventivas" else "Órdenes / proyectos"
+    fun label(target: String) = if (target == Plans) tr("Plantillas preventivas") else tr("Órdenes / proyectos")
 
     fun kindOf(code: String?): OrderKind = if (code == KindProject) OrderKind.Project else OrderKind.Corrective
 }
@@ -98,16 +100,16 @@ object MondayTarget {
 
     // En el orden en que se muestran en el formulario de mapeo.
     val all = listOf(
-        Definition(Status, "Estado (en planes solo se anota en la descripción)"),
-        Definition(Priority, "Prioridad"),
-        Definition(Due, "Fecha límite (en planes, próxima fecha)"),
-        Definition(Assignees, "Responsable"),
-        Definition(Description, "Descripción / notas"),
-        Definition(Property, "Propiedad"),
-        Definition(Asset, "Activo / equipo"),
-        Definition(Department, "Departamento", plans = false),
-        Definition(Quote, "Cotización (USD)", plans = false),
-        Definition(QuotedBy, "Cotizado por", plans = false),
+        Definition(Status, msg("Estado (en planes solo se anota en la descripción)")),
+        Definition(Priority, msg("Prioridad")),
+        Definition(Due, msg("Fecha límite (en planes, próxima fecha)")),
+        Definition(Assignees, msg("Responsable")),
+        Definition(Description, msg("Descripción / notas")),
+        Definition(Property, msg("Propiedad")),
+        Definition(Asset, msg("Activo / equipo")),
+        Definition(Department, msg("Departamento"), plans = false),
+        Definition(Quote, msg("Cotización (USD)"), plans = false),
+        Definition(QuotedBy, msg("Cotizado por"), plans = false),
     )
 
     fun forDestination(target: String): List<Definition> = all.filter { if (target == MondayDestination.Plans) it.plans else it.orders }

@@ -15,6 +15,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.ui.UiNode
 import java.sql.Connection
@@ -37,7 +38,7 @@ object PropietariosMondayServerExtension : ServerExtension, PropietariosImportSo
         module = "propietarios",
         displayName = "Importacion de propietarios desde monday",
         description = "Importa un tablero de monday (lotes y sus propietarios) al modulo Propietarios: lee el tablero con el token de la empresa, mapea sus columnas y trae desarrollos, lotes, titulares y archivos.",
-        version = "1.0.2",
+        version = "1.1.0",
         minModuleVersion = "0.1.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -95,10 +96,10 @@ object PropietariosMondayServerExtension : ServerExtension, PropietariosImportSo
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            UninstallItem(null, "Token de la API de monday (se borra)", count(tenant, "SELECT count(*) FROM ${PropietariosMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
-            UninstallItem(HistoryOption, "Importaciones de monday (trabajos)", count(tenant, "SELECT count(*) FROM ${PropietariosMondayJobs.JobsTable}"), UninstallDefault.Delete),
-            UninstallItem(HistoryOption, "Filas leidas de monday", count(tenant, "SELECT count(*) FROM ${PropietariosMondayJobs.RowsTable}"), UninstallDefault.Delete),
-            UninstallItem(null, "Lotes importados (se conservan)", count(tenant, "SELECT count(*) FROM propietarios_lots WHERE import_key LIKE 'monday:%'"), "keep"),
+            UninstallItem(null, tr("Token de la API de monday (se borra)"), count(tenant, "SELECT count(*) FROM ${PropietariosMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
+            UninstallItem(HistoryOption, tr("Importaciones de monday (trabajos)"), count(tenant, "SELECT count(*) FROM ${PropietariosMondayJobs.JobsTable}"), UninstallDefault.Delete),
+            UninstallItem(HistoryOption, tr("Filas leidas de monday"), count(tenant, "SELECT count(*) FROM ${PropietariosMondayJobs.RowsTable}"), UninstallDefault.Delete),
+            UninstallItem(null, tr("Lotes importados (se conservan)"), count(tenant, "SELECT count(*) FROM propietarios_lots WHERE import_key LIKE 'monday:%'"), "keep"),
         )
     }
 

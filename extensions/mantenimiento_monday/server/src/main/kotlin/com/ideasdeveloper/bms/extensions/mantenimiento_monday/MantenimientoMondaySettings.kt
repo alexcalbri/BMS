@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.extensions.mantenimiento_monday
 
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.security.SecretDecryptionException
 import com.ideasdeveloper.bms.server.security.SecretsUnavailableException
@@ -36,7 +38,7 @@ class MantenimientoMondayException(message: String, val transient: Boolean = fal
  */
 object MantenimientoMondaySettings {
     const val Table = "ext_mantenimiento_monday__settings"
-    const val UnavailableMessage = "No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor."
+    val UnavailableMessage = msg("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
 
     /** La extension esta activa en la empresa (tenant_extensions.status = enabled); sin la tabla o la fila, no. */
     fun extensionEnabled(tenant: Connection): Boolean = try {
@@ -75,7 +77,7 @@ object MantenimientoMondaySettings {
             try {
                 secrets.seal(tenant, it)
             } catch (failure: SecretsUnavailableException) {
-                throw MantenimientoMondayException(UnavailableMessage)
+                throw MantenimientoMondayException(tr(UnavailableMessage))
             }
         }
         tenant.prepareStatement(
@@ -149,7 +151,7 @@ object MantenimientoMondayJobs {
     const val JobsTable = "ext_mantenimiento_monday__jobs"
     const val RowsTable = "ext_mantenimiento_monday__rows"
     const val PeopleTable = "ext_mantenimiento_monday__people"
-    const val OpenJobMessage = "Ya hay una importacion en curso o por revisar; aplicala, cancelala o espera a que termine."
+    val OpenJobMessage = msg("Ya hay una importacion en curso o por revisar; aplicala, cancelala o espera a que termine.")
     private val json = Json { ignoreUnknownKeys = true }
 
     // ---- Cola ----
@@ -164,9 +166,9 @@ object MantenimientoMondayJobs {
         mapping: MondayMapping,
         createdBy: UUID?,
     ): UUID {
-        if (!MantenimientoMondayClient.isBoardId(boardId)) throw MantenimientoMondayException("El id del tablero debe ser un numero.")
-        if (!MondayDestination.isValid(target)) throw MantenimientoMondayException("Elige el destino: plantillas preventivas u ordenes / proyectos.")
-        if (recent(tenant, 20).any { it.open }) throw MantenimientoMondayException(OpenJobMessage)
+        if (!MantenimientoMondayClient.isBoardId(boardId)) throw MantenimientoMondayException(tr("El id del tablero debe ser un numero."))
+        if (!MondayDestination.isValid(target)) throw MantenimientoMondayException(tr("Elige el destino: plantillas preventivas u ordenes / proyectos."))
+        if (recent(tenant, 20).any { it.open }) throw MantenimientoMondayException(tr(OpenJobMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
@@ -183,7 +185,7 @@ object MantenimientoMondayJobs {
             }
         } catch (failure: SQLException) {
             // El indice unico parcial deja una sola importacion abierta por empresa (dos peticiones a la vez).
-            if (failure.sqlState == "23505") throw MantenimientoMondayException(OpenJobMessage)
+            if (failure.sqlState == "23505") throw MantenimientoMondayException(tr(OpenJobMessage))
             throw failure
         }
         return id
@@ -194,7 +196,7 @@ object MantenimientoMondayJobs {
 
     /** Cancela un trabajo que aun no termino; false si ya habia terminado. */
     fun cancel(tenant: Connection, id: UUID): Boolean =
-        changeStatus(tenant, id, MondayJobStatus.Cancelled, "Cancelada por el usuario.", from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
+        changeStatus(tenant, id, MondayJobStatus.Cancelled, msg("Cancelada por el usuario."), from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
 
     fun changeStatus(tenant: Connection, id: UUID, status: String, message: String, from: List<String>): Boolean =
         tenant.prepareStatement(

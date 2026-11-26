@@ -1,4 +1,4 @@
-# Extension `membresia_monday` (1.0.1)
+# Extension `membresia_monday` (1.1.0)
 
 One-time migration of a monday.com members board (for example Esc "Members & Memberships") into the
 **Membresia** module (0.2.0 or newer). Install it, import, check the result, then uninstall it: members,
@@ -42,9 +42,17 @@ memberships, visits, plans and Clientes fields stay; the token and the import hi
 The Core does not schedule `ServerExtension.jobs` yet, so the Membresia module job `membresia-import` (every minute)
 calls `runPending` of every enabled import source with a 20 second budget.
 
+## 1.1.0
+
+- Bilingue espanol/ingles: los textos de la pantalla Importar y de los mensajes usan el catalogo en ingles (necesita Core 0.10.0). Lo que viene de monday (nombres de tableros, columnas, elementos) no se traduce.
+
 ## 1.0.1
 
 - Response read cap lowered to 5 MB (was 20 MB).
 - Every `runPending` pass deletes (up to 5) done, failed or cancelled imports older than 30 days, with their rows.
 - The preview summary is computed in batches of 500 staged rows instead of loading the whole staging into memory.
 - Retries of transient failures wait longer each time (2, 4, 8... min, cap 30); shrinking the page is not an attempt and, at 10 per page, gives a clear error.
+
+## Idiomas
+
+Bilingue espanol/ingles (1.1.0, necesita Core 0.10.0): los textos del codigo usan `tr("Texto en espanol")` y el catalogo ingles esta en `server/src/main/resources/extensions/membresia_monday/i18n/en.json`. Los valores que se guardan o se comparan (planes, columnas, estados guardados) siguen en espanol.

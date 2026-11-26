@@ -3,6 +3,7 @@ package com.ideasdeveloper.bms.extensions.membresia_monday
 import com.ideasdeveloper.bms.modules.membresia.ImportPlanProposal
 import com.ideasdeveloper.bms.modules.membresia.ImportSummary
 import com.ideasdeveloper.bms.modules.membresia.ImportedMember
+import com.ideasdeveloper.bms.server.i18n.msg
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.math.BigDecimal
@@ -20,7 +21,7 @@ object MondayReading {
     const val MaxPages = 1_000
     const val MaxAttempts = 5
     const val MaxMessage = 200
-    const val TooHeavyMessage = "Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas."
+    val TooHeavyMessage = msg("Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas.")
 
     // Fallos que pasan solos: limites de uso, concurrencia, errores del servidor o tiempos agotados.
     private val transientWords = listOf(
@@ -60,7 +61,7 @@ object MondayReading {
         return when (kind) {
             MondayErrorKind.Permanent -> Step.Fail(shown)
             MondayErrorKind.CursorExpired ->
-                if (restarts >= 1) Step.Fail("monday vencio el cursor de lectura dos veces seguidas; divide el tablero en otros mas chicos o vuelve a intentarlo mas tarde.")
+                if (restarts >= 1) Step.Fail(msg("monday vencio el cursor de lectura dos veces seguidas; divide el tablero en otros mas chicos o vuelve a intentarlo mas tarde."))
                 else Step.Restart
             // Reducir la pagina no cuenta como intento; con la pagina al minimo (o sin pagina que reducir) el error es claro.
             MondayErrorKind.Complexity, MondayErrorKind.TooLarge -> when {

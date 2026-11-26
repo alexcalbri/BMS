@@ -87,6 +87,10 @@ Siempre se borra el token. La opcion `import_history` (por omision, borrar) elim
 - Archivos de cualquier tamaño (cada descarga dispone del tiempo de una pasada del trabajo, como mucho 5 minutos), solo de servidores de monday (`*.monday.com` y su S3); los de Drive o Dropbox (enlaces) no se importan. Los planes no llevan archivos.
 - Solo se leen las primeras 100 actualizaciones de cada elemento (en una consulta aparte); los topes de lista de comprobacion (100) y notas (2000) por fila los aplica el modulo.
 
+## Version 1.1.0 (bilingue)
+
+- Bilingue espanol/ingles: los textos de la pantalla Importar y de los mensajes usan el catalogo en ingles (necesita Core 0.10.0). Lo que viene de monday (nombres de tableros, columnas, elementos, personas) no se traduce.
+
 ## Version 1.0.1 (rendimiento)
 
 - Lectura adaptativa: ante un error de complejidad de monday (o una respuesta mayor a 5 MB) la pagina baja a la mitad (minimo 10) y se reintenta en la misma corrida; un cursor vencido relee el tablero desde cero una sola vez.
@@ -95,3 +99,7 @@ Siempre se borra el token. La opcion `import_history` (por omision, borrar) elim
 - Cada pasada del runner purga importaciones terminadas, fallidas o canceladas de mas de 30 dias (hasta 50 por pasada) y aplica lotes de 100 filas hasta agotar su tiempo.
 - El tamano de pagina vigente y las relecturas por cursor vencido se guardan en el trabajo (`page_size`, `restarts`, migracion `V002`); los reintentos por fallos pasajeros esperan 2, 4, 8, 16 y 30 minutos como tope. Con 10 por pagina y aun muy pesado, el trabajo falla con un mensaje claro.
 - Migracion `V002__read_state.sql` (columnas `page_size` y `restarts`). Las actualizaciones se piden con `items(ids:[...], limit: N)`; si monday no devuelve un elemento o llega al tope de 100, la fila avisa "Notas incompletas".
+
+## Idiomas
+
+Bilingue espanol/ingles (1.1.0, necesita Core 0.10.0): los textos del codigo usan `tr("Texto en espanol")` y el catalogo ingles esta en `server/src/main/resources/extensions/mantenimiento_monday/i18n/en.json`. Los valores que se guardan o se comparan (opciones de destino y tipo, ids, estados guardados) siguen en espanol.

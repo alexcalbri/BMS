@@ -4,6 +4,8 @@ import com.ideasdeveloper.bms.modules.membresia.ImportOutcome
 import com.ideasdeveloper.bms.modules.membresia.ImportedMember
 import com.ideasdeveloper.bms.modules.membresia.MembresiaImportApply
 import com.ideasdeveloper.bms.modules.membresia.MembresiaRepository
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleJobContext
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -71,19 +73,19 @@ object MembresiaMondayJobs {
     private const val ApplyChunk = 50
     const val SummaryBatch = 500
     private const val UniqueViolation = "23505"
-    const val RowFailedMessage = "No se pudo importar esta fila."
-    const val RowUnreadableMessage = "No se pudo leer esta fila."
+    val RowFailedMessage = msg("No se pudo importar esta fila.")
+    val RowUnreadableMessage = msg("No se pudo leer esta fila.")
     private val log = LoggerFactory.getLogger(MembresiaMondayJobs::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
     // ---- Cola ----
 
-    private const val BusyMessage = "Ya hay una importacion en curso; espera a que termine o cancelala."
+    private val BusyMessage = msg("Ya hay una importacion en curso; espera a que termine o cancelala.")
 
     /** Pone en cola la lectura de un tablero. Solo hay una importacion activa a la vez (indice unico en la base). */
     fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, author: String): UUID {
-        if (!MembresiaMondayClient.isBoardId(boardId)) throw MembresiaMondayException("El id del tablero debe ser un numero.")
-        if (recent(tenant, 20).any { it.active }) throw MembresiaMondayException(BusyMessage)
+        if (!MembresiaMondayClient.isBoardId(boardId)) throw MembresiaMondayException(tr("El id del tablero debe ser un numero."))
+        if (recent(tenant, 20).any { it.active }) throw MembresiaMondayException(tr(BusyMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
@@ -97,7 +99,7 @@ object MembresiaMondayJobs {
                 insert.executeUpdate()
             }
         } catch (failure: SQLException) {
-            if (failure.sqlState == UniqueViolation) throw MembresiaMondayException(BusyMessage)
+            if (failure.sqlState == UniqueViolation) throw MembresiaMondayException(tr(BusyMessage))
             throw failure
         }
         return id
@@ -107,13 +109,13 @@ object MembresiaMondayJobs {
     fun requestApply(tenant: Connection, id: UUID): Boolean = try {
         changeStatus(tenant, id, MondayJobStatus.Applying, "", from = listOf(MondayJobStatus.Preview))
     } catch (failure: SQLException) {
-        if (failure.sqlState == UniqueViolation) throw MembresiaMondayException(BusyMessage)
+        if (failure.sqlState == UniqueViolation) throw MembresiaMondayException(tr(BusyMessage))
         throw failure
     }
 
     /** Cancela un trabajo que aun no termino; false si ya habia terminado. */
     fun cancel(tenant: Connection, id: UUID): Boolean =
-        changeStatus(tenant, id, MondayJobStatus.Cancelled, "Cancelada por el usuario.", from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
+        changeStatus(tenant, id, MondayJobStatus.Cancelled, msg("Cancelada por el usuario."), from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
 
     /** Cambia el estado; al llegar a uno final borra los datos personales guardados (payload y problemas con nombres). */
     private fun changeStatus(tenant: Connection, id: UUID, status: String, message: String, from: List<String>): Boolean {
@@ -261,7 +263,7 @@ object MembresiaMondayJobs {
             fail(tenant, job.id, failure.message.orEmpty())
         } catch (failure: Exception) {
             log.error("Importacion de monday {} fallo ({})", job.id, failure.javaClass.simpleName, failure)
-            fail(tenant, job.id, "No se pudo completar la importacion; revisa el registro del servidor.")
+            fail(tenant, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
         }
     }
 
@@ -277,7 +279,7 @@ object MembresiaMondayJobs {
     private fun readPages(context: ModuleJobContext, jobId: UUID, deadline: Long) {
         val tenant = context.tenant
         val token = MembresiaMondaySettings.loadToken(context.access.secrets, tenant)
-            ?: throw MembresiaMondayException("Falta el token de monday o no se puede leer; guardalo de nuevo.")
+            ?: throw MembresiaMondayException(tr("Falta el token de monday o no se puede leer; guardalo de nuevo."))
         while (System.nanoTime() < deadline) {
             // Se vuelve a leer el estado en cada pagina: asi una cancelacion corta la lectura.
             val job = find(tenant, jobId)?.takeIf { it.status == MondayJobStatus.Reading } ?: return
@@ -293,13 +295,13 @@ object MembresiaMondayJobs {
                 return
             }
             if (MondayReading.repeatedCursor(job.cursor, page.cursor)) {
-                throw MembresiaMondayException("monday devolvio el mismo cursor dos veces; la lectura se detuvo para no repetirse.")
+                throw MembresiaMondayException(tr("monday devolvio el mismo cursor dos veces; la lectura se detuvo para no repetirse."))
             }
             if (job.pagesRead + 1 > MondayReading.MaxPages) {
-                throw MembresiaMondayException("El tablero necesita mas de ${MondayReading.MaxPages} paginas; divide el tablero antes de importarlo.")
+                throw MembresiaMondayException(tr("El tablero necesita mas de {0} paginas; divide el tablero antes de importarlo.", MondayReading.MaxPages))
             }
             if (job.itemsRead + page.items.size > MembresiaMondayClient.MaxItems) {
-                throw MembresiaMondayException("El tablero tiene mas de ${MembresiaMondayClient.MaxItems} elementos; divide el tablero antes de importarlo.")
+                throw MembresiaMondayException(tr("El tablero tiene mas de {0} elementos; divide el tablero antes de importarlo.", MembresiaMondayClient.MaxItems))
             }
             val members = page.items.map { MembresiaMondayMapping.toMember(it, job.mapping) }
             if (!storePage(tenant, job, members, page.cursor)) return
@@ -379,7 +381,7 @@ object MembresiaMondayJobs {
     private fun completeRead(context: ModuleJobContext, jobId: UUID) {
         val tenant = context.tenant
         val job = find(tenant, jobId)?.takeIf { it.status == MondayJobStatus.Reading } ?: return
-        if (job.itemsRead == 0) throw MembresiaMondayException("El tablero no tiene elementos.")
+        if (job.itemsRead == 0) throw MembresiaMondayException(tr("El tablero no tiene elementos."))
         // Por lotes de SummaryBatch filas: nunca se carga el staging entero. De cada fila solo se conserva lo que necesitan los
         // planes nuevos y los problemas (sin visitas, notas ni campos); visitas y campos de Clientes se acumulan por lote.
         var unreadable = 0
@@ -433,7 +435,7 @@ object MembresiaMondayJobs {
 
     private fun applyRows(context: ModuleJobContext, job: MondayJob, deadline: Long) {
         val tenant = context.tenant
-        val summary = job.summary ?: throw MembresiaMondayException("La importacion no tiene resumen; vuelve a leer el tablero.")
+        val summary = job.summary ?: throw MembresiaMondayException(tr("La importacion no tiene resumen; vuelve a leer el tablero."))
         // Los planes y campos de Clientes que faltan se crean con lo que dijo el resumen (idempotente: lo que ya existe se reutiliza).
         val plans = MembresiaImportApply.ensurePlans(tenant, summary.newPlans.map { it.toProposal() })
         val fields = MembresiaImportApply.ensureCustomerFields(tenant, summary.customerFields)
