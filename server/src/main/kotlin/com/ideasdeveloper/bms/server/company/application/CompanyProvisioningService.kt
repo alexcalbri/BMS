@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.company.application
 
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.server.modules.CompanyFiles
 import com.ideasdeveloper.bms.server.security.ScramSha256
 import com.ideasdeveloper.bms.server.company.api.ServerNameResponse
@@ -61,6 +62,8 @@ class CompanyProvisioningService(
     private val requestRestart: () -> Unit,
     // Files the modules stored for the company; removed with the company.
     private val companyFiles: CompanyFiles? = null,
+    // Installs that survive restarts and the single restart once every build ended; null keeps the restart per package.
+    private val installQueue: PackageInstallQueue? = null,
 ) {
     private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
     // Progress of optional modules being built for installation, shown in the module list.
@@ -1201,6 +1204,8 @@ class CompanyProvisioningService(
         val source = remotePackage?.source
             ?: throw CompanyProvisioningException("${definition.displayName} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.")
         installStates[definition.id] = ModuleInstallState(InstallStatus.Installing, "En cola para compilar")
+        installQueue?.add(PackageInstallQueue.Module, definition.id)
+        installQueue?.queued()
         buildExecutor.execute { buildAndInstall(definition, builder, source) }
         return moduleResponse(definition, remotePackage).copy(warning = warning)
     }
@@ -1503,15 +1508,57 @@ class CompanyProvisioningService(
                     installedPackagePath = built.jar.toString(),
                 )
             }
-            log.info("Module {} {} built from {}@{}; restarting to load it.", moduleId, built.version, source.repo, source.ref)
-            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting, "Reiniciando el servidor para cargar ${definition.displayName}")
-            requestRestart()
+            log.info("Module {} {} built from {}@{}; the server restarts to load it once nothing else is being built.", moduleId, built.version, source.repo, source.ref)
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting, "Compilado; el servidor se reinicia para cargar ${definition.displayName} cuando termine lo que queda en cola")
+            finishBuild(moduleId, needsRestart = true)
         } catch (failure: ModuleBuildException) {
             log.warn("Module {} could not be built: {}", moduleId, failure.message)
             installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, failure.message.orEmpty())
+            finishBuild(moduleId, needsRestart = false)
         } catch (failure: Exception) {
             log.error("Module {} installation failed", moduleId, failure)
             installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, "Error inesperado: ${failure.message}")
+            finishBuild(moduleId, needsRestart = false)
+        }
+    }
+
+    // The build ended, well or not: it is not resumed, and the restart waits for the other builds in the queue.
+    private fun finishBuild(moduleId: String, needsRestart: Boolean) {
+        val queue = installQueue
+        if (queue == null) {
+            if (needsRestart) requestRestart()
+            return
+        }
+        queue.done(PackageInstallQueue.Module, moduleId)
+        queue.built(needsRestart)
+    }
+
+    /** Whether the module is being installed now or waits for the restart that loads it: its extensions wait for it. */
+    fun moduleInstallPending(moduleId: String): Boolean =
+        installStates[moduleId]?.status in setOf(InstallStatus.Installing, InstallStatus.Restarting) ||
+            installQueue?.has(PackageInstallQueue.Module, moduleId) == true
+
+    /**
+     * Module installs that a restart interrupted (asked for while another package was restarting the
+     * server, or cut while building) start again. Call it once at startup, off the main thread.
+     */
+    fun resumePendingInstalls() {
+        val queue = installQueue ?: return
+        queue.pending().filter { it.kind == PackageInstallQueue.Module }.forEach { entry ->
+            if (!queue.attempt(entry.kind, entry.id)) {
+                log.warn("Module {} is not installed again: it was tried {} times.", entry.id, PackageInstallQueue.MaxAttempts)
+                installStates[entry.id] = ModuleInstallState(InstallStatus.Failed, "No se pudo instalar tras varios intentos; vuelve a pedirlo.")
+                return@forEach
+            }
+            try {
+                installServerModule(entry.id)
+                // Already loaded at the wanted version: there was nothing left to build.
+                if (installStates[entry.id]?.status != InstallStatus.Installing) queue.done(entry.kind, entry.id)
+            } catch (failure: Exception) {
+                log.warn("Pending install of module {} was dropped: {}", entry.id, failure.message)
+                installStates[entry.id] = ModuleInstallState(InstallStatus.Failed, failure.message ?: "No se pudo reanudar la instalacion.")
+                queue.done(entry.kind, entry.id)
+            }
         }
     }
 

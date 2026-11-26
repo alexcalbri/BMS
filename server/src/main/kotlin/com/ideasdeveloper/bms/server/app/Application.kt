@@ -23,6 +23,7 @@ import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.server.modules.CompanyFiles
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
 import com.ideasdeveloper.bms.server.modules.CustomerReferenceSource
@@ -171,6 +172,8 @@ fun Application.module() {
         if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
     }
     val provisioningConfig = companyProvisioningConfig()
+    // What the owner asked to install and is not finished: resumed after a restart, which waits for every build.
+    val installQueue = PackageInstallQueue(modulePackagesRoot.toAbsolutePath().resolve("pending-installs.json"), ::restartToLoadModules)
     val companyProvisioning = CompanyProvisioningService(
         central = DatabaseFactory.getDataSource(),
         config = provisioningConfig,
@@ -188,6 +191,7 @@ fun Application.module() {
         ),
         requestRestart = ::restartToLoadModules,
         companyFiles = companyFiles,
+        installQueue = installQueue,
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without
     // delaying startup.
@@ -269,6 +273,9 @@ fun Application.module() {
         authorizations = unsignedAuthorizations,
         requestRestart = ::restartToLoadModules,
         audit = { role, action, company, module, details -> companyProvisioning.recordAudit(role, action, company, module, details) },
+        installQueue = installQueue,
+        moduleLoaded = { id -> moduleRegistry.definition(id) != null },
+        modulePending = { id -> companyProvisioning.moduleInstallPending(id) },
     )
     val packageExtensions = extensionPackages.loadInstalled(
         moduleClassLoader = { id -> moduleRegistry.module(id)?.javaClass?.classLoader },
@@ -285,6 +292,16 @@ fun Application.module() {
         auditor = { role, action, company, module, details -> companyProvisioning.recordAudit(role, action, company, module, details) },
         migrationRunner = { company, extension -> companyProvisioning.applyExtensionMigrations(company, extension) },
     )
+    // Installs a restart left unfinished start again: modules first, then the extensions that waited for them.
+    Thread({
+        migrationsDone.await()
+        try {
+            companyProvisioning.resumePendingInstalls()
+            extensionPackages.resumePendingInstalls()
+        } catch (failure: Exception) {
+            log.error("Pending installs were not resumed", failure)
+        }
+    }, "resume-installs").apply { isDaemon = true }.start()
     // A module loaded at a version below an extension's minimum leaves that extension incompatible.
     Thread({
         // Group operations cut by a restart end as failed, so their companies can be retried.

@@ -540,6 +540,20 @@ Installing a module should eventually:
 
 Exact CLI/API/UI installation steps must be added here when implemented.
 
+### Installing several packages (Core 0.9.2)
+
+Modules and extension packages are compiled on the server and loaded by restarting it. Since Core
+0.9.2 the owner can ask for several at once:
+
+-   the server restarts **once**, when nothing else is being built, not after each package;
+-   what is pending is kept in `pending-installs.json` next to the module packages
+    (`MODULE_PACKAGES_ROOT`) and starts again after any restart, so nothing asked for is lost;
+-   **an extension is not installed until its module is fully installed** (loaded after the
+    restart): asked for while the module is still installing, it shows "En espera" and is built
+    after that restart; asked for without the module, it is refused with `MODULE_NOT_INSTALLED`;
+-   a package that fails to build does not stop the others, and one that keeps taking the server
+    down while building is dropped after three tries. A ZIP or URL install is not resumed.
+
 Disabling a module should preserve data by default.
 
 Uninstalling may be destructive and must require explicit administrative
