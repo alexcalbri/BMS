@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerHistoryEntry
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
@@ -70,7 +71,8 @@ object ClientesServerModule : ServerModule {
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.11.0",
+        version = "0.12.0",
+        minCoreVersion = "0.10.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -147,13 +149,13 @@ object ClientesServerModule : ServerModule {
                 val permissions = call.requirePermission(access, "clientes.fields.manage") ?: return@post
                 val request = call.receive<CreateCustomerFieldRequest>()
                 if (!validField(request)) {
-                    call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_FIELD", "El campo dinamico no es valido."))
+                    call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_FIELD", tr("El campo dinamico no es valido.")))
                     return@post
                 }
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
                         if (loadFields(tenant).any { it.fieldKey == request.fieldKey.trim() }) {
-                            return@tenantReply failure(HttpStatusCode.Conflict, "FIELD_DUPLICATE", "Ya existe un campo con esa clave.")
+                            return@tenantReply failure(HttpStatusCode.Conflict, "FIELD_DUPLICATE", tr("Ya existe un campo con esa clave."))
                         }
                         val created = insertField(tenant, request)
                         ClientesActivity.recordCompany(tenant, "field_created", fieldCreatedBody(created), ClientesActivity.author(tenant, permissions, access))
@@ -166,11 +168,11 @@ object ClientesServerModule : ServerModule {
             delete("/fields/{fieldId}") {
                 val permissions = call.requirePermission(access, "clientes.fields.manage") ?: return@delete
                 val fieldId = call.parameters["fieldId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_FIELD", "Campo invalido."))
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_FIELD", tr("Campo invalido.")))
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
                         val deleted = deleteField(tenant, fieldId)
-                            ?: return@tenantReply failure(HttpStatusCode.NotFound, "FIELD_NOT_FOUND", "Campo no encontrado.")
+                            ?: return@tenantReply failure(HttpStatusCode.NotFound, "FIELD_NOT_FOUND", tr("Campo no encontrado."))
                         ClientesActivity.recordCompany(tenant, "field_deleted", fieldDeletedBody(deleted), ClientesActivity.author(tenant, permissions, access))
                         noContent()
                     }
@@ -185,7 +187,7 @@ object ClientesServerModule : ServerModule {
                 val rawCursor = call.request.queryParameters["after"]?.takeIf { it.isNotBlank() }
                 val cursor = rawCursor?.let { CustomerQuery.decodeCursor(it) }
                 if (rawCursor != null && cursor == null) {
-                    return@get call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CURSOR", "El cursor de paginacion no es valido."))
+                    return@get call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CURSOR", tr("El cursor de paginacion no es valido.")))
                 }
                 val limit = (call.request.queryParameters["limit"]?.toIntOrNull() ?: CustomerQuery.PageSize).coerceIn(1, CustomerQuery.PageSize)
                 val answer = withContext(Dispatchers.IO) {
@@ -201,7 +203,7 @@ object ClientesServerModule : ServerModule {
                     tenantReply(access, call) { tenant ->
                         validateCustomerRequest(tenant, request)?.let { return@tenantReply json(HttpStatusCode.BadRequest, it) }
                         if (emailExists(tenant, request.primaryEmail.trim(), null)) {
-                            return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", "Ya existe un cliente con ese correo.")
+                            return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", tr("Ya existe un cliente con ese correo."))
                         }
                         val customerId = UUID.randomUUID()
                         upsertCustomer(tenant, customerId, request, insert = true)
@@ -217,22 +219,22 @@ object ClientesServerModule : ServerModule {
             put("/customers/{customerId}") {
                 val permissions = call.requirePermission(access, "clientes.edit") ?: return@put
                 val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                    ?: return@put call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
+                    ?: return@put call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", tr("Cliente invalido.")))
                 val request = call.receive<CreateCustomerRequest>()
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
                         validateCustomerRequest(tenant, request)?.let { return@tenantReply json(HttpStatusCode.BadRequest, it) }
                         val before = activeCustomer(tenant, customerId)?.takeIf { ClientesSharing.visible(tenant, customerId) }
-                            ?: return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", "Cliente no encontrado.")
+                            ?: return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
                         if (emailExists(tenant, request.primaryEmail.trim(), customerId)) {
-                            return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", "Ya existe otro cliente con ese correo.")
+                            return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", tr("Ya existe otro cliente con ese correo."))
                         }
                         // Un cambio de correo no puede chocar con un cliente de las empresas vinculadas (aunque aqui no se vea).
                         emailChangeConflict(access, tenant, permissions.companyCode, customerId, before.primaryEmail, request.primaryEmail, permissions.businessOwner)?.let {
                             return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", it)
                         }
                         val updated = upsertCustomer(tenant, customerId, request, insert = false)
-                        if (!updated) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", "Cliente no encontrado.")
+                        if (!updated) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
                         recordUpdate(tenant, customerId, before, request, ClientesActivity.author(tenant, permissions, access))
                         // One record for the companies it is shared with: the edit reaches every copy.
                         propagateLogged(access, tenant, permissions.companyCode, customerId)
@@ -245,11 +247,11 @@ object ClientesServerModule : ServerModule {
             delete("/customers/{customerId}") {
                 val permissions = call.requirePermission(access, "clientes.delete") ?: return@delete
                 val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
+                    ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", tr("Cliente invalido.")))
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
-                        originCheck(tenant, customerId, "archiva")?.let { return@tenantReply it }
-                        if (!archiveCustomer(tenant, customerId)) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", "Cliente no encontrado.")
+                        originCheck(tenant, customerId, restore = false)?.let { return@tenantReply it }
+                        if (!archiveCustomer(tenant, customerId)) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
                         ClientesActivity.record(tenant, customerId, "archived", "", ClientesActivity.author(tenant, permissions, access))
                         propagateLogged(access, tenant, permissions.companyCode, customerId)
                         noContent()
@@ -261,14 +263,14 @@ object ClientesServerModule : ServerModule {
             post("/customers/{customerId}/restore") {
                 val permissions = call.requirePermission(access, "clientes.delete") ?: return@post
                 val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                    ?: return@post call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", tr("Cliente invalido.")))
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
                         // Only the company where the customer was created restores it; the copies follow.
-                        originCheck(tenant, customerId, "restaura")?.let { return@tenantReply it }
+                        originCheck(tenant, customerId, restore = true)?.let { return@tenantReply it }
                         when (restoreCustomer(tenant, customerId)) {
-                            RestoreResult.NotFound -> return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", "Cliente no encontrado o no esta archivado.")
-                            RestoreResult.EmailTaken -> return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", "Otro cliente activo ya usa el correo de este cliente.")
+                            RestoreResult.NotFound -> return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado o no esta archivado."))
+                            RestoreResult.EmailTaken -> return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", tr("Otro cliente activo ya usa el correo de este cliente."))
                             RestoreResult.Restored -> Unit
                         }
                         ClientesActivity.record(tenant, customerId, "restored", "", ClientesActivity.author(tenant, permissions, access))
@@ -283,10 +285,10 @@ object ClientesServerModule : ServerModule {
             get("/customers/{customerId}/history") {
                 val permissions = call.requirePermission(access, "clientes.view") ?: return@get
                 val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", tr("Cliente invalido.")))
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
-                        if (!ClientesSharing.visible(tenant, customerId)) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", "Cliente no encontrado.")
+                        if (!ClientesSharing.visible(tenant, customerId)) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
                         json(HttpStatusCode.OK, CustomerHistoryResponse(access.customerHistory(tenant, permissions, customerId)))
                     }
                 }
@@ -304,7 +306,7 @@ object ClientesServerModule : ServerModule {
 
     // Opens the user's company database, runs [block] and closes it; answers 403 when it cannot be opened.
     private fun tenantReply(access: ModuleAccessService, call: ApplicationCall, block: (Connection) -> ClientesReply): ClientesReply {
-        val connection = access.tenantConnection(call) ?: return failure(HttpStatusCode.Forbidden, "TENANT_UNAVAILABLE", "No se pudo abrir la empresa.")
+        val connection = access.tenantConnection(call) ?: return failure(HttpStatusCode.Forbidden, "TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa."))
         return connection.use(block)
     }
 
@@ -313,9 +315,12 @@ object ClientesServerModule : ServerModule {
      * origin; 404 when the customer is not visible here (a hidden copy does not exist for this company); 409 for a copy.
      * Checked before writing anything.
      */
-    private fun originCheck(tenant: Connection, customerId: UUID, verb: String): ClientesReply? = when {
-        !ClientesSharing.visible(tenant, customerId) -> failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", "Cliente no encontrado.")
-        !ClientesSharing.isOrigin(tenant, customerId) -> failure(HttpStatusCode.Conflict, "CUSTOMER_NOT_ORIGIN", "Este cliente se $verb desde la empresa donde se creo.")
+    private fun originCheck(tenant: Connection, customerId: UUID, restore: Boolean): ClientesReply? = when {
+        !ClientesSharing.visible(tenant, customerId) -> failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
+        !ClientesSharing.isOrigin(tenant, customerId) -> failure(
+            HttpStatusCode.Conflict, "CUSTOMER_NOT_ORIGIN",
+            if (restore) tr("Este cliente se restaura desde la empresa donde se creo.") else tr("Este cliente se archiva desde la empresa donde se creo."),
+        )
         else -> null
     }
 
@@ -345,7 +350,7 @@ object ClientesServerModule : ServerModule {
     private suspend fun ApplicationCall.requirePermission(access: ModuleAccessService, permissionId: String): ModulePermissions? {
         val permissions = requireModuleAccess(access, ClientesModule.id) ?: return null
         if (!permissions.has(permissionId)) {
-            respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", "No tienes permiso para usar esta funcion."))
+            respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", tr("No tienes permiso para usar esta funcion.")))
             return null
         }
         return permissions
@@ -400,7 +405,7 @@ object ClientesServerModule : ServerModule {
             insert.setBoolean(6, request.required)
             insert.setInt(7, request.displayOrder)
             insert.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
-        } ?: throw ClientesSharingException("Ya existe un campo con la clave '$fieldKey'.")
+        } ?: throw ClientesSharingException(tr("Ya existe un campo con la clave '{0}'.", fieldKey))
         return CustomerFieldResponse(fieldId.toString(), fieldKey, label, fieldType, request.required, true, request.displayOrder)
     }
 
@@ -462,11 +467,11 @@ object ClientesServerModule : ServerModule {
     internal fun validateCustomerRequest(connection: Connection, request: CreateCustomerRequest): ClientesErrorResponse? {
         // Email and phone are optional since V005; only the name is required.
         if (request.displayName.isBlank()) {
-            return ClientesErrorResponse("CUSTOMER_REQUIRED_FIELDS", "El nombre es obligatorio.")
+            return ClientesErrorResponse("CUSTOMER_REQUIRED_FIELDS", tr("El nombre es obligatorio."))
         }
         val fields = loadFields(connection).filter { it.required && it.active }
         val missing = fields.firstOrNull { field -> request.dynamicFields[field.fieldKey] == null }
-        return missing?.let { ClientesErrorResponse("CUSTOMER_DYNAMIC_FIELD_REQUIRED", "El campo ${it.label} es obligatorio.") }
+        return missing?.let { ClientesErrorResponse("CUSTOMER_DYNAMIC_FIELD_REQUIRED", tr("El campo {0} es obligatorio.", it.label)) }
     }
 
     internal fun loadFields(connection: Connection): List<CustomerFieldResponse> = connection.prepareStatement(

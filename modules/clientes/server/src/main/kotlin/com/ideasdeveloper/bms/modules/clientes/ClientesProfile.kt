@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerHistoryEntry
 import com.ideasdeveloper.bms.server.modules.CustomerNote
 import com.ideasdeveloper.bms.server.modules.CustomerHistoryWriter
@@ -130,7 +132,7 @@ internal object ClientesProfile {
         val currentCode = access.companyOf(tenant)?.code ?: return emptyList()
         val customer = ClientesSharing.customer(tenant, customerId, currentCode)?.takeIf { it.visible } ?: return emptyList()
         val notes = ClientesSharing.onCompany(access, tenant, currentCode, customer.origin) { origin -> notes(origin, customerId) }
-            ?: throw ClientesSharingException("No se pudo abrir la empresa del cliente.")
+            ?: throw ClientesSharingException(tr("No se pudo abrir la empresa del cliente."))
         val names = companyNames(access, currentCode)
         return notes.take(limit).map { note ->
             CustomerNote(note.at.toInstant(), note.body, note.author, nameOf(names, note.companyCode))
@@ -185,30 +187,30 @@ internal object ClientesProfile {
 
     // Runs the action of a POST (params["op"]) and says how it went.
     private fun act(access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): UiNotice {
-        val id = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Cliente invalido.")
+        val id = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException(tr("Cliente invalido."))
         val currentCode = permissions.companyCode
-        val tenant = access.tenantConnectionForCompany(currentCode) ?: throw ClientesSharingException("No se pudo abrir la empresa.")
+        val tenant = access.tenantConnectionForCompany(currentCode) ?: throw ClientesSharingException(tr("No se pudo abrir la empresa."))
         return tenant.use { connection ->
             val customer = ClientesSharing.customer(connection, id, currentCode)?.takeIf { it.visible }
-                ?: throw ClientesSharingException("Cliente no encontrado.")
+                ?: throw ClientesSharingException(tr("Cliente no encontrado."))
             val author = ClientesActivity.author(connection, permissions, access)
             when (params["op"]) {
                 "restore" -> {
-                    if (!canRestore(permissions, customer, currentCode)) throw ClientesSharingException("No tienes permiso para restaurar este cliente o no se creo en esta empresa.")
+                    if (!canRestore(permissions, customer, currentCode)) throw ClientesSharingException(tr("No tienes permiso para restaurar este cliente o no se creo en esta empresa."))
                     when (ClientesServerModule.restoreCustomer(connection, id)) {
-                        ClientesServerModule.RestoreResult.NotFound -> throw ClientesSharingException("El cliente no esta archivado.")
-                        ClientesServerModule.RestoreResult.EmailTaken -> throw ClientesSharingException("Otro cliente activo ya usa el correo ${customer.email}.")
+                        ClientesServerModule.RestoreResult.NotFound -> throw ClientesSharingException(tr("El cliente no esta archivado."))
+                        ClientesServerModule.RestoreResult.EmailTaken -> throw ClientesSharingException(tr("Otro cliente activo ya usa el correo {0}.", customer.email))
                         ClientesServerModule.RestoreResult.Restored -> Unit
                     }
                     ClientesActivity.record(connection, id, "restored", "", author)
                     ClientesServerModule.propagateLogged(access, connection, currentCode, id)
-                    UiNotice("Cliente restaurado.", UiTone.Success)
+                    UiNotice(tr("Cliente restaurado."), UiTone.Success)
                 }
                 "note" -> {
-                    if (!permissions.has("clientes.edit")) throw ClientesSharingException("No tienes permiso para editar clientes.")
+                    if (!permissions.has("clientes.edit")) throw ClientesSharingException(tr("No tienes permiso para editar clientes."))
                     val body = values["body"].orEmpty().trim()
-                    if (body.isEmpty()) throw ClientesSharingException("Escribe la nota.")
-                    if (body.length > 5_000) throw ClientesSharingException("La nota no puede pasar de 5000 caracteres.")
+                    if (body.isEmpty()) throw ClientesSharingException(tr("Escribe la nota."))
+                    if (body.length > 5_000) throw ClientesSharingException(tr("La nota no puede pasar de 5000 caracteres."))
                     ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
                         origin.prepareStatement(
                             "INSERT INTO customer_notes (id, customer_id, body, user_id, author, company_code) VALUES (?, ?, ?, ?, ?, ?)"
@@ -222,29 +224,29 @@ internal object ClientesProfile {
                             insert.setString(6, currentCode)
                             insert.executeUpdate()
                         }
-                    } ?: throw ClientesSharingException("No se pudo abrir la empresa del cliente para guardar la nota.")
-                    UiNotice("Nota agregada.", UiTone.Success)
+                    } ?: throw ClientesSharingException(tr("No se pudo abrir la empresa del cliente para guardar la nota."))
+                    UiNotice(tr("Nota agregada."), UiTone.Success)
                 }
                 "deletenote" -> {
-                    val noteId = params["note"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Nota invalida.")
+                    val noteId = params["note"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException(tr("Nota invalida."))
                     val deletedText = ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
                         val note = notes(origin, id).firstOrNull { it.id == noteId } ?: return@onCompany null
-                        if (!canDeleteNote(permissions, note, currentCode)) throw ClientesSharingException("Solo quien escribio la nota o el business owner pueden borrarla.")
+                        if (!canDeleteNote(permissions, note, currentCode)) throw ClientesSharingException(tr("Solo quien escribio la nota o el business owner pueden borrarla."))
                         origin.prepareStatement("DELETE FROM customer_notes WHERE id = ? AND customer_id = ?").use { delete ->
                             delete.setObject(1, noteId)
                             delete.setObject(2, id)
                             if (delete.executeUpdate() == 1) note.body else null
                         }
                     }
-                    if (deletedText == null) throw ClientesSharingException("Nota no encontrada.")
+                    if (deletedText == null) throw ClientesSharingException(tr("Nota no encontrada."))
                     ClientesActivity.record(connection, id, "note_deleted", noteDeletedBody(deletedText), author)
-                    UiNotice("Nota borrada.", UiTone.Success)
+                    UiNotice(tr("Nota borrada."), UiTone.Success)
                 }
                 "history" -> {
-                    if (!permissions.has("clientes.edit")) throw ClientesSharingException("No tienes permiso para editar clientes.")
+                    if (!permissions.has("clientes.edit")) throw ClientesSharingException(tr("No tienes permiso para editar clientes."))
                     val title = values["title"].orEmpty().trim()
-                    if (title.isEmpty()) throw ClientesSharingException("Escribe que contrato o compro el cliente.")
-                    if (title.length > 300) throw ClientesSharingException("El titulo no puede pasar de 300 caracteres.")
+                    if (title.isEmpty()) throw ClientesSharingException(tr("Escribe que contrato o compro el cliente."))
+                    if (title.length > 300) throw ClientesSharingException(tr("El titulo no puede pasar de 300 caracteres."))
                     writer.write(
                         connection,
                         com.ideasdeveloper.bms.server.modules.CustomerHistoryEvent(
@@ -256,21 +258,21 @@ internal object ClientesProfile {
                             author = author.second,
                         ),
                     )
-                    UiNotice("Agregado al historial de ${ClientesSharing.companyName(access, currentCode, currentCode)}.", UiTone.Success)
+                    UiNotice(tr("Agregado al historial de {0}.", ClientesSharing.companyName(access, currentCode, currentCode)), UiTone.Success)
                 }
                 "linkuser" -> {
-                    val accountId = params["account"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Cuenta invalida.")
+                    val accountId = params["account"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException(tr("Cuenta invalida."))
                     UiNotice(ClientesAccounts.link(connection, currentCode, permissions, id, accountId, author), UiTone.Success)
                 }
                 "unlinkuser" -> UiNotice(ClientesAccounts.unlink(connection, id, permissions, author), UiTone.Success)
                 "deletehistory" -> {
-                    if (!permissions.has("clientes.edit")) throw ClientesSharingException("No tienes permiso para editar clientes.")
-                    val entryId = params["entry"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Entrada invalida.")
-                    val title = deleteManualEntry(connection, id, entryId) ?: throw ClientesSharingException("Solo se pueden borrar las entradas agregadas a mano en esta empresa.")
+                    if (!permissions.has("clientes.edit")) throw ClientesSharingException(tr("No tienes permiso para editar clientes."))
+                    val entryId = params["entry"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException(tr("Entrada invalida."))
+                    val title = deleteManualEntry(connection, id, entryId) ?: throw ClientesSharingException(tr("Solo se pueden borrar las entradas agregadas a mano en esta empresa."))
                     ClientesActivity.record(connection, id, "history_deleted", historyDeletedBody(title), author)
-                    UiNotice("Entrada borrada del historial.", UiTone.Success)
+                    UiNotice(tr("Entrada borrada del historial."), UiTone.Success)
                 }
-                else -> throw ClientesSharingException("Accion desconocida.")
+                else -> throw ClientesSharingException(tr("Accion desconocida."))
             }
         }
     }
@@ -325,7 +327,8 @@ internal object ClientesProfile {
     fun mergeUsage(uses: List<ModuleUse>): List<ModuleUse> =
         uses.groupBy { it.name }.map { (name, group) -> ModuleUse(name, group.maxOf { it.count }, group.maxOf { it.last }) }.sortedBy { it.name.lowercase() }
 
-    fun usageLine(use: ModuleUse): String = "${use.name}: ${use.count} ${if (use.count == 1) "registro" else "registros"}, ultimo ${use.last.take(10)}"
+    fun usageLine(use: ModuleUse): String =
+        if (use.count == 1) tr("{0}: {1} registro, ultimo {2}", use.name, use.count, use.last.take(10)) else tr("{0}: {1} registros, ultimo {2}", use.name, use.count, use.last.take(10))
 
     /** Names of the companies of the group by code, read once per request (one central query, not one per note). */
     fun companyNames(access: ModuleAccessService, currentCode: String): Map<String, String> =
@@ -370,17 +373,17 @@ internal object ClientesProfile {
     private suspend fun ApplicationCall.respondProfile(access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, notice: UiNotice?) {
         val screen = withContext(Dispatchers.IO) {
             access.tenantConnectionForCompany(permissions.companyCode)?.use { tenant -> screen(access, tenant, permissions, params, notice) }
-        } ?: UiScreen("Cliente", notice = UiNotice("No se pudo abrir la empresa.", UiTone.Danger))
-        respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
+        } ?: UiScreen(tr("Cliente"), notice = UiNotice(tr("No se pudo abrir la empresa."), UiTone.Danger))
+        respondText(UiJson.encodeToString(UiScreen.serializer(), localizedPayload(screen)), ContentType.Application.Json)
     }
 
     private fun screen(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, params: Map<String, String>, notice: UiNotice?): UiScreen {
         val currentCode = permissions.companyCode
         val id = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         val customer = id?.let { ClientesSharing.customer(tenant, it, currentCode) }?.takeIf { it.visible }
-            ?: return UiScreen("Cliente", notice = UiNotice("Cliente no encontrado.", UiTone.Danger))
+            ?: return UiScreen(tr("Cliente"), notice = UiNotice(tr("Cliente no encontrado."), UiTone.Danger))
         if (!ClientesSharing.supportsSharing(tenant)) {
-            return UiScreen(customer.name, notice = UiNotice("La empresa todavia no aplica la actualizacion de Clientes.", UiTone.Warning))
+            return UiScreen(customer.name, notice = UiNotice(tr("La empresa todavia no aplica la actualizacion de Clientes."), UiTone.Warning))
         }
         val tabs = ClientesSharing.tabs(access, tenant, currentCode, customer, permissions.businessOwner)
         val linked = access.linkedCompanies(currentCode, ClientesLinking.LinkPurpose)
@@ -410,22 +413,22 @@ internal object ClientesProfile {
         val details = UiCard(
             title = customer.name,
             children = listOfNotNull(
-                UiText("Codigo de cliente: ${customer.code}"),
-                customer.email.takeIf { it.isNotBlank() }?.let { UiText("Correo: $it") },
-                customer.phone.takeIf { it.isNotBlank() }?.let { UiText("Telefono: $it") },
-                UiText("Creado en $originName", UiTextStyle.Caption),
+                UiText(tr("Codigo de cliente: {0}", customer.code)),
+                customer.email.takeIf { it.isNotBlank() }?.let { UiText(tr("Correo: {0}", it)) },
+                customer.phone.takeIf { it.isNotBlank() }?.let { UiText(tr("Telefono: {0}", it)) },
+                UiText(tr("Creado en {0}", originName), UiTextStyle.Caption),
                 UiText(linkText(linked.map { it.name }, originName), UiTextStyle.Caption),
-                UiText("Roles: " + ClientesAccounts.roles(userLink, ClientesAccounts.canSeeAccount(permissions)).joinToString(", "), UiTextStyle.Caption),
-                customer.archived.takeIf { it }?.let { UiText("Cliente archivado.", tone = UiTone.Warning) },
+                UiText(tr("Roles: {0}", ClientesAccounts.roles(userLink, ClientesAccounts.canSeeAccount(permissions)).joinToString(", ")), UiTextStyle.Caption),
+                customer.archived.takeIf { it }?.let { UiText(tr("Cliente archivado."), tone = UiTone.Warning) },
             ),
             actions = listOfNotNull(
                 if (canRestore(permissions, customer, currentCode)) {
-                    UiButton("Restaurar cliente", post("restore", confirm = "El cliente vuelve a aparecer en la lista y en las empresas vinculadas. Continuar?"))
+                    UiButton(tr("Restaurar cliente"), post("restore", confirm = tr("El cliente vuelve a aparecer en la lista y en las empresas vinculadas. Continuar?")))
                 } else {
                     null
                 },
-                if (permissions.businessOwner) UiButton("Empresas vinculadas", UiNavigate("links"), style = "secondary") else null,
-                if (ClientesLinkScreens.canSeeActivity(permissions)) UiButton("Registro de Clientes", UiNavigate("activity"), style = "secondary") else null,
+                if (permissions.businessOwner) UiButton(tr("Empresas vinculadas"), UiNavigate("links"), style = "secondary") else null,
+                if (ClientesLinkScreens.canSeeActivity(permissions)) UiButton(tr("Registro de Clientes"), UiNavigate("activity"), style = "secondary") else null,
             ),
         )
 
@@ -434,7 +437,7 @@ internal object ClientesProfile {
 
         // What the customer did, by company of the visible tabs: the modules that have something and how much.
         val summary = UiCard(
-            title = "Resumen",
+            title = tr("Resumen"),
             children = tabs.map { company ->
                 val uses = historyOf(company.code)?.let { entries ->
                     ClientesSharing.onCompany(access, tenant, currentCode, company.code) { companyTenant ->
@@ -446,8 +449,8 @@ internal object ClientesProfile {
                     }
                 }
                 val lines = when {
-                    uses == null -> listOf(UiText("No se pudo abrir ${company.name}.", tone = UiTone.Danger))
-                    uses.isEmpty() -> listOf(UiText("Sin actividad registrada.", UiTextStyle.Caption))
+                    uses == null -> listOf(UiText(tr("No se pudo abrir {0}.", company.name), tone = UiTone.Danger))
+                    uses.isEmpty() -> listOf(UiText(tr("Sin actividad registrada."), UiTextStyle.Caption))
                     else -> uses.map { UiText(usageLine(it)) }
                 }
                 UiCard(title = company.name, children = lines)
@@ -455,7 +458,7 @@ internal object ClientesProfile {
         )
 
         val tabRow = UiRow(
-            children = listOf(UiButton("Notas del cliente", open(NotesTab), style = if (tab == NotesTab) "primary" else "secondary")) +
+            children = listOf(UiButton(tr("Notas del cliente"), open(NotesTab), style = if (tab == NotesTab) "primary" else "secondary")) +
                 tabs.map { company -> UiButton(company.name, open(company.code), style = if (tab == company.code) "primary" else "secondary") },
             spacing = 8,
         )
@@ -463,9 +466,9 @@ internal object ClientesProfile {
         val content: List<UiNode> = if (tab == NotesTab) {
             val notes = ClientesSharing.onCompany(access, tenant, currentCode, customer.origin) { origin -> notes(origin, customer.id) }
             listOfNotNull(
-                UiText("Gustos, preferencias y datos generales del cliente, para no preguntarlos en cada visita o lead. Se ven en todas las empresas donde esta el cliente y en sus leads del CRM.", UiTextStyle.Caption),
+                UiText(tr("Gustos, preferencias y datos generales del cliente, para no preguntarlos en cada visita o lead. Se ven en todas las empresas donde esta el cliente y en sus leads del CRM."), UiTextStyle.Caption),
                 if (notes == null) {
-                    UiText("No se pudo abrir $originName para leer las notas.", tone = UiTone.Danger)
+                    UiText(tr("No se pudo abrir {0} para leer las notas.", originName), tone = UiTone.Danger)
                 } else {
                     UiList(
                         items = notes.map { note ->
@@ -473,17 +476,17 @@ internal object ClientesProfile {
                                 title = note.body,
                                 subtitle = listOf(note.author, nameOf(names, note.companyCode)).filter { it.isNotBlank() }.joinToString(" - "),
                                 trailing = note.at.toLocalDate().toString(),
-                                action = if (canDeleteNote(permissions, note, currentCode)) post("deletenote", mapOf("note" to note.id.toString()), confirm = "Borrar esta nota?") else null,
+                                action = if (canDeleteNote(permissions, note, currentCode)) post("deletenote", mapOf("note" to note.id.toString()), confirm = tr("Borrar esta nota?")) else null,
                             )
                         },
-                        emptyText = "Sin notas del cliente.",
+                        emptyText = tr("Sin notas del cliente."),
                     )
                 },
                 if (permissions.has("clientes.edit")) {
                     UiForm(
                         id = "note",
-                        fields = listOf(UiField("body", "Nueva nota", "textarea", required = true, placeholder = "Ej.: prefiere habitacion en planta baja, alergico al mani")),
-                        submit = UiButton("Agregar nota", post("note", formId = "note")),
+                        fields = listOf(UiField("body", tr("Nueva nota"), "textarea", required = true, placeholder = tr("Ej.: prefiere habitacion en planta baja, alergico al mani"))),
+                        submit = UiButton(tr("Agregar nota"), post("note", formId = "note")),
                     )
                 } else {
                     null
@@ -493,24 +496,24 @@ internal object ClientesProfile {
             val company = tabs.first { it.code == tab }
             val entries = historyOf(company.code)
             listOfNotNull(
-                UiText("Lo que el cliente compro o contrato en ${company.name}. Las ventas del CRM se agregan solas; toca una para ver el detalle.", UiTextStyle.Caption),
+                UiText(tr("Lo que el cliente compro o contrato en {0}. Las ventas del CRM se agregan solas; toca una para ver el detalle.", company.name), UiTextStyle.Caption),
                 if (entries == null) {
-                    UiText("No se pudo abrir ${company.name}.", tone = UiTone.Danger)
+                    UiText(tr("No se pudo abrir {0}.", company.name), tone = UiTone.Danger)
                 } else {
-                    UiList(items = entries.map(::historyItem), emptyText = "Sin historial en ${company.name}.")
+                    UiList(items = entries.map(::historyItem), emptyText = tr("Sin historial en {0}.", company.name))
                 },
                 if (company.code == currentCode && permissions.has("clientes.edit")) {
                     manualEntries(tenant, customer.id).takeIf { it.isNotEmpty() }?.let { manual ->
                         UiCard(
-                            title = "Entradas agregadas a mano",
+                            title = tr("Entradas agregadas a mano"),
                             children = listOf(
                                 UiList(
                                     items = manual.map { entry ->
                                         UiListItem(
                                             title = entry.title,
                                             trailing = entry.at.toLocalDate().toString(),
-                                            badges = listOf(UiBadge("Borrar", UiTone.Danger)),
-                                            action = post("deletehistory", mapOf("entry" to entry.id.toString()), confirm = "Borrar esta entrada del historial?"),
+                                            badges = listOf(UiBadge(tr("Borrar"), UiTone.Danger)),
+                                            action = post("deletehistory", mapOf("entry" to entry.id.toString()), confirm = tr("Borrar esta entrada del historial?")),
                                         )
                                     },
                                 ),
@@ -524,10 +527,10 @@ internal object ClientesProfile {
                     UiForm(
                         id = "history",
                         fields = listOf(
-                            UiField("title", "Que compro o contrato", required = true, placeholder = "Ej.: Paquete de 3 noches"),
-                            UiField("detail", "Detalle", "textarea"),
+                            UiField("title", tr("Que compro o contrato"), required = true, placeholder = tr("Ej.: Paquete de 3 noches")),
+                            UiField("detail", tr("Detalle"), "textarea"),
                         ),
-                        submit = UiButton("Agregar al historial", post("history", formId = "history")),
+                        submit = UiButton(tr("Agregar al historial"), post("history", formId = "history")),
                     )
                 } else {
                     null
@@ -544,25 +547,25 @@ internal object ClientesProfile {
         link: ClientesAccounts.Link?,
         post: (String, Map<String, String>, String?, String?) -> UiRequest,
     ): UiCard = UiCard(
-        title = "Cuenta de usuario",
+        title = tr("Cuenta de usuario"),
         children = buildList<UiNode> {
-            add(UiText("Opcional: enlaza la cuenta de usuario de esta empresa que tiene el mismo correo que la ficha. El enlace no da permisos a la cuenta. El correo de la cuenta no se verifica: confirma que la cuenta es de esta persona.", UiTextStyle.Caption))
+            add(UiText(tr("Opcional: enlaza la cuenta de usuario de esta empresa que tiene el mismo correo que la ficha. El enlace no da permisos a la cuenta. El correo de la cuenta no se verifica: confirma que la cuenta es de esta persona."), UiTextStyle.Caption))
             when {
                 link != null -> {
-                    add(UiText(link.account?.let { "${it.name} (${it.email})" } ?: "La cuenta enlazada ya no existe."))
-                    add(UiText("Enlazada por ${link.linkedBy} el ${link.linkedAt.toLocalDate()}", UiTextStyle.Caption))
+                    add(UiText(link.account?.let { "${it.name} (${it.email})" } ?: tr("La cuenta enlazada ya no existe.")))
+                    add(UiText(tr("Enlazada por {0} el {1}", link.linkedBy, link.linkedAt.toLocalDate()), UiTextStyle.Caption))
                     if (link.account != null && !ClientesAccounts.emailMatches(link.account.email, customer.email)) {
-                        add(UiText(ClientesAccounts.MismatchWarning, tone = UiTone.Warning))
+                        add(UiText(tr(ClientesAccounts.MismatchWarning), tone = UiTone.Warning))
                     }
-                    add(UiButton("Desenlazar cuenta", post("unlinkuser", emptyMap(), null, "La ficha y la cuenta siguen igual; solo se quita el enlace. Continuar?"), style = "danger"))
+                    add(UiButton(tr("Desenlazar cuenta"), post("unlinkuser", emptyMap(), null, tr("La ficha y la cuenta siguen igual; solo se quita el enlace. Continuar?")), style = "danger"))
                 }
-                customer.archived -> add(UiText("Restaura el cliente para enlazar una cuenta.", UiTextStyle.Caption))
-                customer.email.isBlank() -> add(UiText("La ficha no tiene correo: agregalo para poder enlazar una cuenta.", tone = UiTone.Warning))
+                customer.archived -> add(UiText(tr("Restaura el cliente para enlazar una cuenta."), UiTextStyle.Caption))
+                customer.email.isBlank() -> add(UiText(tr("La ficha no tiene correo: agregalo para poder enlazar una cuenta."), tone = UiTone.Warning))
                 else -> {
                     val candidates = ClientesAccounts.candidates(tenant, customer.email)
-                    if (candidates.isEmpty()) add(UiText("No hay una cuenta libre con el correo ${customer.email}.", UiTextStyle.Caption))
+                    if (candidates.isEmpty()) add(UiText(tr("No hay una cuenta libre con el correo {0}.", customer.email), UiTextStyle.Caption))
                     candidates.forEach { account ->
-                        add(UiButton("Enlazar a ${account.name}", post("linkuser", mapOf("account" to account.id.toString()), null, "Enlazar la cuenta de ${account.name} (${account.email}) con esta ficha?"), style = "secondary"))
+                        add(UiButton(tr("Enlazar a {0}", account.name), post("linkuser", mapOf("account" to account.id.toString()), null, tr("Enlazar la cuenta de {0} ({1}) con esta ficha?", account.name, account.email)), style = "secondary"))
                     }
                 }
             }
@@ -571,7 +574,7 @@ internal object ClientesProfile {
 
     /** Says whether the company is linked: which companies share their customers with this one. [linkedNames] has the current company first. */
     fun linkText(linkedNames: List<String>, originName: String): String =
-        if (linkedNames.size > 1) "Empresa vinculada: los clientes se comparten con ${linkedNames.drop(1).joinToString()}." else "Empresa no vinculada: este cliente solo se ve en $originName."
+        if (linkedNames.size > 1) tr("Empresa vinculada: los clientes se comparten con {0}.", linkedNames.drop(1).joinToString()) else tr("Empresa no vinculada: este cliente solo se ve en {0}.", originName)
 
     private fun historyItem(entry: CustomerHistoryEntry): UiListItem = UiListItem(
         title = entry.title,
@@ -585,7 +588,7 @@ internal object ClientesProfile {
     private suspend fun ApplicationCall.profilePermissions(access: ModuleAccessService, permissionId: String): ModulePermissions? {
         val permissions = requireModuleAccess(access, ClientesModule.id) ?: return null
         if (!permissions.has(permissionId)) {
-            respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", "No tienes permiso para usar esta funcion."))
+            respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", tr("No tienes permiso para usar esta funcion.")))
             return null
         }
         return permissions

@@ -165,3 +165,11 @@ It is optional and lives in the company of the account; the card must be visible
 - **Agent tools** (permission `clientes.accounts.link`): `clientes_link_user_account` (by `userId` or account
   email) and `clientes_unlink_user_account`; `clientes_get_customer` returns `roles` and, only to who may link,
   `userAccount`.
+
+## Languages (0.12.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, confirmations, permissions and view definition) is available in
+Spanish (source) and English: the code writes `tr("Texto en espanol")` and the English catalog is
+`server/src/main/resources/modules/clientes/i18n/en.json`. Customer data, notes, activity rows already stored
+(`customer_activity`, merge reasons, job errors), names and the MCP tools (names, descriptions and results) are
+not translated. Values the app sends back (`op`, ids, tabs) never change with the language.
