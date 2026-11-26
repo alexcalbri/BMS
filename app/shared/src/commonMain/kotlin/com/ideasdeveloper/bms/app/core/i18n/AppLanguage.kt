@@ -1,7 +1,6 @@
 package com.ideasdeveloper.bms.app.core.i18n
 
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.text.intl.Locale
 import com.ideasdeveloper.bms.app.core.theme.PersistentPreferences
 
 /**
@@ -24,8 +23,12 @@ object AppLanguage {
     private val choiceState = mutableStateOf<String?>(normalize(PersistentPreferences.get(ChoiceKey)))
     private val companyState = mutableStateOf<String?>(normalize(PersistentPreferences.get(CompanyKey)))
     private val languageState = mutableStateOf(
-        normalize(PersistentPreferences.get(EffectiveKey)) ?: deviceLanguage()
+        normalize(PersistentPreferences.get(EffectiveKey)) ?: Source
     )
+
+    // Idioma del dispositivo ("en" o el fuente). Lo informa App() desde una funcion @Composable: leerlo aqui,
+    // fuera de composicion, no compila de forma segura con todas las versiones de Compose.
+    private var deviceState: String = Source
 
     // Idioma con el que se pintan los textos y que viaja en Accept-Language.
     val current: String get() = languageState.value
@@ -42,14 +45,15 @@ object AppLanguage {
         return base.takeIf { it in Supported }
     }
 
-    // Idioma del dispositivo si es uno soportado distinto del fuente; si no, el fuente.
-    private fun deviceLanguage(): String {
-        val device = try {
-            normalize(Locale.current.language)
-        } catch (_: Exception) {
-            null
+    private fun deviceLanguage(): String = deviceState
+
+    // Recibe el idioma del dispositivo. Solo cambia lo que se ve si aun no hay idioma guardado ni sesion.
+    fun useDeviceLanguage(tag: String?) {
+        deviceState = if (normalize(tag) == "en") "en" else Source
+        val hasStored = normalize(PersistentPreferences.get(EffectiveKey)) != null
+        if (!hasStored && choiceState.value == null && companyState.value == null) {
+            languageState.value = deviceState
         }
-        return if (device == "en") "en" else Source
     }
 
     // El usuario elige idioma en Ajustes o en su perfil. null = seguir el idioma de la empresa.
@@ -60,16 +64,17 @@ object AppLanguage {
         apply(chosen ?: companyState.value ?: deviceLanguage())
     }
 
-    // Tras iniciar sesion: [language] es el idioma efectivo del usuario y [companyLanguage] el de su empresa.
-    fun applyServer(language: String?, companyLanguage: String?) {
+    // Tras iniciar sesion: [language] es el idioma efectivo del usuario, [companyLanguage] el de su empresa y
+    // [userLanguage] la eleccion propia del usuario (null = sigue al idioma de la empresa).
+    fun applyServer(language: String?, companyLanguage: String?, userLanguage: String?) {
         val company = normalize(companyLanguage)
         if (company != null) {
             companyState.value = company
             PersistentPreferences.set(CompanyKey, company)
         }
         val effective = normalize(language) ?: return
-        // Si coincide con el de la empresa se muestra como "seguir a la empresa".
-        val chosen = if (company != null && effective == company) null else effective
+        // Un servidor sin userLanguage (antiguo) tampoco informa language, asi que aqui la respuesta es completa.
+        val chosen = normalize(userLanguage)
         choiceState.value = chosen
         PersistentPreferences.set(ChoiceKey, chosen.orEmpty())
         apply(effective)

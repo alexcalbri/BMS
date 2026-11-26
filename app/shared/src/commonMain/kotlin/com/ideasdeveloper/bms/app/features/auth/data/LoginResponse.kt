@@ -26,4 +26,6 @@ data class LoginResponse(
     // Idioma efectivo del usuario ("es" o "en") y el de su empresa; null en servidores antiguos.
     val language: String? = null,
     val companyLanguage: String? = null,
+    // Eleccion propia del usuario; null = sigue al idioma de la empresa.
+    val userLanguage: String? = null,
 )

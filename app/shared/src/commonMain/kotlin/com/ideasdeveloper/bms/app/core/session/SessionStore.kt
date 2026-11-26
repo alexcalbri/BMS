@@ -35,7 +35,7 @@ object SessionStore {
         _expired.value = false
         _session.value = response
         // El idioma del servidor (usuario o empresa) manda sobre el del dispositivo.
-        AppLanguage.applyServer(response.language, response.companyLanguage)
+        AppLanguage.applyServer(response.language, response.companyLanguage, response.userLanguage)
         if (keepSignedIn) {
             PersistentSessionStore.save(response)
         } else {

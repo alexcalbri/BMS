@@ -395,18 +395,16 @@ private fun optionLabel(field: UiField, option: String): String {
     return labels.getOrNull(index)?.takeIf { it.isNotBlank() } ?: option
 }
 
-// Token corto sin espacios con letras y digitos, p. ej. "AB12-CD34"; no depende del texto de la etiqueta.
-private fun looksLikeCode(value: String): Boolean =
-    value.length in 4..64 && value.none { it.isWhitespace() } && value.any { it.isLetter() } && value.any { it.isDigit() }
-
 @Composable
 private fun ModuleMetric(node: UiMetric, colors: ModuleColors) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(node.label.uppercase(), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-        // UiMetric no tiene un indicador "copiable" (vive en core): se decide por la forma del valor, que no
-        // depende del idioma. Un codigo es un token corto sin espacios que mezcla letras y digitos (clave WiFi,
-        // token, codigo de acceso) y lleva boton Copiar; el resto es seleccionable.
-        val isCode = looksLikeCode(node.value)
+        // UiMetric no tiene clave ni indicador "copiable" (el contrato vive en core): solo los valores cuya
+        // etiqueta habla de un codigo (p. ej. "Mi codigo WiFi" / "My WiFi code") llevan boton Copiar, en
+        // espanol o ingles; el resto es seleccionable.
+        val isCode = node.value.isNotBlank() && node.label.let {
+            it.contains("codigo", ignoreCase = true) || it.contains("c\u00f3digo", ignoreCase = true) || it.contains("code", ignoreCase = true)
+        }
         if (isCode) {
             CopyableCode(
                 label = "",
@@ -1695,6 +1693,11 @@ private fun ModuleTimeline(node: UiTimeline, colors: ModuleColors) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
                     Text(entry.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     if (entry.body.isNotBlank()) Text(entry.body, color = colors.text, fontSize = 13.sp)
+                    // Traduccion de la nota (la original no se reemplaza): debajo, en tono secundario.
+                    val translation = entry.translation
+                    if (!translation.isNullOrBlank() && translation != entry.body) {
+                        Text(translation, color = colors.muted, fontSize = 13.sp)
+                    }
                     if (entry.caption.isNotBlank()) Text(entry.caption, color = colors.muted, fontSize = 11.sp)
                 }
             }

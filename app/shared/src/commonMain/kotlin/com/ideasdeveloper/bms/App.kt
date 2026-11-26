@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms
 
+import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -10,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.intl.Locale
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -46,6 +48,9 @@ import com.ideasdeveloper.bms.navigation.NavRoute.Companion.routeName
 @Composable
 // Orquesta la navegacion principal segun exista o no una sesion restaurada.
 fun App(initialServerUrl: String = "") {
+    // Idioma del dispositivo: solo se usa mientras no haya idioma guardado ni sesion.
+    val deviceLanguageTag = Locale.current.language
+    remember(deviceLanguageTag) { AppLanguage.useDeviceLanguage(deviceLanguageTag) }
     BMSTheme {
         // Restaura la sesion, identidad visual y configuracion local antes de construir rutas.
         val navController = rememberNavController()
