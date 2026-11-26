@@ -87,7 +87,7 @@ fun Application.module() {
     // Language of every request (Accept-Language, then the user's stored language) and the Core catalog.
     installI18n()
     install(ContentNegotiation) {
-        json(kotlinx.serialization.json.Json { encodeDefaults = true })
+        json(kotlinx.serialization.json.Json { encodeDefaults = true; ignoreUnknownKeys = true })
     }
     install(RateLimit) {
         register(RateLimitName("login")) {

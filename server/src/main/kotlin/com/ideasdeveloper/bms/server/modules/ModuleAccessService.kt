@@ -161,11 +161,25 @@ class ModuleAccessService(
         }
         if (own != null) return own
         val company = try {
-            companyOf(tenant)?.code
+            companyCodeOf(tenant)
         } catch (_: Exception) {
             null
         }
         return company?.let(::companyLanguage) ?: I18n.Source
+    }
+
+    // database name -> company code: a notifyEach over many recipients opens one central connection, not one each.
+    private val companyCodes = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun companyCodeOf(tenant: Connection): String? {
+        val database = tenant.createStatement().use { statement ->
+            statement.executeQuery("SELECT current_database()").use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: return null
+        companyCodes[database]?.let { return it }
+        val code = companyOf(tenant)?.code ?: return null
+        if (companyCodes.size > 10_000) companyCodes.clear()
+        companyCodes[database] = code
+        return code
     }
 
     // The request now knows its user: their stored language (from memory when fresh) wins over Accept-Language.

@@ -40,7 +40,7 @@ class TextTranslationTest {
             if (rows[key]?.second == true) rows.remove(key)
         }
         override fun findManual(tenant: Connection, language: String, hashes: Collection<String>): Map<String, String> =
-            hashes.mapNotNull { hash -> rows[hash to language]?.takeIf { it.second }?.let { hash to it.first } }.toMap()
+            if (failing) throw SQLException("relation \"text_translations\" does not exist") else hashes.mapNotNull { hash -> rows[hash to language]?.takeIf { it.second }?.let { hash to it.first } }.toMap()
     }
 
     private class CountingTranslator(private val answer: (String) -> String = { "EN:$it" }) : TextTranslator {
@@ -57,12 +57,14 @@ class TextTranslationTest {
 
     private val store = MemoryStore()
 
-    private fun service(defaultLanguage: String = "es", waitMillis: Long = 2_000) = TextTranslation(
+    private fun service(defaultLanguage: String = "es", waitMillis: Long = 2_000, budget: Long = 30_000, clock: () -> Long = System::currentTimeMillis) = TextTranslation(
         openTenant = { connection },
         companyLanguage = { defaultLanguage },
         store = store,
         waitMillis = waitMillis,
         executor = Executors.newFixedThreadPool(2),
+        taskBudgetMillis = budget,
+        clock = clock,
     )
 
     @Test
@@ -176,5 +178,71 @@ class TextTranslationTest {
     fun hashIsTheSha256OfTheTrimmedText() {
         assertEquals(TextTranslation.hash("Nuevo"), TextTranslation.hash("  Nuevo \n"))
         assertEquals(64, TextTranslation.hash("x").length)
+    }
+
+    @Test
+    fun aCompanyWithoutProviderSettingsIsRememberedForAWhile() {
+        var now = 0L
+        val translation = service(clock = { now })
+        var calls = 0
+        translation.registerTextTranslator("unconfigured") { _, _, _, _ -> calls++; null }
+        assertEquals(listOf("Nuevo"), translation.translate("acme", connection, listOf("Nuevo"), "en"))
+        assertEquals(1, calls)
+        assertEquals(listOf("Otro"), translation.translate("acme", connection, listOf("Otro"), "en"))
+        assertEquals(1, calls)
+        now += TextTranslation.NoProviderMillis + 1
+        translation.translate("acme", connection, listOf("Otro"), "en")
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun blankProviderAnswersAreCachedAsTheSourceText() {
+        val translation = service()
+        val provider = CountingTranslator { "" }
+        translation.registerTextTranslator("crm", provider)
+        assertEquals(listOf("Nuevo"), translation.translate("acme", connection, listOf("Nuevo"), "en"))
+        repeat(50) { if (store.rows.isEmpty()) Thread.sleep(20) }
+        assertEquals(listOf("Nuevo"), translation.translate("acme", connection, listOf("Nuevo"), "en"))
+        assertEquals(1, provider.calls.size)
+    }
+
+    @Test
+    fun onlyOneFillPerCompanyRunsAndOthersDoNotWait() {
+        val release = CountDownLatch(1)
+        val translation = service(waitMillis = 100)
+        var calls = 0
+        translation.registerTextTranslator("slow") { _, texts, _, _ ->
+            calls++
+            release.await(5, TimeUnit.SECONDS)
+            texts
+        }
+        translation.translate("acme", connection, listOf("Uno"), "en")
+        val started = System.nanoTime()
+        repeat(5) { translation.translate("acme", connection, listOf("Otro $it"), "en") }
+        assertTrue(System.nanoTime() - started < TimeUnit.MILLISECONDS.toNanos(80))
+        release.countDown()
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun aHangingProviderIsCancelledAfterItsBudget() {
+        val interrupted = CountDownLatch(1)
+        val translation = service(waitMillis = 20, budget = 100)
+        translation.registerTextTranslator("hang") { _, texts, _, _ ->
+            try {
+                Thread.sleep(10_000)
+            } catch (_: InterruptedException) {
+                interrupted.countDown()
+            }
+            texts
+        }
+        translation.translate("acme", connection, listOf("Uno"), "en")
+        assertTrue(interrupted.await(3, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun manualTranslationsOfAMissingTableAreEmpty() {
+        store.failing = true
+        assertEquals(emptyMap(), service().manualTranslations(connection, listOf("Nuevo"), "en"))
     }
 }

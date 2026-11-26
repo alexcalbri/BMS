@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions
 
+import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.NotificationText
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -19,15 +20,18 @@ import org.slf4j.LoggerFactory
 /** Writes provisioning_audit_log (CompanyProvisioningService.insertAudit); details is a JSON object. */
 typealias ExtensionAuditor = (actorRole: String, action: String, companyCode: String?, moduleId: String?, details: String) -> Unit
 
-/** Tells a user about something in a company through the Core's notification center. */
-fun interface ExtensionNotifier {
+/**
+ * Tells a user about something in a company through the Core's notification center. Both overloads are
+ * abstract on purpose: the builder one must render in the recipient's language (I18N.md §7), which only
+ * the access-backed implementation ([from]) can resolve. `ExtensionNotifier { tenant, module, user, title, text -> }`
+ * still compiles (see the factory below) for tests and simple uses; there the builder runs in [I18n.Source]
+ * unless a `recipientLanguage` is given.
+ */
+interface ExtensionNotifier {
     fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String)
 
     /** Like [notify], with title and text written by [build] in the recipient's language (I18N.md §7). */
-    fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText) {
-        val text = build()
-        notify(tenant, moduleId, userId, text.title, text.text)
-    }
+    fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText)
 
     companion object {
         fun from(access: ModuleAccessService): ExtensionNotifier = object : ExtensionNotifier {
@@ -39,6 +43,20 @@ fun interface ExtensionNotifier {
                 access.notificationsFor(moduleId).notify(tenant, userId, build = build)
             }
         }
+    }
+}
+
+/** Source-compatible replacement of the former SAM constructor: a notifier from a plain `send` function. */
+fun ExtensionNotifier(
+    recipientLanguage: (Connection, UUID) -> String = { _, _ -> I18n.Source },
+    send: (tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) -> Unit,
+): ExtensionNotifier = object : ExtensionNotifier {
+    override fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) =
+        send(tenant, moduleId, userId, title, text)
+
+    override fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText) {
+        val written = I18n.withLanguage(recipientLanguage(tenant, userId)) { build() }
+        send(tenant, moduleId, userId, written.title, written.text)
     }
 }
 

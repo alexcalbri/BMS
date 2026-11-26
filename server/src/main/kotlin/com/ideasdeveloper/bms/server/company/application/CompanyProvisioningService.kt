@@ -1444,6 +1444,11 @@ class CompanyProvisioningService(
                         log.error("Account throttle migration failed for company {}", companyCode, failure)
                     }
                     try {
+                        applyOutboundMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Outbound migration failed for company {}", companyCode, failure)
+                    }
+                    try {
                         applyNotificationsMigration(tenant)
                     } catch (failure: Exception) {
                         log.error("Notifications migration failed for company {}", companyCode, failure)

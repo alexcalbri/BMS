@@ -433,6 +433,14 @@ apply_control_migrations() {
         die 'No se encontro database/core/migrations/V006__add_application_user_language.sql.'
     [[ -f database/control/migrations/V014__add_company_default_language.sql ]] ||
         die 'No se encontro database/control/migrations/V014__add_company_default_language.sql.'
+    [[ -f database/tenant/migrations/V006__create_extensions.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V006__create_extensions.sql.'
+    [[ -f database/tenant/migrations/V007__create_company_mail_settings.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V007__create_company_mail_settings.sql.'
+    [[ -f database/tenant/migrations/V008__account_reset_throttle.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V008__account_reset_throttle.sql.'
+    [[ -f database/tenant/migrations/V009__outbound.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V009__outbound.sql.'
     [[ -f database/tenant/migrations/V010__create_text_translations.sql ]] ||
         die 'No se encontro database/tenant/migrations/V010__create_text_translations.sql.'
 
@@ -501,6 +509,10 @@ SQL
         apply_migration "$tenant_db" core database/core/migrations/V003__add_application_user_profile.sql
         apply_migration "$tenant_db" core database/core/migrations/V005__create_notifications.sql
         apply_migration "$tenant_db" core database/core/migrations/V006__add_application_user_language.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V006__create_extensions.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V007__create_company_mail_settings.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V008__account_reset_throttle.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V009__outbound.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V010__create_text_translations.sql
         runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
@@ -508,6 +520,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_user";
 GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO :"db_user";
+GRANT SELECT, INSERT ON tenant_data_keys TO :"db_user";
+GRANT SELECT, INSERT, UPDATE ON tenant_extensions TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_extension_settings, tenant_extension_objects TO :"db_user";
+GRANT SELECT, INSERT, UPDATE ON company_mail_settings TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON account_reset_throttle TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON outbound_events, outbound_links, integration_connections TO :"db_user";
+GRANT USAGE, SELECT ON SEQUENCE outbound_events_id_seq TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
 SQL
     done <<< "$tenant_list"

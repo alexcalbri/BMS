@@ -68,4 +68,12 @@ class NotificationLanguageTest {
         notifier.notify(tenant, "crm", ana) { NotificationText("Hola", "Mundo") }
         assertEquals(listOf("Hola|Mundo"), seen)
     }
+
+    @Test
+    fun extensionNotifiersFromAFunctionRenderTheBuilderInTheRecipientLanguage() {
+        val seen = mutableListOf<String>()
+        val notifier = ExtensionNotifier(recipientLanguage = { _, _ -> "en" }) { _, _, _, title, _ -> seen += title }
+        notifier.notify(tenant, "crm", ana) { NotificationText(I18n.language(), "") }
+        assertEquals(listOf("en"), seen)
+    }
 }

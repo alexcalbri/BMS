@@ -9,8 +9,10 @@ import java.time.Instant
 import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -69,6 +71,8 @@ class TextTranslation(
     private val store: TextTranslationStore = JdbcTextTranslationStore,
     private val waitMillis: Long = DefaultWaitMillis,
     private val executor: ExecutorService = defaultExecutor(),
+    // Longest a background fill may run before it is cancelled, so one hanging provider cannot hold the pool.
+    private val taskBudgetMillis: Long = TaskBudgetMillis,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val log = LoggerFactory.getLogger(TextTranslation::class.java)
@@ -77,6 +81,10 @@ class TextTranslation(
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
     // company -> time of the last provider failure; the provider is not called again for FailureCooldownMillis.
     private val failures = ConcurrentHashMap<String, Long>()
+    // company -> time when no provider had settings for it; no task is queued for NoProviderMillis.
+    private val noProvider = ConcurrentHashMap<String, Long>()
+    // Companies with a background fill running: at most one task per company, the others answer at once.
+    private val busy = ConcurrentHashMap.newKeySet<String>()
     private val logged = ConcurrentHashMap.newKeySet<String>()
 
     /** Registers (or replaces, by [id]) a provider. Providers are asked in registration order. */
@@ -139,7 +147,11 @@ class TextTranslation(
     fun manualTranslations(tenant: Connection, sources: List<String>, language: String): Map<String, String> {
         val hashes = sources.map { it.trim() }.filter { it.isNotEmpty() }.distinct().associateBy(::hash)
         if (hashes.isEmpty()) return emptyMap()
-        val rows = store.findManual(tenant, language, hashes.keys)
+        val rows = try {
+            store.findManual(tenant, language, hashes.keys)
+        } catch (failure: SQLException) {
+            return emptyMap()
+        }
         return rows.mapNotNull { (hash, translated) -> hashes[hash]?.let { it to translated } }.toMap()
     }
 
@@ -158,26 +170,54 @@ class TextTranslation(
         if (translators.isEmpty()) return emptyMap()
         val lastFailure = failures[companyCode]
         if (lastFailure != null && clock() - lastFailure < FailureCooldownMillis) return emptyMap()
+        val lastNone = noProvider[companyCode]
+        if (lastNone != null) {
+            if (clock() - lastNone < NoProviderMillis) return emptyMap()
+            noProvider.remove(companyCode, lastNone)
+        }
+        // One fill per company at a time; a screen never waits behind the company's running task.
+        if (!busy.add(companyCode)) return emptyMap()
         val keys = misses.associateWith { "$companyCode/$target/${hash(it)}" }
         val batch = misses.filter { inFlight.add(keys.getValue(it)) }
-        if (batch.isEmpty()) return emptyMap()
+        if (batch.isEmpty()) {
+            busy.remove(companyCode)
+            return emptyMap()
+        }
         val source = try {
             companyLanguage(companyCode)
         } catch (_: Exception) {
             I18n.Source
+        }
+        val released = java.util.concurrent.atomic.AtomicBoolean(false)
+        val release = {
+            if (released.compareAndSet(false, true)) {
+                batch.forEach { inFlight.remove(keys.getValue(it)) }
+                busy.remove(companyCode)
+            }
         }
         val future: Future<Map<String, String>> = try {
             executor.submit<Map<String, String>> {
                 try {
                     providerFill(companyCode, source, target, batch)
                 } finally {
-                    batch.forEach { inFlight.remove(keys.getValue(it)) }
+                    release()
                 }
             }
         } catch (failure: Exception) {
-            batch.forEach { inFlight.remove(keys.getValue(it)) }
+            release()
             logOnce("submit", "Text translation for company {} not started: {}", companyCode, failure.message)
             return emptyMap()
+        }
+        // A task that overruns its budget is cancelled (interrupted) and its company rests like after a failure.
+        if (taskBudgetMillis > 0) {
+            Watchdog.schedule({
+                if (!future.isDone) {
+                    future.cancel(true)
+                    failures[companyCode] = clock()
+                    release()
+                    logOnce("budget:$companyCode", "Text translation for company {} cancelled after {} ms", companyCode, taskBudgetMillis)
+                }
+            }, taskBudgetMillis, TimeUnit.MILLISECONDS)
         }
         return try {
             future.get(waitMillis, TimeUnit.MILLISECONDS)
@@ -204,7 +244,8 @@ class TextTranslation(
                 val translated = ask(companyCode, tenant, chunk, source, target) ?: break
                 chunk.indices.forEach { index ->
                     val text = translated[index].trim()
-                    if (text.isNotEmpty()) result[chunk[index]] = text
+                    // A blank answer is cached as the source text so it is not sent again.
+                    result[chunk[index]] = text.ifEmpty { chunk[index] }
                 }
             }
             if (result.isNotEmpty()) {
@@ -220,6 +261,7 @@ class TextTranslation(
 
     // The first provider configured for the company; null when none is, or on a provider error.
     private fun ask(companyCode: String, tenant: Connection, texts: List<String>, source: String, target: String): List<String>? {
+        var answered = false
         for ((id, translator) in translators) {
             val translated = try {
                 translator.translate(tenant, texts, source, target)
@@ -228,6 +270,7 @@ class TextTranslation(
                 logOnce("provider:$id:$companyCode", "Text translation provider {} failed for company {}: {}", id, companyCode, failure.message)
                 return null
             } ?: continue
+            answered = true
             if (translated.size != texts.size) {
                 logOnce("size:$id", "Text translation provider {} answered {} texts for {}", id, translated.size, texts.size)
                 return null
@@ -235,6 +278,8 @@ class TextTranslation(
             failures.remove(companyCode)
             return translated
         }
+        // Every provider answered null: this company has none configured.
+        if (!answered) noProvider[companyCode] = clock()
         return null
     }
 
@@ -246,6 +291,8 @@ class TextTranslation(
     companion object {
         const val DefaultWaitMillis = 800L
         const val FailureCooldownMillis = 5 * 60_000L
+        const val NoProviderMillis = 5 * 60_000L
+        const val TaskBudgetMillis = 30_000L
         const val MaxBatch = 50
         // Longer texts are shown in the original.
         const val MaxTextLength = 5_000
@@ -254,9 +301,16 @@ class TextTranslation(
         fun hash(text: String): String =
             HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.trim().toByteArray(Charsets.UTF_8)))
 
-        private fun defaultExecutor(): ExecutorService = Executors.newFixedThreadPool(2) { runnable ->
-            Thread(runnable, "text-translation").apply { isDaemon = true }
-        }
+        // Two workers and a short queue: when full, submit is rejected and the screen shows the originals.
+        private fun defaultExecutor(): ExecutorService = ThreadPoolExecutor(
+            2, 2, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(16),
+            { runnable -> Thread(runnable, "text-translation").apply { isDaemon = true } },
+            ThreadPoolExecutor.AbortPolicy(),
+        )
+
+        private val Watchdog = ScheduledThreadPoolExecutor(1) { runnable ->
+            Thread(runnable, "text-translation-watchdog").apply { isDaemon = true }
+        }.apply { removeOnCancelPolicy = true }
     }
 }
 
@@ -275,10 +329,12 @@ object JdbcTextTranslationStore : TextTranslationStore {
 
     override fun findManual(tenant: Connection, language: String, hashes: Collection<String>): Map<String, String> {
         if (hashes.isEmpty()) return emptyMap()
-        return tenant.prepareStatement("SELECT hash, translated_text FROM text_translations WHERE language = ? AND manual AND hash = ANY(?)").use { query ->
-            query.setString(1, language)
-            query.setArray(2, tenant.createArrayOf("text", hashes.toTypedArray()))
-            query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getString(1), rows.getString(2)) } }
+        return guardedTransaction(tenant) {
+            tenant.prepareStatement("SELECT hash, translated_text FROM text_translations WHERE language = ? AND manual AND hash = ANY(?)").use { query ->
+                query.setString(1, language)
+                query.setArray(2, tenant.createArrayOf("text", hashes.toTypedArray()))
+                query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getString(1), rows.getString(2)) } }
+            }
         }
     }
 
