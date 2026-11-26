@@ -202,7 +202,16 @@ them in the app without a password. Since 0.4.0 that business owner's agent can 
 - A connection revoked or expired in the middle of a request (a batch) stops at its next call.
 
 A JSON-RPC batch holds at most 20 messages (it is answered by one request of the rate limit).
-- Requires Core 0.9.1 (`ModuleAccessService.ownerGroupCompanies` and `groupOwnerAccess`).
+- Requires Core 0.9.1 for `ModuleAccessService.ownerGroupCompanies` and `groupOwnerAccess` (the module itself needs Core 0.10.0 since 0.5.0).
 
 How a module writes its MCP, and the rules the registry enforces (names, permissions, no
 credentials), are in `modules/README.md`; each module's README lists its own tools.
+
+## Languages (0.5.0, needs Core 0.10.0)
+
+Every text the module shows to people (screens, errors, permissions and the sign-in and consent pages of the OAuth
+authorization, which follow the browser language) is available in Spanish (source) and English: the code writes
+`tr("Texto en espanol")` and the English catalog is `server/src/main/resources/modules/agentes/i18n/en.json`.
+The MCP tools (names, descriptions, results), the OAuth protocol answers meant for the client (`error_description`),
+the activity rows already stored and the tool titles shown in the lists stay in Spanish. Token handling, scopes and
+permission checks do not change with the language.

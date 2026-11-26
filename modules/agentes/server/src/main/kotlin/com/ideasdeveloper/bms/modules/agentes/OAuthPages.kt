@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.agentes
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.RegisteredMcpTool
 import com.ideasdeveloper.bms.server.modules.VerifiedUser
 import io.ktor.http.Parameters
@@ -12,25 +14,26 @@ object OAuthPages {
 
     fun signIn(request: OAuthRequest, params: Parameters, error: String?, company: String): String {
         val hidden = carried.mapNotNull { key -> params[key]?.let { hiddenInput(key, it) } }.joinToString("")
+        val client = "<strong>${esc(request.client.name)}</strong>"
         return page(
-            "Conectar con BMS",
+            tr("Conectar con BMS"),
             """
-            <p class="lead"><strong>${esc(request.client.name)}</strong> quiere conectarse a BMS en tu nombre.</p>
-            <p class="muted">Inicia sesion. El agente solo podra usar las funciones que tu usuario tiene permitidas.</p>
+            <p class="lead">${tr("{0} quiere conectarse a BMS en tu nombre.", client)}</p>
+            <p class="muted">${tr("Inicia sesion. El agente solo podra usar las funciones que tu usuario tiene permitidas.")}</p>
             ${error?.let { "<p class=\"error\">${esc(it)}</p>" }.orEmpty()}
             <form method="post" action="${AgentOAuth.Base}/authorize" autocomplete="on">
               <input type="hidden" name="step" value="signin">$hidden
-              <label>Empresa
-                <input name="company" value="${esc(company)}" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="codigo de la empresa">
+              <label>${tr("Empresa")}
+                <input name="company" value="${esc(company)}" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="${esc(tr("codigo de la empresa"))}">
               </label>
-              <p class="hint">Dejalo vacio si eres el dueno del servidor.</p>
-              <label>Usuario
+              <p class="hint">${tr("Dejalo vacio si eres el dueno del servidor.")}</p>
+              <label>${tr("Usuario")}
                 <input name="username" required autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username">
               </label>
-              <label>Contrasena
+              <label>${tr("Contrasena")}
                 <input name="password" type="password" required autocomplete="current-password">
               </label>
-              <button type="submit">Continuar</button>
+              <button type="submit">${tr("Continuar")}</button>
             </form>
             ${returnNote(request)}
             """,
@@ -41,39 +44,40 @@ object OAuthPages {
         val modules = tools.groupBy { it.moduleId }.map { (id, list) -> Triple(id, list.first().moduleName, list) }.sortedBy { it.second }
         val moduleChecks = modules.joinToString("") { (id, name, list) ->
             val items = list.sortedBy { it.tool.title }.joinToString("") { registered ->
-                val kind = if (registered.tool.readOnly) "consulta" else "modifica"
+                val kind = if (registered.tool.readOnly) tr("consulta") else tr("modifica")
                 "<li>${esc(registered.tool.title)} <span class=\"tag ${if (registered.tool.readOnly) "read" else "write"}\">$kind</span></li>"
             }
             """
             <div class="module">
-              <label class="check"><input type="checkbox" name="m_${esc(id)}" value="true" checked> ${esc(name)}</label>
+              <label class="check"><input type="checkbox" name="m_${esc(id)}" value="true" checked> ${esc(tr(name))}</label>
               <ul>$items</ul>
             </div>
             """
         }
         val expirations = AgentesScreens.expirations.keys.joinToString("") { option ->
-            "<option${if (option == "90 dias") " selected" else ""}>${esc(option)}</option>"
+            "<option value=\"${esc(option)}\"${if (option == "90 dias") " selected" else ""}>${esc(tr(option))}</option>"
         }
-        val who = if (user.serverOwner) "dueno del servidor" else "${esc(user.username)} · empresa ${esc(user.companyCode)}"
+        val who = if (user.serverOwner) tr("dueno del servidor") else tr("{0} · empresa {1}", esc(user.username), esc(user.companyCode))
+        val client = "<strong>${esc(request.client.name)}</strong>"
         return page(
-            "Autorizar agente",
+            tr("Autorizar agente"),
             """
-            <p class="lead"><strong>${esc(request.client.name)}</strong> podra usar BMS como <strong>$who</strong>.</p>
-            <p class="muted">Nunca podra hacer algo que tu usuario no tenga permitido. Si te quitan un permiso, el agente lo pierde de inmediato. Puedes revocarlo cuando quieras en Agentes IA.</p>
+            <p class="lead">${tr("{0} podra usar BMS como {1}.", client, "<strong>$who</strong>")}</p>
+            <p class="muted">${tr("Nunca podra hacer algo que tu usuario no tenga permitido. Si te quitan un permiso, el agente lo pierde de inmediato. Puedes revocarlo cuando quieras en Agentes IA.")}</p>
             ${error?.let { "<p class=\"error\">${esc(it)}</p>" }.orEmpty()}
             <form method="post" action="${AgentOAuth.Base}/authorize">
               <input type="hidden" name="ticket" value="${esc(ticket)}">
-              <h2>Modulos que puede usar</h2>
-              ${moduleChecks.ifEmpty { "<p class=\"error\">Aun no tienes funciones que un agente pueda usar.</p>" }}
-              <h2>Limites</h2>
-              <label class="check"><input type="checkbox" name="readOnly" value="true"> Solo lectura: puede consultar, pero no crear ni modificar</label>
-              ${if (user.serverOwner) "" else "<label class=\"check\"><input type=\"checkbox\" name=\"groupScope\" value=\"true\"> Tambien en las demas empresas de mi grupo (solo si eres el dueno de la empresa)</label>"}
-              <label>La conexion vence en
+              <h2>${tr("Modulos que puede usar")}</h2>
+              ${moduleChecks.ifEmpty { "<p class=\"error\">${tr("Aun no tienes funciones que un agente pueda usar.")}</p>" }}
+              <h2>${tr("Limites")}</h2>
+              <label class="check"><input type="checkbox" name="readOnly" value="true"> ${tr("Solo lectura: puede consultar, pero no crear ni modificar")}</label>
+              ${if (user.serverOwner) "" else "<label class=\"check\"><input type=\"checkbox\" name=\"groupScope\" value=\"true\"> ${tr("Tambien en las demas empresas de mi grupo (solo si eres el dueno de la empresa)")}</label>"}
+              <label>${tr("La conexion vence en")}
                 <select name="expires">$expirations</select>
               </label>
               <div class="actions">
-                <button type="submit" name="step" value="consent">Permitir</button>
-                <button type="submit" name="step" value="cancel" class="secondary" formnovalidate>Cancelar</button>
+                <button type="submit" name="step" value="consent">${tr("Permitir")}</button>
+                <button type="submit" name="step" value="cancel" class="secondary" formnovalidate>${tr("Cancelar")}</button>
               </div>
             </form>
             ${returnNote(request)}
@@ -81,14 +85,15 @@ object OAuthPages {
         )
     }
 
-    fun error(message: String): String = page("No se pudo conectar", "<p class=\"error\">${esc(message)}</p>")
+    fun error(message: String): String = page(tr("No se pudo conectar"), "<p class=\"error\">${esc(message)}</p>")
 
     private fun returnNote(request: OAuthRequest): String {
         val host = runCatching { URI(request.redirectUri).host }.getOrNull().orEmpty()
         // El nombre del cliente lo escribe quien lo registra: el dominio de retorno es lo unico fiable, y se avisa si no es de un servicio conocido.
+        val shownHost = "<strong>${esc(host)}</strong>"
         val warning = if (isKnownRedirectHost(host)) "" else
-            "<p class=\"error\">Atencion: <strong>${esc(host)}</strong> no es un servicio de IA conocido. Continua solo si reconoces ese dominio.</p>"
-        return "<p class=\"hint\">Al terminar volveras a <strong>${esc(host)}</strong>.</p>$warning"
+            "<p class=\"error\">${tr("Atencion: {0} no es un servicio de IA conocido. Continua solo si reconoces ese dominio.", shownHost)}</p>"
+        return "<p class=\"hint\">${tr("Al terminar volveras a {0}.", shownHost)}</p>$warning"
     }
 
     // Dominios de los clientes MCP habituales; localhost es el de las aplicaciones de escritorio.
@@ -116,7 +121,7 @@ object OAuthPages {
 
     private fun page(title: String, body: String) = """
         <!doctype html>
-        <html lang="es">
+        <html lang="${I18n.language()}">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -153,7 +158,7 @@ object OAuthPages {
         <body>
         <main>
           <div class="card">
-            <div class="brand">BMS · Agentes IA</div>
+            <div class="brand">${tr("BMS · Agentes IA")}</div>
             <h1>${esc(title)}</h1>
             $body
           </div>
