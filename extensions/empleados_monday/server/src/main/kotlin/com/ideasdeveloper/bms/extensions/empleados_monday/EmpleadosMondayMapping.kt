@@ -4,10 +4,11 @@ import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportSummary
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosScheduleText
 import com.ideasdeveloper.bms.modules.empleados.ImportedEmployee
 import com.ideasdeveloper.bms.modules.empleados.ImportedSlot
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import com.ideasdeveloper.bms.server.i18n.msg
 import java.text.Normalizer
 import java.time.LocalTime
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 /** Columna de un tablero de monday (su id estable, su titulo y su tipo: status, text, dropdown...). */
 data class MondayColumn(val id: String, val title: String, val type: String)
@@ -42,16 +43,16 @@ object MondayTarget {
 
     // En el orden en que se muestran en el formulario de mapeo.
     val all = listOf(
-        Definition(Name, "Nombre (si no, el nombre del elemento)"),
-        Definition(Site, "Sede"),
-        Definition(JobTitle, "Puesto"),
-        Definition(Department, "Departamento"),
-        Definition(Days, "Dias de trabajo"),
-        Definition(Hours, "Horario"),
-        Definition(Availability, "Disponibilidad"),
-        Definition(Phone, "Telefono"),
-        Definition(Email, "Correo"),
-        Definition(Notes, "Notas"),
+        Definition(Name, msg("Nombre (si no, el nombre del elemento)")),
+        Definition(Site, msg("Sede")),
+        Definition(JobTitle, msg("Puesto")),
+        Definition(Department, msg("Departamento")),
+        Definition(Days, msg("Dias de trabajo")),
+        Definition(Hours, msg("Horario")),
+        Definition(Availability, msg("Disponibilidad")),
+        Definition(Phone, msg("Telefono")),
+        Definition(Email, msg("Correo")),
+        Definition(Notes, msg("Notas")),
     )
 }
 

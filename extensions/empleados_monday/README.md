@@ -79,6 +79,11 @@ solo queda el resultado, sin datos); con "conservar" quedan. **Nunca** se borran
 - Hasta 2 000 elementos por tablero y una importacion en curso a la vez.
 - Solo se importan datos basicos de la ficha y el horario habitual; no hay turnos concretos ni ausencias.
 
+## Version 1.1.0 (bilingue)
+
+- Textos en español e inglés: el código usa `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/empleados_monday/i18n/en.json`. Necesita Core 0.10.0.
+- Lo que viene de monday (nombres de tableros, columnas, elementos, departamentos, sedes, horarios) no se traduce. Lo que se guarda al importar (notas del empleado, motivos y errores de las filas) queda en español.
+
 ## Version 1.0.1 (rendimiento)
 
 - Lectura adaptativa: ante un error de complejidad de monday (o una respuesta mayor a 5 MB) la pagina baja a la mitad (minimo 10) y se reintenta en la misma corrida; un cursor vencido relee el tablero desde cero una sola vez.
