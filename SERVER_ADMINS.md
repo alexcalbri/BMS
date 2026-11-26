@@ -40,6 +40,10 @@ Principles (security requirements, not suggestions):
   are ignored when read).
 - `server_admin_companies(user_id → server_admins ON DELETE CASCADE, company_code, PRIMARY KEY (…))`:
   companies the administrator may act on when `all_companies` is false. Empty + not all = none.
+- `server_workspace_staff(user_id PK, created_by → application_users, created_by_kind, created_at,
+  updated_at)`: workspace staff accounts whose credentials a server user knows (created them or set
+  their password or email last). `user_id` is the account in the workspace database (no foreign key; no
+  tenant migration was needed).
 - `provisioning_audit_log` gains `actor_user_id UUID NULL` and `actor_kind TEXT NULL`
   (`server_owner`, `server_admin`, `business_owner`, `system`).
 - The `application_users` row of an administrator uses its login in `postgres_role` (the column is
@@ -58,14 +62,14 @@ Principles (security requirements, not suggestions):
 |---|---|---|
 | `server.companies.view` | List companies (code, name, status, modules) | yes (sees only scoped) |
 | `server.companies.create` | Create a company; duplicate a company in scope | duplicate source: yes |
-| `server.companies.edit` | Edit company profile; view and edit its business owner's name, user and email | yes |
+| `server.companies.edit` | Edit company profile; view its business owner and change the owner's display name (user, email and password need `owner_password` too) | yes |
 | `server.companies.status` | Activate / deactivate a company | yes |
 | `server.companies.modules` | Enable / disable modules for a company | yes |
 | `server.companies.extensions` | Manage extensions inside a company (install, settings, enable, uninstall) | yes |
-| `server.companies.owner_password` | Reset a business owner's password. **High risk: equals taking over the company.** | yes |
+| `server.companies.owner_password` | Reset a business owner's password and change their user or email (password recovery goes to the email). **High risk: equals taking over the company.** | yes |
 | `server.companies.enter` | Enter a company from the switcher and work there as its business owner. **High risk: full access to that company's data.** | yes |
 | `server.modules.view` | See installed and available modules and their status | – |
-| `server.modules.install` | Install / update / inspect modules from the configured catalog | – |
+| `server.modules.install` | Install / update / inspect modules from the configured catalog (an unsigned package always needs its hash authorized, see §8) | – |
 | `server.modules.remove` | Remove a module from the server | – |
 | `server.modules.authorize_unsigned` | Authorize an unsigned module package. **High risk: runs code on the server.** | – |
 | `server.extensions.install` | Browse the catalog; install / update / remove / inspect extension packages | – |
@@ -74,7 +78,7 @@ Principles (security requirements, not suggestions):
 | `server.logs.view` | See recent server errors | – |
 | `server.audit.view` | See the audit log (new screen and route, §5) | yes (rows of scoped companies + own rows; server-wide rows only with all companies) |
 | `server.settings` | Rename the server | – |
-| `server.workspace` | Create the server workspace, turn its modules on/off, manage its profile, mail settings and staff users | – |
+| `server.workspace` | Create the server workspace, turn its modules on/off, manage its profile, mail settings and staff users. **High risk: allows creating workspace staff accounts** (closed when the administrator is deactivated, deleted or loses the permission) | – |
 
 A company created by a scoped administrator is added to that administrator's scope.
 
@@ -169,10 +173,13 @@ session trailers, no push. Never edit an existing migration.
   &actor=&from=YYYY-MM-DD&to=YYYY-MM-DD&page=0&pageSize=50` → `{items, page, pageSize, hasMore}`.
   Errors are `{code, message}`; refusals `SERVER_OWNER_REQUIRED`, `SERVER_PERMISSION_REQUIRED`,
   `PASSWORD_CHANGE_REQUIRED` (403), `SERVER_OWNER_UNAVAILABLE` (503, no active owner to execute).
+  `GET /server/admin-permissions` marks `server.workspace` as `risk: "high"` too.
 - Deleting an administrator keeps the `application_users` row (audit references stay valid, the
   login is never reused) and removes `server_admins`; it can no longer sign in anywhere.
 - New audit rows: module install/update request, module removal, catalog URL change, workspace
-  profile/mail/users changes, every administrator change, `server_admin.entered_company`.
+  profile/mail/users changes, every administrator change, `server_admin.entered_company`,
+  `server_workspace.staff_deactivated`, `module.install_dropped`,
+  `extension.package.install_dropped`.
 
 ## 8. Threat notes
 
@@ -199,8 +206,13 @@ session trailers, no push. Never edit an existing migration.
   caller's own hash and needs the current password (attempt limiter).
 - **Owner-password / business-owner edit out of scope.** Both are scoped by the path company; in
   addition every company that shares the owner's PostgreSQL role (duplicates) and every company of
-  its owner group must be in scope (fail closed if a company cannot be read). Changing the owner's
-  user or password needs `server.companies.owner_password` too.
+  its owner group must be in scope (fail closed if a company cannot be read); `GET` is scoped the
+  same way, and the refusal does not name the related company. Changing the owner's user, password
+  **or email** needs `server.companies.owner_password` too: with only `companies.edit` an
+  administrator could otherwise point the email to a mailbox they control and take the company (and
+  every company sharing that owner role) over through `/auth/password-reset/*`. Email comparison is
+  `EmailChangeRule.isChange` (trim, ASCII case); the audit row `company.owner_updated` records
+  `usernameChanged`, `emailChanged` and `passwordChanged`.
 - **Duplicate / link tricks.** Linking and unlinking (companies and extension groups) are owner
   only. Duplicating needs the source in scope; the copy joins the creator's scope. Entering a
   company requires its whole owner group in scope, so a duplicate (or a group) reaching an
@@ -210,18 +222,73 @@ session trailers, no push. Never edit an existing migration.
 - **`X-Company-Code` on `/companies/current/*`.** A server session there goes through the same
   policy with the company taken from the header (permission + scope), never "server owner acts
   anywhere".
+- **The server workspace is not a company.** `servidor` (any case) is never in an administrator's
+  scope, not even with all companies (`ServerActor.mayActOn`, `ServerAdminScope.includes`): the gate
+  refuses it for every per-company policy (path or header) unless the policy names
+  `server.workspace` explicitly (today only the workspace module switch). The owner is unchanged.
 - **Switcher session kept after revocation.** `LoginDatabases.companySessionAllowed` runs on every
   use of a company session (module access, notifications, self-service, `/auth/profile`, extension
   routes, switcher) and re-checks the opener live; when it fails the tenant session is revoked and
-  the `server_owner_company_sessions` row is kept until expiry, so it keeps failing even if the
-  revoke failed. Deactivating, deleting or resetting an administrator also revokes their central and
-  company sessions first; if inserting the switcher row fails, the opened company session is revoked.
-  A company session opened by an administrator cannot edit the business owner from inside.
+  the `server_owner_company_sessions` row is kept, so it keeps failing even if the revoke failed.
+  Deactivating, deleting or resetting an administrator also revokes their central and company
+  sessions first; if inserting the switcher row fails, the opened company session is revoked. A
+  company session opened by an administrator cannot edit the business owner from inside.
+- **Switcher row expiring before its session.** The row's `expires_at` is the session lifetime plus
+  `SwitcherRowMarginSeconds` (1 h), and it is only a pruning hint: `openerOf` and
+  `revokeCompanySessionsOpenedBy` do not filter by expiry, and rows are deleted only a day after
+  `expires_at`. Logout and leaving a company no longer delete the row (with another company's
+  `X-Company-Code`, logout could otherwise untrack a live session). A session minted by the business
+  owner switcher (`switchCompany`) from a tracked session inherits the tracking: the opener is
+  re-checked for both companies (scope and owner-group rule) and the new session gets its own row.
+- **Unsigned modules.** `MODULE_SIGNATURE_ENFORCED=false` (the default) only relaxes the gate for the
+  owner and background work. When an administrator installs or updates a module the build always
+  uses the enforced gate (`ModulePackageBuilder.build(…, requireAuthorization = true)`): an unsigned
+  package needs the hash-bound authorization of `POST /server/modules/{id}/authorize-unsigned`
+  (`server.modules.authorize_unsigned`); without it they cannot run unsigned code.
+- **Queued installs.** `PackageInstallQueue` entries keep the login of who asked (modules too now).
+  A resumed install (after a restart, or an extension released when its module is ready, which
+  `GET /server/extensions/{id}/status` can trigger) runs with that person's CURRENT rights
+  (`ServerAdminStore.queuedInstallActor`: active owner, or active administrator without a pending
+  password change who still holds the install permission), never the caller's; otherwise it is
+  dropped and audited (`module.install_dropped`, `extension.package.install_dropped`, actor
+  `system`). A resumed module install by an administrator again gets the enforced gate. Entries
+  without a login (older ones) resume as the system, as before.
+- **Workspace staff.** `server.workspace` is high risk: it can create staff accounts with any module
+  permission. Accounts an administrator created, or gave a password or a new email (password
+  recovery goes there), are recorded in
+  `server_workspace_staff`; deactivating or deleting that administrator, or removing their
+  `server.workspace`, deactivates those accounts and revokes their sessions (audited as
+  `server_workspace.staff_deactivated` by the owner). Reactivating the administrator does not bring
+  them back. Every workspace change (profile, mail, user create/update/permissions) is audited as
+  the actor.
+- **Audit integrity.** Details are built with kotlinx (`auditDetails`, `buildJsonObject`), never by
+  hand; `ProvisioningAudit.insert` accepts only a JSON object and replaces NUL (refused by jsonb even
+  escaped). Control characters are refused in server, company, workspace and user names. The
+  delegable actions write their audit row in the same central transaction as the change, or (when
+  the change is in another database) insert it first in an open central transaction committed right
+  after the change, so a failed insert stops the change; only a failed final commit after a tenant
+  commit can leave a change without its row. Audit failures of administrator actions are never
+  swallowed (workspace self-service, extensions).
+- **Password guessing at server sign-in.** Besides the per-IP login rate limit, each existing login
+  (owner or administrator) gets at most 10 failures per 5-minute window; then it is refused with the
+  same `LOGIN_REJECTED`, without checking the password (one dummy hash is still computed). It
+  throttles and never locks: nothing is stored, attempts while throttled do not extend the window,
+  and an attacker can at most keep the login throttled while the attack lasts.
+- **Owner/administrator race.** Both V015 identity triggers take `pg_advisory_xact_lock` on the user
+  id before checking, so two concurrent transactions cannot make one user both.
 - **Owner-only power that stays owner only.** MCP tools (`serverOwnerSessionUser`), workspace modules
   with implicit rights, `UserModuleAccess.serverOwner`, agent sign-in at server level
   (`verifyCredentials` revokes and refuses administrator sessions), the four raw-SQL owner checks.
-- **Residual risks (accepted).** `server.companies.enter` and `owner_password` equal full control of
-  that company: inside it the administrator can create staff users or connect an agent that outlive
-  their revocation (audited as `server_admin.entered_company`). `activeCompanyCount` in the module
-  list counts every company. Changes recorded only by login (extension packages) are attributed by
-  that login.
+- **Residual risks (accepted).**
+  - Accounts and agents created inside a company after `server.companies.enter` persist:
+    `server.companies.enter` (and `owner_password`) equal full control of that company, and inside it
+    the administrator, acting as the business owner, can create company users or connect AI agents.
+    Those accounts and agents belong to the company, are not tracked per administrator and keep
+    working after the administrator is deactivated or deleted; only the entry is audited
+    (`server_admin.entered_company`). The owner must review the company's users and agents after
+    revoking such an administrator.
+  - Deleted administrator logins are not reusable: deleting keeps the `application_users` row so the
+    audit keeps pointing to it; that login can never sign in again and can never be given to a new
+    administrator, owner, business owner or company user.
+  - `activeCompanyCount` in the module list counts every company. Changes recorded only by login
+    (extension packages) are attributed by that login.
