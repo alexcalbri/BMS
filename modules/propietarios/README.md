@@ -36,7 +36,7 @@ Solo se muestran clientes visibles (`origin_company_code = '' OR shared`, sin ar
 | `buscar?q` | Busca por número de lote o de registro en todos los desarrollos. |
 | `importar` | Pantalla de las extensiones de importación (solo con `propietarios.import` y alguna fuente activa). |
 
-Rutas de apoyo: `POST /files` y `GET /files/{id}` (adjuntos, máximo 25 MB, descarga siempre como archivo con `safeContentType`) y
+Rutas de apoyo: `POST /files` y `GET /files/{id}` (adjuntos, sin límite de tamaño, descarga siempre como archivo con `safeContentType`) y
 `GET /suggest/customers` (exige `propietarios.manage` y `clientes.view`; solo clientes visibles, máximo 6, texto recortado a 200).
 
 ## Permisos

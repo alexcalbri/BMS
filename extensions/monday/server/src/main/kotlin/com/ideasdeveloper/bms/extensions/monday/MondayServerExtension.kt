@@ -55,7 +55,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
         module = "crm",
         displayName = "Importacion desde monday",
         description = "Importa tableros de monday como leads y envia a monday los leads nuevos, sus cambios, notas (con menciones) y archivos.",
-        version = "1.1.0",
+        version = "1.1.1",
         // El envio necesita el contrato de salida del CRM (OutboundSource, permiso crm.leads.export), desde la 0.29.0.
         minModuleVersion = "0.29.0",
         source = ExtensionSource(

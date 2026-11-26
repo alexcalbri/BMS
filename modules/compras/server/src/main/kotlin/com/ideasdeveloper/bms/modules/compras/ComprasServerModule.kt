@@ -82,7 +82,7 @@ object ComprasServerModule : ServerModule {
         id = ComprasModule.id,
         displayName = ComprasModule.displayName,
         description = "Solicitudes de compra con cotizaciones opcionales, aprobadores con limite de monto, adjuntos de respaldo y totales por departamento, mes y moneda.",
-        version = "0.2.2",
+        version = "0.2.3",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.5.0",
         permissions = listOf(

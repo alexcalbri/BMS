@@ -124,7 +124,7 @@ pantalla siguiente con un aviso). Todo exige `mantenimiento.view`; las reglas po
 - Permisos de pantalla: `admin`, y toda acción (`op`) de `plan`, `asset`: gestionar; `importar`: importar; el resto, ver.
 - `assets`, `asset?id=` (historial de órdenes filtrado por visibilidad y planes del activo), `plans`, `plan?id=` (lista editable y órdenes
   generadas), `admin` (propiedades, días de "por vencer", tablero de Tareas) e `importar?source=`.
-- Adjuntos: `POST /modules/mantenimiento/ui/files` (25 MB, `view`; queda huérfano hasta guardar) y `GET /modules/mantenimiento/ui/files/{id}`
+- Adjuntos: `POST /modules/mantenimiento/ui/files` (sin límite de tamaño, `view`; queda huérfano hasta guardar) y `GET /modules/mantenimiento/ui/files/{id}`
   (solo quien ve la orden; un huérfano, solo su autor).
 
 ## Herramientas MCP

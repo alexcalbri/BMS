@@ -21,7 +21,8 @@ import java.util.UUID
  * Bloqueante (JDBC y disco): llamar dentro de withContext(Dispatchers.IO).
  */
 object ComprasAttachments {
-    const val MaxFileBytes = 25L * 1024 * 1024
+    // Sin limite practico por archivo: el tope real es el disco del servidor. 100 GB evita desbordes al sumar.
+    const val MaxFileBytes = 100L * 1024 * 1024 * 1024
     const val MaxFilesPerRequest = 100
 
     /** Subidas pendientes (sin solicitud) que un usuario puede tener a la vez. */

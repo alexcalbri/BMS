@@ -653,7 +653,7 @@ Files are kept as monday asset ids with the row and downloaded when the row is
 applied (monday links expire within the hour): column files go to
 Documentos in a folder named after the column (or to the mapped CRM files
 field), update files to Documentos > Actualizaciones de monday > date; each
-file is attached once per lead (`crm_attachments.source_ref`); files over 25 MB
+file is attached once per lead (`crm_attachments.source_ref`); files that cannot be downloaded
 or that fail are reported with the row. The `import` job stops after about 50
 seconds per run so large downloads continue on the next minute.
 
@@ -677,7 +677,7 @@ The renderer has no row selection, so it is a form with one checkbox field per l
 - **Attachments** (`crm_attachments`): every lead has a built-in **Documentos** field and custom
   fields of type Archivos work the same way. Files or whole folders (with subfolders, kept as
   `folder_path`) are uploaded one by one to `POST /modules/crm/ui/files` (`crm.leads.manage`,
-  25 MB per file, 500 files per lead) and streamed to the server file storage of the company
+  no size limit per file, 500 files per lead) and streamed to the server file storage of the company
   (`ModuleAccessService.files`, under `COMPANY_FILES_ROOT`); the row keeps name, folder, lead,
   `storage_backend` and `storage_ref` (V011). An upload belongs to no lead until the form is
   saved. Removing a file, deleting its field or deleting the lead only marks the row; the

@@ -38,7 +38,7 @@ object MantenimientoMondayServerExtension : ServerExtension, MantenimientoImport
         module = "mantenimiento",
         displayName = "Importacion de mantenimiento desde monday",
         description = "Importa tableros de monday al modulo Mantenimiento: como planes preventivos o como ordenes y proyectos. Lee el tablero con el token de la empresa, mapea sus columnas y trae subelementos, actualizaciones y archivos.",
-        version = "1.0.1",
+        version = "1.0.2",
         minModuleVersion = "0.1.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
