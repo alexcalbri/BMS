@@ -85,8 +85,9 @@ A company created by a scoped administrator is added to that administrator's sco
 **Owner only (no permission exists):** managing administrators; deleting a company; linking /
 unlinking companies and owner groups (`owner_group` is trusted elsewhere as "same person");
 changing the module catalog URL; uploading or URL-installing packages; anything about
-`server_owners`; the server MCP tools and connecting AI agents at server level; using workspace
-modules with implicit full permissions. `permissions.serverOwner` / `UserModuleAccess.serverOwner`
+`server_owners`; the server MCP tools and connecting AI agents at server level (one exception since
+Core 0.12.0, see §8 "Audit-only agents of administrators"); using workspace modules with implicit full
+permissions. `permissions.serverOwner` / `UserModuleAccess.serverOwner`
 stay false for administrators everywhere.
 
 The high-risk permissions are marked as such in the contract (`risk: "high"`) so the app can warn.
@@ -291,7 +292,25 @@ session trailers, no push. Never edit an existing migration.
   id before checking, so two concurrent transactions cannot make one user both.
 - **Owner-only power that stays owner only.** MCP tools (`serverOwnerSessionUser`), workspace modules
   with implicit rights, `UserModuleAccess.serverOwner`, agent sign-in at server level
-  (`verifyCredentials` revokes and refuses administrator sessions), the four raw-SQL owner checks.
+  (`verifyCredentials` revokes and refuses administrator sessions, except the audit-only case below),
+  the four raw-SQL owner checks.
+- **Audit-only agents of administrators (Core 0.12.0, ACTIVITY_LOG.md §7).** This deliberately
+  reverses "agents at server level are owner only" for exactly one case: an active administrator
+  holding `server.audit.view` (no pending password change) may connect an AI agent through OAuth
+  without a company code (`verifyCredentials(..., allowAuditAdmin = true)`, the session it opened is
+  revoked at once). The connection is an `agent_tokens` row of the server workspace with
+  `server_admin = TRUE` (agentes V005; never `server_owner`, never group scope, read only). Its only
+  tools are `ModuleAccessService.serverAuditAgent(...).tools`, filtered by name to
+  `ServerAuditMcpTools.AdminAgentToolNames` (`servidor_list_server_audit`,
+  `servidor_list_company_activity`); it never goes through `userAccess`, so it gets no module tool, no
+  `serverOwner` flag, no `acting_company` and no company access. The rights are re-read on every
+  request and every call (and again inside each tool with `ServerOwnerAuthorizer.liveActor` +
+  `server.audit.view` + the scope of `ServerActor`); when they are gone the call fails, the
+  connection is revoked and `server_admin.agent_revoked` is audited (also on refresh). Connecting
+  (`server_admin.agent_connected`), each read (`server_audit.agent_read` with the filters) and each
+  refused tool (`server_admin.agent_denied`) are audited. Tested by `AdminAuditAgentPostgresTest`.
+  Residual: an administrator who already read data through the agent keeps what was read; the owner
+  sees and can revoke these connections in the workspace's Agentes IA team view.
 - **Residual risks (accepted).**
   - Accounts and agents created inside a company after `server.companies.enter` persist:
     `server.companies.enter` (and `owner_password`) equal full control of that company, and inside it

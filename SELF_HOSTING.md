@@ -78,6 +78,14 @@ server like the owner (no company code) with an application password (16+
 characters, changed at the first sign-in); they get no PostgreSQL role and only
 the permissions and companies the owner gives them. See `SERVER_ADMINS.md`.
 
+Since Core 0.12.0 every company has an append-only **activity log** (tenant
+migration `V011__create_activity_log.sql`, applied by `update.sh` to every
+company and by the server at startup): who changed what, when and where. The
+service user gets only `SELECT, INSERT` on `activity_log` and a trigger refuses
+`UPDATE`, `DELETE` and `TRUNCATE`; there is no retention purge, so include it in
+the company database backups as usual. Server sign-ins and failures go to
+`provisioning_audit_log`. See `ACTIVITY_LOG.md`.
+
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
 authentication for that account. This verifies login and the backend is wired

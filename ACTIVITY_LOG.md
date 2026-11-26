@@ -150,3 +150,24 @@ migrations already released). Commits: author/committer `alexcalbri
 <164930758+alexcalbri@users.noreply.github.com>`, Spanish conventional message, no co-author or
 session trailers, no push. User-visible screen text goes through `tr` with catalog entries
 (I18N.md); stored log text is Spanish (§1.5).
+
+## 9. Core implementation (0.12.0)
+
+- Code: `server/.../server/activity/` (`ActivityLog`, `ActivityActor`, `ActivityChanges`, `ActivityLogReader`,
+  `ServerActivity`, `ServerAuditMcpTools`, `CoreActivity`, `ActivityRoutes`); contract `core/.../bms/ActivityLog.kt`.
+  Module adoption: `ACTIVITY_LOG_MODULE_GUIDE.md`; test kit `ActivityLogTesting` (server tests).
+- Routes: `GET /companies/me/activity` and `GET /server/activity?company=` (+ `/export`, CSV), query `user` (id or
+  text: name, display or username), `module`, `entityType`, `entityId`, `action`, `q`, `from`, `to` (YYYY-MM-DD),
+  `page`, `pageSize` (≤ 200) → `{items, page, pageSize, hasMore, unavailableCompanies}`; rows as §2 plus `moduleName`,
+  `actionLabel`, `companyCode` (server route); `changes[].secret` marks a masked secret. Refusals `{code, message}`:
+  401 session, 403 `ACTIVITY_PERMISSION_REQUIRED` / `SERVER_PERMISSION_REQUIRED`, 400 `INVALID_FILTER`, 404
+  `COMPANY_NOT_FOUND`. Reading is not logged; exports are (company row `exported`, `server_activity.exported`).
+  The merged server read reads at most 1,000 rows per company (deeper pages need `company`).
+- MCP: `empresa_list_activity`, `empresa_get_activity_entry` (one `viewed` row per call);
+  `servidor_list_server_audit`, `servidor_list_company_activity` (one `server_audit.agent_read` audit row per call).
+- Core's own rows tolerate a company whose table does not exist yet (before V011 reaches it) with a warning;
+  module rows never do. Failed sign-ins: first failure of a (login, address) per 5 minutes is written at once, the
+  rest of the window becomes one row with the count; at most 20 rows per address and window.
+- Residual: the runtime role is a member of the owner's role (installer), so it inherits the table owner's rights;
+  the trigger is what refuses UPDATE/DELETE/TRUNCATE, and a role able to run `ALTER TABLE` as the owner could still
+  disable it.

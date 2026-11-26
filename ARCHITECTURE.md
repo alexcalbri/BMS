@@ -374,6 +374,16 @@ company.
   (unlisted routes are owner only); permissions, scope and active state are read
   on every request. Only the owner manages administrators; MCP tools, workspace
   modules and server-level agent sign-in stay owner only.
+- **Activity log** (Core 0.12.0, `ACTIVITY_LOG.md`): each company database has
+  an append-only `activity_log` written in the same transaction as the change.
+  Core resolves the real person once (`ModulePermissions.activityActor`: user,
+  switcher session with its server opener, "Agente de <usuario>" for AI agents,
+  owner-group agents with their company of origin) and modules record with
+  `ActivityLog.record` (`ACTIVITY_LOG_MODULE_GUIDE.md`). Reads:
+  `GET /companies/me/activity` (`empresa.activity.view`) and `GET /server/activity`
+  (`server.audit.view` within the scope). The one exception to "server-level
+  agents are owner only": an administrator with `server.audit.view` may connect
+  an agent that gets only the two audit read tools.
 - Ownership transfer replaces the company's owner atomically; it must not
   leave an active company without an owner or with multiple owners.
 - The server administration UI is visible only to `server_owner`. Ktor
