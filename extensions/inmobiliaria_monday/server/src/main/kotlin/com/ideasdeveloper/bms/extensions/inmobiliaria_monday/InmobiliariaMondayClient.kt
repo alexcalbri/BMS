@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.inmobiliaria_monday
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.net.PinnedHost
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -84,7 +85,7 @@ object InmobiliariaMondayClient {
 
     fun firstPage(token: String, boardId: String, remainingMillis: Long = 60_000L, pageSize: Int = PageSize): FirstPage {
         requireToken(token)
-        if (!validBoardId(boardId)) throw InmobiliariaMondayException("El id del tablero no es valido.")
+        if (!validBoardId(boardId)) throw InmobiliariaMondayException(tr("El id del tablero no es valido."))
         val data = query(token, "query { boards(ids: [$boardId]) { name columns { id title type } items_page(limit: ${pageSize.coerceIn(MondayMapping.MinPageSize, PageSize)}) { cursor items { $ItemFields } } } }", timeoutsFor(remainingMillis))
         return parseFirstPage(data, boardId)
     }
@@ -98,7 +99,7 @@ object InmobiliariaMondayClient {
 
     fun parseFirstPage(data: JsonObject, boardId: String): FirstPage {
         val board = data["boards"].arr().firstOrNull().obj()
-            ?: throw InmobiliariaMondayException("monday no devolvio el tablero $boardId (revisa el id y los permisos del token).")
+            ?: throw InmobiliariaMondayException(tr("monday no devolvio el tablero {0} (revisa el id y los permisos del token).", boardId))
         // Nombre y Grupo son columnas sinteticas: se pueden mapear y sugerir como las demas (title / property).
         val columns = listOf(
             MondayColumn("name", MondayMapping.NameColumn, "name"),
@@ -158,7 +159,7 @@ object InmobiliariaMondayClient {
     // ---- Transporte ----
 
     private fun requireToken(token: String) {
-        if (token.isBlank()) throw InmobiliariaMondayException("Guarda primero el token de la API de monday.")
+        if (token.isBlank()) throw InmobiliariaMondayException(tr("Guarda primero el token de la API de monday."))
     }
 
     private fun query(token: String, query: String, timeouts: Timeouts = timeoutsFor(60_000L)): JsonObject {
@@ -174,9 +175,9 @@ object InmobiliariaMondayClient {
             ).use { response -> response.status to response.body.readNBytes(MaxBytes + 1).decodeToString() }
         } catch (failure: Exception) {
             // Red caida, DNS o plazo agotado: pasajero, la lectura se reintenta en la siguiente corrida.
-            throw InmobiliariaMondayTransientException("No se pudo contactar monday.")
+            throw InmobiliariaMondayTransientException(tr("No se pudo contactar monday."))
         }
-        if (text.length > MaxBytes) throw InmobiliariaMondayTooBigException("monday respondio algo demasiado grande (mas de 5 MB).")
+        if (text.length > MaxBytes) throw InmobiliariaMondayTooBigException(tr("monday respondio algo demasiado grande (mas de 5 MB)."))
         return parseResponse(status, text)
     }
 
@@ -192,14 +193,14 @@ object InmobiliariaMondayClient {
     /** Datos de una respuesta de monday o el error que corresponda (token rechazado, error de la consulta, respuesta inesperada). */
     fun parseResponse(status: Int, text: String): JsonObject {
         val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
-        if (status == 401 || status == 403) throw InmobiliariaMondayException("monday rechazo el token.")
-        if (status == 429 || status in 500..599) throw InmobiliariaMondayTransientException("monday respondio HTTP $status (error pasajero).")
+        if (status == 401 || status == 403) throw InmobiliariaMondayException(tr("monday rechazo el token."))
+        if (status == 429 || status in 500..599) throw InmobiliariaMondayTransientException(tr("monday respondio HTTP {0} (error pasajero).", status))
         body?.get("errors").arr().firstOrNull()?.let {
             val message = it.obj()?.get("message").str().take(300)
             if (isTooBigMessage(message)) throw InmobiliariaMondayTooBigException("monday: $message")
             if (isTransientMessage(message)) throw InmobiliariaMondayTransientException("monday: $message")
             throw InmobiliariaMondayException("monday: $message")
         }
-        return body?.get("data").obj() ?: throw InmobiliariaMondayException("monday respondio HTTP $status.")
+        return body?.get("data").obj() ?: throw InmobiliariaMondayException(tr("monday respondio HTTP {0}.", status))
     }
 }

@@ -5,6 +5,8 @@ import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmImportKind
 import com.ideasdeveloper.bms.modules.crm.CrmImportTarget
 import com.ideasdeveloper.bms.modules.crm.CrmModuleExtensions
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.time.Duration
@@ -18,7 +20,7 @@ import java.time.Instant
 object InmobiliariaMondayRunner {
     private val log = LoggerFactory.getLogger("InmobiliariaMonday")
 
-    private const val PermissionLost = "El usuario que aplico la importacion ya no tiene permiso."
+    private val PermissionLost = msg("El usuario que aplico la importacion ya no tiene permiso.")
 
     /** La extension destino (Inmobiliaria) y su contrato de importacion; null si no esta instalada o no esta activa en la empresa. */
     fun target(tenant: Connection): CrmImportTarget? =
@@ -64,8 +66,8 @@ object InmobiliariaMondayRunner {
     private fun read(tenant: Connection, job: MondayJob, target: CrmImportTarget, deadline: Instant): Int {
         var read = 0
         try {
-            val token = InmobiliariaMondaySettingsStore.loadToken(tenant) ?: throw InmobiliariaMondayException("Se borro el token de monday; guardalo de nuevo.")
-            val kind = kindOf(target, job.kind) ?: throw InmobiliariaMondayException("La extension Inmobiliaria no importa ese tipo de registro.")
+            val token = InmobiliariaMondaySettingsStore.loadToken(tenant) ?: throw InmobiliariaMondayException(tr("Se borro el token de monday; guardalo de nuevo."))
+            val kind = kindOf(target, job.kind) ?: throw InmobiliariaMondayException(tr("La extension Inmobiliaria no importa ese tipo de registro."))
             val state = ReadState(job.columns, job.readCursor, !job.readStarted)
             while (true) {
                 // Antes de cada consulta: sin tiempo, el cursor queda guardado y la siguiente corrida sigue desde ahi.
@@ -75,13 +77,13 @@ object InmobiliariaMondayRunner {
                 } catch (failure: InmobiliariaMondayTooBigException) {
                     // Respuesta enorme o de complejidad: pagina a la mitad dentro de la misma corrida (100, 50, 25, 12, 10); a 10, error claro.
                     val smaller = MondayMapping.nextPageSize(state.pageSize)
-                        ?: throw InmobiliariaMondayException(MondayMapping.TooHeavyMessage)
+                        ?: throw InmobiliariaMondayException(tr(MondayMapping.TooHeavyMessage))
                     log.warn("La importacion {} reduce la pagina de monday de {} a {} elementos.", job.id, state.pageSize, smaller)
                     state.pageSize = smaller
                     continue
                 }
                 read += page.added
-                if (page.total == 0 && state.cursor.isEmpty()) throw InmobiliariaMondayException("El tablero no tiene elementos.")
+                if (page.total == 0 && state.cursor.isEmpty()) throw InmobiliariaMondayException(tr("El tablero no tiene elementos."))
                 when (MondayMapping.readStep(state.cursor, remainingMillis(deadline))) {
                     ReadStep.Finish -> {
                         // Un mapeo que trajo quien la lanzo (agente) se valida contra las columnas reales; si no coincide, el sugerido y un aviso.
@@ -99,7 +101,7 @@ object InmobiliariaMondayRunner {
             if (attempts != null && MondayMapping.giveUpReading(attempts)) {
                 InmobiliariaMondayStore.transition(
                     tenant, job.id, MondayJobState.Reading, MondayJobState.Failed,
-                    "No se pudo leer el tablero de monday tras ${MondayMapping.MaxReadAttempts} intentos (${failure.message.orEmpty()}).",
+                    tr("No se pudo leer el tablero de monday tras {0} intentos ({1}).", MondayMapping.MaxReadAttempts, failure.message.orEmpty()),
                 )
             } else {
                 log.warn("Error pasajero al leer el tablero de monday de la importacion {} (intento {}).", job.id, attempts)
@@ -109,7 +111,7 @@ object InmobiliariaMondayRunner {
         } catch (failure: Exception) {
             // Solo la clase: el mensaje de una excepcion de red o de base de datos no debe llegar a los registros.
             log.warn("No se pudo leer el tablero de monday de la importacion {} ({}).", job.id, failure.javaClass.simpleName)
-            InmobiliariaMondayStore.transition(tenant, job.id, MondayJobState.Reading, MondayJobState.Failed, "No se pudo leer el tablero de monday.")
+            InmobiliariaMondayStore.transition(tenant, job.id, MondayJobState.Reading, MondayJobState.Failed, msg("No se pudo leer el tablero de monday."))
         }
         return read
     }
@@ -144,7 +146,7 @@ object InmobiliariaMondayRunner {
             // rows_read cuenta filas realmente nuevas: un elemento que monday repite en otra pagina reemplaza su fila y no suma.
             val total = InmobiliariaMondayStore.syncRowsRead(tenant, job.id)
             if (total > MondayMapping.MaxRows) {
-                throw InmobiliariaMondayException("El tablero tiene mas de ${MondayMapping.MaxRows} elementos; divide la importacion o filtra el tablero en monday.")
+                throw InmobiliariaMondayException(tr("El tablero tiene mas de {0} elementos; divide la importacion o filtra el tablero en monday.", MondayMapping.MaxRows))
             }
             PageResult(total - before, total)
         }
@@ -157,7 +159,7 @@ object InmobiliariaMondayRunner {
     private fun apply(tenant: Connection, job: MondayJob, target: CrmImportTarget, deadline: Instant): Int {
         val kind = kindOf(target, job.kind)
         if (kind == null) {
-            InmobiliariaMondayStore.transition(tenant, job.id, MondayJobState.Applying, MondayJobState.Failed, "La extension Inmobiliaria no importa ese tipo de registro.")
+            InmobiliariaMondayStore.transition(tenant, job.id, MondayJobState.Applying, MondayJobState.Failed, msg("La extension Inmobiliaria no importa ese tipo de registro."))
             return 0
         }
         // Quien pulso Aplicar es quien actua en Inmobiliaria, y debe seguir siendo usuario activo con crm.settings.
@@ -189,7 +191,7 @@ object InmobiliariaMondayRunner {
         } catch (failure: Exception) {
             // Todo el lote falla (por ejemplo, la base): sus filas quedan con problema y la importacion sigue con las demas.
             log.warn("Fallo un lote de la importacion {} ({}).", job.id, failure.javaClass.simpleName)
-            val message = "No se pudo aplicar el lote."
+            val message = msg("No se pudo aplicar el lote.")
             rows.forEach { InmobiliariaMondayStore.markRow(tenant, it.id, MondayRowState.Failed, message) }
             InmobiliariaMondayStore.addResult(tenant, job.id, 0, 0, 0, rows.size, listOf("${rows.first().importKey}: $message (${rows.size} filas)"))
             return

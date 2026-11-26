@@ -1,4 +1,4 @@
-# Extensión `inmobiliaria_monday` (CRM) — 1.0.1
+# Extensión `inmobiliaria_monday` (CRM) — 1.1.0
 
 Migración de un solo uso desde monday.com hacia la extensión [`inmobiliaria`](../inmobiliaria/README.md): reemplaza los
 tableros de listados ("All Real Estate Listings", "New listing", "Sellers | New upcoming listings") y el de transacciones
@@ -47,6 +47,10 @@ Herramientas MCP (`crm_inmobiliaria_monday_*`, permiso `crm.settings`; nunca rec
 Borra siempre el token. La opción **Historial de importaciones** (por defecto, borrar) elimina las importaciones y sus
 filas leídas; si se conserva, el aviso recuerda que contiene datos de clientes (nombres, correos y teléfonos). Las
 propiedades y transacciones ya importadas se conservan en `inmobiliaria`.
+
+## 1.1.0
+
+- Bilingüe español/inglés (necesita Core 0.10.0): textos con `tr("...")` y catálogo `server/src/main/resources/extensions/inmobiliaria_monday/i18n/en.json`. Lo que viene de monday (nombres de tableros, columnas, valores) no se traduce.
 
 ## 1.0.1
 

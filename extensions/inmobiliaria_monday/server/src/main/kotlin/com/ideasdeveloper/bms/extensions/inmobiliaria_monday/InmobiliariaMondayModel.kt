@@ -2,6 +2,8 @@ package com.ideasdeveloper.bms.extensions.inmobiliaria_monday
 
 import com.ideasdeveloper.bms.modules.crm.CrmImportKind
 import com.ideasdeveloper.bms.modules.crm.CrmImportRecord
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.text.Normalizer
 import java.util.UUID
 
@@ -195,12 +197,12 @@ object MondayMapping {
         val clean = linkedMapOf<String, String>()
         mapping.forEach { (column, field) ->
             if (field.isBlank()) return@forEach
-            if (column !in titles) throw InmobiliariaMondayException("El tablero no tiene la columna '${column.take(80)}'.")
-            if (field !in keys) throw InmobiliariaMondayException("'${field.take(60)}' no es un campo de ${kind.label}.")
+            if (column !in titles) throw InmobiliariaMondayException(tr("El tablero no tiene la columna '{0}'.", column.take(80)))
+            if (field !in keys) throw InmobiliariaMondayException(tr("'{0}' no es un campo de {1}.", field.take(60), tr(kind.label)))
             clean[column] = field
         }
         val repeated = clean.values.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
-        if (repeated.isNotEmpty()) throw InmobiliariaMondayException("Cada campo recibe una sola columna; se repite: ${repeated.joinToString()}.")
+        if (repeated.isNotEmpty()) throw InmobiliariaMondayException(tr("Cada campo recibe una sola columna; se repite: {0}.", repeated.joinToString()))
         return clean
     }
 
@@ -225,7 +227,7 @@ object MondayMapping {
         return try {
             checkMapping(kind, columns, sent) to ""
         } catch (failure: InmobiliariaMondayException) {
-            suggested() to "El mapeo enviado no coincide con las columnas del tablero (${failure.message.orEmpty()}); se uso el sugerido. Revisalo antes de aplicar."
+            suggested() to tr("El mapeo enviado no coincide con las columnas del tablero ({0}); se uso el sugerido. Revisalo antes de aplicar.", failure.message.orEmpty())
         }
     }
 
@@ -239,7 +241,7 @@ object MondayMapping {
     /** Paginas de lectura: se parte de [MaxPageSize] y ante una respuesta enorme o de complejidad se reduce a la mitad hasta [MinPageSize]. */
     const val MaxPageSize = 100
     const val MinPageSize = 10
-    const val TooHeavyMessage = "Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas."
+    val TooHeavyMessage = msg("Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas.")
 
     /** Siguiente tamano de pagina (100 -> 50 -> 25 -> 12 -> 10); null si ya esta al minimo y no se puede reducir mas. */
     fun nextPageSize(current: Int): Int? = if (current <= MinPageSize) null else (current / 2).coerceAtLeast(MinPageSize)
@@ -262,7 +264,7 @@ object MondayMapping {
         val failed = failedKeys.toSet()
         return rows.map { row ->
             if (row.importKey in failed) {
-                MondayRowVerdict(row, MondayRowState.Failed, problemOf(row.importKey, problems) ?: "No se pudo guardar el registro.")
+                MondayRowVerdict(row, MondayRowState.Failed, problemOf(row.importKey, problems) ?: msg("No se pudo guardar el registro."))
             } else {
                 MondayRowVerdict(row, MondayRowState.Applied, problemOf(row.importKey, warnings).orEmpty())
             }
