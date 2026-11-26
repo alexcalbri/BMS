@@ -3,6 +3,8 @@ package com.ideasdeveloper.bms.extensions.mantenimiento_monday
 import com.ideasdeveloper.bms.modules.mantenimiento.ImportOutcome
 import com.ideasdeveloper.bms.modules.mantenimiento.MantenimientoImportApply
 import com.ideasdeveloper.bms.modules.mantenimiento.MantenimientoImportJobContext
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
@@ -71,10 +73,10 @@ object MantenimientoMondayRunner {
         } catch (failure: SQLException) {
             // Base de datos no disponible o bloqueo: pasajero, se reintenta (hasta MaxRetries).
             log.warn("Importacion de monday {}: error temporal de base de datos: {}", job.id, failure.javaClass.simpleName)
-            retry(tenant, job.id, "error temporal de la base de datos")
+            retry(tenant, job.id, msg("error temporal de la base de datos"))
         } catch (failure: Exception) {
             log.error("Importacion de monday {} fallo", job.id, failure)
-            fail(tenant, job.id, "No se pudo completar la importacion; revisa el registro del servidor.")
+            fail(tenant, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
         }
         return 0
     }
@@ -99,7 +101,7 @@ object MantenimientoMondayRunner {
     private fun readPages(context: MantenimientoImportJobContext, job: MondayJob, deadline: Long): Int {
         val tenant = context.tenant
         val token = MantenimientoMondaySettings.loadToken(context.access.secrets, tenant)
-            ?: throw MantenimientoMondayException("Falta el token de monday o no se puede leer; guardalo de nuevo.")
+            ?: throw MantenimientoMondayException(tr("Falta el token de monday o no se puede leer; guardalo de nuevo."))
         var cursor = job.cursor
         var pages = job.pages
         var read = 0
@@ -109,13 +111,13 @@ object MantenimientoMondayRunner {
         if (cursor != "") {
             do {
                 if (MantenimientoMondayJobs.statusOf(tenant, job.id) != MondayJobStatus.Reading) return read
-                if (pages >= MaxPages) throw MantenimientoMondayException("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo.")
+                if (pages >= MaxPages) throw MantenimientoMondayException(tr("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo."))
                 val page = fetchPage(tenant, token, job, cursor, state, deadline)
                     ?: return read // Cursor vencido: se borro lo leido y la proxima corrida relee desde el inicio.
-                if (page.cursor.length > MaxCursorLength) throw MantenimientoMondayException("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero.")
-                if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw MantenimientoMondayException("monday devolvio una pagina vacia sin terminar la lectura del tablero.")
+                if (page.cursor.length > MaxCursorLength) throw MantenimientoMondayException(tr("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero."))
+                if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw MantenimientoMondayException(tr("monday devolvio una pagina vacia sin terminar la lectura del tablero."))
                 if (job.total + read + page.items.size > MantenimientoMondayClient.MaxItems) {
-                    throw MantenimientoMondayException("El tablero tiene mas de ${MantenimientoMondayClient.MaxItems} elementos; divide el tablero antes de importarlo.")
+                    throw MantenimientoMondayException(tr("El tablero tiene mas de {0} elementos; divide el tablero antes de importarlo.", MantenimientoMondayClient.MaxItems))
                 }
                 // Las personas de la pagina se piden a monday una sola vez por trabajo (users(ids) trae el correo).
                 val known = MantenimientoMondayJobs.people(tenant, job.id)
@@ -170,7 +172,7 @@ object MantenimientoMondayRunner {
                             log.warn("Importacion de monday {}: pagina de {} a {} elementos", job.id, state.pageSize, step.pageSize)
                             state.pageSize = step.pageSize
                             MantenimientoMondayJobs.savePageSize(tenant, job.id, step.pageSize)
-                            if (!MantenimientoMondayClient.hasTime(deadline)) throw MantenimientoMondayException("monday pidio una pagina mas chica; se sigue en la proxima corrida.", transient = true)
+                            if (!MantenimientoMondayClient.hasTime(deadline)) throw MantenimientoMondayException(tr("monday pidio una pagina mas chica; se sigue en la proxima corrida."), transient = true)
                         }
                         is MondayReading.Step.Fail -> throw MantenimientoMondayException(step.message)
                         is MondayReading.Step.Restart -> throw failure
@@ -197,7 +199,7 @@ object MantenimientoMondayRunner {
             parts += MondaySummaryDto.of(summary, extra)
             after = last
         }
-        if (parts.isEmpty()) throw MantenimientoMondayException("El tablero no tiene elementos.")
+        if (parts.isEmpty()) throw MantenimientoMondayException(tr("El tablero no tiene elementos."))
         val summary = MondaySummaryDto.merge(parts).copy(files = MantenimientoMondayJobs.fileCount(tenant, job.id))
         MantenimientoMondayJobs.moveToPreview(tenant, job.id, summary)
     }
