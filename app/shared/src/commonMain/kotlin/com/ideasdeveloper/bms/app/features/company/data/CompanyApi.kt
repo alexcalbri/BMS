@@ -2,7 +2,9 @@ package com.ideasdeveloper.bms.app.features.company.data
 
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
+import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
+import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -35,6 +37,17 @@ class CompanyApi(serverUrl: String) {
     init {
         // Valida que la URL sea parseable antes de lanzar solicitudes.
         Url(baseUrl)
+    }
+
+    // Verdadero si el servidor declara Core >= 0.10.0 y por tanto acepta defaultLanguage; con version desconocida, falso.
+    suspend fun supportsDefaultLanguage(): Boolean {
+        val versionApi = VersionApi(baseUrl)
+        val serverVersion = try {
+            versionApi.version()
+        } finally {
+            versionApi.close()
+        }
+        return serverVersion?.coreVersion?.let { isCoreAtLeast(it, 0, 10, 0) } == true
     }
 
     // Carga el perfil editable de la empresa de la sesion business_owner.

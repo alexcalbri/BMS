@@ -11,6 +11,8 @@ data class CompanyProfileResponse(
     val primaryColor: String,
     val secondaryColor: String,
     val accentColor: String,
+    // Idioma predeterminado ("es" | "en"); null en servidores con Core anterior a 0.10.0.
+    val defaultLanguage: String? = null,
 )
 
 @Serializable
@@ -21,6 +23,8 @@ data class UpdateCompanyProfileRequest(
     val primaryColor: String,
     val secondaryColor: String,
     val accentColor: String,
+    // Solo se envia con Core >= 0.10.0; null se omite del cuerpo (el Json del cliente no codifica valores por defecto).
+    val defaultLanguage: String? = null,
 )
 
 @Serializable

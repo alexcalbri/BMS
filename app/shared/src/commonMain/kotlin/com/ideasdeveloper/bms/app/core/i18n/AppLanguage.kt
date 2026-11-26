@@ -80,6 +80,14 @@ object AppLanguage {
         apply(effective)
     }
 
+    // Tras guardar el idioma predeterminado de la empresa: lo recuerda y, si el usuario sigue a la empresa, cambia al momento.
+    fun updateCompanyLanguage(companyLanguage: String?) {
+        val company = normalize(companyLanguage) ?: return
+        companyState.value = company
+        PersistentPreferences.set(CompanyKey, company)
+        if (choiceState.value == null) apply(company)
+    }
+
     private fun apply(language: String) {
         languageState.value = language
         PersistentPreferences.set(EffectiveKey, language)

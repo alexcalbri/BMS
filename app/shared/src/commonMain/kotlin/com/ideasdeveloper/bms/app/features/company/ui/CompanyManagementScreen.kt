@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
@@ -24,6 +25,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -81,6 +83,10 @@ fun CompanyManagementScreen(
     var savedPrimaryColor by remember { mutableStateOf(companyIdentity.primaryColor) }
     var savedSecondaryColor by remember { mutableStateOf(companyIdentity.secondaryColor) }
     var savedAccentColor by remember { mutableStateOf(companyIdentity.accentColor) }
+    // Idioma predeterminado de la empresa; el selector solo existe si el servidor es Core >= 0.10.0.
+    var companyLanguage by remember { mutableStateOf("es") }
+    var savedCompanyLanguage by remember { mutableStateOf("es") }
+    var languageSupported by remember { mutableStateOf(false) }
     var backups by remember { mutableStateOf<List<CompanyBackupResponse>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -92,7 +98,8 @@ fun CompanyManagementScreen(
                 logoUrl != savedLogoUrl ||
                 primaryColor != savedPrimaryColor ||
                 secondaryColor != savedSecondaryColor ||
-                accentColor != savedAccentColor
+                accentColor != savedAccentColor ||
+                (languageSupported && companyLanguage != savedCompanyLanguage)
 
     fun requestReturnToDashboard() {
         if (hasUnsavedChanges) {
@@ -130,6 +137,10 @@ fun CompanyManagementScreen(
         savedPrimaryColor = profile.primaryColor
         savedSecondaryColor = profile.secondaryColor
         savedAccentColor = profile.accentColor
+        AppLanguage.normalize(profile.defaultLanguage)?.let {
+            companyLanguage = it
+            savedCompanyLanguage = it
+        }
         CompanyIdentityStore.save(
             CompanyIdentity(
                 id = profile.code,
@@ -150,6 +161,7 @@ fun CompanyManagementScreen(
         isLoading = true
         try {
             CompanyApi(activeServerUrl).use { api ->
+                languageSupported = api.supportsDefaultLanguage()
                 applyProfile(api.companyProfile(activeSession.accessToken, companyCode))
                 backups = api.listBackups(activeSession.accessToken, companyCode)
             }
@@ -259,6 +271,21 @@ fun CompanyManagementScreen(
                         onAccentColorChange = { accentColor = it },
                     )
 
+                    if (languageSupported) {
+                        Text(tr("Idioma predeterminado de la empresa"), style = MaterialTheme.typography.labelLarge, color = AppTheme.colors.muted)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Los nombres de los idiomas se escriben en su propio idioma y no se traducen.
+                            listOf("es" to "Espa\u00f1ol", "en" to "English").forEach { (value, label) ->
+                                FilterChip(
+                                    selected = companyLanguage == value,
+                                    onClick = { companyLanguage = value },
+                                    label = { Text(label) },
+                                    enabled = !isLoading,
+                                )
+                            }
+                        }
+                    }
+
                     error?.let { Text(it, color = AppTheme.colors.danger) }
                     message?.let { Text(it, color = AppTheme.colors.success) }
 
@@ -303,10 +330,12 @@ fun CompanyManagementScreen(
                                                     primaryColor = primaryColor,
                                                     secondaryColor = secondaryColor,
                                                     accentColor = accentColor,
+                                                    defaultLanguage = if (languageSupported) companyLanguage else null,
                                                 ),
                                             )
                                         }
                                         applyProfile(profile)
+                                        if (languageSupported) AppLanguage.updateCompanyLanguage(profile.defaultLanguage)
                                         message = tr("Empresa actualizada.")
                                     } catch (exception: CompanyException) {
                                         error = exception.message

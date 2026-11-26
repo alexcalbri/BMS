@@ -29,6 +29,7 @@ private fun englishPart0(): Map<String, String> = mapOf(
     "Empresa: {0}" to "Company: {0}",
     "Enviar codigo" to "Send code",
     "Idioma" to "Language",
+    "Idioma predeterminado de la empresa" to "Company default language",
     "Iniciar sesion" to "Sign in",
     "Mi perfil" to "My profile",
     "Nombre completo" to "Full name",
