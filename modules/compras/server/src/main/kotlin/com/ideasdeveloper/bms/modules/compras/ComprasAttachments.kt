@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.server.modules.StoredFileRef
@@ -54,20 +55,20 @@ object ComprasAttachments {
      * se escribe primero en [files]; si la fila no se guarda, el archivo se borra.
      */
     fun upload(tenant: Connection, files: ModuleFiles, actor: Actor, name: String, path: String, contentType: String, content: InputStream): UiFileRef {
-        if (!actor.can(ComprasModule.Create) && !actor.can(ComprasModule.Manage)) throw ComprasValidationException("No tienes permiso para subir archivos.")
-        val userId = actor.userId ?: throw ComprasValidationException("No se pudo identificar al usuario.")
+        if (!actor.can(ComprasModule.Create) && !actor.can(ComprasModule.Manage)) throw ComprasValidationException(tr("No tienes permiso para subir archivos."))
+        val userId = actor.userId ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
         val fileName = cleanName(name)
-        if (fileName.isEmpty()) throw ComprasValidationException("El archivo no tiene nombre.")
+        if (fileName.isEmpty()) throw ComprasValidationException(tr("El archivo no tiene nombre."))
         val pending = tenant.prepareStatement("SELECT count(*) FROM compras_attachments WHERE uploaded_by_id = ? AND request_id IS NULL AND deleted_at IS NULL").use { query ->
             query.setObject(1, userId)
             query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
         }
-        if (pending >= MaxPendingPerUser) throw ComprasValidationException("Tienes demasiados archivos sin guardar; guarda o recarga la solicitud antes de subir mas.")
+        if (pending >= MaxPendingPerUser) throw ComprasValidationException(tr("Tienes demasiados archivos sin guardar; guarda o recarga la solicitud antes de subir mas."))
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         val stored = try {
             files.put(fileName, type, content, MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw ComprasValidationException("$fileName supera el maximo de ${MaxFileBytes / (1024 * 1024)} MB.")
+            throw ComprasValidationException(tr("{0} supera el maximo de {1} MB.", fileName, MaxFileBytes / (1024 * 1024)))
         }
         val ref = UiFileRef(UUID.randomUUID().toString(), fileName, cleanPath(path), stored.size)
         try {
@@ -117,15 +118,15 @@ object ComprasAttachments {
      */
     fun link(tenant: Connection, actor: Actor, requestId: UUID, ids: List<UUID>, quoteId: UUID? = null, kind: String = "support"): Change {
         if (ids.isEmpty()) return Change(emptyList(), emptyList())
-        if (kind !in Kinds) throw ComprasValidationException("Tipo de adjunto no valido.")
-        val userId = actor.userId ?: throw ComprasValidationException("No se pudo identificar al usuario.")
+        if (kind !in Kinds) throw ComprasValidationException(tr("Tipo de adjunto no valido."))
+        val userId = actor.userId ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
         return ComprasSql.transaction(tenant) {
             // Fila bloqueada primero: el estado, las cotizaciones y el tope de archivos no cambian mientras se vincula.
             ComprasRepository.lockRequest(tenant, requestId)
-            val request = ComprasRepository.get(tenant, requestId, actor) ?: throw ComprasValidationException("La solicitud no existe o no tienes acceso a ella.")
+            val request = ComprasRepository.get(tenant, requestId, actor) ?: throw ComprasValidationException(tr("La solicitud no existe o no tienes acceso a ella."))
             val approver = ComprasRepository.approver(tenant, actor)
             if (!ComprasFlow.canAddAttachment(request.status, actor, ComprasFlow.contextOf(request, approver))) {
-                throw ComprasValidationException("No puedes agregar archivos a esta solicitud en estado ${request.status.label}.")
+                throw ComprasValidationException(tr("No puedes agregar archivos a esta solicitud en estado {0}.", tr(request.status.label)))
             }
             if (quoteId != null) {
                 val belongs = tenant.prepareStatement("SELECT 1 FROM compras_quotes WHERE id = ? AND request_id = ?").use { query ->
@@ -133,13 +134,13 @@ object ComprasAttachments {
                     query.setObject(2, requestId)
                     query.executeQuery().use { it.next() }
                 }
-                if (!belongs) throw ComprasValidationException("La cotizacion no pertenece a la solicitud.")
+                if (!belongs) throw ComprasValidationException(tr("La cotizacion no pertenece a la solicitud."))
             }
             val total = tenant.prepareStatement("SELECT count(*) FROM compras_attachments WHERE request_id = ? AND deleted_at IS NULL").use { query ->
                 query.setObject(1, requestId)
                 query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
             }
-            if (total + ids.size > MaxFilesPerRequest) throw ComprasValidationException("Una solicitud admite hasta $MaxFilesPerRequest archivos.")
+            if (total + ids.size > MaxFilesPerRequest) throw ComprasValidationException(tr("Una solicitud admite hasta {0} archivos.", MaxFilesPerRequest))
             val added = tenant.prepareStatement(
                 """
                 UPDATE compras_attachments SET request_id = ?, quote_id = ?, kind = ?
@@ -164,9 +165,9 @@ object ComprasAttachments {
      * cualquier estado. Devuelve el nombre del archivo quitado, o null si no existia.
      */
     fun remove(tenant: Connection, actor: Actor, requestId: UUID, attachmentId: UUID): String? {
-        val request = ComprasRepository.get(tenant, requestId, actor) ?: throw ComprasValidationException("La solicitud no existe o no tienes acceso a ella.")
+        val request = ComprasRepository.get(tenant, requestId, actor) ?: throw ComprasValidationException(tr("La solicitud no existe o no tienes acceso a ella."))
         if (!ComprasFlow.canRemoveAttachment(request.status, actor, request.requesterId)) {
-            throw ComprasValidationException("No puedes quitar archivos de esta solicitud en estado ${request.status.label}.")
+            throw ComprasValidationException(tr("No puedes quitar archivos de esta solicitud en estado {0}.", tr(request.status.label)))
         }
         return ComprasSql.transaction(tenant) {
             val name = tenant.prepareStatement(

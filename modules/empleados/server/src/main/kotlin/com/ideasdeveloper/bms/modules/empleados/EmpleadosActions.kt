@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import com.ideasdeveloper.bms.ui.UiJson
 import kotlinx.serialization.json.JsonArray
@@ -21,7 +23,7 @@ object EmpleadosActions {
     const val AllOption = "Todos"
     const val ActiveOption = "Activos"
     const val InactiveOption = "Bajas"
-    const val InvalidForm = "Formulario demasiado grande o no válido."
+    val InvalidForm = msg("Formulario demasiado grande o no válido.")
     private const val MaxBodyChars = 1_000_000
 
     val WeekdayLabels = listOf("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo")
@@ -42,8 +44,8 @@ object EmpleadosActions {
 
     /** Como [bodyValues] pero un cuerpo demasiado grande o que no es un objeto JSON es un error para el usuario. */
     fun formValues(body: String): Map<String, String> {
-        if (body.length > MaxBodyChars) throw EmpleadosValidationException(InvalidForm)
-        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw EmpleadosValidationException(InvalidForm)
+        if (body.length > MaxBodyChars) throw EmpleadosValidationException(tr(InvalidForm))
+        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw EmpleadosValidationException(tr(InvalidForm))
         return bodyValues(parsed.toString())
     }
 
@@ -56,34 +58,34 @@ object EmpleadosActions {
         return try {
             LocalDate.parse(clean)
         } catch (_: DateTimeParseException) {
-            throw EmpleadosValidationException("La fecha debe tener el formato AAAA-MM-DD.")
+            throw EmpleadosValidationException(tr("La fecha debe tener el formato AAAA-MM-DD."))
         }
     }
 
-    fun requiredDate(text: String?, what: String): LocalDate = date(text) ?: throw EmpleadosValidationException("$what es obligatoria.")
+    fun requiredDate(text: String?, what: String): LocalDate = date(text) ?: throw EmpleadosValidationException(tr("{0} es obligatoria.", what))
 
     /** Una hora HH:mm; vacio es "sin hora". */
     fun time(text: String?): java.time.LocalTime? {
         val clean = text?.trim().orEmpty()
         if (clean.isEmpty()) return null
-        return EmpleadosSchedule.parseTime(clean) ?: throw EmpleadosValidationException("La hora debe tener el formato HH:mm (de 00:00 a 23:59).")
+        return EmpleadosSchedule.parseTime(clean) ?: throw EmpleadosValidationException(tr("La hora debe tener el formato HH:mm (de 00:00 a 23:59)."))
     }
 
-    fun requiredTime(text: String?, what: String): java.time.LocalTime = time(text) ?: throw EmpleadosValidationException("$what es obligatoria (HH:mm).")
+    fun requiredTime(text: String?, what: String): java.time.LocalTime = time(text) ?: throw EmpleadosValidationException(tr("{0} es obligatoria (HH:mm).", what))
 
     /** Dia de la semana ISO por su nombre (Lunes...Domingo); desconocido es un error. */
     fun weekday(label: String?): Int {
         val index = WeekdayLabels.indexOfFirst { it.equals(label?.trim(), ignoreCase = true) }
-        if (index < 0) throw EmpleadosValidationException("Elige un día de la semana.")
+        if (index < 0) throw EmpleadosValidationException(tr("Elige un día de la semana."))
         return index + 1
     }
 
     fun absenceKind(label: String?): AbsenceKind =
-        AbsenceKind.fromLabel(label) ?: throw EmpleadosValidationException("Tipo de ausencia no válido: ${label.orEmpty()}.")
+        AbsenceKind.fromLabel(label) ?: throw EmpleadosValidationException(tr("Tipo de ausencia no válido: {0}.", label.orEmpty()))
 
     fun shiftKind(label: String?): ShiftKind {
         if (label.isNullOrBlank()) return ShiftKind.Work
-        return ShiftKind.fromLabel(label) ?: throw EmpleadosValidationException("Tipo de turno no válido: $label.")
+        return ShiftKind.fromLabel(label) ?: throw EmpleadosValidationException(tr("Tipo de turno no válido: {0}.", label))
     }
 
     // ---- etiquetas ----
@@ -109,27 +111,27 @@ object EmpleadosActions {
 
     fun employeeId(label: String?, labels: Map<UUID, String>): UUID {
         val clean = label?.trim().orEmpty()
-        if (clean.isEmpty()) throw EmpleadosValidationException("Elige un empleado de la lista.")
+        if (clean.isEmpty()) throw EmpleadosValidationException(tr("Elige un empleado de la lista."))
         return labels.entries.firstOrNull { it.value.equals(clean, ignoreCase = true) }?.key
-            ?: throw EmpleadosValidationException("Empleado no válido: $clean. Elige solo empleados de la lista.")
+            ?: throw EmpleadosValidationException(tr("Empleado no válido: {0}. Elige solo empleados de la lista.", clean))
     }
 
     private fun catalogId(label: String?, none: String, items: List<CatalogItem>, what: String): UUID? {
         val clean = label?.trim().orEmpty()
         if (clean.isEmpty() || clean.equals(none, ignoreCase = true)) return null
         return items.firstOrNull { it.name.equals(clean, ignoreCase = true) }?.id
-            ?: throw EmpleadosValidationException("Elige $what de la lista.")
+            ?: throw EmpleadosValidationException(tr("Elige {0} de la lista.", what))
     }
 
-    fun siteId(label: String?, sites: List<CatalogItem>): UUID? = catalogId(label, NoSite, sites, "una sede")
+    fun siteId(label: String?, sites: List<CatalogItem>): UUID? = catalogId(label, NoSite, sites, tr("una sede"))
 
-    fun departmentId(label: String?, departments: List<CatalogItem>): UUID? = catalogId(label, NoDepartment, departments, "un departamento")
+    fun departmentId(label: String?, departments: List<CatalogItem>): UUID? = catalogId(label, NoDepartment, departments, tr("un departamento"))
 
     fun userId(label: String?, users: List<UserRef>): UUID? {
         val clean = label?.trim().orEmpty()
         if (clean.isEmpty() || clean.equals(NoUser, ignoreCase = true)) return null
         return users.firstOrNull { it.label.equals(clean, ignoreCase = true) }?.id
-            ?: throw EmpleadosValidationException("Elige un usuario de la lista.")
+            ?: throw EmpleadosValidationException(tr("Elige un usuario de la lista."))
     }
 
     // ---- formularios ----

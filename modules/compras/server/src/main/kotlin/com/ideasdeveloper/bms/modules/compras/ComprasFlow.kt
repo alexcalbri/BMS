@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.util.UUID
 
@@ -59,23 +60,23 @@ object ComprasFlow {
      * (> 0) para pedir aprobacion. Lanza [ComprasValidationException] con un mensaje claro.
      */
     fun validate(from: RequestStatus, to: RequestStatus, actor: Actor, context: FlowContext, reason: String?, title: String) {
-        if (!allowed(from, to)) throw ComprasValidationException("No se puede pasar de ${from.label} a ${to.label}.")
+        if (!allowed(from, to)) throw ComprasValidationException(tr("No se puede pasar de {0} a {1}.", tr(from.label), tr(to.label)))
         if (!canMove(from, to, actor, context)) throw ComprasValidationException(denial(from, to, context))
-        if (to == RequestStatus.Rejected && reason.isNullOrBlank()) throw ComprasValidationException("El motivo del rechazo es obligatorio.")
+        if (to == RequestStatus.Rejected && reason.isNullOrBlank()) throw ComprasValidationException(tr("El motivo del rechazo es obligatorio."))
         if (to == RequestStatus.PendingApproval) {
-            if (title.isBlank()) throw ComprasValidationException("La solicitud necesita un titulo.")
+            if (title.isBlank()) throw ComprasValidationException(tr("La solicitud necesita un titulo."))
             val amount = context.amount
             if (amount == null || amount.signum() <= 0) {
-                throw ComprasValidationException("Indica un monto mayor a cero (estimado o de una cotizacion elegida) antes de pedir aprobacion.")
+                throw ComprasValidationException(tr("Indica un monto mayor a cero (estimado o de una cotizacion elegida) antes de pedir aprobacion."))
             }
         }
     }
 
     private fun denial(from: RequestStatus, to: RequestStatus, context: FlowContext): String = when {
         from == RequestStatus.PendingApproval && to == RequestStatus.Approved ->
-            if (context.approver?.maxAmount != null) "Tu limite de aprobacion no cubre este monto." else "No puedes aprobar esta solicitud."
-        from == RequestStatus.PendingApproval && to == RequestStatus.Rejected -> "No puedes rechazar esta solicitud."
-        else -> "No tienes permiso para pasar la solicitud a ${to.label}."
+            if (context.approver?.maxAmount != null) tr("Tu limite de aprobacion no cubre este monto.") else tr("No puedes aprobar esta solicitud.")
+        from == RequestStatus.PendingApproval && to == RequestStatus.Rejected -> tr("No puedes rechazar esta solicitud.")
+        else -> tr("No tienes permiso para pasar la solicitud a {0}.", tr(to.label))
     }
 
     private fun ownsOrManages(actor: Actor, requesterId: UUID?) = actor.isUser(requesterId) || actor.can(ComprasModule.Manage)

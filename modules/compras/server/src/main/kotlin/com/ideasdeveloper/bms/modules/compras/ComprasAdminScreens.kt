@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiCard
 import com.ideasdeveloper.bms.ui.UiField
@@ -58,43 +59,43 @@ object ComprasAdminScreens {
 
     private fun approverFields(withUser: UiField?): List<UiField> = listOfNotNull(
         withUser,
-        UiField("maxAmount", "Limite de monto", type = "number", help = "Vacio = sin limite."),
-        UiField("limitCurrency", "Moneda del limite", help = "Codigo de 3 letras, por ejemplo USD."),
-        UiField("active", "Activo", type = "boolean"),
+        UiField("maxAmount", tr("Limite de monto"), type = "number", help = tr("Vacio = sin limite.")),
+        UiField("limitCurrency", tr("Moneda del limite"), help = tr("Codigo de 3 letras, por ejemplo USD.")),
+        UiField("active", tr("Activo"), type = "boolean"),
     )
 
     fun settingsScreen(actor: Actor, data: SettingsData, notice: UiNotice? = null, submitted: Map<String, String>? = null): UiScreen {
         val currency = UiCard(
-            title = "Moneda por defecto",
+            title = tr("Moneda por defecto"),
             children = listOf(
                 UiForm(
-                    "currency", listOf(UiField("currency", "Moneda", required = true, help = "Moneda de las solicitudes nuevas (3 letras).")),
+                    "currency", listOf(UiField("currency", tr("Moneda"), required = true, help = tr("Moneda de las solicitudes nuevas (3 letras)."))),
                     mapOf("currency" to (submitted?.get("currency") ?: data.defaultCurrency)),
-                    submit = UiButton("Guardar moneda", UiRequest(Route, params = mapOf("op" to "currency"), formId = "currency")),
+                    submit = UiButton(tr("Guardar moneda"), UiRequest(Route, params = mapOf("op" to "currency"), formId = "currency")),
                 ),
             ),
         )
 
         val newDepartment = UiForm(
-            "dept-new", listOf(UiField("name", "Nuevo departamento", required = true)),
+            "dept-new", listOf(UiField("name", tr("Nuevo departamento"), required = true)),
             mapOf("name" to (submitted?.get("name") ?: "")),
-            submit = UiButton("Agregar departamento", UiRequest(Route, params = mapOf("op" to "deptSave"), formId = "dept-new"), style = "secondary"),
+            submit = UiButton(tr("Agregar departamento"), UiRequest(Route, params = mapOf("op" to "deptSave"), formId = "dept-new"), style = "secondary"),
         )
         val departments = UiCard(
-            title = "Departamentos",
+            title = tr("Departamentos"),
             children = listOf<UiNode>(newDepartment) + data.departments.map { department ->
                 val params = mapOf("id" to department.id.toString())
                 UiCard(
                     title = if (department.active) department.name else "${department.name} (inactivo)",
                     children = listOf(
                         UiForm(
-                            "dept-${department.id}", listOf(UiField("name", "Nombre", required = true)), mapOf("name" to department.name),
-                            submit = UiButton("Renombrar", UiRequest(Route, params = params + ("op" to "deptSave"), formId = "dept-${department.id}"), style = "secondary"),
+                            "dept-${department.id}", listOf(UiField("name", tr("Nombre"), required = true)), mapOf("name" to department.name),
+                            submit = UiButton(tr("Renombrar"), UiRequest(Route, params = params + ("op" to "deptSave"), formId = "dept-${department.id}"), style = "secondary"),
                         ),
                         UiRow(
                             listOf(
                                 UiButton(
-                                    if (department.active) "Desactivar" else "Activar",
+                                    if (department.active) tr("Desactivar") else tr("Activar"),
                                     UiRequest(Route, params = params + mapOf("op" to "deptActive", "active" to (!department.active).toString())),
                                     style = if (department.active) "danger" else "primary",
                                 ),
@@ -108,26 +109,26 @@ object ComprasAdminScreens {
         val labels = userLabels(data.users)
         val newApprover = UiForm(
             "approver-new",
-            approverFields(UiField("user", "Usuario", type = "dropdown", required = true, options = labels.keys.toList())),
+            approverFields(UiField("user", tr("Usuario"), type = "dropdown", required = true, options = labels.keys.toList())),
             submitted?.takeIf { it.containsKey("user") } ?: mapOf("limitCurrency" to data.defaultCurrency, "active" to "true"),
-            submit = UiButton("Designar aprobador", UiRequest(Route, params = mapOf("op" to "approverSave"), formId = "approver-new"), style = "secondary"),
+            submit = UiButton(tr("Designar aprobador"), UiRequest(Route, params = mapOf("op" to "approverSave"), formId = "approver-new"), style = "secondary"),
         )
         val approvers = UiCard(
-            title = "Aprobadores",
+            title = tr("Aprobadores"),
             children = buildList<UiNode> {
-                add(UiText("Basta una aprobacion de alguien cuyo limite cubra el monto. El dueno del negocio aprueba sin limite. Cada aprobador necesita ademas el permiso compras.approve.", UiTextStyle.Caption))
+                add(UiText(tr("Basta una aprobacion de alguien cuyo limite cubra el monto. El dueno del negocio aprueba sin limite. Cada aprobador necesita ademas el permiso compras.approve."), UiTextStyle.Caption))
                 add(newApprover)
                 data.approvers.forEach { approver ->
                     val form = "approver-${approver.userId}"
                     val params = mapOf("user" to approver.userId.toString())
-                    val limit = approver.maxAmount?.let { "Limite: " + ComprasMoney.format(it, approver.limitCurrency) } ?: "Sin limite"
+                    val limit = approver.maxAmount?.let { tr("Limite: {0}", ComprasMoney.format(it, approver.limitCurrency)) } ?: tr("Sin limite")
                     add(
                         UiCard(
                             title = approver.name + if (approver.active) "" else " (inactivo)",
                             children = buildList<UiNode> {
                                 add(UiText(limit))
                                 if (approver.userId in data.withoutPermission) {
-                                    add(UiText("No tiene el permiso compras.approve: no podra aprobar hasta que se lo den en Usuarios.", tone = UiTone.Warning))
+                                    add(UiText(tr("No tiene el permiso compras.approve: no podra aprobar hasta que se lo den en Usuarios."), tone = UiTone.Warning))
                                 }
                                 add(
                                     UiForm(
@@ -137,15 +138,15 @@ object ComprasAdminScreens {
                                             "limitCurrency" to approver.limitCurrency,
                                             "active" to approver.active.toString(),
                                         ),
-                                        submit = UiButton("Guardar", UiRequest(Route, params = params + ("op" to "approverSave"), formId = form), style = "secondary"),
+                                        submit = UiButton(tr("Guardar"), UiRequest(Route, params = params + ("op" to "approverSave"), formId = form), style = "secondary"),
                                     ),
                                 )
                                 add(
                                     UiRow(
                                         listOf(
                                             UiButton(
-                                                "Quitar",
-                                                UiRequest(Route, params = params + ("op" to "approverRemove"), confirm = "Se quita a ${approver.name} de los aprobadores. Continuar?"),
+                                                tr("Quitar"),
+                                                UiRequest(Route, params = params + ("op" to "approverRemove"), confirm = tr("Se quita a {0} de los aprobadores. Continuar?", approver.name)),
                                                 style = "danger",
                                             ),
                                         ),

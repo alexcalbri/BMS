@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.CustomerTimelineEntry
 import com.ideasdeveloper.bms.ui.UiOpenModule
@@ -60,7 +61,7 @@ object PropietariosCustomerTimeline {
                     entry(
                         at = start?.atStartOfDay(zone)?.toInstant() ?: row.createdAt,
                         kind = if (row.received) "propietario_traspaso_entrada" else "propietario_alta",
-                        title = if (row.received) "Recibió el lote ${row.lotNumber} por traspaso" else "Propietario del lote ${row.lotNumber}",
+                        title = if (row.received) tr("Recibió el lote {0} por traspaso", row.lotNumber) else tr("Propietario del lote {0}", row.lotNumber),
                         detail = listOfNotNull(
                             if (start != null) "${row.developmentName} · desde $start" else row.developmentName,
                             row.sharePercent?.let { "Participación: ${it.stripTrailingZeros().toPlainString()}%" },
@@ -74,7 +75,7 @@ object PropietariosCustomerTimeline {
                         entry(
                             at = end.atStartOfDay(zone).toInstant(),
                             kind = if (row.handedOver) "propietario_traspaso_salida" else "propietario_baja",
-                            title = if (row.handedOver) "Traspasó el lote ${row.lotNumber}" else "Dejó de ser propietario del lote ${row.lotNumber}",
+                            title = if (row.handedOver) tr("Traspasó el lote {0}", row.lotNumber) else tr("Dejó de ser propietario del lote {0}", row.lotNumber),
                             detail = "${row.developmentName} · hasta $end",
                             lotId = row.lotId,
                         )

@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.McpTool
@@ -194,9 +195,9 @@ object PropietariosImportApply {
     fun skipReason(row: ImportedLot): String? {
         val key = row.key.trim()
         return when {
-            key.isEmpty() -> "El elemento no tiene identificador."
-            key.length > MaxKey -> "El identificador del elemento $key es demasiado largo."
-            row.lotNumber.isBlank() -> "El elemento $key no tiene número de lote."
+            key.isEmpty() -> tr("El elemento no tiene identificador.")
+            key.length > MaxKey -> tr("El identificador del elemento {0} es demasiado largo.", key)
+            row.lotNumber.isBlank() -> tr("El elemento {0} no tiene número de lote.", key)
             else -> null
         }
     }
@@ -209,9 +210,9 @@ object PropietariosImportApply {
         rows.forEach { row ->
             val key = row.key.trim()
             when {
-                key.isEmpty() -> problems += "Un elemento no tiene identificador y se omitirá."
-                row.lotNumber.isBlank() -> problems += "El elemento $key no tiene número de lote y se omitirá."
-                !seen.add(key) -> problems += "El elemento $key aparece más de una vez."
+                key.isEmpty() -> problems += tr("Un elemento no tiene identificador y se omitirá.")
+                row.lotNumber.isBlank() -> problems += tr("El elemento {0} no tiene número de lote y se omitirá.", key)
+                !seen.add(key) -> problems += tr("El elemento {0} aparece más de una vez.", key)
                 else -> valid += row
             }
         }
@@ -230,16 +231,16 @@ object PropietariosImportApply {
             val area = row.areaM2
             if (area != null) {
                 if (area.signum() < 0 || area.compareTo(PropietariosRules.MaxArea) > 0) {
-                    problems += "El lote $label tiene un área fuera de rango y se importará sin área."
+                    problems += tr("El lote {0} tiene un área fuera de rango y se importará sin área.", label)
                 } else {
                     totalArea += area
                 }
             }
             val shares = row.owners.mapNotNull { it.sharePercent }
             if (shares.any { !PropietariosRules.validShare(it) } || shares.fold(BigDecimal.ZERO) { sum, share -> sum + share } > BigDecimal(100)) {
-                problems += "Los porcentajes del lote $label no son válidos o suman más de 100 %: se importará sin porcentajes."
+                problems += tr("Los porcentajes del lote {0} no son válidos o suman más de 100 %: se importará sin porcentajes.", label)
             }
-            if (row.owners.size > MaxOwnersPerLot) problems += "El lote $label tiene más de $MaxOwnersPerLot titulares: solo se importarán los primeros $MaxOwnersPerLot."
+            if (row.owners.size > MaxOwnersPerLot) problems += tr("El lote {0} tiene más de {1} titulares: solo se importarán los primeros {2}.", label, MaxOwnersPerLot, MaxOwnersPerLot)
         }
         val duplicates = valid.groupBy { (it.developmentName?.trim().orEmpty().lowercase()) to it.lotNumber.trim().lowercase() }
             .filterValues { it.size > 1 }
@@ -283,12 +284,12 @@ object PropietariosImportApply {
     fun ensureDevelopment(tenant: Connection, importKey: String, name: String, targetDevelopmentId: UUID?, actorId: UUID?): UUID {
         if (targetDevelopmentId != null) {
             val development = PropietariosRepository.getDevelopment(tenant, targetDevelopmentId)
-                ?: throw PropietariosValidationException("El desarrollo de destino ya no existe.")
-            if (development.archived) throw PropietariosValidationException("El desarrollo de destino está archivado.")
+                ?: throw PropietariosValidationException(tr("El desarrollo de destino ya no existe."))
+            if (development.archived) throw PropietariosValidationException(tr("El desarrollo de destino está archivado."))
             return development.id
         }
         val key = importKey.trim()
-        if (key.isEmpty() || key.length > MaxKey) throw PropietariosValidationException("La clave de importación del desarrollo no es válida.")
+        if (key.isEmpty() || key.length > MaxKey) throw PropietariosValidationException(tr("La clave de importación del desarrollo no es válida."))
         val clean = PropietariosRules.clip(name.trim().ifEmpty { "Importado" }, PropietariosRules.MaxName)
         return PropietariosRepository.transaction(tenant) {
             lock(tenant, "propietarios-development:$key")
@@ -306,7 +307,7 @@ object PropietariosImportApply {
                         "INSERT INTO propietarios_developments (id, name, created_by, import_key) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                         listOf(UUID.randomUUID(), clean, actorId, key),
                     )
-                    byKey() ?: throw PropietariosValidationException("No se pudo crear el desarrollo.")
+                    byKey() ?: throw PropietariosValidationException(tr("No se pudo crear el desarrollo."))
                 }
             }
         }
@@ -362,7 +363,7 @@ object PropietariosImportApply {
         } else {
             ensureDevelopment(tenant, "", "", developmentIdArg, actorId)
         }
-        val development = PropietariosRepository.getDevelopment(tenant, developmentId) ?: throw PropietariosValidationException("El desarrollo ya no existe.")
+        val development = PropietariosRepository.getDevelopment(tenant, developmentId) ?: throw PropietariosValidationException(tr("El desarrollo ya no existe."))
 
         // Recortes en lugar de fallos: lo que no cabe o no es valido se omite o se acorta.
         val register = PropietariosRules.clip(row.registerNumber.trim(), PropietariosRules.MaxRegister)
@@ -399,10 +400,10 @@ object PropietariosImportApply {
             ) { it.getObject("id", UUID::class.java) to it.getString("import_key") }.firstOrNull()
         }
         if (adoptable != null && adoptable.second != null) {
-            throw PropietariosValidationException("Ya existe otro lote $lotNumber en ${development.name} que vino de otra importación.")
+            throw PropietariosValidationException(tr("Ya existe otro lote {0} en {1} que vino de otra importación.", lotNumber, development.name))
         }
         val existingId = byKey?.first ?: adoptable?.first
-        if (byKey != null && byKey.second) throw PropietariosValidationException("El lote $lotNumber está archivado.")
+        if (byKey != null && byKey.second) throw PropietariosValidationException(tr("El lote {0} está archivado.", lotNumber))
 
         val created = existingId == null
         val lotId: UUID
@@ -416,7 +417,7 @@ object PropietariosImportApply {
             )
         } else {
             lotId = existingId
-            val old = PropietariosRepository.getLot(tenant, lotId) ?: throw PropietariosValidationException("El lote ya no existe.")
+            val old = PropietariosRepository.getLot(tenant, lotId) ?: throw PropietariosValidationException(tr("El lote ya no existe."))
             if (adoptable != null) tenant.exec("UPDATE propietarios_lots SET import_key = ? WHERE id = ? AND import_key IS NULL", listOf(key, lotId))
             // Un dato que la fuente trae vacio no borra el que ya tiene el lote. Si nada cambia no se escribe.
             val merged = LotInput(
@@ -524,17 +525,17 @@ object PropietariosImportApply {
      */
     fun attachFile(tenant: Connection, files: ModuleFiles, lotId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
         val key = importKey.trim().take(MaxKey)
-        if (key.isEmpty()) throw PropietariosValidationException("La clave del archivo no es válida.")
+        if (key.isEmpty()) throw PropietariosValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM propietarios_attachments WHERE lot_id = ? AND import_key = ?", listOf(lotId, key)) { it.getInt("found") }.isNotEmpty()
         if (already) return false
         val total = tenant.rows("SELECT count(*) AS total FROM propietarios_attachments WHERE lot_id = ? AND NOT delete_pending", listOf(lotId)) { it.getInt("total") }.firstOrNull() ?: 0
-        if (total >= PropietariosRepository.MaxFilesPerLot) throw PropietariosValidationException("El lote ya tiene el máximo de ${PropietariosRepository.MaxFilesPerLot} archivos.")
+        if (total >= PropietariosRepository.MaxFilesPerLot) throw PropietariosValidationException(tr("El lote ya tiene el máximo de {0} archivos.", PropietariosRepository.MaxFilesPerLot))
         val fileName = PropietariosRepository.cleanFileName(name).ifEmpty { "archivo" }
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         val stored = try {
             files.put(fileName, type, content, PropietariosRepository.MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw PropietariosValidationException("$fileName supera el máximo de ${PropietariosRepository.MaxFileBytes / (1024 * 1024)} MB.")
+            throw PropietariosValidationException(tr("{0} supera el máximo de {1} MB.", fileName, PropietariosRepository.MaxFileBytes / (1024 * 1024)))
         }
         try {
             val inserted = tenant.exec(

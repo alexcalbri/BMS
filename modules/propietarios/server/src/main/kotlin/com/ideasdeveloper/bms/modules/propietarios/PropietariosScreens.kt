@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiCard
@@ -73,11 +74,11 @@ object PropietariosScreens {
     }
 
     fun historyLabel(kind: String): String = when (kind) {
-        "alta" -> "Alta de titular"
-        "traspaso" -> "Cambio de titularidad"
-        "baja" -> "Baja de titular"
-        "importacion" -> "Importación"
-        else -> "Edición"
+        "alta" -> tr("Alta de titular")
+        "traspaso" -> tr("Cambio de titularidad")
+        "baja" -> tr("Baja de titular")
+        "importacion" -> tr("Importación")
+        else -> tr("Edición")
     }
 
     private fun historyTone(kind: String): String = when (kind) {
@@ -96,10 +97,10 @@ object PropietariosScreens {
     fun navigation(context: Context, selected: String): UiNavigation = UiNavigation(
         title = PropietariosModule.displayName,
         items = listOfNotNull(
-            UiNavItem("desarrollos", "Desarrollos", UiNavigate("desarrollos")),
-            UiNavItem("propietarios", "Propietarios", UiNavigate("propietarios")),
-            UiNavItem("buscar", "Buscar", UiNavigate("buscar")),
-            UiNavItem("importar", "Importar", UiNavigate("importar")).takeIf { context.importEnabled },
+            UiNavItem("desarrollos", tr("Desarrollos"), UiNavigate("desarrollos")),
+            UiNavItem("propietarios", tr("Propietarios"), UiNavigate("propietarios")),
+            UiNavItem("buscar", tr("Buscar"), UiNavigate("buscar")),
+            UiNavItem("importar", tr("Importar"), UiNavigate("importar")).takeIf { context.importEnabled },
         ),
         selected = selected,
     )
@@ -110,19 +111,19 @@ object PropietariosScreens {
     // ---- piezas comunes ----
 
     private fun lotItem(lot: Lot, withDevelopment: Boolean): UiListItem = UiListItem(
-        title = "Lote ${lot.lotNumber}" + lot.propertyName.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+        title = tr("Lote {0}", lot.lotNumber) + lot.propertyName.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
         subtitle = listOfNotNull(
             lot.developmentName.takeIf { withDevelopment },
-            lot.registerNumber.takeIf { it.isNotBlank() }?.let { "Registro $it" },
+            lot.registerNumber.takeIf { it.isNotBlank() }?.let { tr("Registro {0}", it) },
             lot.propertyType.takeIf { it.isNotBlank() },
         ).joinToString(" · "),
         trailing = lot.areaM2?.let { "${area(it)} m²" }.orEmpty(),
-        badges = listOf(UiBadge(lot.status.label, statusTone(lot.status))),
+        badges = listOf(UiBadge(tr(lot.status.label), statusTone(lot.status))),
         action = UiNavigate("lote", mapOf("id" to lot.id.toString())),
     )
 
     private fun truncatedNote(count: Int): List<UiNode> =
-        if (count > ListLimit) listOf(hint("Se muestran los primeros $ListLimit resultados: afina la búsqueda para ver el resto.", UiTone.Warning)) else emptyList()
+        if (count > ListLimit) listOf(hint(tr("Se muestran los primeros {0} resultados: afina la búsqueda para ver el resto.", ListLimit), UiTone.Warning)) else emptyList()
 
     private fun filesField(readOnly: Boolean) = UiField(
         "files", "Adjuntos (escrituras, planos)", type = "files", readOnly = readOnly,
@@ -131,17 +132,17 @@ object PropietariosScreens {
 
     private fun fileRefs(attachments: List<LotAttachment>) = attachments.map { UiFileRef(it.id.toString(), it.name, it.path, it.size) }
 
-    private fun mapButton(url: String?): List<UiNode> = if (url == null) emptyList() else listOf(UiButton("Ver en mapa", UiOpenUrl(url), style = "secondary"))
+    private fun mapButton(url: String?): List<UiNode> = if (url == null) emptyList() else listOf(UiButton(tr("Ver en mapa"), UiOpenUrl(url), style = "secondary"))
 
     // ---- Desarrollos ----
 
     private fun developmentFields() = listOf(
-        UiField("name", "Nombre", required = true),
-        UiField("location", "Ubicación", placeholder = "Ciudad, zona o dirección"),
-        UiField("map_url", "Enlace del mapa", type = "url", help = "Opcional. Debe empezar por https://. Si lo dejas vacío se usan las coordenadas."),
-        UiField("latitude", "Latitud", help = "Opcional, por ejemplo 9.9281."),
-        UiField("longitude", "Longitud", help = "Opcional, por ejemplo -84.0907."),
-        UiField("notes", "Notas", type = "textarea"),
+        UiField("name", tr("Nombre"), required = true),
+        UiField("location", tr("Ubicación"), placeholder = tr("Ciudad, zona o dirección")),
+        UiField("map_url", tr("Enlace del mapa"), type = "url", help = tr("Opcional. Debe empezar por https://. Si lo dejas vacío se usan las coordenadas.")),
+        UiField("latitude", tr("Latitud"), help = tr("Opcional, por ejemplo 9.9281.")),
+        UiField("longitude", tr("Longitud"), help = tr("Opcional, por ejemplo -84.0907.")),
+        UiField("notes", tr("Notas"), type = "textarea"),
     )
 
     private fun developmentValues(development: Development?) = mapOf(
@@ -159,9 +160,9 @@ object PropietariosScreens {
             add(
                 UiGrid(
                     listOf(
-                        metric("Desarrollos", list.size.toString()),
-                        metric("Lotes", list.sumOf { it.lots }.toString()),
-                        metric("Área total", "${area(totalArea)} m²"),
+                        metric(tr("Desarrollos"), list.size.toString()),
+                        metric(tr("Lotes"), list.sumOf { it.lots }.toString()),
+                        metric(tr("Área total"), "${area(totalArea)} m²"),
                     ),
                 ),
             )
@@ -175,7 +176,7 @@ object PropietariosScreens {
                             action = UiNavigate("desarrollo", mapOf("id" to item.development.id.toString())),
                         )
                     },
-                    emptyText = "Aún no hay desarrollos.",
+                    emptyText = tr("Aún no hay desarrollos."),
                 ),
             )
             if (context.canAdmin) {
@@ -186,17 +187,17 @@ object PropietariosScreens {
                                 id = "development",
                                 fields = developmentFields(),
                                 values = developmentValues(null) + submitted.orEmpty(),
-                                submit = UiButton("Crear desarrollo", UiRequest("$Route/desarrollos", params = mapOf("op" to "dev-save"), formId = "development")),
+                                submit = UiButton(tr("Crear desarrollo"), UiRequest("$Route/desarrollos", params = mapOf("op" to "dev-save"), formId = "development")),
                             ),
                         ),
-                        title = "Nuevo desarrollo",
+                        title = tr("Nuevo desarrollo"),
                         collapsible = true,
                         expanded = list.isEmpty() || submitted != null,
                     ),
                 )
             }
         }
-        return screen(context, "Desarrollos", "desarrollos", notice, body)
+        return screen(context, tr("Desarrollos"), "desarrollos", notice, body)
     }
 
     fun development(context: Context, data: DevelopmentData, params: Map<String, String>, notice: UiNotice? = null, submitted: Map<String, String>? = null): UiScreen {
@@ -206,35 +207,35 @@ object PropietariosScreens {
             val details = listOfNotNull(development.location.takeIf { it.isNotBlank() }, development.notes.takeIf { it.isNotBlank() })
             details.forEach { add(hint(it)) }
             val buttons = buildList<UiNode> {
-                if (context.canManage) add(UiButton("Nuevo lote", UiNavigate("lote", mapOf("development" to id))))
+                if (context.canManage) add(UiButton(tr("Nuevo lote"), UiNavigate("lote", mapOf("development" to id))))
                 addAll(mapButton(PropietariosRules.mapLink(development.mapUrl, development.latitude, development.longitude)))
-                add(UiButton("Todos los desarrollos", UiNavigate("desarrollos"), style = "secondary"))
+                add(UiButton(tr("Todos los desarrollos"), UiNavigate("desarrollos"), style = "secondary"))
             }
             add(UiRow(buttons))
             add(
                 UiGrid(
-                    listOf(metric("Lotes", data.totals.values.sumOf { it.lots }.toString(), "${area(data.totals.values.fold(BigDecimal.ZERO) { sum, item -> sum + item.areaM2 })} m²")) +
+                    listOf(metric(tr("Lotes"), data.totals.values.sumOf { it.lots }.toString(), "${area(data.totals.values.fold(BigDecimal.ZERO) { sum, item -> sum + item.areaM2 })} m²")) +
                         LotStatus.entries.map { status ->
                             val totals = data.totals[status] ?: StatusTotals(0, BigDecimal.ZERO)
-                            metric(status.label, totals.lots.toString(), "${area(totals.areaM2)} m²")
+                            metric(tr(status.label), totals.lots.toString(), "${area(totals.areaM2)} m²")
                         },
                     minItemWidth = 150,
                 ),
             )
             val filterFields = listOf(
-                UiField("q", "Buscar", placeholder = "Número de lote, registro o propiedad"),
-                UiField("status", "Estado", type = "dropdown", options = listOf(PropietariosActions.AllOption) + LotStatus.entries.map { it.label }),
+                UiField("q", tr("Buscar"), placeholder = tr("Número de lote, registro o propiedad")),
+                UiField("status", tr("Estado"), type = "dropdown", options = listOf(PropietariosActions.AllOption) + LotStatus.entries.map { it.label }),
             )
             add(
                 UiForm(
                     "filters", filterFields,
                     values = mapOf("q" to params["q"].orEmpty(), "status" to (params["status"]?.takeIf { it.isNotBlank() } ?: PropietariosActions.AllOption)),
-                    submit = UiButton("Filtrar", UiNavigate("desarrollo", mapOf("id" to id), formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate("desarrollo", mapOf("id" to id), formId = "filters"), style = "secondary"),
                     minFieldWidth = 220,
                 ),
             )
             addAll(truncatedNote(data.lots.size))
-            add(UiList(data.lots.take(ListLimit).map { lotItem(it, withDevelopment = false) }, emptyText = "No hay lotes con esos filtros."))
+            add(UiList(data.lots.take(ListLimit).map { lotItem(it, withDevelopment = false) }, emptyText = tr("No hay lotes con esos filtros.")))
             if (context.canAdmin) {
                 add(
                     UiCard(
@@ -243,14 +244,14 @@ object PropietariosScreens {
                                 id = "development",
                                 fields = developmentFields(),
                                 values = developmentValues(development) + submitted.orEmpty(),
-                                submit = UiButton("Guardar", UiRequest("$Route/desarrollo", params = mapOf("op" to "dev-save", "id" to id), formId = "development"), style = "secondary"),
+                                submit = UiButton(tr("Guardar"), UiRequest("$Route/desarrollo", params = mapOf("op" to "dev-save", "id" to id), formId = "development"), style = "secondary"),
                             ),
                             UiButton(
-                                "Archivar desarrollo", UiRequest("$Route/desarrollo", params = mapOf("op" to "dev-archive", "id" to id), confirm = "Se archivará el desarrollo y todos sus lotes. ¿Continuar?"),
+                                tr("Archivar desarrollo"), UiRequest("$Route/desarrollo", params = mapOf("op" to "dev-archive", "id" to id), confirm = tr("Se archivará el desarrollo y todos sus lotes. ¿Continuar?")),
                                 style = "danger",
                             ),
                         ),
-                        title = "Editar desarrollo",
+                        title = tr("Editar desarrollo"),
                         collapsible = true,
                         expanded = submitted != null,
                     ),
@@ -263,16 +264,16 @@ object PropietariosScreens {
     // ---- Lote ----
 
     private fun lotFields(readOnly: Boolean) = listOf(
-        UiField("lot_number", "Número de lote", required = true, readOnly = readOnly),
-        UiField("register_number", "Número de registro", readOnly = readOnly),
-        UiField("property_name", "Propiedad", readOnly = readOnly),
-        UiField("property_type", "Tipo de propiedad", readOnly = readOnly),
-        UiField("status", "Estado", type = "dropdown", options = LotStatus.entries.map { it.label }, readOnly = readOnly),
+        UiField("lot_number", tr("Número de lote"), required = true, readOnly = readOnly),
+        UiField("register_number", tr("Número de registro"), readOnly = readOnly),
+        UiField("property_name", tr("Propiedad"), readOnly = readOnly),
+        UiField("property_type", tr("Tipo de propiedad"), readOnly = readOnly),
+        UiField("status", tr("Estado"), type = "dropdown", options = LotStatus.entries.map { it.label }, readOnly = readOnly),
         UiField("area_m2", "Área (m²)", readOnly = readOnly),
-        UiField("map_url", "Enlace del mapa", type = "url", readOnly = readOnly, help = "Opcional. Debe empezar por https://."),
-        UiField("latitude", "Latitud", readOnly = readOnly),
-        UiField("longitude", "Longitud", readOnly = readOnly),
-        UiField("notes", "Notas", type = "textarea", readOnly = readOnly),
+        UiField("map_url", tr("Enlace del mapa"), type = "url", readOnly = readOnly, help = tr("Opcional. Debe empezar por https://.")),
+        UiField("latitude", tr("Latitud"), readOnly = readOnly),
+        UiField("longitude", tr("Longitud"), readOnly = readOnly),
+        UiField("notes", tr("Notas"), type = "textarea", readOnly = readOnly),
     )
 
     private fun lotValues(lot: Lot?) = mapOf(
@@ -293,11 +294,11 @@ object PropietariosScreens {
             id = "lot",
             fields = lotFields(readOnly = false),
             values = lotValues(null) + submitted.orEmpty(),
-            submit = UiButton("Crear lote", UiRequest("$Route/lote", params = mapOf("op" to "save", "development" to development.id.toString()), formId = "lot")),
+            submit = UiButton(tr("Crear lote"), UiRequest("$Route/lote", params = mapOf("op" to "save", "development" to development.id.toString()), formId = "lot")),
         )
         return screen(
-            context, "Nuevo lote", "desarrollos", notice,
-            listOf(hint("Desarrollo: ${development.name}"), UiCard(listOf(form), title = "Datos del lote")),
+            context, tr("Nuevo lote"), "desarrollos", notice,
+            listOf(hint(tr("Desarrollo: {0}", development.name)), UiCard(listOf(form), title = tr("Datos del lote"))),
         )
     }
 
@@ -319,9 +320,9 @@ object PropietariosScreens {
         val body = buildList<UiNode> {
             add(hint("${lot.developmentName}${if (lot.archived) " · Lote archivado" else ""}"))
             val buttons = buildList<UiNode> {
-                add(UiButton("Ver el desarrollo", UiNavigate("desarrollo", mapOf("id" to lot.developmentId.toString())), style = "secondary"))
+                add(UiButton(tr("Ver el desarrollo"), UiNavigate("desarrollo", mapOf("id" to lot.developmentId.toString())), style = "secondary"))
                 addAll(mapButton(PropietariosRules.mapLink(lot.mapUrl, lot.latitude, lot.longitude)))
-                if (canEdit) add(UiButton("Cambiar titularidad", UiNavigate("traspaso", mapOf("lot" to id))))
+                if (canEdit) add(UiButton(tr("Cambiar titularidad"), UiNavigate("traspaso", mapOf("lot" to id))))
             }
             add(UiRow(buttons))
 
@@ -336,10 +337,10 @@ object PropietariosScreens {
                                     action = if (canEdit) UiNavigate("titularidad", mapOf("id" to ownership.id.toString())) else UiNavigate("propietario", mapOf("id" to ownership.customerId.toString())),
                                 )
                             },
-                            emptyText = "Este lote no tiene titulares vigentes.",
+                            emptyText = tr("Este lote no tiene titulares vigentes."),
                         ),
                     ) + if (past.isEmpty()) emptyList<UiNode>() else listOf<UiNode>(
-                        hint("Titulares anteriores"),
+                        hint(tr("Titulares anteriores")),
                         UiList(
                             past.map { ownership ->
                                 UiListItem(
@@ -350,7 +351,7 @@ object PropietariosScreens {
                             },
                         ),
                     ),
-                    title = "Titulares vigentes",
+                    title = tr("Titulares vigentes"),
                 ),
             )
 
@@ -358,18 +359,18 @@ object PropietariosScreens {
                 add(
                     UiCard(
                         listOf(
-                            hint("Para quitar a un titular o pasar el lote a otra persona usa Cambiar titularidad."),
+                            hint(tr("Para quitar a un titular o pasar el lote a otra persona usa Cambiar titularidad.")),
                             UiForm(
                                 id = "co-owner",
                                 fields = listOf(
-                                    UiField("owner", "Cliente", required = true, placeholder = "Escribe para buscar", suggest = UiSuggest(CustomerSuggestRoute), help = "Elige un cliente de la lista de sugerencias."),
-                                    UiField("share", "Porcentaje", help = "Opcional, de 0 a 100."),
+                                    UiField("owner", tr("Cliente"), required = true, placeholder = tr("Escribe para buscar"), suggest = UiSuggest(CustomerSuggestRoute), help = tr("Elige un cliente de la lista de sugerencias.")),
+                                    UiField("share", tr("Porcentaje"), help = tr("Opcional, de 0 a 100.")),
                                 ),
                                 values = submitted.orEmpty().filterKeys { it in setOf("owner", "owner_id", "share") },
-                                submit = UiButton("Añadir cotitular", request("add-owner", formId = "co-owner"), style = "secondary"),
+                                submit = UiButton(tr("Añadir cotitular"), request("add-owner", formId = "co-owner"), style = "secondary"),
                             ),
                         ),
-                        title = "Añadir cotitular",
+                        title = tr("Añadir cotitular"),
                         collapsible = true,
                         expanded = false,
                     ),
@@ -383,10 +384,10 @@ object PropietariosScreens {
                             id = "lot",
                             fields = lotFields(readOnly = !canEdit),
                             values = lotValues(lot) + submitted.orEmpty().filterKeys { it in lotValues(null).keys },
-                            submit = UiButton("Guardar", request("save", formId = "lot")).takeIf { canEdit },
+                            submit = UiButton(tr("Guardar"), request("save", formId = "lot")).takeIf { canEdit },
                         ),
                     ),
-                    title = "Datos del lote",
+                    title = tr("Datos del lote"),
                 ),
             )
 
@@ -397,10 +398,10 @@ object PropietariosScreens {
                             id = "attachments",
                             fields = listOf(filesField(readOnly = !canEdit)),
                             values = mapOf("files" to UiFieldValues.files(fileRefs(detail.attachments))),
-                            submit = UiButton("Guardar adjuntos", request("files", formId = "attachments"), style = "secondary").takeIf { canEdit },
+                            submit = UiButton(tr("Guardar adjuntos"), request("files", formId = "attachments"), style = "secondary").takeIf { canEdit },
                         ),
                     ),
-                    title = "Adjuntos",
+                    title = tr("Adjuntos"),
                 ),
             )
 
@@ -416,18 +417,18 @@ object PropietariosScreens {
                                     tone = historyTone(entry.kind),
                                 )
                             },
-                            emptyText = "Todavía no hay movimientos.",
+                            emptyText = tr("Todavía no hay movimientos."),
                         ),
                     ),
-                    title = "Historial",
+                    title = tr("Historial"),
                 ),
             )
 
             if (context.canAdmin && !lot.archived) {
-                add(UiButton("Archivar lote", request("archive", confirm = "El lote dejará de aparecer en listas y búsquedas. ¿Archivarlo?"), style = "danger"))
+                add(UiButton(tr("Archivar lote"), request("archive", confirm = tr("El lote dejará de aparecer en listas y búsquedas. ¿Archivarlo?")), style = "danger"))
             }
         }
-        return screen(context, "Lote ${lot.lotNumber}", "desarrollos", notice, body)
+        return screen(context, tr("Lote {0}", lot.lotNumber), "desarrollos", notice, body)
     }
 
     // ---- Cambio de titularidad ----
@@ -435,18 +436,18 @@ object PropietariosScreens {
     fun transfer(context: Context, lot: Lot, current: List<Ownership>, notice: UiNotice? = null, submitted: Map<String, String>? = null): UiScreen {
         val id = lot.id.toString()
         val fields = buildList {
-            add(UiField("date", "Fecha del cambio", type = "date", required = true))
+            add(UiField("date", tr("Fecha del cambio"), type = "date", required = true))
             for (index in 1..PropietariosRules.MaxFormOwners) {
                 add(
                     UiField(
-                        "owner$index", "Nuevo titular $index", placeholder = "Escribe para buscar",
-                        help = if (index == 1) "Elige un cliente de la lista de sugerencias. Déjalo vacío para registrar solo la baja." else "",
-                        section = "Titular $index", suggest = UiSuggest(CustomerSuggestRoute),
+                        "owner$index", tr("Nuevo titular {0}", index), placeholder = tr("Escribe para buscar"),
+                        help = if (index == 1) tr("Elige un cliente de la lista de sugerencias. Déjalo vacío para registrar solo la baja.") else "",
+                        section = tr("Titular {0}", index), suggest = UiSuggest(CustomerSuggestRoute),
                     ),
                 )
-                add(UiField("share$index", "Porcentaje $index", section = "Titular $index", help = if (index == 1) "Opcional, de 0 a 100; entre todos de 100 como máximo." else ""))
+                add(UiField("share$index", tr("Porcentaje {0}", index), section = tr("Titular {0}", index), help = if (index == 1) tr("Opcional, de 0 a 100; entre todos de 100 como máximo.") else ""))
             }
-            add(UiField("notes", "Notas", type = "textarea"))
+            add(UiField("notes", tr("Notas"), type = "textarea"))
         }
         val values = mapOf("date" to context.today.toString()) + submitted.orEmpty()
         val body = buildList<UiNode> {
@@ -456,11 +457,11 @@ object PropietariosScreens {
                     listOf(
                         UiList(
                             current.map { UiListItem(title = it.customerName, subtitle = ownerLine(it)) },
-                            emptyText = "El lote no tiene titulares vigentes.",
+                            emptyText = tr("El lote no tiene titulares vigentes."),
                         ),
-                        hint("Las titularidades vigentes terminan en la fecha del cambio y quedan en el historial."),
+                        hint(tr("Las titularidades vigentes terminan en la fecha del cambio y quedan en el historial.")),
                     ),
-                    title = "Titulares vigentes",
+                    title = tr("Titulares vigentes"),
                 ),
             )
             if (context.canSeeCustomers) {
@@ -470,17 +471,17 @@ object PropietariosScreens {
                         fields = fields,
                         values = values,
                         submit = UiButton(
-                            "Registrar cambio",
+                            tr("Registrar cambio"),
                             UiRequest("$Route/traspaso", params = mapOf("op" to "transfer", "lot" to id), formId = "transfer"),
                         ),
                     ),
                 )
             } else {
-                add(hint("Para elegir titulares necesitas permiso para ver clientes.", UiTone.Warning))
+                add(hint(tr("Para elegir titulares necesitas permiso para ver clientes."), UiTone.Warning))
             }
-            add(UiButton("Volver al lote", UiNavigate("lote", mapOf("id" to id)), style = "secondary"))
+            add(UiButton(tr("Volver al lote"), UiNavigate("lote", mapOf("id" to id)), style = "secondary"))
         }
-        return screen(context, "Cambiar titularidad", "desarrollos", notice, body)
+        return screen(context, tr("Cambiar titularidad"), "desarrollos", notice, body)
     }
 
     fun ownership(context: Context, ownership: Ownership, lot: Lot, notice: UiNotice? = null, submitted: Map<String, String>? = null): UiScreen {
@@ -493,20 +494,20 @@ object PropietariosScreens {
         val form = UiForm(
             id = "ownership",
             fields = listOf(
-                UiField("share", "Porcentaje", help = "Opcional, de 0 a 100."),
-                UiField("starts_on", "Inicio", type = "date"),
-                UiField("ends_on", "Fin", type = "date", help = "Con fecha de fin el titular deja de ser vigente (en esa fecha)."),
-                UiField("notes", "Notas", type = "textarea"),
+                UiField("share", tr("Porcentaje"), help = tr("Opcional, de 0 a 100.")),
+                UiField("starts_on", tr("Inicio"), type = "date"),
+                UiField("ends_on", tr("Fin"), type = "date", help = tr("Con fecha de fin el titular deja de ser vigente (en esa fecha).")),
+                UiField("notes", tr("Notas"), type = "textarea"),
             ),
             values = values,
-            submit = UiButton("Guardar", UiRequest("$Route/titularidad", params = mapOf("op" to "save", "id" to ownership.id.toString()), formId = "ownership")),
+            submit = UiButton(tr("Guardar"), UiRequest("$Route/titularidad", params = mapOf("op" to "save", "id" to ownership.id.toString()), formId = "ownership")),
         )
         val body = listOf(
             hint("${lot.developmentName} · Lote ${lot.lotNumber} · ${ownership.customerName}"),
-            UiCard(listOf(form), title = "Titularidad"),
-            UiButton("Volver al lote", UiNavigate("lote", mapOf("id" to lot.id.toString())), style = "secondary"),
+            UiCard(listOf(form), title = tr("Titularidad")),
+            UiButton(tr("Volver al lote"), UiNavigate("lote", mapOf("id" to lot.id.toString())), style = "secondary"),
         )
-        return screen(context, "Titularidad", "desarrollos", notice, body)
+        return screen(context, tr("Titularidad"), "desarrollos", notice, body)
     }
 
     // ---- Propietarios ----
@@ -515,8 +516,8 @@ object PropietariosScreens {
         val body = buildList<UiNode> {
             add(
                 UiForm(
-                    "filters", listOf(UiField("q", "Buscar", placeholder = "Nombre o correo")), values = mapOf("q" to query),
-                    submit = UiButton("Buscar", UiNavigate("propietarios", formId = "filters"), style = "secondary"),
+                    "filters", listOf(UiField("q", tr("Buscar"), placeholder = tr("Nombre o correo"))), values = mapOf("q" to query),
+                    submit = UiButton(tr("Buscar"), UiNavigate("propietarios", formId = "filters"), style = "secondary"),
                     minFieldWidth = 260,
                 ),
             )
@@ -531,22 +532,22 @@ object PropietariosScreens {
                             action = UiNavigate("propietario", mapOf("id" to owner.customerId.toString())),
                         )
                     },
-                    emptyText = "No hay propietarios con lotes vigentes.",
+                    emptyText = tr("No hay propietarios con lotes vigentes."),
                 ),
             )
         }
-        return screen(context, "Propietarios", "propietarios", notice, body)
+        return screen(context, tr("Propietarios"), "propietarios", notice, body)
     }
 
     fun owner(context: Context, customer: CustomerRef, owned: List<OwnedLot>, notice: UiNotice? = null): UiScreen {
         fun item(entry: OwnedLot) = UiListItem(
             title = "Lote ${entry.lot.lotNumber} · ${entry.lot.developmentName}",
             subtitle = listOfNotNull(
-                entry.lot.registerNumber.takeIf { it.isNotBlank() }?.let { "Registro $it" },
+                entry.lot.registerNumber.takeIf { it.isNotBlank() }?.let { tr("Registro {0}", it) },
                 entry.lot.areaM2?.let { "${area(it)} m²" },
                 ownerLine(entry.ownership).takeIf { it.isNotBlank() },
             ).joinToString(" · "),
-            badges = listOf(UiBadge(entry.lot.status.label, statusTone(entry.lot.status))),
+            badges = listOf(UiBadge(tr(entry.lot.status.label), statusTone(entry.lot.status))),
             action = UiNavigate("lote", mapOf("id" to entry.lot.id.toString())),
         )
         val current = owned.filter { it.ownership.current }
@@ -555,12 +556,12 @@ object PropietariosScreens {
         val body = buildList<UiNode> {
             if (context.canSeeCustomers && customer.email.isNotBlank()) add(hint(customer.email))
             if (context.canSeeCustomers) {
-                add(UiButton("Abrir en Clientes", UiOpenModule("clientes", "customer", mapOf("id" to customer.id.toString())), style = "secondary"))
+                add(UiButton(tr("Abrir en Clientes"), UiOpenModule("clientes", "customer", mapOf("id" to customer.id.toString())), style = "secondary"))
             }
-            add(UiGrid(listOf(metric("Lotes vigentes", current.size.toString()), metric("Área total", "${area(totalArea)} m²"))))
-            add(UiCard(listOf(UiList(current.map(::item), emptyText = "No tiene lotes vigentes.")), title = "Lotes vigentes"))
-            if (past.isNotEmpty()) add(UiCard(listOf(UiList(past.map(::item))), title = "Lotes anteriores"))
-            add(UiButton("Todos los propietarios", UiNavigate("propietarios"), style = "secondary"))
+            add(UiGrid(listOf(metric(tr("Lotes vigentes"), current.size.toString()), metric(tr("Área total"), "${area(totalArea)} m²"))))
+            add(UiCard(listOf(UiList(current.map(::item), emptyText = tr("No tiene lotes vigentes."))), title = tr("Lotes vigentes")))
+            if (past.isNotEmpty()) add(UiCard(listOf(UiList(past.map(::item))), title = tr("Lotes anteriores")))
+            add(UiButton(tr("Todos los propietarios"), UiNavigate("propietarios"), style = "secondary"))
         }
         return screen(context, customer.name, "propietarios", notice, body)
     }
@@ -571,18 +572,18 @@ object PropietariosScreens {
         val body = buildList<UiNode> {
             add(
                 UiForm(
-                    "search", listOf(UiField("q", "Número de lote o de registro", required = true, placeholder = "Por ejemplo 24 o 1-234567")), values = mapOf("q" to query),
-                    submit = UiButton("Buscar", UiNavigate("buscar", formId = "search")),
+                    "search", listOf(UiField("q", tr("Número de lote o de registro"), required = true, placeholder = tr("Por ejemplo 24 o 1-234567"))), values = mapOf("q" to query),
+                    submit = UiButton(tr("Buscar"), UiNavigate("buscar", formId = "search")),
                     minFieldWidth = 320,
                 ),
             )
             if (query.isNotBlank()) {
                 addAll(truncatedNote(lots.size))
-                add(UiList(lots.take(ListLimit).map { lotItem(it, withDevelopment = true) }, emptyText = "Ningún lote coincide con \"$query\"."))
+                add(UiList(lots.take(ListLimit).map { lotItem(it, withDevelopment = true) }, emptyText = tr("Ningún lote coincide con \"{0}\".", query)))
             } else {
-                add(hint("Busca por número de lote o de registro en todos los desarrollos."))
+                add(hint(tr("Busca por número de lote o de registro en todos los desarrollos.")))
             }
         }
-        return screen(context, "Buscar", "buscar", notice, body)
+        return screen(context, tr("Buscar"), "buscar", notice, body)
     }
 }

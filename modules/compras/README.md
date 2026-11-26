@@ -1,6 +1,6 @@
 # Modulo Compras
 
-Version 0.2.3. Estado: en desarrollo (`.development`).
+Version 0.3.0. Estado: en desarrollo (`.development`).
 
 Solicitudes de compra por empresa: se solicita, se aprueba y se procede. Cotizar es opcional. Cada negocio es una empresa de BMS, por eso no hay catalogo de sedes; el departamento si es un catalogo configurable.
 
@@ -132,3 +132,13 @@ reimportacion no deshace una aprobacion ni un rechazo hechos en BMS. El resultad
 - Conversion de monedas en los totales (hoy se separan por moneda).
 - Adjuntos y cotizaciones desde MCP.
 - Prueba manual en la app de las pantallas, la subida de archivos y las notificaciones.
+
+## Languages (0.3.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, confirmations, notifications, permissions and the module definition) is
+available in Spanish (source) and English: the code writes `tr("Texto en espanol")` and the English catalog is
+`server/src/main/resources/modules/compras/i18n/en.json`. Enum labels (status, priority) are stored and parsed in
+Spanish and translated only where they are shown. Notifications are written in each recipient's language.
+Customer data, names typed by users (suppliers, departments, requesters), the history and activity rows already
+stored (events, decision names, import problems), the imported source labels and the MCP tools (names, descriptions
+and results) are not translated. Values the app sends back (`op`, ids, filters, option values) never change with the language.

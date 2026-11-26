@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiFileRef
 import java.math.BigDecimal
@@ -26,11 +27,11 @@ data class OwnershipResult(
  * los agentes. Los permisos los comprueba quien llama (rutas y herramientas MCP) antes de abrir la conexion.
  */
 object PropietariosService {
-    private fun missingLot() = PropietariosValidationException("Lote no encontrado.")
+    private fun missingLot() = PropietariosValidationException(tr("Lote no encontrado."))
 
     /** Falla con un mensaje para el usuario si no tiene [permission] (las rutas y las herramientas ya lo piden antes; esto es la segunda barrera). */
     fun require(permissions: ModulePermissions, permission: String) {
-        if (!permissions.has(permission)) throw PropietariosValidationException("No tienes permiso para esta acción.")
+        if (!permissions.has(permission)) throw PropietariosValidationException(tr("No tienes permiso para esta acción."))
     }
 
     // ---- desarrollos ----
@@ -38,11 +39,11 @@ object PropietariosService {
     fun createDevelopment(tenant: Connection, input: DevelopmentInput, actorId: UUID?): UUID = PropietariosRepository.createDevelopment(tenant, input, actorId)
 
     fun updateDevelopment(tenant: Connection, id: UUID, input: DevelopmentInput) {
-        if (!PropietariosRepository.updateDevelopment(tenant, id, input)) throw PropietariosValidationException("Desarrollo no encontrado.")
+        if (!PropietariosRepository.updateDevelopment(tenant, id, input)) throw PropietariosValidationException(tr("Desarrollo no encontrado."))
     }
 
     fun archiveDevelopment(tenant: Connection, id: UUID) {
-        if (!PropietariosRepository.archiveDevelopment(tenant, id)) throw PropietariosValidationException("Desarrollo no encontrado.")
+        if (!PropietariosRepository.archiveDevelopment(tenant, id)) throw PropietariosValidationException(tr("Desarrollo no encontrado."))
     }
 
     // ---- lotes ----
@@ -51,7 +52,7 @@ object PropietariosService {
     fun createLot(tenant: Connection, input: LotInput, author: String, actorId: UUID?, today: LocalDate = PropietariosRepository.today()): UUID =
         PropietariosRepository.transaction(tenant) {
             val development = PropietariosRepository.getDevelopment(tenant, input.developmentId)?.takeIf { !it.archived }
-                ?: throw PropietariosValidationException("Desarrollo no encontrado.")
+                ?: throw PropietariosValidationException(tr("Desarrollo no encontrado."))
             val id = PropietariosRepository.createLot(tenant, input, actorId)
             PropietariosRepository.addHistory(tenant, id, "edicion", today, "Lote creado en ${development.name}.", author)
             id
@@ -113,7 +114,7 @@ object PropietariosService {
     ): OwnershipResult = PropietariosRepository.transaction(tenant) {
         val status = PropietariosRepository.lockLot(tenant, lotId) ?: throw missingLot()
         val lot = PropietariosRepository.getLot(tenant, lotId) ?: throw missingLot()
-        if (notes.trim().length > PropietariosRules.MaxNotes) throw PropietariosValidationException("Las notas admiten hasta ${PropietariosRules.MaxNotes} caracteres.")
+        if (notes.trim().length > PropietariosRules.MaxNotes) throw PropietariosValidationException(tr("Las notas admiten hasta {0} caracteres.", PropietariosRules.MaxNotes))
         val open = PropietariosRepository.openOwnerships(tenant, lotId, date)
         val customers = PropietariosRepository.visibleCustomers(tenant, newOwners.map { it.customerId })
         val plan = PropietariosRules.planTransfer(date, open, newOwners, customers.keys, status)
@@ -148,9 +149,9 @@ object PropietariosService {
         val status = PropietariosRepository.lockLot(tenant, lotId) ?: throw missingLot()
         val lot = PropietariosRepository.getLot(tenant, lotId) ?: throw missingLot()
         val customer = PropietariosRepository.visibleCustomer(tenant, newOwner.customerId)
-            ?: throw PropietariosValidationException("El cliente ya no está disponible en Clientes.")
+            ?: throw PropietariosValidationException(tr("El cliente ya no está disponible en Clientes."))
         val open = PropietariosRepository.openOwnerships(tenant, lotId, today)
-        if (open.any { it.customerId == customer.id }) throw PropietariosValidationException("${customer.name} ya es titular vigente de este lote.")
+        if (open.any { it.customerId == customer.id }) throw PropietariosValidationException(tr("{0} ya es titular vigente de este lote.", customer.name))
         PropietariosRules.checkShares(listOf(newOwner.sharePercent), PropietariosRepository.assignedShare(tenant, lotId, today))
         val id = PropietariosRepository.insertOwnership(tenant, lotId, customer.id, newOwner.sharePercent, startsOn, notes, actorId)
         val after = PropietariosRules.statusAfterOwnership(status)
@@ -185,19 +186,19 @@ object PropietariosService {
         author: String,
         today: LocalDate = PropietariosRepository.today(),
     ): OwnershipResult = PropietariosRepository.transaction(tenant) {
-        val lotId = PropietariosRepository.ownershipLotId(tenant, ownershipId) ?: throw PropietariosValidationException("Titularidad no encontrada.")
+        val lotId = PropietariosRepository.ownershipLotId(tenant, ownershipId) ?: throw PropietariosValidationException(tr("Titularidad no encontrada."))
         // Primero el candado del lote (sin archivar) y despues se relee la titularidad: asi se ve lo que dejo un cambio en curso.
         PropietariosRepository.lockLot(tenant, lotId) ?: throw missingLot()
-        val old = PropietariosRepository.getOwnership(tenant, ownershipId, today) ?: throw PropietariosValidationException("Titularidad no encontrada.")
+        val old = PropietariosRepository.getOwnership(tenant, ownershipId, today) ?: throw PropietariosValidationException(tr("Titularidad no encontrada."))
         val lot = PropietariosRepository.getLot(tenant, old.lotId) ?: throw missingLot()
-        if (startsOn != null && endsOn != null && endsOn.isBefore(startsOn)) throw PropietariosValidationException("La fecha de fin no puede ser anterior a la de inicio.")
-        if (notes.trim().length > PropietariosRules.MaxNotes) throw PropietariosValidationException("Las notas admiten hasta ${PropietariosRules.MaxNotes} caracteres.")
+        if (startsOn != null && endsOn != null && endsOn.isBefore(startsOn)) throw PropietariosValidationException(tr("La fecha de fin no puede ser anterior a la de inicio."))
+        if (notes.trim().length > PropietariosRules.MaxNotes) throw PropietariosValidationException(tr("Las notas admiten hasta {0} caracteres.", PropietariosRules.MaxNotes))
         val stillCurrent = endsOn == null || endsOn.isAfter(today)
         PropietariosRules.checkShares(
             listOf(share),
             if (stillCurrent) PropietariosRepository.assignedShare(tenant, old.lotId, today, exceptOwnershipId = ownershipId) else BigDecimal.ZERO,
         )
-        if (!PropietariosRepository.updateOwnership(tenant, ownershipId, share, startsOn, endsOn, notes)) throw PropietariosValidationException("Titularidad no encontrada.")
+        if (!PropietariosRepository.updateOwnership(tenant, ownershipId, share, startsOn, endsOn, notes)) throw PropietariosValidationException(tr("Titularidad no encontrada."))
         val diff = ownershipDiff(old, share, startsOn, endsOn)
         if (diff.isNotEmpty()) PropietariosRepository.addHistory(tenant, old.lotId, "edicion", today, diff, author)
         val ended = if (old.current && !stillCurrent) listOf(OwnershipChange(ownershipId, old.customerId)) else emptyList()

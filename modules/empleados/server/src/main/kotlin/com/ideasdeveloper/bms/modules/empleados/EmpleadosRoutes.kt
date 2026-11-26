@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
@@ -64,7 +65,7 @@ object EmpleadosRoutes {
             if (!allowed(permissions, screen, params["op"].orEmpty())) return@post call.forbidden()
             val length = call.request.headers["Content-Length"]?.toLongOrNull()
             val values = try {
-                if (length != null && length > 1_000_000L) throw EmpleadosValidationException(EmpleadosActions.InvalidForm)
+                if (length != null && length > 1_000_000L) throw EmpleadosValidationException(tr(EmpleadosActions.InvalidForm))
                 EmpleadosActions.formValues(call.receiveText())
             } catch (failure: EmpleadosValidationException) {
                 return@post call.respond(HttpStatusCode.BadRequest, EmpleadosErrorResponse("invalid_request", failure.message.orEmpty()))
@@ -77,7 +78,7 @@ object EmpleadosRoutes {
     }
 
     private suspend fun ApplicationCall.forbidden() =
-        respond(HttpStatusCode.Forbidden, EmpleadosErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+        respond(HttpStatusCode.Forbidden, EmpleadosErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
 
     // ---- importar (las fuentes son extensiones: ver EmpleadosImportSource) ----
 
@@ -92,13 +93,13 @@ object EmpleadosRoutes {
         val scope = EmpleadosService.scope(tenant, permissions)
         val sources = EmpleadosImportSources.enabled(tenant, permissions.companyCode)
         fun screen(body: List<UiNode>) = UiScreen(
-            title = "Importar",
+            title = tr("Importar"),
             navigation = EmpleadosScreens.navigation(scope, ImportScreen, import = sources.isNotEmpty()),
             notice = notice,
             body = body,
         )
         if (sources.isEmpty()) {
-            return screen(listOf(UiText("No hay fuentes de importación activas. Instala y activa una extensión de importación de Empleados (por ejemplo Monday) y vuelve aquí.")))
+            return screen(listOf(UiText(tr("No hay fuentes de importación activas. Instala y activa una extensión de importación de Empleados (por ejemplo Monday) y vuelve aquí."))))
         }
         val chosen = sources.firstOrNull { it.sourceId == params["source"] } ?: sources.singleOrNull()
         val picker = if (sources.size > 1) {
@@ -106,7 +107,7 @@ object EmpleadosRoutes {
         } else {
             emptyList()
         }
-        if (chosen == null) return screen(picker + UiText("Elige desde dónde quieres importar.", UiTextStyle.Caption))
+        if (chosen == null) return screen(picker + UiText(tr("Elige desde dónde quieres importar."), UiTextStyle.Caption))
         val body = try {
             chosen.screen(importContext(tenant, access, permissions), params)
         } catch (failure: EmpleadosValidationException) {
@@ -115,14 +116,14 @@ object EmpleadosRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("No se pudo mostrar la fuente de importación {} ({}).", chosen.sourceId, failure.javaClass.simpleName)
-            errorBody("No se pudo mostrar esta fuente de importación.")
+            errorBody(tr("No se pudo mostrar esta fuente de importación."))
         }
         return screen(picker + body)
     }
 
     private fun importAct(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): UiScreen {
         val source = EmpleadosImportSources.enabled(tenant, permissions.companyCode).firstOrNull { it.sourceId == params["source"] }
-            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice("Esa fuente de importación no está disponible.", UiTone.Danger))
+            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice(tr("Esa fuente de importación no está disponible."), UiTone.Danger))
         val reply = try {
             source.action(importContext(tenant, access, permissions), params["op"].orEmpty(), values)
         } catch (failure: EmpleadosValidationException) {
@@ -131,7 +132,7 @@ object EmpleadosRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("Falló una operación de importación de {} ({}).", source.sourceId, failure.javaClass.simpleName)
-            EmpleadosImportReply("No se pudo completar la operación.", error = true)
+            EmpleadosImportReply(tr("No se pudo completar la operación."), error = true)
         }
         return importScreen(tenant, access, permissions, reply.params + ("source" to source.sourceId), UiNotice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
     }
@@ -185,8 +186,8 @@ object EmpleadosRoutes {
     ): UiScreen {
         val scope = context.scope
         val shifts = scope.canShifts || scope.canManage
-        fun requireShifts() { if (!shifts) throw missing("No tienes permiso para abrir esa pantalla.") }
-        fun requireManage() { if (!scope.canManage) throw missing("Solo quien administra fichas puede abrir esa pantalla.") }
+        fun requireShifts() { if (!shifts) throw missing(tr("No tienes permiso para abrir esa pantalla.")) }
+        fun requireManage() { if (!scope.canManage) throw missing(tr("Solo quien administra fichas puede abrir esa pantalla.")) }
         return when (screen) {
             "team" -> {
                 val sites = EmpleadosRepository.listCatalog(tenant, Catalog.Sites)
@@ -195,7 +196,7 @@ object EmpleadosRoutes {
                 EmpleadosScreens.team(context, EmpleadosScreens.TeamData(EmpleadosRepository.list(tenant, scope, filter), sites, departments), params, notice)
             }
             "employee" -> {
-                val employee = EmpleadosService.visibleEmployee(tenant, scope, uuid(params, "id") ?: throw missing("Empleado no encontrado."))
+                val employee = EmpleadosService.visibleEmployee(tenant, scope, uuid(params, "id") ?: throw missing(tr("Empleado no encontrado.")))
                 val today = context.today
                 val siteNames = if (shifts) EmpleadosRepository.catalogNames(tenant, Catalog.Sites) else emptyMap()
                 val upcoming = if (shifts) {
@@ -254,8 +255,8 @@ object EmpleadosRoutes {
                 )
             }
             "shift" -> {
-                val shift = EmpleadosService.getShift(tenant, scope, uuid(params, "id") ?: throw missing("Turno no encontrado."))
-                val name = EmpleadosRepository.basics(tenant, listOf(shift.employeeId))[shift.employeeId]?.fullName ?: "Empleado"
+                val shift = EmpleadosService.getShift(tenant, scope, uuid(params, "id") ?: throw missing(tr("Turno no encontrado.")))
+                val name = EmpleadosRepository.basics(tenant, listOf(shift.employeeId))[shift.employeeId]?.fullName ?: tr("Empleado")
                 EmpleadosScreens.shift(context, shift, name, EmpleadosRepository.listCatalog(tenant, Catalog.Sites), EmpleadosRepository.catalogNames(tenant, Catalog.Sites), notice, submitted)
             }
             "absences" -> {
@@ -350,12 +351,12 @@ object EmpleadosRoutes {
         val scope = context.scope
         val today = context.today
         val op = params["op"].orEmpty()
-        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing("Falta el elemento sobre el que actuar.")
+        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing(tr("Falta el elemento sobre el que actuar."))
         val same = keep(screen, params)
         fun absenceDates(): Triple<AbsenceKind, LocalDate, LocalDate> = Triple(
             EmpleadosActions.absenceKind(values["kind"]),
-            EmpleadosActions.requiredDate(values["from"], "La fecha inicial"),
-            EmpleadosActions.requiredDate(values["to"], "La fecha final"),
+            EmpleadosActions.requiredDate(values["from"], tr("La fecha inicial")),
+            EmpleadosActions.requiredDate(values["to"], tr("La fecha final")),
         )
         fun activeEmployees() = EmpleadosRepository.list(tenant, scope, EmployeeFilter(status = EmployeeStatus.Active, limit = EmpleadosRepository.MaxListed), FieldLevel.Basic)
 
@@ -364,26 +365,26 @@ object EmpleadosRoutes {
                 "absence-request" -> {
                     val (kind, from, to) = absenceDates()
                     EmpleadosService.requestAbsence(tenant, access, scope, kind, from, to, values["reason"].orEmpty())
-                    success(screen, same, "Solicitud enviada: queda pendiente de aprobación.")
+                    success(screen, same, tr("Solicitud enviada: queda pendiente de aprobación."))
                 }
                 "absence-cancel" -> {
                     EmpleadosService.cancelAbsence(tenant, scope, requireId("id"))
-                    success(screen, same, "Solicitud cancelada.")
+                    success(screen, same, tr("Solicitud cancelada."))
                 }
                 "register" -> {
-                    if (screen != "absences") throw missing("Acción no disponible.")
+                    if (screen != "absences") throw missing(tr("Acción no disponible."))
                     val (kind, from, to) = absenceDates()
                     val employeeId = EmpleadosActions.employeeId(values["employee"], EmpleadosActions.employeeLabels(activeEmployees()))
                     EmpleadosService.registerAbsence(tenant, access, scope, AbsenceInput(employeeId, kind, from, to, values["reason"].orEmpty()))
-                    success(screen, same, "Ausencia registrada y aprobada.")
+                    success(screen, same, tr("Ausencia registrada y aprobada."))
                 }
                 "decide-approve", "decide-reject" -> {
-                    if (screen != "absences") throw missing("Acción no disponible.")
+                    if (screen != "absences") throw missing(tr("Acción no disponible."))
                     val approve = op == "decide-approve"
                     EmpleadosService.decideAbsence(tenant, access, scope, requireId("id"), approve, values["note"].orEmpty())
-                    success(screen, same, if (approve) "Ausencia aprobada." else "Ausencia rechazada.")
+                    success(screen, same, if (approve) tr("Ausencia aprobada.") else tr("Ausencia rechazada."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "employee-new" -> when (op) {
@@ -393,9 +394,9 @@ object EmpleadosRoutes {
                         EmpleadosRepository.linkableUsers(tenant, null), null, today,
                     )
                     val id = EmpleadosService.createEmployee(tenant, scope, input)
-                    success("employee", mapOf("id" to id.toString()), "Ficha creada.")
+                    success("employee", mapOf("id" to id.toString()), tr("Ficha creada."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "employee" -> {
@@ -407,29 +408,29 @@ object EmpleadosRoutes {
                         val departments = withCurrent(EmpleadosRepository.listCatalog(tenant, Catalog.Departments), { EmpleadosRepository.listCatalog(tenant, Catalog.Departments, true) }, existing.departmentId)
                         val input = EmpleadosActions.employeeInput(values, sites, departments, EmpleadosRepository.linkableUsers(tenant, existing.userId), existing, today)
                         EmpleadosService.updateEmployee(tenant, scope, id, input)
-                        success("employee", same, "Cambios guardados.")
+                        success("employee", same, tr("Cambios guardados."))
                     }
                     "status" -> {
                         val active = params["active"].toBoolean()
                         EmpleadosService.setActive(tenant, scope, id, active)
-                        success("employee", same, if (active) "Ficha reactivada." else "Ficha dada de baja.")
+                        success("employee", same, if (active) tr("Ficha reactivada.") else tr("Ficha dada de baja."))
                     }
                     "slot-add" -> {
                         val sites = EmpleadosRepository.listCatalog(tenant, Catalog.Sites)
                         EmpleadosService.addWeeklySlot(
                             tenant, access, scope, id,
                             EmpleadosActions.weekday(values["weekday"]),
-                            EmpleadosActions.requiredTime(values["start"], "La hora de inicio"),
-                            EmpleadosActions.requiredTime(values["end"], "La hora de fin"),
+                            EmpleadosActions.requiredTime(values["start"], tr("La hora de inicio")),
+                            EmpleadosActions.requiredTime(values["end"], tr("La hora de fin")),
                             EmpleadosActions.siteId(values["site"], sites),
                         )
-                        success("employee", same, "Franja añadida al horario habitual.")
+                        success("employee", same, tr("Franja añadida al horario habitual."))
                     }
                     "slot-remove" -> {
                         EmpleadosService.removeWeeklySlot(tenant, access, scope, requireId("slot"))
-                        success("employee", same, "Franja quitada.")
+                        success("employee", same, tr("Franja quitada."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -437,7 +438,7 @@ object EmpleadosRoutes {
                 "shift-create" -> {
                     val employeeId = EmpleadosActions.employeeId(values["employee"], EmpleadosActions.employeeLabels(activeEmployees()))
                     val kind = EmpleadosActions.shiftKind(values["kind"])
-                    val date = EmpleadosActions.requiredDate(values["date"], "La fecha")
+                    val date = EmpleadosActions.requiredDate(values["date"], tr("La fecha"))
                     val input = ShiftInput(
                         employeeId = employeeId,
                         date = date,
@@ -448,9 +449,9 @@ object EmpleadosRoutes {
                         note = values["note"].orEmpty(),
                     )
                     EmpleadosService.createShift(tenant, access, scope, input)
-                    success("week", same + ("start" to EmpleadosSchedule.weekStart(date).toString()), "Turno guardado.")
+                    success("week", same + ("start" to EmpleadosSchedule.weekStart(date).toString()), tr("Turno guardado."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "shift" -> {
@@ -463,22 +464,22 @@ object EmpleadosRoutes {
                         EmpleadosService.moveShift(
                             tenant, access, scope, id,
                             ShiftPatch(
-                                date = EmpleadosActions.requiredDate(values["date"], "La fecha"),
-                                start = if (work) EmpleadosActions.requiredTime(values["start"], "La hora de inicio") else null,
-                                end = if (work) EmpleadosActions.requiredTime(values["end"], "La hora de fin") else null,
+                                date = EmpleadosActions.requiredDate(values["date"], tr("La fecha")),
+                                start = if (work) EmpleadosActions.requiredTime(values["start"], tr("La hora de inicio")) else null,
+                                end = if (work) EmpleadosActions.requiredTime(values["end"], tr("La hora de fin")) else null,
                                 setSite = work,
                                 siteId = if (work) EmpleadosActions.siteId(values["site"], sites) else null,
                                 note = values["note"].orEmpty(),
                             ),
                         )
-                        success("shift", same, "Turno guardado.")
+                        success("shift", same, tr("Turno guardado."))
                     }
                     "delete" -> {
                         val shift = EmpleadosService.getShift(tenant, scope, id)
                         EmpleadosService.deleteShift(tenant, access, scope, id)
-                        success("week", mapOf("start" to EmpleadosSchedule.weekStart(shift.date).toString()), "Turno borrado.")
+                        success("week", mapOf("start" to EmpleadosSchedule.weekStart(shift.date).toString()), tr("Turno borrado."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -486,30 +487,30 @@ object EmpleadosRoutes {
                 val catalog = when {
                     op.startsWith("site-") -> Catalog.Sites
                     op.startsWith("dept-") -> Catalog.Departments
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
                 when (op.substringAfter('-')) {
                     "add" -> {
                         EmpleadosService.addCatalog(tenant, scope, catalog, values["name"].orEmpty())
-                        success("admin", emptyMap(), "Se añadió la ${catalog.singular}.")
+                        success("admin", emptyMap(), tr("Se añadió la {0}.", tr(catalog.singular)))
                     }
                     "rename" -> {
                         EmpleadosService.renameCatalog(tenant, scope, catalog, requireId("id"), values["name"].orEmpty())
-                        success("admin", emptyMap(), "Nombre guardado.")
+                        success("admin", emptyMap(), tr("Nombre guardado."))
                     }
                     "up", "down" -> {
                         EmpleadosService.moveCatalog(tenant, scope, catalog, requireId("id"), up = op.endsWith("-up"))
-                        success("admin", emptyMap(), "Orden actualizado.")
+                        success("admin", emptyMap(), tr("Orden actualizado."))
                     }
                     "archive" -> {
                         EmpleadosService.archiveCatalog(tenant, scope, catalog, requireId("id"))
-                        success("admin", emptyMap(), "Se archivó la ${catalog.singular}.")
+                        success("admin", emptyMap(), tr("Se archivó la {0}.", tr(catalog.singular)))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
-            else -> throw missing("Acción no disponible.")
+            else -> throw missing(tr("Acción no disponible."))
         }
     }
 }

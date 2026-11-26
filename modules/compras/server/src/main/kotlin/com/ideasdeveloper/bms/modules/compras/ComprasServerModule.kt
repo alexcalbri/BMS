@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.compras
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
 import com.ideasdeveloper.bms.server.modules.ModuleJob
@@ -82,8 +84,8 @@ object ComprasServerModule : ServerModule {
         id = ComprasModule.id,
         displayName = ComprasModule.displayName,
         description = "Solicitudes de compra con cotizaciones opcionales, aprobadores con limite de monto, adjuntos de respaldo y totales por departamento, mes y moneda.",
-        version = "0.2.3",
-        minCoreVersion = "0.8.0",
+        version = "0.3.0",
+        minCoreVersion = "0.10.0",
         minAppVersion = "0.5.0",
         permissions = listOf(
             ModulePermissionDefinition(ComprasModule.View, "Ver compras", "Permite entrar a Compras y ver sus propias solicitudes."),
@@ -144,7 +146,7 @@ object ComprasServerModule : ServerModule {
     )
 
     private suspend fun ApplicationCall.forbidden() =
-        respond(HttpStatusCode.Forbidden, ComprasErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+        respond(HttpStatusCode.Forbidden, ComprasErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
 
     override fun routes(route: Route, access: ModuleAccessService) {
         route.route(ComprasScreens.UiRoute) {
@@ -158,7 +160,7 @@ object ComprasServerModule : ServerModule {
                 if (length != null && length > ComprasAttachments.MaxFileBytes) {
                     return@post call.respond(
                         HttpStatusCode.PayloadTooLarge,
-                        ComprasErrorResponse("too_large", "El archivo supera el maximo de ${ComprasAttachments.MaxFileBytes / (1024 * 1024)} MB."),
+                        ComprasErrorResponse("too_large", tr("El archivo supera el maximo de {0} MB.", ComprasAttachments.MaxFileBytes / (1024 * 1024))),
                     )
                 }
                 fun header(name: String) = call.request.headers[name]?.let { runCatching { URLDecoder.decode(it, Charsets.UTF_8) }.getOrNull() }.orEmpty()
@@ -166,7 +168,7 @@ object ComprasServerModule : ServerModule {
                 val path = header("X-File-Path")
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
-                    ?: return@post call.respond(HttpStatusCode.BadRequest, ComprasErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ComprasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 // El cuerpo va directo al almacen de archivos: nunca se carga entero en memoria.
                 val body = call.receiveChannel().toInputStream()
                 val result = withContext(Dispatchers.IO) {
@@ -181,7 +183,7 @@ object ComprasServerModule : ServerModule {
                             Result.failure(failure)
                         }
                     }
-                } ?: return@post call.respond(HttpStatusCode.Forbidden, ComprasErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+                } ?: return@post call.respond(HttpStatusCode.Forbidden, ComprasErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
                 result.fold(
                     onSuccess = { ref -> call.respondText(UiJson.encodeToString(UiFileRef.serializer(), ref), ContentType.Application.Json) },
                     onFailure = { failure ->
@@ -189,7 +191,7 @@ object ComprasServerModule : ServerModule {
                             call.respond(HttpStatusCode.BadRequest, ComprasErrorResponse("invalid_file", failure.message.orEmpty()))
                         } else {
                             log.warn("No se pudo guardar un archivo de compras.", failure)
-                            call.respond(HttpStatusCode.InternalServerError, ComprasErrorResponse("DATABASE_ERROR", "No se pudo guardar el archivo."))
+                            call.respond(HttpStatusCode.InternalServerError, ComprasErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))
                         }
                     },
                 )
@@ -202,7 +204,7 @@ object ComprasServerModule : ServerModule {
                 val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@get call.respond(HttpStatusCode.NotFound)
                 val companyCode = access.companyCode(call)
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, ComprasErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ComprasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 val file = try {
                     withContext(Dispatchers.IO) {
                         access.tenantConnectionForCompany(companyCode)?.use { tenant ->
@@ -213,10 +215,10 @@ object ComprasServerModule : ServerModule {
                     throw cancelled
                 } catch (failure: Exception) {
                     log.warn("No se pudo leer un archivo de compras.", failure)
-                    return@get call.respond(HttpStatusCode.InternalServerError, ComprasErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
-                } ?: return@get call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("not_found", "Ese archivo ya no esta disponible."))
+                    return@get call.respond(HttpStatusCode.InternalServerError, ComprasErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
+                } ?: return@get call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("not_found", tr("Ese archivo ya no esta disponible.")))
                 val content = withContext(Dispatchers.IO) { file.open() }
-                    ?: return@get call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("missing_content", "El archivo ya no esta en el almacenamiento del servidor."))
+                    ?: return@get call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("missing_content", tr("El archivo ya no esta en el almacenamiento del servidor.")))
                 call.response.header(
                     HttpHeaders.ContentDisposition,
                     ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.ref.name).toString(),
@@ -231,7 +233,7 @@ object ComprasServerModule : ServerModule {
                 val permissions = call.requireModuleAccess(access, ComprasModule.id) ?: return@get
                 val screen = call.parameters["screen"].orEmpty()
                 if (!ComprasScreens.isScreen(screen)) {
-                    return@get call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada."))
+                    return@get call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("UNKNOWN_SCREEN", tr("Seccion no encontrada.")))
                 }
                 if (!ComprasScreens.canOpen(screen, { permission -> permissions.allows(permission) })) return@get call.forbidden()
                 val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
@@ -245,7 +247,7 @@ object ComprasServerModule : ServerModule {
                 val permissions = call.requireModuleAccess(access, ComprasModule.id) ?: return@post
                 val screen = call.parameters["screen"].orEmpty()
                 if (!ComprasScreens.isScreen(screen)) {
-                    return@post call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada."))
+                    return@post call.respond(HttpStatusCode.NotFound, ComprasErrorResponse("UNKNOWN_SCREEN", tr("Seccion no encontrada.")))
                 }
                 val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
                 // El permiso exacto de la operacion se comprueba antes de abrir la base de datos.
@@ -272,18 +274,18 @@ object ComprasServerModule : ServerModule {
     // Abre la base de la empresa autorizada, ejecuta [block] (JDBC, en el hilo de IO) y responde con su pantalla.
     private suspend fun ApplicationCall.respondScreen(access: ModuleAccessService, block: (Connection) -> UiScreen) {
         val companyCode = access.companyCode(this)
-            ?: return respond(HttpStatusCode.BadRequest, ComprasErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+            ?: return respond(HttpStatusCode.BadRequest, ComprasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
         try {
             // La conexion se abre, se usa y se cierra dentro de un unico withContext(IO).
             val screen = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode)?.use { tenant -> block(tenant) } }
-                ?: return respond(HttpStatusCode.Forbidden, ComprasErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
-            respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
+                ?: return respond(HttpStatusCode.Forbidden, ComprasErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
+            respondText(UiJson.encodeToString(UiScreen.serializer(), localizedPayload(screen)), ContentType.Application.Json)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
             // Sin detalles para el cliente: el error queda solo en el registro del servidor.
             log.warn("Error en Compras ({}).", (failure as? SQLException)?.sqlState ?: failure.javaClass.simpleName, failure)
-            respond(HttpStatusCode.InternalServerError, ComprasErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+            respond(HttpStatusCode.InternalServerError, ComprasErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
         }
     }
 
@@ -295,7 +297,7 @@ object ComprasServerModule : ServerModule {
     }
 
     private suspend fun ApplicationCall.tooLarge() =
-        respond(HttpStatusCode.PayloadTooLarge, ComprasErrorResponse("too_large", "La peticion es demasiado grande."))
+        respond(HttpStatusCode.PayloadTooLarge, ComprasErrorResponse("too_large", tr("La peticion es demasiado grande.")))
 
     // Tope del cuerpo de los formularios (256 KB).
     private const val MaxBodyBytes = 256 * 1024

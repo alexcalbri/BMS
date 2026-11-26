@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -7,8 +9,8 @@ import java.util.UUID
 
 /** Estado de una ficha: la baja conserva la ficha y su historial pero deja de verse en el directorio basico. */
 enum class EmployeeStatus(val code: String, val label: String) {
-    Active("active", "Activo"),
-    Inactive("inactive", "Baja");
+    Active("active", msg("Activo")),
+    Inactive("inactive", msg("Baja"));
 
     companion object {
         fun fromCode(code: String?): EmployeeStatus? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }
@@ -22,8 +24,8 @@ enum class EmployeeStatus(val code: String, val label: String) {
 }
 
 enum class ShiftKind(val code: String, val label: String) {
-    Work("work", "Turno"),
-    Off("off", "Libre");
+    Work("work", msg("Turno")),
+    Off("off", msg("Libre"));
 
     companion object {
         fun fromCode(code: String?): ShiftKind? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }
@@ -36,9 +38,9 @@ enum class ShiftKind(val code: String, val label: String) {
 }
 
 enum class AbsenceKind(val code: String, val label: String) {
-    Vacation("vacation", "Vacaciones"),
-    Leave("leave", "Permiso"),
-    Sick("sick", "Enfermedad"),
+    Vacation("vacation", msg("Vacaciones")),
+    Leave("leave", msg("Permiso")),
+    Sick("sick", msg("Enfermedad")),
     Other("other", "Otro");
 
     companion object {
@@ -52,10 +54,10 @@ enum class AbsenceKind(val code: String, val label: String) {
 }
 
 enum class AbsenceStatus(val code: String, val label: String) {
-    Pending("pending", "Pendiente"),
-    Approved("approved", "Aprobada"),
-    Rejected("rejected", "Rechazada"),
-    Cancelled("cancelled", "Cancelada");
+    Pending("pending", msg("Pendiente")),
+    Approved("approved", msg("Aprobada")),
+    Rejected("rejected", msg("Rechazada")),
+    Cancelled("cancelled", msg("Cancelada"));
 
     companion object {
         fun fromCode(code: String?): AbsenceStatus? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }
@@ -178,14 +180,14 @@ data class EmployeeInput(
 ) {
     /** Mensajes para el usuario; vacio cuando la entrada es valida. */
     fun validate(today: LocalDate): List<String> = buildList {
-        if (fullName.isBlank()) add("El nombre es obligatorio.")
-        else if (fullName.trim().length > MaxName) add("El nombre admite hasta $MaxName caracteres.")
-        if (jobTitle.trim().length > MaxJobTitle) add("El puesto admite hasta $MaxJobTitle caracteres.")
-        if (phone.isNotBlank() && !PhonePattern.matches(phone.trim())) add("El teléfono solo admite números, espacios y + - ( ) . # (hasta $MaxPhone caracteres).")
-        if (email.isNotBlank() && !(email.trim().length <= MaxEmail && EmailPattern.matches(email.trim()))) add("El correo no es válido (hasta $MaxEmail caracteres).")
-        if (hireDate != null && (hireDate.isBefore(MinHireDate) || hireDate.isAfter(today.plusYears(1)))) add("La fecha de ingreso debe estar entre $MinHireDate y un año desde hoy.")
-        if (availability.trim().length > MaxAvailability) add("La disponibilidad admite hasta $MaxAvailability caracteres.")
-        if (notes.length > MaxNotes) add("Las notas admiten hasta $MaxNotes caracteres.")
+        if (fullName.isBlank()) add(tr("El nombre es obligatorio."))
+        else if (fullName.trim().length > MaxName) add(tr("El nombre admite hasta {0} caracteres.", MaxName))
+        if (jobTitle.trim().length > MaxJobTitle) add(tr("El puesto admite hasta {0} caracteres.", MaxJobTitle))
+        if (phone.isNotBlank() && !PhonePattern.matches(phone.trim())) add(tr("El teléfono solo admite números, espacios y + - ( ) . # (hasta {0} caracteres).", MaxPhone))
+        if (email.isNotBlank() && !(email.trim().length <= MaxEmail && EmailPattern.matches(email.trim()))) add(tr("El correo no es válido (hasta {0} caracteres).", MaxEmail))
+        if (hireDate != null && (hireDate.isBefore(MinHireDate) || hireDate.isAfter(today.plusYears(1)))) add(tr("La fecha de ingreso debe estar entre {0} y un año desde hoy.", MinHireDate))
+        if (availability.trim().length > MaxAvailability) add(tr("La disponibilidad admite hasta {0} caracteres.", MaxAvailability))
+        if (notes.length > MaxNotes) add(tr("Las notas admiten hasta {0} caracteres.", MaxNotes))
     }
 
     companion object {
@@ -212,11 +214,11 @@ data class ShiftInput(
     val note: String = "",
 ) {
     fun validate(): List<String> = buildList {
-        if (date.isBefore(MinDate) || date.isAfter(MaxDate)) add("La fecha debe estar entre $MinDate y $MaxDate.")
-        if (note.trim().length > MaxNote) add("La nota admite hasta $MaxNote caracteres.")
+        if (date.isBefore(MinDate) || date.isAfter(MaxDate)) add(tr("La fecha debe estar entre {0} y {1}.", MinDate, MaxDate))
+        if (note.trim().length > MaxNote) add(tr("La nota admite hasta {0} caracteres.", MaxNote))
         if (kind == ShiftKind.Work) {
-            if (start == null || end == null) add("El turno necesita hora de inicio y de fin (HH:mm).")
-            else if (start == end) add("La hora de inicio y la de fin no pueden ser iguales.")
+            if (start == null || end == null) add(tr("El turno necesita hora de inicio y de fin (HH:mm)."))
+            else if (start == end) add(tr("La hora de inicio y la de fin no pueden ser iguales."))
         }
     }
 
@@ -247,10 +249,10 @@ data class AbsenceInput(
     val reason: String = "",
 ) {
     fun validate(): List<String> = buildList {
-        if (startDate.isBefore(ShiftInput.MinDate) || endDate.isAfter(ShiftInput.MaxDate)) add("Las fechas deben estar entre ${ShiftInput.MinDate} y ${ShiftInput.MaxDate}.")
-        if (endDate.isBefore(startDate)) add("La fecha final no puede ser anterior a la inicial.")
-        else if (java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate) > MaxDays) add("Una ausencia admite hasta ${MaxDays + 1} días.")
-        if (reason.trim().length > MaxReason) add("El motivo admite hasta $MaxReason caracteres.")
+        if (startDate.isBefore(ShiftInput.MinDate) || endDate.isAfter(ShiftInput.MaxDate)) add(tr("Las fechas deben estar entre {0} y {1}.", ShiftInput.MinDate, ShiftInput.MaxDate))
+        if (endDate.isBefore(startDate)) add(tr("La fecha final no puede ser anterior a la inicial."))
+        else if (java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate) > MaxDays) add(tr("Una ausencia admite hasta {0} días.", MaxDays + 1))
+        if (reason.trim().length > MaxReason) add(tr("El motivo admite hasta {0} caracteres.", MaxReason))
     }
 
     companion object {

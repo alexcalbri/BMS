@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.time.LocalDate
 import java.time.LocalTime
 import java.util.UUID
@@ -92,8 +93,8 @@ object EmpleadosSchedule {
      * dia los revisa [slotsProblem].
      */
     fun crossDayProblem(start: LocalTime, end: LocalTime, previousDay: List<DaySlot>, nextDay: List<DaySlot>): String? = when {
-        previousDay.any { it.overnight && start < it.end } -> "Se solapa con la madrugada de un turno nocturno del día anterior."
-        end < start && nextDay.any { it.start < end } -> "La madrugada de este turno nocturno se solapa con el inicio del día siguiente."
+        previousDay.any { it.overnight && start < it.end } -> tr("Se solapa con la madrugada de un turno nocturno del día anterior.")
+        end < start && nextDay.any { it.start < end } -> tr("La madrugada de este turno nocturno se solapa con el inicio del día siguiente.")
         else -> null
     }
 
@@ -106,9 +107,9 @@ object EmpleadosSchedule {
 
     /** Mensaje de la primera regla que falla en las franjas de un mismo dia (maximo, horas distintas y sin solapes), o null. */
     fun slotsProblem(times: List<Pair<LocalTime, LocalTime>>, max: Int): String? = when {
-        times.size > max -> "Un dia admite hasta $max franjas."
-        times.any { it.first == it.second } -> "La hora de inicio y la de fin no pueden ser iguales."
-        firstOverlap(times) != null -> "Las franjas de un mismo dia no pueden solaparse."
+        times.size > max -> tr("Un dia admite hasta {0} franjas.", max)
+        times.any { it.first == it.second } -> tr("La hora de inicio y la de fin no pueden ser iguales.")
+        firstOverlap(times) != null -> tr("Las franjas de un mismo dia no pueden solaparse.")
         else -> null
     }
 }

@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
@@ -103,8 +105,8 @@ object PropietariosServerModule : ServerModule {
         id = PropietariosModule.id,
         displayName = PropietariosModule.displayName,
         description = "Registro de desarrollos, lotes y propietarios: area, numero de registro y estado de cada lote, titulares vigentes con su porcentaje, historial de cambios de titularidad y adjuntos como escrituras y planos.",
-        version = "0.2.2",
-        minCoreVersion = "0.8.0",
+        version = "0.3.0",
+        minCoreVersion = "0.10.0",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -140,18 +142,18 @@ object PropietariosServerModule : ServerModule {
                 val permissions = call.requireModuleAccess(access, PropietariosModule.id) ?: return@post
                 // Subir archivos es parte de editar el lote.
                 if (!permissions.has(PropietariosModule.Manage)) {
-                    return@post call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@post call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val length = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
                 if (length != null && length > PropietariosRepository.MaxFileBytes) {
-                    return@post call.respond(HttpStatusCode.PayloadTooLarge, PropietariosErrorResponse("too_large", "El archivo supera el maximo de ${PropietariosRepository.MaxFileBytes / (1024 * 1024)} MB."))
+                    return@post call.respond(HttpStatusCode.PayloadTooLarge, PropietariosErrorResponse("too_large", tr("El archivo supera el maximo de {0} MB.", PropietariosRepository.MaxFileBytes / (1024 * 1024))))
                 }
                 fun header(name: String) = call.request.headers[name]?.let { runCatching { URLDecoder.decode(it, Charsets.UTF_8) }.getOrNull() }.orEmpty()
                 val name = header("X-File-Name")
                 val path = header("X-File-Path")
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
-                    ?: return@post call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 // El cuerpo va directo al almacenamiento de archivos; nunca se guarda entero en memoria.
                 val body = call.receiveChannel().toInputStream()
                 // La conexion se abre dentro de upload, solo para el conteo y el INSERT: no se mantiene abierta mientras llega el cuerpo.
@@ -175,7 +177,7 @@ object PropietariosServerModule : ServerModule {
                 result.fold(
                     onSuccess = { ref ->
                         if (ref == null) {
-                            call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+                            call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
                         } else {
                             call.respondText(UiJson.encodeToString(UiFileRef.serializer(), ref), ContentType.Application.Json)
                         }
@@ -185,7 +187,7 @@ object PropietariosServerModule : ServerModule {
                             call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("invalid_file", failure.message.orEmpty()))
                         } else {
                             log.warn("No se pudo guardar un archivo de propietarios ({}).", failure.javaClass.simpleName)
-                            call.respond(HttpStatusCode.InternalServerError, PropietariosErrorResponse("DATABASE_ERROR", "No se pudo guardar el archivo."))
+                            call.respond(HttpStatusCode.InternalServerError, PropietariosErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))
                         }
                     },
                 )
@@ -195,12 +197,12 @@ object PropietariosServerModule : ServerModule {
             get("/files/{id}") {
                 val permissions = call.requireModuleAccess(access, PropietariosModule.id) ?: return@get
                 if (!permissions.has(PropietariosModule.View)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@get call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@get call.respond(HttpStatusCode.NotFound)
                 val companyCode = access.companyCode(call)
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 val file = withContext(Dispatchers.IO) {
                     access.tenantConnectionForCompany(companyCode)?.use { tenant ->
                         PropietariosRepository.file(tenant, access.files(companyCode, PropietariosModule.id), id)?.takeIf { stored ->
@@ -209,10 +211,10 @@ object PropietariosServerModule : ServerModule {
                             PropietariosRepository.getLot(tenant, lotId) != null
                         }
                     }
-                } ?: return@get call.respond(HttpStatusCode.NotFound, PropietariosErrorResponse("not_found", "Ese archivo ya no esta disponible."))
+                } ?: return@get call.respond(HttpStatusCode.NotFound, PropietariosErrorResponse("not_found", tr("Ese archivo ya no esta disponible.")))
                 val type = runCatching { ContentType.parse(safeContentType(file.attachment.contentType)) }.getOrDefault(ContentType.Application.OctetStream)
                 val content = withContext(Dispatchers.IO) { file.open() }
-                    ?: return@get call.respond(HttpStatusCode.NotFound, PropietariosErrorResponse("missing_content", "El archivo ya no esta en el almacenamiento del servidor."))
+                    ?: return@get call.respond(HttpStatusCode.NotFound, PropietariosErrorResponse("missing_content", tr("El archivo ya no esta en el almacenamiento del servidor.")))
                 // Las cabeceras solo cuando el contenido de verdad se va a enviar (una respuesta de error no debe llevarlas).
                 call.response.header(
                     HttpHeaders.ContentDisposition,
@@ -226,7 +228,7 @@ object PropietariosServerModule : ServerModule {
             get("/suggest/customers") {
                 val permissions = call.requireModuleAccess(access, PropietariosModule.id) ?: return@get
                 if (!permissions.has(PropietariosModule.Manage)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@get call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val customers = withContext(Dispatchers.IO) {
                     try {
@@ -239,7 +241,7 @@ object PropietariosServerModule : ServerModule {
                     }
                 }
                 if (customers !is ModulePermissionLookup.Granted || !customers.permissions.has("clientes.view")) {
-                    return@get call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", "No tienes permiso para ver clientes."))
+                    return@get call.respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", tr("No tienes permiso para ver clientes.")))
                 }
                 val typed = call.request.queryParameters["q"].orEmpty().take(200)
                 // El campo del formulario que pide la sugerencia (owner, owner1...): recibe el nombre y su id oculto.
@@ -278,16 +280,16 @@ data class PropietariosErrorResponse(val code: String, val message: String)
  */
 suspend fun <T> ApplicationCall.respondPropietarios(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
     val companyCode = access.companyCode(this)
-        ?: return respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+        ?: return respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
     val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
-        ?: return respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+        ?: return respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
     try {
         val result = withContext(Dispatchers.IO) { connection.use { tenant -> block(tenant) } }
-        respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
+        respondText(UiJson.encodeToString(serializer, localizedPayload(result)), ContentType.Application.Json)
     } catch (failure: PropietariosValidationException) {
         respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("invalid_request", failure.message.orEmpty()))
     } catch (failure: SQLException) {
-        respond(HttpStatusCode.InternalServerError, PropietariosErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+        respond(HttpStatusCode.InternalServerError, PropietariosErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
     }
 }
 

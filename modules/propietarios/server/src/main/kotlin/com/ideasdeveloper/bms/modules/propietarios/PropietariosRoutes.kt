@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissionLookup
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -72,7 +73,7 @@ object PropietariosRoutes {
             if (!permissions.has(PropietariosActions.requiredPermission(screen, params["op"]))) return@post call.forbidden()
             val length = call.request.headers["Content-Length"]?.toLongOrNull()
             val values = try {
-                if (length != null && length > 1_000_000L) throw PropietariosValidationException(PropietariosActions.InvalidForm)
+                if (length != null && length > 1_000_000L) throw PropietariosValidationException(tr(PropietariosActions.InvalidForm))
                 PropietariosActions.formValues(call.receiveText())
             } catch (failure: PropietariosValidationException) {
                 return@post call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("invalid_request", failure.message.orEmpty()))
@@ -88,7 +89,7 @@ object PropietariosRoutes {
     }
 
     private suspend fun ApplicationCall.forbidden() =
-        respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+        respond(HttpStatusCode.Forbidden, PropietariosErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
 
     /** Los clientes aparecen en los formularios solo para quien puede verlos (clientes.view). */
     private suspend fun canSeeCustomers(access: ModuleAccessService, call: ApplicationCall): Boolean {
@@ -128,13 +129,13 @@ object PropietariosRoutes {
         val context = context(tenant, permissions, customers = false)
         val sources = PropietariosImportSources.enabled(tenant, permissions.companyCode)
         fun screen(body: List<UiNode>) = UiScreen(
-            title = "Importar",
+            title = tr("Importar"),
             navigation = PropietariosScreens.navigation(context.copy(importEnabled = sources.isNotEmpty()), ImportScreen),
             notice = notice,
             body = body,
         )
         if (sources.isEmpty()) {
-            return screen(listOf(UiText("No hay fuentes de importación activas. Instala y activa una extensión de importación de Propietarios (por ejemplo Monday) y vuelve aquí.")))
+            return screen(listOf(UiText(tr("No hay fuentes de importación activas. Instala y activa una extensión de importación de Propietarios (por ejemplo Monday) y vuelve aquí."))))
         }
         val chosen = sources.firstOrNull { it.sourceId == params["source"] } ?: sources.singleOrNull()
         val picker = if (sources.size > 1) {
@@ -142,7 +143,7 @@ object PropietariosRoutes {
         } else {
             emptyList()
         }
-        if (chosen == null) return screen(picker + UiText("Elige desde dónde quieres importar.", UiTextStyle.Caption))
+        if (chosen == null) return screen(picker + UiText(tr("Elige desde dónde quieres importar."), UiTextStyle.Caption))
         val body = try {
             chosen.screen(importContext(tenant, access, permissions), params)
         } catch (failure: PropietariosValidationException) {
@@ -151,14 +152,14 @@ object PropietariosRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("No se pudo mostrar la fuente de importación {} ({}).", chosen.sourceId, failure.javaClass.simpleName)
-            errorBody("No se pudo mostrar esta fuente de importación.")
+            errorBody(tr("No se pudo mostrar esta fuente de importación."))
         }
         return screen(picker + body)
     }
 
     private fun importAct(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): UiScreen {
         val source = PropietariosImportSources.enabled(tenant, permissions.companyCode).firstOrNull { it.sourceId == params["source"] }
-            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice("Esa fuente de importación no está disponible.", UiTone.Danger))
+            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice(tr("Esa fuente de importación no está disponible."), UiTone.Danger))
         val reply = try {
             source.action(importContext(tenant, access, permissions), params["op"].orEmpty(), values)
         } catch (failure: PropietariosValidationException) {
@@ -167,7 +168,7 @@ object PropietariosRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("Falló una operación de importación de {} ({}).", source.sourceId, failure.javaClass.simpleName)
-            PropietariosImportReply("No se pudo completar la operación.", error = true)
+            PropietariosImportReply(tr("No se pudo completar la operación."), error = true)
         }
         return importScreen(tenant, access, permissions, reply.params + ("source" to source.sourceId), UiNotice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
     }
@@ -206,7 +207,7 @@ object PropietariosRoutes {
         val today = context.today
         return when (screen) {
             "desarrollo" -> {
-                val development = uuid(params, "id")?.let { PropietariosRepository.getDevelopment(tenant, it) }?.takeIf { !it.archived } ?: throw missing("Desarrollo no encontrado.")
+                val development = uuid(params, "id")?.let { PropietariosRepository.getDevelopment(tenant, it) }?.takeIf { !it.archived } ?: throw missing(tr("Desarrollo no encontrado."))
                 val filter = LotFilter(
                     developmentId = development.id,
                     status = PropietariosActions.statusFilter(params["status"]),
@@ -223,11 +224,11 @@ object PropietariosRoutes {
                 val lotId = uuid(params, "id")
                 if (lotId == null) {
                     // Formulario de un lote nuevo en un desarrollo.
-                    if (!context.canManage) throw missing("No tienes permiso para crear lotes.")
-                    val development = uuid(params, "development")?.let { PropietariosRepository.getDevelopment(tenant, it) }?.takeIf { !it.archived } ?: throw missing("Desarrollo no encontrado.")
+                    if (!context.canManage) throw missing(tr("No tienes permiso para crear lotes."))
+                    val development = uuid(params, "development")?.let { PropietariosRepository.getDevelopment(tenant, it) }?.takeIf { !it.archived } ?: throw missing(tr("Desarrollo no encontrado."))
                     PropietariosScreens.newLot(context, development, notice, submitted)
                 } else {
-                    val lot = PropietariosRepository.getLot(tenant, lotId) ?: throw missing("Lote no encontrado.")
+                    val lot = PropietariosRepository.getLot(tenant, lotId) ?: throw missing(tr("Lote no encontrado."))
                     PropietariosScreens.lot(
                         context,
                         PropietariosScreens.LotDetail(
@@ -241,14 +242,14 @@ object PropietariosRoutes {
                 }
             }
             "traspaso" -> {
-                if (!context.canManage) throw missing("No tienes permiso para registrar cambios de titularidad.")
-                val lot = uuid(params, "lot")?.let { PropietariosRepository.getLot(tenant, it) }?.takeIf { !it.archived } ?: throw missing("Lote no encontrado.")
+                if (!context.canManage) throw missing(tr("No tienes permiso para registrar cambios de titularidad."))
+                val lot = uuid(params, "lot")?.let { PropietariosRepository.getLot(tenant, it) }?.takeIf { !it.archived } ?: throw missing(tr("Lote no encontrado."))
                 PropietariosScreens.transfer(context, lot, PropietariosRepository.listOwnerships(tenant, lot.id, today).filter { it.current }, notice, submitted)
             }
             "titularidad" -> {
-                if (!context.canManage) throw missing("No tienes permiso para editar titularidades.")
-                val ownership = uuid(params, "id")?.let { PropietariosRepository.getOwnership(tenant, it, today) } ?: throw missing("Titularidad no encontrada.")
-                val lot = PropietariosRepository.getLot(tenant, ownership.lotId)?.takeIf { !it.archived } ?: throw missing("Lote no encontrado.")
+                if (!context.canManage) throw missing(tr("No tienes permiso para editar titularidades."))
+                val ownership = uuid(params, "id")?.let { PropietariosRepository.getOwnership(tenant, it, today) } ?: throw missing(tr("Titularidad no encontrada."))
+                val lot = PropietariosRepository.getLot(tenant, ownership.lotId)?.takeIf { !it.archived } ?: throw missing(tr("Lote no encontrado."))
                 PropietariosScreens.ownership(context, ownership, lot, notice, submitted)
             }
             "propietarios" -> {
@@ -256,7 +257,7 @@ object PropietariosRoutes {
                 PropietariosScreens.owners(context, PropietariosRepository.listOwners(tenant, query, today, PropietariosScreens.ListLimit + 1), query, notice)
             }
             "propietario" -> {
-                val customer = uuid(params, "id")?.let { PropietariosRepository.visibleCustomer(tenant, it) } ?: throw missing("Propietario no encontrado.")
+                val customer = uuid(params, "id")?.let { PropietariosRepository.visibleCustomer(tenant, it) } ?: throw missing(tr("Propietario no encontrado."))
                 PropietariosScreens.owner(context, customer, PropietariosRepository.ownedLots(tenant, customer.id, today), notice)
             }
             "buscar" -> {
@@ -312,7 +313,7 @@ object PropietariosRoutes {
         val op = params["op"].orEmpty()
         val actorId = permissions.userId
         val author by lazy { access.userIdentity(tenant, permissions)?.name ?: "Usuario" }
-        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing("Falta el elemento sobre el que actuar.")
+        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing(tr("Falta el elemento sobre el que actuar."))
         fun lotOutcome(id: UUID, text: String) = success("lote", mapOf("id" to id.toString()), text)
 
         return when (screen) {
@@ -320,9 +321,9 @@ object PropietariosRoutes {
                 "dev-save" -> {
                     PropietariosService.require(permissions, PropietariosModule.Admin)
                     val id = PropietariosService.createDevelopment(tenant, PropietariosActions.developmentInput(values), actorId)
-                    success("desarrollo", mapOf("id" to id.toString()), "Desarrollo creado.")
+                    success("desarrollo", mapOf("id" to id.toString()), tr("Desarrollo creado."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "desarrollo" -> {
@@ -331,14 +332,14 @@ object PropietariosRoutes {
                     "dev-save" -> {
                         PropietariosService.require(permissions, PropietariosModule.Admin)
                         PropietariosService.updateDevelopment(tenant, id, PropietariosActions.developmentInput(values))
-                        success("desarrollo", mapOf("id" to id.toString()), "Desarrollo guardado.")
+                        success("desarrollo", mapOf("id" to id.toString()), tr("Desarrollo guardado."))
                     }
                     "dev-archive" -> {
                         PropietariosService.require(permissions, PropietariosModule.Admin)
                         PropietariosService.archiveDevelopment(tenant, id)
-                        success("desarrollos", emptyMap(), "Desarrollo archivado.")
+                        success("desarrollos", emptyMap(), tr("Desarrollo archivado."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -349,66 +350,66 @@ object PropietariosRoutes {
                     if (lotId == null) {
                         val development = requireId("development")
                         val created = PropietariosService.createLot(tenant, PropietariosActions.lotInput(development, values), author, actorId)
-                        lotOutcome(created, "Lote creado.")
+                        lotOutcome(created, tr("Lote creado."))
                     } else {
-                        val lot = PropietariosRepository.getLot(tenant, lotId) ?: throw missing("Lote no encontrado.")
+                        val lot = PropietariosRepository.getLot(tenant, lotId) ?: throw missing(tr("Lote no encontrado."))
                         PropietariosService.updateLot(tenant, lotId, PropietariosActions.lotInput(lot.developmentId, values), author)
-                        lotOutcome(lotId, "Cambios guardados.")
+                        lotOutcome(lotId, tr("Cambios guardados."))
                     }
                 }
                 "files" -> {
                     PropietariosService.require(permissions, PropietariosModule.Manage)
                     val lotId = requireId("id")
-                    PropietariosRepository.getLot(tenant, lotId)?.takeIf { !it.archived } ?: throw missing("Lote no encontrado.")
+                    PropietariosRepository.getLot(tenant, lotId)?.takeIf { !it.archived } ?: throw missing(tr("Lote no encontrado."))
                     val changes = PropietariosActions.fileChanges(values, PropietariosRepository.listAttachments(tenant, lotId))
                     PropietariosRepository.transaction(tenant) {
                         if (changes.added.isNotEmpty()) PropietariosService.attachFiles(tenant, lotId, changes.added, actorId, author)
                         if (changes.removed.isNotEmpty()) PropietariosService.removeFiles(tenant, lotId, changes.removed, author)
                     }
-                    lotOutcome(lotId, "Adjuntos actualizados.")
+                    lotOutcome(lotId, tr("Adjuntos actualizados."))
                 }
                 "add-owner" -> {
                     PropietariosService.require(permissions, PropietariosModule.Manage)
                     val lotId = requireId("id")
                     PropietariosService.addOwner(tenant, lotId, PropietariosActions.coOwner(values), null, "", author, actorId)
-                    lotOutcome(lotId, "Cotitular añadido.")
+                    lotOutcome(lotId, tr("Cotitular añadido."))
                 }
                 "archive" -> {
                     PropietariosService.require(permissions, PropietariosModule.Admin)
                     val lotId = requireId("id")
-                    val developmentId = PropietariosRepository.getLot(tenant, lotId)?.developmentId ?: throw missing("Lote no encontrado.")
+                    val developmentId = PropietariosRepository.getLot(tenant, lotId)?.developmentId ?: throw missing(tr("Lote no encontrado."))
                     PropietariosService.archiveLot(tenant, lotId, author)
-                    success("desarrollo", mapOf("id" to developmentId.toString()), "Lote archivado.")
+                    success("desarrollo", mapOf("id" to developmentId.toString()), tr("Lote archivado."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "traspaso" -> when (op) {
                 "transfer" -> {
                     PropietariosService.require(permissions, PropietariosModule.Manage)
                     val lotId = requireId("lot")
-                    val date = PropietariosActions.date(values["date"]) ?: throw missing("Escribe la fecha del cambio.")
+                    val date = PropietariosActions.date(values["date"]) ?: throw missing(tr("Escribe la fecha del cambio."))
                     val newOwners = PropietariosActions.newOwners(values)
                     val result = PropietariosService.transfer(tenant, lotId, date, newOwners, values["notes"].orEmpty(), author, actorId)
-                    lotOutcome(lotId, if (newOwners.isEmpty()) "Baja registrada." else "Cambio de titularidad registrado.")
+                    lotOutcome(lotId, if (newOwners.isEmpty()) tr("Baja registrada.") else tr("Cambio de titularidad registrado."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "titularidad" -> when (op) {
                 "save" -> {
                     PropietariosService.require(permissions, PropietariosModule.Manage)
                     val id = requireId("id")
-                    val share = PropietariosActions.decimal(values["share"], "El porcentaje")
+                    val share = PropietariosActions.decimal(values["share"], tr("El porcentaje"))
                     val result = PropietariosService.editOwnership(
                         tenant, id, share, PropietariosActions.date(values["starts_on"]), PropietariosActions.date(values["ends_on"]), values["notes"].orEmpty(), author,
                     )
-                    lotOutcome(result.lotId, "Titularidad guardada.")
+                    lotOutcome(result.lotId, tr("Titularidad guardada."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
-            else -> throw missing("Acción no disponible.")
+            else -> throw missing(tr("Acción no disponible."))
         }
     }
 }
