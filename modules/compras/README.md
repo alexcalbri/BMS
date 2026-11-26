@@ -1,6 +1,6 @@
 # Modulo Compras
 
-Version 0.2.1. Estado: en desarrollo (`.development`).
+Version 0.2.2. Estado: en desarrollo (`.development`).
 
 Solicitudes de compra por empresa: se solicita, se aprueba y se procede. Cotizar es opcional. Cada negocio es una empresa de BMS, por eso no hay catalogo de sedes; el departamento si es un catalogo configurable.
 
@@ -111,6 +111,14 @@ El modulo soporta extensiones (`supportsExtensions`) que aportan fuentes de impo
 - Motor comun `ComprasImportEngine.apply`: idempotente por `import_key` (V002). Las solicitudes importadas quedan con decision "Importado de Monday" (sin aprobador real) y un evento `imported`; no avisan una por una.
 - MCP: las herramientas extra de cada fuente (permiso `compras.import`) se suman a las del modulo.
 - Las solicitudes importadas nunca se borran al desinstalar la extension.
+
+## Reimportar (0.2.2)
+
+Volver a importar una solicitud que ya existe sigue sin cambiarla, con una excepcion: si **sigue en borrador** y el origen
+trae otro estado, toma ese estado (con su decision, importe aprobado y fechas). Asi una solicitud importada cuando su estado
+de origen aun no se reconocia se corrige al reimportar. Una solicitud que ya salio del borrador aqui no se toca nunca: la
+reimportacion no deshace una aprobacion ni un rechazo hechos en BMS. El resultado sigue siendo "ya existia", con el aviso
+"Estado actualizado a ...".
 
 ## Cambios de rendimiento (0.2.1)
 
