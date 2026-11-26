@@ -876,7 +876,8 @@ server {
         proxy_set_header X-Forwarded-Host \$host;
     }
     location /modules {
-        client_max_body_size 30m;
+        # Sin tope de tamano: los modulos reciben adjuntos y cada uno decide su limite.
+        client_max_body_size 0;
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -1007,7 +1008,8 @@ server {
         proxy_set_header X-Forwarded-Host \$host;
     }
     location /modules {
-        client_max_body_size 30m;
+        # Sin tope de tamano: los modulos reciben adjuntos y cada uno decide su limite.
+        client_max_body_size 0;
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;

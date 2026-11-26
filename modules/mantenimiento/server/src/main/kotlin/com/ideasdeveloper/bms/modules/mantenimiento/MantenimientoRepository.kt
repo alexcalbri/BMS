@@ -28,7 +28,8 @@ data class GeneratedOrder(val orderId: UUID, val number: Long, val title: String
  * withContext(Dispatchers.IO). Todo el SQL es parametrizado; las listas usan `= ANY(?)` con un arreglo uuid.
  */
 object MantenimientoRepository {
-    const val MaxFileBytes = 25L * 1024 * 1024
+    // Sin limite practico por archivo: el tope real es el disco del servidor. 100 GB evita desbordes al sumar.
+    const val MaxFileBytes = 100L * 1024 * 1024 * 1024
     const val MaxFilesPerOrder = 100
     const val MaxChecklistItems = 100
     const val MaxNoteLength = 5000

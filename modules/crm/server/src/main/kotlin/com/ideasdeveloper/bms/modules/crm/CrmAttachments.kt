@@ -17,7 +17,8 @@ import java.util.UUID
  * marked, so a rolled back save never loses a file that a lead still points to.
  */
 object CrmAttachments {
-    const val MaxFileBytes = 25L * 1024 * 1024
+    // Sin limite practico por archivo: el tope real es el disco del servidor. 100 GB evita desbordes al sumar.
+    const val MaxFileBytes = 100L * 1024 * 1024 * 1024
     // Per lead, so a folder with thousands of files is not attached by mistake.
     const val MaxFilesPerLead = 500
     private val log = LoggerFactory.getLogger(CrmAttachments::class.java)

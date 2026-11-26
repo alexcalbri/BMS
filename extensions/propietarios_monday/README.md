@@ -22,7 +22,7 @@ cada elemento es un lote y cada grupo, un propietario o una familia.
 | Ubicacion (location) | Latitud y longitud |
 | Fecha o linea de tiempo | Inicio de la titularidad |
 | Porcentaje / Share | Porcentaje de propiedad (solo si el lote tiene un titular) |
-| Columnas de archivos | Adjuntos del lote (25 MB cada uno; clave `monday:asset:<id>`) |
+| Columnas de archivos | Adjuntos del lote (sin límite de tamaño; clave `monday:asset:<id>`) |
 | Otras columnas con valor | Notas del lote, como `Columna: valor` |
 
 El mapeo sale sugerido por titulo y tipo de columna (espanol e ingles) y se puede cambiar antes de leer.

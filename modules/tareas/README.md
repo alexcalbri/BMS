@@ -1,6 +1,6 @@
 # Tareas
 
-Version 0.3.1 (in development). Replaces the Monday boards: tasks organized in boards and groups, with several
+Version 0.3.2 (in development). Replaces the Monday boards: tasks organized in boards and groups, with several
 responsibles, an optional reviewer, checklist, comments, attachments, due reminders and list, kanban, agenda and
 workload views.
 
@@ -132,14 +132,14 @@ the extension permission is `tareas.import.write`: create boards, groups, tasks,
   an `import_key` (unique per task): only the missing ones are added; comments keep the original author and date in the
   text. Over the limits (100 checklist items, 2000 comments) the extra ones are left out (logged). Long texts are cut with
   "…" (title 300, detail 20000, comment 5000, checklist 300); a row without title or identifier is skipped. Attachments are
-  stored once per `import_key` (25 MB each, 100 per task).
+  stored once per `import_key` (any size, 100 per task).
 - Importing again updates the tasks already imported and overwrites the local changes made to the imported fields. Importing into an existing board needs `tareas.manage` on it and a new board needs `tareas.boards`; the extension enforces both.
 - Imported tasks write a "imported" activity row and nothing in the customer's history.
 - When a company is duplicated the boards do not keep their `import_key`.
 
 ## Files
 
-`POST /modules/tareas/ui/files` (25 MB, `tareas.view`) stores a pending upload; `GET /modules/tareas/ui/files/{id}`
+`POST /modules/tareas/ui/files` (no size limit, `tareas.view`) stores a pending upload; `GET /modules/tareas/ui/files/{id}`
 needs to see the task (a pending upload only reaches its uploader). Linking happens when the task is saved and only for
 files the same user uploaded.
 

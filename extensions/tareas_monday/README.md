@@ -19,7 +19,7 @@ pasa a ser un tablero de Tareas; es una fuente de importacion del modulo (`Tarea
 | Otras columnas con valor | Detalle, como `Columna: valor` |
 | Subelementos | Lista de pasos (hecho si su estado es Done); clave `monday:sub:<id>` |
 | Actualizaciones y respuestas | Comentarios `[Autor · aaaa-mm-dd] texto` con la fecha original; clave `monday:upd:<id>` |
-| Archivos de columnas y de actualizaciones | Adjuntos (25 MB cada uno); clave `monday:asset:<id>` |
+| Archivos de columnas y de actualizaciones | Adjuntos (sin limite de tamano); clave `monday:asset:<id>` |
 
 Las personas se emparejan por **correo** (`users(ids)` de monday) con los usuarios de Tareas. Las que no tienen usuario
 quedan anotadas en el detalle y la vista previa las lista.
@@ -72,7 +72,7 @@ Siempre se borra el token. La opcion `import_history` (por omision, borrar) elim
 ## Limites
 
 - Hasta 20 000 elementos por tablero y una importacion en curso a la vez.
-- Archivos de hasta 25 MB, solo de servidores de monday (`*.monday.com` y su S3); los de Drive o Dropbox (enlaces) no se importan.
+- Archivos de cualquier tamano (cada descarga dispone del tiempo de una pasada del trabajo, como mucho 5 minutos), solo de servidores de monday (`*.monday.com` y su S3); los de Drive o Dropbox (enlaces) no se importan.
 - Solo se leen las primeras 100 actualizaciones de cada elemento (cada una con sus respuestas); los topes de pasos (100) y comentarios (2000) por tarea los aplica el modulo.
 
 ## 1.0.2 (lectura con respuestas)

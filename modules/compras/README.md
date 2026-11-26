@@ -1,6 +1,6 @@
 # Modulo Compras
 
-Version 0.2.2. Estado: en desarrollo (`.development`).
+Version 0.2.3. Estado: en desarrollo (`.development`).
 
 Solicitudes de compra por empresa: se solicita, se aprueba y se procede. Cotizar es opcional. Cada negocio es una empresa de BMS, por eso no hay catalogo de sedes; el departamento si es un catalogo configurable.
 
@@ -95,7 +95,7 @@ Nunca hacen fallar la accion. El aviso a aprobadores exige que el destinatario t
 
 ## Adjuntos
 
-Facturas, proformas, cotizaciones y otros respaldos, hasta 25 MB por archivo y 100 por solicitud. Se pueden anadir en cualquier estado menos cancelada (las facturas llegan despues de comprar); quitarlos solo en borrador o cotizacion, o con `manage`. Cada usuario puede tener hasta 50 subidas pendientes (sin vincular a una solicitud). La descarga comprueba que la solicitud sea visible para el usuario, sirve solo tipos de archivo seguros y envia `X-Content-Type-Options: nosniff`. Un trabajo cada hora (`attachments-cleanup`) borra archivos quitados o subidas huerfanas de mas de un dia.
+Facturas, proformas, cotizaciones y otros respaldos, sin limite de tamano por archivo y 100 por solicitud. Se pueden anadir en cualquier estado menos cancelada (las facturas llegan despues de comprar); quitarlos solo en borrador o cotizacion, o con `manage`. Cada usuario puede tener hasta 50 subidas pendientes (sin vincular a una solicitud). La descarga comprueba que la solicitud sea visible para el usuario, sirve solo tipos de archivo seguros y envia `X-Content-Type-Options: nosniff`. Un trabajo cada hora (`attachments-cleanup`) borra archivos quitados o subidas huerfanas de mas de un dia.
 
 ## Origen para mantenimiento (previsto)
 

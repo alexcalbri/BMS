@@ -23,7 +23,8 @@ import java.util.UUID
  * withContext(Dispatchers.IO). Todo el SQL va parametrizado; las listas usan `= ANY(?)` con un arreglo uuid.
  */
 object PropietariosRepository {
-    const val MaxFileBytes = 25L * 1024 * 1024
+    // Sin limite practico por archivo: el tope real es el disco del servidor. 100 GB evita desbordes al sumar.
+    const val MaxFileBytes = 100L * 1024 * 1024 * 1024
     const val MaxFilesPerLot = 100
     const val MaxPendingFiles = 20
     const val MaxPendingBytes = 200L * 1024 * 1024

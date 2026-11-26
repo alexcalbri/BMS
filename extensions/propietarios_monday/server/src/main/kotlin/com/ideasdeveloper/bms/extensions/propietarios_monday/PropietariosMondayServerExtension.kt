@@ -37,7 +37,7 @@ object PropietariosMondayServerExtension : ServerExtension, PropietariosImportSo
         module = "propietarios",
         displayName = "Importacion de propietarios desde monday",
         description = "Importa un tablero de monday (lotes y sus propietarios) al modulo Propietarios: lee el tablero con el token de la empresa, mapea sus columnas y trae desarrollos, lotes, titulares y archivos.",
-        version = "1.0.1",
+        version = "1.0.2",
         minModuleVersion = "0.1.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,

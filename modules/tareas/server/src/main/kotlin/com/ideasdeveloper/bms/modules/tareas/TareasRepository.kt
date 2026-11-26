@@ -23,7 +23,8 @@ import java.util.concurrent.ConcurrentHashMap
  * inside withContext(Dispatchers.IO). All SQL is parameterized; lists use `= ANY(?)` with a uuid array.
  */
 object TareasRepository {
-    const val MaxFileBytes = 25L * 1024 * 1024
+    // Sin limite practico por archivo: el tope real es el disco del servidor. 100 GB evita desbordes al sumar.
+    const val MaxFileBytes = 100L * 1024 * 1024 * 1024
     const val MaxFilesPerTask = 100
     const val MaxChecklistItems = 100
     const val MaxCommentLength = 5000

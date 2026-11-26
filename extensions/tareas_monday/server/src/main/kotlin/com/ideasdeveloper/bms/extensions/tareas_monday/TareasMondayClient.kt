@@ -31,7 +31,8 @@ data class MondayAssetLink(val url: String, val size: Long?)
 object TareasMondayClient {
     const val MainWorkspace = "Espacio principal"
     const val MaxItems = 20_000
-    const val MaxFileBytes = 25L * 1024 * 1024
+    // Sin limite practico por archivo: el tope real es el disco del servidor. 100 GB evita desbordes al sumar.
+    const val MaxFileBytes = 100L * 1024 * 1024 * 1024
     const val PageSize = 25
     /** Tope de lectura de una respuesta: pasado esto se trata como complejidad y la pagina se reduce. */
     private const val MaxBytes = 5 * 1024 * 1024

@@ -335,7 +335,8 @@ PY
     printf 'Nginx actualizado para proxyear %s al backend.\n' "$prefix"
 }
 
-# Module routes receive attachments (25 MB per file in the CRM); Nginx allows 1 MB by default.
+# Module routes receive attachments of any size; Nginx allows 1 MB by default. Sites written by older
+# installers carry "client_max_body_size 30m" there: it becomes 0 (no limit; each module decides its own).
 ensure_nginx_module_upload_limit() {
     if [[ ! -f $NGINX_SITE ]] || ! grep -q "proxy_pass http://127.0.0.1:$APP_PORT" "$NGINX_SITE"; then
         return
@@ -350,7 +351,7 @@ import sys
 text = Path(sys.argv[1]).read_text()
 marker = "    location /modules {\n"
 parts = text.split(marker)
-sys.exit(0 if all(part.lstrip().startswith("client_max_body_size") for part in parts[1:]) else 1)
+sys.exit(0 if all(part.lstrip().startswith("client_max_body_size 0;") for part in parts[1:]) else 1)
 PY
     then
         return
@@ -358,19 +359,25 @@ PY
     cp -a "$NGINX_SITE" "$NGINX_SITE.update-backup.$(date -u +%Y%m%dT%H%M%SZ)"
     python3 - "$NGINX_SITE" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 path = Path(sys.argv[1])
 text = path.read_text()
 marker = "    location /modules {\n"
-limit = "        client_max_body_size 30m;\n"
+limit = "        client_max_body_size 0;\n"
 parts = text.split(marker)
-fixed = parts[0] + "".join(marker + (part if part.lstrip().startswith("client_max_body_size") else limit + part) for part in parts[1:])
-path.write_text(fixed)
+
+def fix(part):
+    if part.lstrip().startswith("client_max_body_size"):
+        return re.sub(r"^\s*client_max_body_size[^;]*;\n", limit, part, count=1)
+    return limit + part
+
+path.write_text(parts[0] + "".join(marker + fix(part) for part in parts[1:]))
 PY
     nginx -t
     systemctl reload nginx
-    printf 'Nginx actualizado: /modules acepta archivos de hasta 30 MB.\n'
+    printf 'Nginx actualizado: /modules acepta archivos de cualquier tamano.\n'
 }
 
 configure_nginx_server_route() {

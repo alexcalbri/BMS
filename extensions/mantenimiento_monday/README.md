@@ -26,7 +26,7 @@ La sugerencia sale del nombre del tablero: "Solicitud" o "Proyecto" -> ordenes d
 | Otras columnas con valor | Descripcion, como `Columna: valor` | Descripcion, como `Columna: valor` |
 | Subelementos | Lista de comprobacion; clave `monday:sub:<id>` | Lista de comprobacion (hecha si su estado es Done); clave `monday:sub:<id>` |
 | Actualizaciones y respuestas | Al final de la descripcion (tope 5000) | Notas `[Autor · aaaa-mm-dd] texto` con la fecha original; clave `monday:upd:<id>` |
-| Archivos de columnas y de actualizaciones | - | Adjuntos (25 MB cada uno); clave `monday:asset:<id>` |
+| Archivos de columnas y de actualizaciones | - | Adjuntos (sin límite de tamaño); clave `monday:asset:<id>` |
 
 Tableros reales con sugerencia probada: "Tareas de Mantenimiento" (grupos Anuales / Trimestrales / Mensuales; columnas Estado,
 Asignado a, Prioridad, Fecha limite, Notas) y "Solicitudes de Proyectos - Mantenimiento" (grupos Pendiente de aprobacion, En
@@ -84,7 +84,7 @@ Siempre se borra el token. La opcion `import_history` (por omision, borrar) elim
 ## Limites
 
 - Hasta 20 000 elementos por tablero y una importacion en curso a la vez.
-- Archivos de hasta 25 MB, solo de servidores de monday (`*.monday.com` y su S3); los de Drive o Dropbox (enlaces) no se importan. Los planes no llevan archivos.
+- Archivos de cualquier tamaño (cada descarga dispone del tiempo de una pasada del trabajo, como mucho 5 minutos), solo de servidores de monday (`*.monday.com` y su S3); los de Drive o Dropbox (enlaces) no se importan. Los planes no llevan archivos.
 - Solo se leen las primeras 100 actualizaciones de cada elemento (en una consulta aparte); los topes de lista de comprobacion (100) y notas (2000) por fila los aplica el modulo.
 
 ## Version 1.0.1 (rendimiento)
