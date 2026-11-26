@@ -15,6 +15,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.ui.UiNode
 import java.sql.Connection
@@ -37,7 +38,7 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
         module = "tareas",
         displayName = "Importacion de tareas desde monday",
         description = "Importa tableros de monday como tableros de Tareas: lee el tablero con el token de la empresa, mapea sus columnas y trae grupos, tareas, subelementos, comentarios y archivos.",
-        version = "1.0.3",
+        version = "1.1.0",
         minModuleVersion = "0.2.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -96,10 +97,10 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            UninstallItem(null, "Token de la API de monday (se borra)", count(tenant, "SELECT count(*) FROM ${TareasMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
-            UninstallItem(HistoryOption, "Importaciones de monday (trabajos)", count(tenant, "SELECT count(*) FROM ${TareasMondayJobs.JobsTable}"), UninstallDefault.Delete),
-            UninstallItem(HistoryOption, "Filas leidas de monday", count(tenant, "SELECT count(*) FROM ${TareasMondayJobs.RowsTable}"), UninstallDefault.Delete),
-            UninstallItem(null, "Tareas importadas (se conservan)", count(tenant, "SELECT count(*) FROM tareas_tasks WHERE source = 'monday'"), "keep"),
+            UninstallItem(null, tr("Token de la API de monday (se borra)"), count(tenant, "SELECT count(*) FROM ${TareasMondaySettings.Table} WHERE coalesce(token, '') <> ''"), "delete"),
+            UninstallItem(HistoryOption, tr("Importaciones de monday (trabajos)"), count(tenant, "SELECT count(*) FROM ${TareasMondayJobs.JobsTable}"), UninstallDefault.Delete),
+            UninstallItem(HistoryOption, tr("Filas leidas de monday"), count(tenant, "SELECT count(*) FROM ${TareasMondayJobs.RowsTable}"), UninstallDefault.Delete),
+            UninstallItem(null, tr("Tareas importadas (se conservan)"), count(tenant, "SELECT count(*) FROM tareas_tasks WHERE source = 'monday'"), "keep"),
         )
     }
 
