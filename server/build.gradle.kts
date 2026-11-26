@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.ideasdeveloper.bms"
-version = "0.9.1"
+version = "0.9.2"
 application {
     mainClass = "com.ideasdeveloper.bms.server.app.ApplicationKt"
 }

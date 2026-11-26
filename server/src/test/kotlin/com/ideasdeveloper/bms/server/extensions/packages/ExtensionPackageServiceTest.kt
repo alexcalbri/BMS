@@ -136,6 +136,112 @@ class ExtensionPackageServiceTest {
 
     private fun harness(builder: FakeBuilder? = FakeBuilder(), signed: Boolean = true) = Harness(builder, listOf(remote(signed = signed)))
 
+    // Con la cola de instalacion: un solo reinicio al acabar, y las extensiones esperan a su modulo.
+    private class QueueHarness(packages: List<RemoteExtensionPackage>, builder: FakeBuilder = FakeBuilder()) {
+        val file: java.nio.file.Path = Files.createTempDirectory("ext-queue").resolve("pending-installs.json")
+        var restarts = 0
+        var loaded = setOf("crm")
+        var installing = emptySet<String>()
+        val tasks = ArrayDeque<Runnable>()
+        val store = FakeStore()
+        fun service(queue: com.ideasdeveloper.bms.server.modules.PackageInstallQueue) = ExtensionPackageService(
+            store = store,
+            packagesRoot = Files.createTempDirectory("ext-packages"),
+            bundledIds = { emptySet() },
+            catalogSource = { packagesList },
+            builder = builderRef,
+            authorizations = FakeAuthorizations(),
+            requestRestart = { error("con cola no se reinicia por paquete") },
+            audit = { _, _, _, _, _ -> },
+            executor = Executor { tasks.addLast(it) },
+            installQueue = queue,
+            moduleLoaded = { it in loaded },
+            modulePending = { it in installing },
+        )
+        private val packagesList = packages
+        private val builderRef = builder
+        fun newQueue() = com.ideasdeveloper.bms.server.modules.PackageInstallQueue(file) { restarts++ }
+        fun runAll() { while (tasks.isNotEmpty()) tasks.removeFirst().run() }
+    }
+
+    @Test
+    fun `several extensions asked together are all built before the single restart`() {
+        val h = QueueHarness(listOf(remote("monday_import"), remote("cloudbeds"), remote("meta")))
+        val queue = h.newQueue()
+        val service = h.service(queue)
+        listOf("monday_import", "cloudbeds", "meta").forEach { assertEquals("installing", service.install(it, "owner_role").status) }
+        assertEquals(3, queue.pending().size)
+        // The first build ends: the other two are still queued, so no restart yet.
+        h.tasks.removeFirst().run()
+        assertEquals(0, h.restarts)
+        h.runAll()
+        assertEquals(1, h.restarts)
+        assertEquals(setOf("monday_import", "cloudbeds", "meta"), h.store.rows.keys)
+        assertEquals(emptyList(), queue.pending())
+    }
+
+    @Test
+    fun `an extension waits until its module is fully installed and is built after the restart`() {
+        val h = QueueHarness(listOf(remote("monday_import")))
+        h.loaded = emptySet()
+        h.installing = setOf("crm")
+        val queue = h.newQueue()
+        val waiting = h.service(queue).install("monday_import", "owner_role")
+        assertEquals("installing", waiting.status)
+        assertTrue("En espera" in waiting.message.orEmpty(), waiting.message)
+        // Nothing was queued to build: the module is not loaded yet.
+        assertTrue(h.tasks.isEmpty())
+        assertEquals(listOf("monday_import"), queue.pending().map { it.id })
+
+        // The server restarted with the module loaded: the pending extension is built now, by the same person.
+        h.loaded = setOf("crm")
+        h.installing = emptySet()
+        val afterRestart = h.newQueue()
+        val service = h.service(afterRestart)
+        service.resumePendingInstalls()
+        h.runAll()
+        assertEquals("pending_restart", h.store.find("monday_import")?.status)
+        assertEquals(1, h.restarts)
+        assertEquals(emptyList(), afterRestart.pending())
+    }
+
+    @Test
+    fun `an extension whose module is neither installed nor installing is refused`() {
+        val h = QueueHarness(listOf(remote("monday_import")))
+        h.loaded = emptySet()
+        val queue = h.newQueue()
+        val failure = assertFailsWith<ExtensionPackageServiceException> { h.service(queue).install("monday_import", "owner_role") }
+        assertEquals("MODULE_NOT_INSTALLED", failure.code)
+        assertEquals(emptyList(), queue.pending())
+    }
+
+    @Test
+    fun `a waiting extension stops waiting when its module failed to install`() {
+        val h = QueueHarness(listOf(remote("monday_import")))
+        h.loaded = emptySet()
+        h.installing = setOf("crm")
+        val queue = h.newQueue()
+        val service = h.service(queue)
+        service.install("monday_import", "owner_role")
+        h.installing = emptySet()
+        val status = service.status("monday_import")
+        assertEquals("error", status.status)
+        assertTrue("no se instalo" in status.message.orEmpty(), status.message)
+        assertEquals(emptyList(), queue.pending())
+    }
+
+    @Test
+    fun `a failed build is not resumed and does not restart the server`() {
+        val h = QueueHarness(listOf(remote("monday_import")), FakeBuilder(failure = "No compila."))
+        val queue = h.newQueue()
+        val service = h.service(queue)
+        service.install("monday_import", "owner_role")
+        h.runAll()
+        assertEquals("error", service.status("monday_import").status)
+        assertEquals(0, h.restarts)
+        assertEquals(emptyList(), queue.pending())
+    }
+
     // GitHub corta por limite de llamadas: el catalogo llega vacio y el motivo no puede ser "no esta en el catalogo".
     @Test
     fun `a catalog that could not be read is reported as unavailable and not as a missing extension`() {

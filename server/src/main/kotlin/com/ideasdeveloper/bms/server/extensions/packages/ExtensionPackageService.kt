@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions.packages
 
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.ModuleVersion
 import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
@@ -117,10 +118,16 @@ class ExtensionPackageService(
     /** (actorRole, action, companyCode, moduleId, detailsJson) -> Unit */
     private val audit: (String, String, String?, String?, String) -> Unit,
     private val executor: Executor = Executors.newSingleThreadExecutor { task -> Thread(task, "extension-package-build").apply { isDaemon = true } },
+    /** Instalaciones que sobreviven a un reinicio y reinicio unico al acabar todas; null conserva el reinicio por paquete. */
+    private val installQueue: PackageInstallQueue? = null,
+    /** Si el modulo esta cargado ahora: una extension solo se compila contra un modulo cargado. */
+    private val moduleLoaded: (moduleId: String) -> Boolean = { true },
+    /** Si el modulo se esta instalando o espera el reinicio que lo carga: sus extensiones esperan por el. */
+    private val modulePending: (moduleId: String) -> Boolean = { false },
 ) {
     private val log = LoggerFactory.getLogger(ExtensionPackageService::class.java)
 
-    private class InstallState(val status: String, val message: String)
+    private class InstallState(val status: String, val message: String, val waitingFor: String? = null)
 
     private val states = ConcurrentHashMap<String, InstallState>()
 
@@ -153,6 +160,13 @@ class ExtensionPackageService(
     fun status(id: String): ExtensionPackageStatus = status(id, store.find(id))
 
     private fun status(id: String, stored: StoredExtensionPackage?): ExtensionPackageStatus {
+        // Una extension en espera de un modulo que al final no se instalo deja de esperar.
+        states[id]?.waitingFor?.let { module ->
+            if (!moduleLoaded(module) && !modulePending(module)) {
+                installQueue?.done(PackageInstallQueue.Extension, id)
+                states[id] = InstallState("error", "El modulo '$module' no se instalo; instalalo y vuelve a pedir la extension.")
+            }
+        }
         states[id]?.let { state ->
             return ExtensionPackageStatus(id, state.status, stored?.version.takeIf { stored?.status != "removed" }, state.message)
         }
@@ -183,10 +197,48 @@ class ExtensionPackageService(
                 "Este servidor no puede compilar extensiones: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh.",
                 "BUILDER_UNAVAILABLE",
             )
+        // Una extension no se instala hasta que su modulo esta instalado del todo (cargado tras el reinicio).
+        val module = remote.manifest.module
+        if (!moduleLoaded(module)) {
+            val queue = installQueue
+            if (queue == null || !modulePending(module)) {
+                throw ExtensionPackageServiceException(
+                    "La extension '$id' necesita el modulo '$module': instalalo primero en Modulos del servidor.", "MODULE_NOT_INSTALLED",
+                )
+            }
+            queue.add(PackageInstallQueue.Extension, id, actorRole)
+            states[id] = InstallState("installing", "En espera: se instalara cuando el modulo '$module' termine de instalarse", waitingFor = module)
+            return status(id)
+        }
         val queued = InstallState("installing", "En cola para compilar")
-        if (states.compute(id) { _, current -> if (current?.status == "installing") current else queued } !== queued) return status(id)
+        if (states.compute(id) { _, current -> if (current?.status == "installing" && current.waitingFor == null) current else queued } !== queued) return status(id)
+        installQueue?.add(PackageInstallQueue.Extension, id, actorRole)
+        installQueue?.queued()
         executor.execute { buildAndStore(id, activeBuilder, actorRole) { active, progress -> active.build(id, remote.source, progress) } }
         return status(id)
+    }
+
+    /**
+     * Instalaciones que un reinicio dejo a medias (en espera de su modulo, en cola cuando otro paquete
+     * reinicio el servidor, o cortadas mientras compilaban) vuelven a empezar. Se llama una vez al
+     * arrancar, fuera del hilo principal y con los modulos ya cargados.
+     */
+    fun resumePendingInstalls() {
+        val queue = installQueue ?: return
+        queue.pending().filter { it.kind == PackageInstallQueue.Extension }.forEach { entry ->
+            if (!queue.attempt(entry.kind, entry.id)) {
+                log.warn("Extension package {} is not installed again: it was tried {} times.", entry.id, PackageInstallQueue.MaxAttempts)
+                states[entry.id] = InstallState("error", "No se pudo instalar tras varios intentos; vuelve a pedirlo.")
+                return@forEach
+            }
+            try {
+                install(entry.id, entry.actor)
+            } catch (failure: Exception) {
+                log.warn("Pending install of extension package {} was dropped: {}", entry.id, failure.message)
+                states[entry.id] = InstallState("error", failure.message ?: "No se pudo reanudar la instalacion.")
+                queue.done(entry.kind, entry.id)
+            }
+        }
     }
 
     // ---- Paquetes desde un ZIP subido o una URL ----
@@ -372,6 +424,8 @@ class ExtensionPackageService(
         val activeBuilder = requireBuilder()
         val queued = InstallState("installing", "En cola para compilar")
         if (states.compute(id) { _, current -> if (current?.status == "installing") current else queued } !== queued) return status(id)
+        // Un ZIP o una URL no se pueden reanudar tras un reinicio, pero el reinicio si espera a que terminen.
+        installQueue?.queued()
         executor.execute { buildAndStore(id, activeBuilder, actorRole, onStored, produce) }
         return status(id)
     }
@@ -418,12 +472,24 @@ class ExtensionPackageService(
                     put("jarSha256", built.jarSha256)
                 }.toString(),
             )
-            log.info("Extension package {} {} built; restarting to load it.", id, built.manifest.version)
-            requestRestart()
+            log.info("Extension package {} {} built; the server restarts to load it once nothing else is being built.", id, built.manifest.version)
+            finishBuild(id, needsRestart = true)
         } catch (failure: Exception) {
             log.warn("Extension package {} could not be installed: {}", id, failure.message)
             states[id] = InstallState("error", failure.message ?: "No se pudo instalar la extension.")
+            finishBuild(id, needsRestart = false)
         }
+    }
+
+    // La compilacion termino, bien o mal: no se reanuda, y el reinicio espera a las demas de la cola.
+    private fun finishBuild(id: String, needsRestart: Boolean) {
+        val queue = installQueue
+        if (queue == null) {
+            if (needsRestart) requestRestart()
+            return
+        }
+        queue.done(PackageInstallQueue.Extension, id)
+        queue.built(needsRestart)
     }
 
     /** Descarga el paquete y devuelve commit, URL y hash del arbol calculado, para revisarlo antes de autorizar. */
