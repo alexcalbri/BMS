@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -69,7 +71,7 @@ fun notificationResponse(
  */
 fun Route.notificationRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
     val notifications = access.notifications
-    fun moduleName(moduleId: String): String? = registry.availableDefinition(moduleId)?.displayName?.let { tr(it) }
+    fun moduleName(moduleId: String): String? = registry.availableDefinition(moduleId)?.displayName?.let { trIn(I18n.moduleNamespace(moduleId), it) }
 
     route("/notifications") {
         get {

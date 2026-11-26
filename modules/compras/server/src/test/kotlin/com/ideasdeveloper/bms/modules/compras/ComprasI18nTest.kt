@@ -65,8 +65,8 @@ class ComprasI18nTest {
         val priority = englishForm.fields.first { it.key == "priority" }
         assertEquals("Priority", priority.label)
         assertEquals(listOf("Baja", "Media", "Alta", "Critica"), priority.options)
-        assertEquals("Low", priority.optionLabels!!.first())
-        assertEquals("Critical", priority.optionLabels!!.last())
+        // The module's own catalog: "Alta" is a priority here, not Core's "New item".
+        assertEquals(listOf("Low", "Medium", "High", "Critical"), priority.optionLabels)
         // Same fields, same keys and same options in both languages; only the labels change.
         assertEquals(spanish.fields.map { it.key }, englishForm.fields.map { it.key })
         assertEquals(spanish.fields.map { it.options }, englishForm.fields.map { it.options })

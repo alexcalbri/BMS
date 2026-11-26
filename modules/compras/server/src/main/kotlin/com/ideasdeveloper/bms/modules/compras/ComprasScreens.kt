@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiBadge
@@ -244,7 +245,7 @@ object ComprasScreens {
             "new" -> newScreen(actor, NewData(ComprasRepository.departments(tenant, onlyActive = true), ComprasRepository.settings(tenant).defaultCurrency), notice, submitted)
             "import" -> {
                 val ctx = importContext?.invoke()
-                val cards = if (ctx == null) emptyList() else ComprasActions.activeSources(ComprasImportSources.all) { it.isEnabled(ctx) }.map { ImportCard(it.id, it.label, it.screen(ctx, params)) }
+                val cards = if (ctx == null) emptyList() else ComprasActions.activeSources(ComprasImportSources.all) { it.isEnabled(ctx) }.map { ImportCard(it.id, it.label, localizedFor(it, it.screen(ctx, params))) }
                 importScreen(actor, cards, notice)
             }
             "settings" -> ComprasAdminScreens.build(tenant, actor, notice, submitted)

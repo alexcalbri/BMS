@@ -1,7 +1,9 @@
 package com.ideasdeveloper.bms.modules.agentes
 
+import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.modules.RegisteredMcpTool
 import com.ideasdeveloper.bms.ui.UiBadge
@@ -146,7 +148,7 @@ object AgentesScreens {
             )
         }
         val moduleFields = context.toolModules.map { (id, name) ->
-            UiField("$ModuleFieldPrefix$id", tr(name), "boolean", section = tr("Modulos que el agente puede usar"))
+            UiField("$ModuleFieldPrefix$id", trIn(I18n.moduleNamespace(id), name), "boolean", section = tr("Modulos que el agente puede usar"))
         }
         val defaults = mapOf("expires" to "90 dias", "readOnly" to "false", "groupScope" to "false") + context.toolModules.associate { "$ModuleFieldPrefix${it.first}" to "true" }
         val form = UiForm(

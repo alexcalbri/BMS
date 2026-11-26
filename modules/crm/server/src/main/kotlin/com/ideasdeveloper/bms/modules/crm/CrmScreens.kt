@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -238,7 +239,7 @@ object CrmScreens {
                 return frame(context, screen, extensionSection.label, UiNotice(CrmExtensions.inactiveMessage(provider.extensionId), UiTone.Warning), emptyList())
             }
             return try {
-                frame(context, screen, extensionSection.label, notice, provider.screen(context, screen, params, submitted))
+                frame(context, screen, extensionSection.label, notice, localizedFor(provider, provider.screen(context, screen, params, submitted)))
             } catch (failure: Exception) {
                 org.slf4j.LoggerFactory.getLogger("CrmScreenProviders").warn("Fallo la pantalla {} de la extension {}.", screen, provider.extensionId, failure)
                 frame(context, screen, extensionSection.label, UiNotice(tr("No se pudo abrir esta pantalla de la extension."), UiTone.Danger), emptyList())

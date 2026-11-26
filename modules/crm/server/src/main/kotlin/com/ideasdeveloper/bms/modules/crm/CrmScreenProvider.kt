@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.ui.UiNode
@@ -125,7 +126,7 @@ object CrmScreenProviders {
     /** Paneles de la ficha del lead de los proveedores activos; un fallo deja un aviso corto y no se propaga. */
     fun leadPanels(context: CrmScreens.Context, lead: CrmLead): List<UiNode> = active(context.tenant).flatMap { provider ->
         try {
-            provider.leadPanel(context, lead)
+            localizedFor(provider, provider.leadPanel(context, lead))
         } catch (failure: Exception) {
             log.warn("Fallo el panel del lead de la extension {}.", provider.extensionId, failure)
             listOf<UiNode>(UiText(tr("No se pudo mostrar el bloque de {0}.", CrmExtensions.displayName(provider.extensionId)), tone = UiTone.Warning))

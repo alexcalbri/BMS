@@ -77,7 +77,7 @@
   "No se pudo conectar": "Could not connect",
   "No tienes permiso para conectar agentes.": "You do not have permission to connect agents.",
   "No tienes permiso para esta accion.": "You do not have permission for this action.",
-  "No tienes permiso para ver esta seccion.": "You do not have permission to see this section.",
+  "No tienes permiso para ver esta seccion.": "You do not have permission to view this section.",
   "Nombre del agente": "Agent name",
   "Nunca": "Never",
   "Nunca podra hacer algo que tu usuario no tenga permitido. Si te quitan un permiso, el agente lo pierde de inmediato. Puedes revocarlo cuando quieras en Agentes IA.": "It will never be able to do anything your user is not allowed to do. If a permission is taken away from you, the agent loses it immediately. You can revoke it whenever you want in AI Agents.",

@@ -22,6 +22,7 @@ import com.ideasdeveloper.bms.server.company.api.UpdateCompanyUserRequest
 import com.ideasdeveloper.bms.server.company.api.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.bms.server.company.api.BusinessOwnerResponse
 import com.ideasdeveloper.bms.server.company.api.UpdateCompanyProfileRequest
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.CompanyMail
 import com.ideasdeveloper.bms.server.modules.CompanyMailForm
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
@@ -655,8 +656,8 @@ class CompanySelfService(
                                 permissionId = rows.getString("permission_id"),
                                 moduleId = rows.getString("module_id"),
                                 // Stored in Spanish from the module definitions; shown in the user's language.
-                                title = tr(rows.getString("title")),
-                                description = tr(rows.getString("description")),
+                                title = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("title")),
+                                description = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("description")),
                             )
                         )
                     }

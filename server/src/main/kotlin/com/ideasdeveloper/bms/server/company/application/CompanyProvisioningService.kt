@@ -27,6 +27,8 @@ import com.ideasdeveloper.bms.server.modules.ModuleRegistry
 import com.ideasdeveloper.bms.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.bms.server.modules.RemoteModulePackage
 import com.ideasdeveloper.bms.ModuleVersion
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.GitHubLocation
 import com.ideasdeveloper.bms.server.modules.ModuleBuildException
 import com.ideasdeveloper.bms.server.modules.ModulePackageBuilder
@@ -996,7 +998,7 @@ class CompanyProvisioningService(
         val definition = modules.singleOrNull { it.id == normalizedModuleId }
             ?: throw CompanyProvisioningException(tr("Modulo no reconocido o no instalado en el servidor."))
         if (definition.locked && !enabled) {
-            throw CompanyProvisioningException(tr("El modulo {0} es base y no puede deshabilitarse.", tr(definition.displayName)))
+            throw CompanyProvisioningException(tr("El modulo {0} es base y no puede deshabilitarse.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
         }
 
         val company = central.connection.use { connection ->
@@ -1090,8 +1092,8 @@ class CompanyProvisioningService(
         val comparable = installed && !definition.locked && catalogVersion != null
         return ServerModuleResponse(
             moduleId = definition.id,
-            displayName = tr(definition.displayName),
-            description = tr(definition.description),
+            displayName = trIn(I18n.moduleNamespace(definition.id), definition.displayName),
+            description = trIn(I18n.moduleNamespace(definition.id), definition.description),
             version = installedVersion,
             latestVersion = remotePackage?.definition?.version,
             locked = definition.locked,
@@ -1203,7 +1205,7 @@ class CompanyProvisioningService(
         val builder = modulePackageBuilder
             ?: throw CompanyProvisioningException(tr("Este servidor no puede compilar modulos: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh."))
         val source = remotePackage?.source
-            ?: throw CompanyProvisioningException(tr("{0} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.", tr(definition.displayName)))
+            ?: throw CompanyProvisioningException(tr("{0} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
         installStates[definition.id] = ModuleInstallState(InstallStatus.Installing) { tr("En cola para compilar") }
         installQueue?.add(PackageInstallQueue.Module, definition.id)
         installQueue?.queued()
@@ -1307,7 +1309,7 @@ class CompanyProvisioningService(
             setModuleEnabled(ensureServerWorkspace(provisioningRole), definition.id, true, provisioningRole)
         } else {
             if (definition.locked) {
-                throw CompanyProvisioningException(tr("{0} es un modulo base y siempre esta activo en el espacio del servidor.", tr(definition.displayName)))
+                throw CompanyProvisioningException(tr("{0} es un modulo base y siempre esta activo en el espacio del servidor.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
             }
             serverWorkspaceRow()?.let { setModuleEnabled(it.code, definition.id, false, provisioningRole) }
         }
@@ -1519,7 +1521,7 @@ class CompanyProvisioningService(
                 )
             }
             log.info("Module {} {} built from {}@{}; the server restarts to load it once nothing else is being built.", moduleId, built.version, source.repo, source.ref)
-            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting) { tr("Compilado; el servidor se reinicia para cargar {0} cuando termine lo que queda en cola", tr(definition.displayName)) }
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting) { tr("Compilado; el servidor se reinicia para cargar {0} cuando termine lo que queda en cola", trIn(I18n.moduleNamespace(definition.id), definition.displayName)) }
             finishBuild(moduleId, needsRestart = true)
         } catch (failure: ModuleBuildException) {
             log.warn("Module {} could not be built: {}", moduleId, failure.message)
@@ -1577,11 +1579,11 @@ class CompanyProvisioningService(
         val definition = moduleRegistry.definition(normalizedModuleId)
             ?: throw CompanyProvisioningException(tr("Modulo no reconocido o no instalado en el servidor."))
         if (definition.locked) {
-            throw CompanyProvisioningException(tr("El modulo {0} es base y no puede eliminarse del servidor.", tr(definition.displayName)))
+            throw CompanyProvisioningException(tr("El modulo {0} es base y no puede eliminarse del servidor.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
         }
         val activeCompanyCount = countCompaniesWithModuleEnabled(definition.id)
         if (activeCompanyCount > 0) {
-            throw CompanyProvisioningException(tr("No se puede eliminar {0}; esta activo en {1} empresa(s) o en el espacio del servidor.", tr(definition.displayName), activeCompanyCount))
+            throw CompanyProvisioningException(tr("No se puede eliminar {0}; esta activo en {1} empresa(s) o en el espacio del servidor.", trIn(I18n.moduleNamespace(definition.id), definition.displayName), activeCompanyCount))
         }
 
         central.connection.use { connection ->
@@ -1590,7 +1592,7 @@ class CompanyProvisioningService(
                 connection.prepareStatement("DELETE FROM server_modules WHERE module_id = ? AND locked = FALSE").use { delete ->
                     delete.setString(1, definition.id)
                     if (delete.executeUpdate() != 1) {
-                        throw CompanyProvisioningException(tr("No se pudo eliminar {0} del catalogo activo.", tr(definition.displayName)))
+                        throw CompanyProvisioningException(tr("No se pudo eliminar {0} del catalogo activo.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
                     }
                 }
                 moduleRegistry.remove(definition.id)
@@ -2335,7 +2337,7 @@ class CompanyProvisioningService(
     private fun ModuleDefinition.toCompanyModuleResponse(enabled: Boolean): CompanyModuleResponse =
         CompanyModuleResponse(
             moduleId = id,
-            displayName = tr(displayName),
+            displayName = trIn(I18n.moduleNamespace(id), displayName),
             enabled = enabled,
             locked = locked,
         )

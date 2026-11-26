@@ -28,9 +28,16 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class LocalizationTest {
+    // The catalog of the demo module "prueba" (the definition below); the screens are localized as that
+    // module, so the result never depends on what other catalogs contain (I18N.md §2).
+    private val namespace = I18n.moduleNamespace("prueba")
+
+    // An option no catalog has: it must stay in the source language.
+    private val untranslated = "Opcion sin traduccion ${java.util.UUID.randomUUID()}"
+
     init {
         I18n.register(
-            "localization-test", "en",
+            namespace, "en",
             mapOf(
                 "Abierto" to "Open", "Cerrado" to "Closed", "Modulo de prueba" to "Test module", "Ver prueba" to "See test",
                 "Estado de prueba" to "Test status", "Permiso de prueba" to "Test permission", "Descripcion de prueba" to "Test description",
@@ -42,7 +49,7 @@ class LocalizationTest {
     private val form = UiForm(
         id = "f",
         fields = listOf(
-            UiField("status", "Estado", type = "select", options = listOf("Abierto", "Cerrado", "Otro")),
+            UiField("status", "Estado", type = "select", options = listOf("Abierto", "Cerrado", untranslated)),
             UiField("name", "Nombre"),
             UiField("kind", "Tipo", type = "dropdown", options = listOf("Abierto"), optionLabels = listOf("Propio")),
         ),
@@ -60,6 +67,7 @@ class LocalizationTest {
     @Test
     fun sourceLanguageLeavesPayloadsUntouched() {
         assertSame(screen, screen.localized())
+        assertSame(screen, screen.localized(namespace))
         assertSame(screen, localizedPayload(screen))
         // Older clients: no optionLabels in the JSON when nobody set them.
         assertFalse(UiJson.encodeToString(UiScreen.serializer(), screen.localized()).contains("optionLabels\":[\"Open"))
@@ -67,21 +75,21 @@ class LocalizationTest {
 
     @Test
     fun optionLabelsAreFilledWhileValuesStayInTheSource() = I18n.withLanguage("en") {
-        val localized = screen.localized()
+        val localized = screen.localized(namespace)
         val fields = ((localized.body[0] as UiColumn).children[0] as UiCard).children.filterIsInstance<UiForm>().single().fields
-        assertEquals(listOf("Abierto", "Cerrado", "Otro"), fields[0].options)
-        assertEquals(listOf("Open", "Closed", "Otro"), fields[0].optionLabels)
+        assertEquals(listOf("Abierto", "Cerrado", untranslated), fields[0].options)
+        assertEquals(listOf("Open", "Closed", untranslated), fields[0].optionLabels)
         // Labels are not guessed: the module translates them with tr where it creates them.
         assertEquals("Estado", fields[0].label)
         assertNull(fields[1].optionLabels)
         // Labels set by the module are kept.
         assertEquals(listOf("Propio"), fields[2].optionLabels)
-        assertTrue(UiJson.encodeToString(UiScreen.serializer(), localized).contains("\"optionLabels\":[\"Open\",\"Closed\",\"Otro\"]"))
+        assertTrue(UiJson.encodeToString(UiScreen.serializer(), localized).contains("\"optionLabels\":[\"Open\",\"Closed\",\"$untranslated\"]"))
     }
 
     @Test
     fun defaultEmptyTextsAreTranslatedButModuleTextsAreNot() = I18n.withLanguage("en") {
-        val localized = screen.localized()
+        val localized = screen.localized(namespace)
         val card = (localized.body[0] as UiColumn).children[0] as UiCard
         val tables = card.children.filterIsInstance<UiTable>()
         assertEquals("No data.", tables[0].emptyText)
@@ -95,8 +103,8 @@ class LocalizationTest {
     @Test
     fun localizedPayloadDispatchesOnTheRuntimeType() = I18n.withLanguage("en") {
         val node: Any = form
-        assertEquals(listOf("Open", "Closed", "Otro"), (localizedPayload(node) as UiForm).fields[0].optionLabels)
-        val list = localizedPayload(listOf(screen))
+        assertEquals(listOf("Open", "Closed", untranslated), (localizedPayload(node, namespace) as UiForm).fields[0].optionLabels)
+        val list = localizedPayload(listOf(screen), namespace)
         assertEquals("No data.", (list[0].body[1] as UiList).emptyText)
         val suggestions = UiSuggestions(heading = "Ya existe")
         assertSame(suggestions, localizedPayload(suggestions))

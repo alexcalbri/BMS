@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.server.extensions
 
 import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.NotificationText
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleRegistry
@@ -105,13 +106,13 @@ class ExtensionService(
                 ExtensionSummary(
                     id = manifest.id,
                     module = manifest.module,
-                    displayName = tr(manifest.displayName),
-                    description = tr(manifest.description),
+                    displayName = trIn(I18n.extensionNamespace(manifest.id), manifest.displayName),
+                    description = trIn(I18n.extensionNamespace(manifest.id), manifest.description),
                     version = manifest.version,
                     minModuleVersion = manifest.minModuleVersion,
                     sourceType = manifest.source.type,
                     permissions = manifest.permissions,
-                    uninstallOptions = manifest.uninstall.options.map { it.copy(label = tr(it.label)) },
+                    uninstallOptions = manifest.uninstall.options.map { it.copy(label = trIn(I18n.extensionNamespace(manifest.id), it.label)) },
                     status = row?.status,
                     moduleInstalled = true,
                     moduleEnabled = manifest.module in enabledModules,
@@ -205,7 +206,7 @@ class ExtensionService(
         return withTenant(companyCode) { tenant ->
             requireInstalled(tenant, extensionId)
             tenant.isReadOnly = true
-            UninstallPreviewResponse(extensionId, companyCode, previewItems(tenant, companyCode, extension), UninstallChoices.views(extension.manifest.uninstall.options))
+            UninstallPreviewResponse(extensionId, companyCode, previewItems(tenant, companyCode, extension), UninstallChoices.views(extension.manifest.uninstall.options, I18n.extensionNamespace(extension.manifest.id)))
         }
     }
 
@@ -238,7 +239,7 @@ class ExtensionService(
                         changed++
                         notifyBusinessOwner(it, moduleId) {
                             NotificationText(
-                                tr("Extension incompatible: {0}", tr(extension.manifest.displayName)),
+                                tr("Extension incompatible: {0}", trIn(I18n.extensionNamespace(extension.manifest.id), extension.manifest.displayName)),
                                 tr("El modulo ahora es la version {0} y la extension necesita {1}. Esta desactivada hasta que se instale una version compatible.", newVersion, extension.manifest.minModuleVersion),
                             )
                         }
@@ -756,7 +757,7 @@ class ExtensionService(
                 definition.secret || value.secret -> SecretBox.mask(value.value)
                 else -> value.value
             }
-            ExtensionSettingView(definition.key, tr(definition.label), definition.secret, definition.required, tr(definition.help), definition.scope, shown, value != null && value.value.isNotEmpty())
+            ExtensionSettingView(definition.key, trIn(I18n.extensionNamespace(manifest.id), definition.label), definition.secret, definition.required, trIn(I18n.extensionNamespace(manifest.id), definition.help), definition.scope, shown, value != null && value.value.isNotEmpty())
         }
     }
 
@@ -766,8 +767,8 @@ class ExtensionService(
             val row = storage.row(tenant, manifest.id)?.takeIf { it.status != ExtensionStatus.Removed }
             val views = if (row != null) settingViews(tenant, manifest) else emptyList()
             ExtensionSummary(
-                manifest.id, manifest.module, tr(manifest.displayName), tr(manifest.description), manifest.version, manifest.minModuleVersion,
-                manifest.source.type, manifest.permissions, manifest.uninstall.options.map { it.copy(label = tr(it.label)) }, row?.status, modules.isInstalled(manifest.module),
+                manifest.id, manifest.module, trIn(I18n.extensionNamespace(manifest.id), manifest.displayName), trIn(I18n.extensionNamespace(manifest.id), manifest.description), manifest.version, manifest.minModuleVersion,
+                manifest.source.type, manifest.permissions, manifest.uninstall.options.map { it.copy(label = trIn(I18n.extensionNamespace(manifest.id), it.label)) }, row?.status, modules.isInstalled(manifest.module),
                 manifest.module in enabledModules(tenant), compatible(manifest), views, if (row != null) missingRequired(manifest, views) else emptyList(),
             )
         }

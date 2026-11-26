@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -224,7 +225,7 @@ object EventosRoutes {
         }
         if (chosen == null) return screen(picker + UiText(tr("Elige desde dónde quieres importar."), UiTextStyle.Caption))
         val body = try {
-            chosen.screen(importContext(tenant, access, permissions), params)
+            localizedFor(chosen, chosen.screen(importContext(tenant, access, permissions), params))
         } catch (failure: EventosValidationException) {
             errorBody(failure.message.orEmpty())
         } catch (failure: CancellationException) {

@@ -12,6 +12,7 @@ import com.ideasdeveloper.bms.server.i18n.SessionLanguages
 import com.ideasdeveloper.bms.server.i18n.TextTranslation
 import com.ideasdeveloper.bms.server.i18n.TextTranslator
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -363,7 +364,7 @@ class ModuleAccessService(
             .sortedByDescending { it.second.at }
             .take(limit)
             .map { (registered, entry) ->
-                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, tr(registered.moduleName), entry.kind, entry.title, entry.detail, entry.author, entry.link)
+                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, trIn(I18n.moduleNamespace(registered.moduleId), registered.moduleName), entry.kind, entry.title, entry.detail, entry.author, entry.link)
             }
     }
 

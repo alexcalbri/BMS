@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.I18n
 import io.ktor.http.Cookie
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -16,6 +17,7 @@ import io.ktor.server.routing.route
 import com.ideasdeveloper.bms.ui.UiAppThemes
 import com.ideasdeveloper.bms.server.i18n.localized
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import kotlinx.serialization.Serializable
 import java.net.URLEncoder
 import java.security.SecureRandom
@@ -30,7 +32,7 @@ fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
 
         // Public so the login screen can use them too; themes hold only colors and names.
         get("/themes") {
-            call.respond(HttpStatusCode.OK, UiAppThemes(registry.themes().map { it.copy(name = tr(it.name)) }))
+            call.respond(HttpStatusCode.OK, UiAppThemes(registry.themes().map { it.copy(name = trIn(I18n.moduleNamespace(it.id.substringBefore('.')), it.name)) }))
         }
 
         get("/{moduleId}/metadata") {
