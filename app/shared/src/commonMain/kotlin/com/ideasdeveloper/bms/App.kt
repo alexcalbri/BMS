@@ -38,6 +38,7 @@ import com.ideasdeveloper.bms.app.features.serveradmin.data.PasswordChangeRequir
 import com.ideasdeveloper.bms.app.features.serveradmin.data.ServerAdminApi
 import com.ideasdeveloper.bms.app.features.serveradmin.data.use
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.AuditLogScreen
+import com.ideasdeveloper.bms.app.features.activitylog.ui.ActivityLogScreen
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ForcedPasswordChangeScreen
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ServerAdminsScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.LoginScreen
@@ -275,6 +276,19 @@ fun App(initialServerUrl: String = "") {
                                 onLogout = ::requestLogout,
                                 onReturnToDashboard = ::openDashboard,
                             )
+                        } else if (moduleId == "company-activity") {
+                            // Registro de actividad de la empresa: solo sesiones de empresa; el servidor decide con 403 si no hay permiso.
+                            if (currentSession.isServerLevel || currentSession?.companyCode == null) {
+                                ReturnToDashboardEffect(onReturn = ::openDashboard)
+                            } else {
+                                ActivityLogScreen(
+                                    serverUrl = clientConfiguration?.serverUrl,
+                                    session = currentSession,
+                                    onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                                    onLogout = ::requestLogout,
+                                    onReturnToDashboard = ::openDashboard,
+                                )
+                            }
                         } else if (currentSession.isServerLevel && (moduleId in ServerOnlyScreens || (moduleId == "empresa" && !currentSession.can(ServerPermission.CompaniesView)))) {
                             // Pantalla del servidor para la que la sesion ya no tiene permiso (por ejemplo, se lo quitaron): vuelve al inicio.
                             ReturnToDashboardEffect(onReturn = ::openDashboard)
@@ -411,6 +425,7 @@ private fun String.toModuleTitle(): String = when (this) {
     "server-update" -> tr("Actualizar servidor")
     "server-admins" -> tr("Administradores del servidor")
     "server-audit" -> tr("Registro de auditoria")
+    "company-activity" -> tr("Registro de actividad")
     "clientes" -> tr("Clientes")
     else -> replace("-", " ")
         .replace("_", " ")

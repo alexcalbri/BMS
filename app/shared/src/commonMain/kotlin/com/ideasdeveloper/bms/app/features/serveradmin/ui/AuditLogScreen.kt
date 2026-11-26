@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -36,6 +37,9 @@ import com.ideasdeveloper.bms.app.core.layout.contentWidth
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.ui.DateFieldPicker
+import com.ideasdeveloper.bms.app.features.activitylog.data.ActivityLogApi
+import com.ideasdeveloper.bms.app.features.activitylog.data.use
+import com.ideasdeveloper.bms.app.features.activitylog.ui.ActivityLogPanel
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.bms.app.features.auth.data.ServerPermission
 import com.ideasdeveloper.bms.app.features.auth.data.can
@@ -74,6 +78,9 @@ fun AuditLogScreen(
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val allowed = session.can(ServerPermission.AuditView)
+    // Pestana "Actividad en empresas": solo con Core >= 0.12.0.
+    var activitySupported by remember { mutableStateOf(false) }
+    var activityTab by remember { mutableStateOf(false) }
 
     fun load(page: Int?, nextHistory: List<Int?>) {
         val url = serverUrl
@@ -102,6 +109,16 @@ fun AuditLogScreen(
         if (allowed) load(null, emptyList())
     }
 
+    LaunchedEffect(serverUrl, allowed) {
+        val url = serverUrl ?: return@LaunchedEffect
+        if (!allowed) return@LaunchedEffect
+        activitySupported = try {
+            ActivityLogApi(url).use { api -> api.supported() }
+        } catch (exception: CompanyException) {
+            false
+        }
+    }
+
     AuthenticatedScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
@@ -128,6 +145,24 @@ fun AuditLogScreen(
             ) {
                 if (!allowed) {
                     Text(tr("No tienes permiso para ver el registro de auditoria."), color = colors.danger)
+                    return@Column
+                }
+                if (activitySupported) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = !activityTab,
+                            onClick = { activityTab = false },
+                            label = { Text(tr("Auditoria del servidor")) },
+                        )
+                        FilterChip(
+                            selected = activityTab,
+                            onClick = { activityTab = true },
+                            label = { Text(tr("Actividad en empresas")) },
+                        )
+                    }
+                }
+                if (activitySupported && activityTab) {
+                    ActivityLogPanel(serverUrl = serverUrl, session = session, serverLevel = true)
                     return@Column
                 }
                 Surface(

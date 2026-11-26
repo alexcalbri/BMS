@@ -53,6 +53,7 @@ import com.ideasdeveloper.bms.app.features.auth.data.can
 import com.ideasdeveloper.bms.app.features.auth.data.isServerLevel
 import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
+import com.ideasdeveloper.bms.app.features.activitylog.data.ActivityLogApi
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.bms.app.features.shell.ui.toComposeColor
@@ -84,6 +85,8 @@ fun DashboardScreen(
     val canRenameServer = session.can(ServerPermission.Settings)
     // Version del Core del servidor: administradores y auditoria solo existen desde 0.11.0.
     var serverAdminsSupported by remember { mutableStateOf(false) }
+    // Registro de actividad de la empresa (Core >= 0.12.0): el business owner siempre; otro usuario si el servidor le deja leerlo.
+    var activityLogAvailable by remember { mutableStateOf(false) }
     var targets by remember(session?.accessToken) { mutableStateOf<SwitchTargetsResponse?>(null) }
     var companyMessage by remember { mutableStateOf<String?>(null) }
     var switching by remember { mutableStateOf(false) }
@@ -156,6 +159,22 @@ fun DashboardScreen(
     val primaryColor = colors.accent
     var versionNotice by remember { mutableStateOf<String?>(null) }
     var coreUpdateAvailable by remember { mutableStateOf(false) }
+
+    LaunchedEffect(serverUrl, session?.accessToken, session?.role, session?.companyCode) {
+        activityLogAvailable = false
+        val url = serverUrl ?: return@LaunchedEffect
+        val active = session ?: return@LaunchedEffect
+        val code = active.companyCode ?: return@LaunchedEffect
+        if (active.isServerLevel) return@LaunchedEffect
+        val api = ActivityLogApi(url)
+        try {
+            if (api.supported()) {
+                activityLogAvailable = active.role == "business_owner" || api.canReadCompany(active.accessToken, code)
+            }
+        } finally {
+            api.close()
+        }
+    }
 
     LaunchedEffect(serverUrl, session?.role, session?.serverPermissions) {
         if (session.isServerLevel && !serverUrl.isNullOrBlank()) {
@@ -275,9 +294,12 @@ fun DashboardScreen(
                 if (serverAdminsSupported && session.can(ServerPermission.AuditView)) {
                     add(DashboardCardData(tr("Registro de auditoria"), tr("Consulta quien hizo que en el servidor y en las empresas"), "R", "server-audit"))
                 }
+                if (activityLogAvailable) {
+                    add(DashboardCardData(tr("Registro de actividad"), tr("Consulta quien hizo que y cuando en la empresa"), "L", "company-activity"))
+                }
                 // Modulos activos recibidos desde el servidor.
                 enabledModules
-                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" && it != "server-logs" && it != "server-update" && it != "server-admins" && it != "server-audit" }
+                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" && it != "server-logs" && it != "server-update" && it != "server-admins" && it != "server-audit" && it != "company-activity" }
                     .forEach { moduleId ->
                         val module = moduleId.toDashboardModule()
                         add(DashboardCardData(module.title, module.description, module.iconText, moduleId))
