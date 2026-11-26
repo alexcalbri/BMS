@@ -23,6 +23,7 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.extensions.UninstallDefault
 import com.ideasdeveloper.bms.server.extensions.UninstallItem
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.outbound.ExtensionConnectionPermission
 import com.ideasdeveloper.bms.server.outbound.IntegrationConnections
@@ -55,7 +56,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
         module = "crm",
         displayName = "Importacion desde monday",
         description = "Importa tableros de monday como leads y envia a monday los leads nuevos, sus cambios, notas (con menciones) y archivos.",
-        version = "1.1.1",
+        version = "1.2.0",
         // El envio necesita el contrato de salida del CRM (OutboundSource, permiso crm.leads.export), desde la 0.29.0.
         minModuleVersion = "0.29.0",
         source = ExtensionSource(
@@ -92,7 +93,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
 
     override val extensionId: String = CrmExtensionIds.MondayImport
 
-    override val sections = listOf(CrmExtensionSection(MondayOutboundScreens.Section, "Envio a monday", CrmScreens.Settings))
+    override val sections get() = listOf(CrmExtensionSection(MondayOutboundScreens.Section, tr("Envio a monday"), CrmScreens.Settings))
 
     /**
      * Las herramientas de importacion (que el CRM ya recoge como [CrmImportSource]) y las del envio, con el mismo permiso
@@ -114,7 +115,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
 
     override fun screen(context: CrmScreens.Context, screen: String, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
         if (screen == MondayOutboundScreens.Section) MondayOutboundScreens.screen(context, submitted)
-        else listOf(UiText("Esa pantalla no existe.", tone = UiTone.Warning))
+        else listOf(UiText(tr("Esa pantalla no existe."), tone = UiTone.Warning))
 
     override fun action(
         context: CrmScreens.Context,
@@ -125,26 +126,26 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
         values: Map<String, String>,
     ): CrmExtensionActionResult =
         if (screen == MondayOutboundScreens.Section) MondayOutboundScreens.action(context, op, params, values)
-        else CrmExtensionActionResult(screen, UiNotice("Esa accion no existe.", UiTone.Warning), params - "op")
+        else CrmExtensionActionResult(screen, UiNotice(tr("Esa accion no existe."), UiTone.Warning), params - "op")
 
     override fun uninstallPreview(context: ExtensionContext): List<UninstallItem> {
         val tenant = context.tenant
         return listOf(
-            CrmExtensions.item(null, "Token de la API de monday (se borra)", CrmExtensions.count(tenant, "SELECT count(*) FROM ${MondaySettingsStore.Table} WHERE coalesce(token, '') <> ''"), "delete"),
+            CrmExtensions.item(null, tr("Token de la API de monday (se borra)"), CrmExtensions.count(tenant, "SELECT count(*) FROM ${MondaySettingsStore.Table} WHERE coalesce(token, '') <> ''"), "delete"),
             CrmExtensions.item(
-                CreatedFieldsOption, "Campos del CRM creados por la importacion",
+                CreatedFieldsOption, tr("Campos del CRM creados por la importacion"),
                 CrmExtensions.count(tenant, "SELECT count(*) FROM crm_field_definitions WHERE extension_id = ?", CrmExtensionIds.MondayImport), UninstallDefault.Ask,
             ),
-            CrmExtensions.item(HistoryOption, "Historial de importaciones de monday", CrmExtensions.count(tenant, "SELECT count(*) FROM crm_import_jobs WHERE source = 'monday'"), UninstallDefault.Delete),
+            CrmExtensions.item(HistoryOption, tr("Historial de importaciones de monday"), CrmExtensions.count(tenant, "SELECT count(*) FROM crm_import_jobs WHERE source = 'monday'"), UninstallDefault.Delete),
             CrmExtensions.item(
-                null, "Envios a monday en cola y enlaces (se borran)",
+                null, tr("Envios a monday en cola y enlaces (se borran)"),
                 CrmExtensions.count(tenant, "SELECT count(*) FROM outbound_events WHERE sink_id = ?", MondayConnectionService), "delete",
             ),
             CrmExtensions.item(
-                null, "Conexion compartida de monday (NO se borra: otras extensiones de monday la usan; quitala desde Importar si ya no la quieres)",
+                null, tr("Conexion compartida de monday (NO se borra: otras extensiones de monday la usan; quitala desde Importar si ya no la quieres)"),
                 CrmExtensions.count(tenant, "SELECT count(*) FROM ${IntegrationConnections.Table} WHERE service = ?", MondayConnectionService), "keep",
             ),
-            CrmExtensions.item(null, "Leads importados (se conservan)", CrmExtensions.count(tenant, "SELECT count(*) FROM crm_leads WHERE import_key LIKE 'monday:%'"), "keep"),
+            CrmExtensions.item(null, tr("Leads importados (se conservan)"), CrmExtensions.count(tenant, "SELECT count(*) FROM crm_leads WHERE import_key LIKE 'monday:%'"), "keep"),
         )
     }
 

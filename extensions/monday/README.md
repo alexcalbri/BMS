@@ -1,6 +1,6 @@
 # Extensión `monday` (CRM) — importar y enviar
 
-Una sola extensión hace las dos direcciones entre el CRM y monday.com. Versión 1.1.0 (necesita CRM 0.29.0 o superior).
+Una sola extensión hace las dos direcciones entre el CRM y monday.com. Versión 1.2.0 (necesita CRM 0.29.0 o superior).
 
 - **Importar**: lee tableros de monday con el token de la empresa y los deja como leads (con notas y archivos). Pantalla Importar del CRM.
 - **Enviar** (1.1.0): manda a monday los leads nuevos, sus cambios, sus notas (con menciones) y sus archivos. Pantalla **Envío a monday** (sección `monday_outbound`, permiso `crm.settings`).
@@ -70,3 +70,7 @@ Se borran la cola de envíos y los enlaces con monday (`OutboundQueue.forget`), 
 ## No probado contra monday real
 
 Todo el envío se probó con un cliente simulado. Sin verificar contra una cuenta real: los formatos de cada tipo de columna, la subida multipart de archivos, la resolución de menciones por correo, la lectura de los códigos de límite y el comportamiento de la columna clave. Probar primero con un tablero de pruebas.
+
+## Idiomas
+
+Bilingüe español/inglés (1.2.0, necesita Core 0.10.0): los textos del código usan `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/monday/i18n/en.json`. Lo que viene de monday (nombres de tableros, elementos, columnas, actualizaciones) no se traduce.
