@@ -60,6 +60,13 @@ class ComprasMondayTest {
     }
 
     @Test
+    fun reviewStatusesWaitForApproval() {
+        for (status in listOf("Pending Review", "pending  review", "In review", "Pendiente de revisión", "En Revisión", "Por revisar")) {
+            assertEquals(RequestStatus.PendingApproval to null, ComprasMondayMapping.mapStatus(status), status)
+        }
+    }
+
+    @Test
     fun unknownAndStuckStatusesComeWithAProblem() {
         val unknown = ComprasMondayMapping.mapStatus("Esperando al jefe")
         assertEquals(RequestStatus.Draft, unknown.first)
@@ -341,7 +348,7 @@ class ComprasMondayTest {
         val manifest = extension.manifest
         assertEquals("compras_monday", manifest.id)
         assertEquals("compras", manifest.module)
-        assertEquals("1.0.1", manifest.version)
+        assertEquals("1.0.2", manifest.version)
         assertEquals("0.2.0", manifest.minModuleVersion)
         assertEquals(listOf("network.outbound:api.monday.com", "secrets.write", "compras.requests.import"), manifest.permissions)
         assertEquals(listOf("import_history" to UninstallDefault.Delete), manifest.uninstall.options.map { it.id to it.default })
