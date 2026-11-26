@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.YearMonth
@@ -87,11 +88,11 @@ object MembresiaRules {
     /** Decide si se puede registrar la visita de hoy del miembro. */
     fun checkIn(membership: Membership, today: LocalDate, expiringDays: Int, override: Boolean): CheckInDecision {
         val status = displayStatus(membership, today, expiringDays)
-        if (status == DisplayStatus.CANCELADA) return CheckInDecision.Refused("La membresía está cancelada.")
+        if (status == DisplayStatus.CANCELADA) return CheckInDecision.Refused(tr("La membresía está cancelada."))
         val warning = when {
-            status == DisplayStatus.VENCIDA -> "La membresía venció el ${membership.endsOn}."
-            status == DisplayStatus.PROGRAMADA -> "La membresía empieza el ${membership.startsOn}."
-            visitsLeft(membership) == 0 -> "Ya usó todas las visitas incluidas en su plan."
+            status == DisplayStatus.VENCIDA -> tr("La membresía venció el {0}.", membership.endsOn)
+            status == DisplayStatus.PROGRAMADA -> tr("La membresía empieza el {0}.", membership.startsOn)
+            visitsLeft(membership) == 0 -> tr("Ya usó todas las visitas incluidas en su plan.")
             else -> null
         }
         return when {
@@ -105,9 +106,9 @@ object MembresiaRules {
     fun guestPassAllowed(membership: Membership, today: LocalDate, expiringDays: Int): CheckInDecision {
         val status = displayStatus(membership, today, expiringDays)
         return when {
-            status == DisplayStatus.CANCELADA -> CheckInDecision.Refused("La membresía está cancelada.")
-            !status.current -> CheckInDecision.Refused("La membresía no está vigente.")
-            guestPassesLeft(membership) == 0 -> CheckInDecision.Refused("No quedan pases de invitado.")
+            status == DisplayStatus.CANCELADA -> CheckInDecision.Refused(tr("La membresía está cancelada."))
+            !status.current -> CheckInDecision.Refused(tr("La membresía no está vigente."))
+            guestPassesLeft(membership) == 0 -> CheckInDecision.Refused(tr("No quedan pases de invitado."))
             else -> CheckInDecision.Allowed()
         }
     }
@@ -128,13 +129,13 @@ object MembresiaRules {
         text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     fun validatePlan(input: PlanInput): List<String> = buildList {
-        if (input.name.isBlank()) add("Escribe el nombre del plan.")
-        if (input.name.trim().length > MaxNameLength) add("El nombre del plan admite hasta $MaxNameLength caracteres.")
-        if (input.description.length > MaxDescriptionLength) add("La descripción admite hasta $MaxDescriptionLength caracteres.")
-        if (!validAmount(input.price)) add("El precio debe estar entre 0 y 99 999 999.99 con hasta 2 decimales.")
-        if (input.durationDays !in 1..MaxDurationDays) add("La duración debe estar entre 1 y $MaxDurationDays días.")
-        if (input.includedVisits != null && input.includedVisits < 1) add("Las visitas incluidas deben ser 1 o más (vacío = ilimitadas).")
-        if (input.guestPasses !in 0..MaxGuestPasses) add("Los pases de invitado deben estar entre 0 y $MaxGuestPasses.")
+        if (input.name.isBlank()) add(tr("Escribe el nombre del plan."))
+        if (input.name.trim().length > MaxNameLength) add(tr("El nombre del plan admite hasta {0} caracteres.", MaxNameLength))
+        if (input.description.length > MaxDescriptionLength) add(tr("La descripción admite hasta {0} caracteres.", MaxDescriptionLength))
+        if (!validAmount(input.price)) add(tr("El precio debe estar entre 0 y 99 999 999.99 con hasta 2 decimales."))
+        if (input.durationDays !in 1..MaxDurationDays) add(tr("La duración debe estar entre 1 y {0} días.", MaxDurationDays))
+        if (input.includedVisits != null && input.includedVisits < 1) add(tr("Las visitas incluidas deben ser 1 o más (vacío = ilimitadas)."))
+        if (input.guestPasses !in 0..MaxGuestPasses) add(tr("Los pases de invitado deben estar entre 0 y {0}.", MaxGuestPasses))
     }
 
     /** Valida un alta o renovacion contra los ajustes (fuente permitida) con el monto ya resuelto. */
@@ -148,25 +149,25 @@ object MembresiaRules {
 
     /** Fechas razonables: inicio entre hoy - 5 años y hoy + 2 años, y una duracion de hasta 3660 dias. */
     fun validateDates(startsOn: LocalDate, endsOn: LocalDate, today: LocalDate, checkStart: Boolean = true): List<String> = buildList {
-        if (checkStart && (startsOn.isBefore(today.minusYears(5)) || startsOn.isAfter(today.plusYears(2)))) add("El inicio debe estar entre 5 años atrás y 2 años adelante.")
-        if (endsOn.isBefore(startsOn)) add("El fin no puede ser anterior al inicio.")
-        else if (ChronoUnit.DAYS.between(startsOn, endsOn) > MaxDurationDays) add("La membresía no puede durar más de $MaxDurationDays días.")
+        if (checkStart && (startsOn.isBefore(today.minusYears(5)) || startsOn.isAfter(today.plusYears(2)))) add(tr("El inicio debe estar entre 5 años atrás y 2 años adelante."))
+        if (endsOn.isBefore(startsOn)) add(tr("El fin no puede ser anterior al inicio."))
+        else if (ChronoUnit.DAYS.between(startsOn, endsOn) > MaxDurationDays) add(tr("La membresía no puede durar más de {0} días.", MaxDurationDays))
     }
 
     private fun validateDetails(amount: BigDecimal, source: String, hostName: String, unit: String, notes: String, settings: MembresiaSettings): List<String> = buildList {
-        if (!validAmount(amount)) add("El monto debe estar entre 0 y 99 999 999.99 con hasta 2 decimales.")
-        if (source.isNotEmpty() && source !in settings.sources) add("Elige una fuente de la lista.")
-        if (hostName.length > MaxHostNameLength) add("El nombre del anfitrión admite hasta $MaxHostNameLength caracteres.")
-        if (unit.length > MaxUnitLength) add("La unidad admite hasta $MaxUnitLength caracteres.")
-        if (notes.length > MaxNotesLength) add("Las notas admiten hasta $MaxNotesLength caracteres.")
+        if (!validAmount(amount)) add(tr("El monto debe estar entre 0 y 99 999 999.99 con hasta 2 decimales."))
+        if (source.isNotEmpty() && source !in settings.sources) add(tr("Elige una fuente de la lista."))
+        if (hostName.length > MaxHostNameLength) add(tr("El nombre del anfitrión admite hasta {0} caracteres.", MaxHostNameLength))
+        if (unit.length > MaxUnitLength) add(tr("La unidad admite hasta {0} caracteres.", MaxUnitLength))
+        if (notes.length > MaxNotesLength) add(tr("Las notas admiten hasta {0} caracteres.", MaxNotesLength))
     }
 
     fun validateSettings(settings: MembresiaSettings): List<String> = buildList {
-        if (!currencyPattern.matches(settings.currency)) add("La moneda es un código de 3 letras mayúsculas, por ejemplo USD.")
-        if (settings.expiringDays !in 1..MaxExpiringDays) add("Los días de aviso deben estar entre 1 y $MaxExpiringDays.")
-        if (settings.sources.size > MaxSources) add("Se admiten hasta $MaxSources fuentes.")
-        if (settings.sources.any { it.isBlank() || it.length > MaxSourceLength }) add("Cada fuente admite hasta $MaxSourceLength caracteres.")
-        if (settings.sources.map { it.lowercase() }.toSet().size != settings.sources.size) add("Las fuentes no pueden repetirse.")
+        if (!currencyPattern.matches(settings.currency)) add(tr("La moneda es un código de 3 letras mayúsculas, por ejemplo USD."))
+        if (settings.expiringDays !in 1..MaxExpiringDays) add(tr("Los días de aviso deben estar entre 1 y {0}.", MaxExpiringDays))
+        if (settings.sources.size > MaxSources) add(tr("Se admiten hasta {0} fuentes.", MaxSources))
+        if (settings.sources.any { it.isBlank() || it.length > MaxSourceLength }) add(tr("Cada fuente admite hasta {0} caracteres.", MaxSourceLength))
+        if (settings.sources.map { it.lowercase() }.toSet().size != settings.sources.size) add(tr("Las fuentes no pueden repetirse."))
     }
 
     /** Fuentes escritas una por linea: recorta, quita vacias y repetidas. */

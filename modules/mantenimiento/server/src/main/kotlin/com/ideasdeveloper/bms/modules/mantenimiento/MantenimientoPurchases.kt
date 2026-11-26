@@ -1,7 +1,10 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.ui.UiOpenModule
+import java.sql.Connection
+import java.util.UUID
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -9,8 +12,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
-import java.sql.Connection
-import java.util.UUID
 
 /**
  * Integración opcional con Compras: desde una orden se crea la solicitud de compra con la herramienta pública `compras_create_request`
@@ -98,14 +99,14 @@ object MantenimientoPurchases {
      * que no quede guardada la solicitud. Quien llama comprueba antes que el usuario puede trabajar la orden.
      */
     fun request(access: ModuleAccessService, tenant: Connection, companyCode: String, userId: UUID, serverOwner: Boolean, orderId: UUID): PurchaseOutcome {
-        val order = MantenimientoRepository.getOrder(tenant, orderId) ?: return PurchaseOutcome.Failed("La orden ya no existe.")
+        val order = MantenimientoRepository.getOrder(tenant, orderId) ?: return PurchaseOutcome.Failed(tr("La orden ya no existe."))
         when (MantenimientoRepository.reservePurchase(tenant, orderId)) {
             MantenimientoRepository.PurchaseReservation.Reserved -> Unit
             MantenimientoRepository.PurchaseReservation.AlreadyLinked ->
-                return PurchaseOutcome.Busy("La orden ya tiene una solicitud de compra (${order.purchaseFolio}).")
+                return PurchaseOutcome.Busy(tr("La orden ya tiene una solicitud de compra ({0}).", order.purchaseFolio))
             MantenimientoRepository.PurchaseReservation.InProgress ->
-                return PurchaseOutcome.Busy("Ya se está creando la solicitud de compra de esta orden. Intenta de nuevo en unos minutos.")
-            MantenimientoRepository.PurchaseReservation.Missing -> return PurchaseOutcome.Failed("La orden ya no existe.")
+                return PurchaseOutcome.Busy(tr("Ya se está creando la solicitud de compra de esta orden. Intenta de nuevo en unos minutos."))
+            MantenimientoRepository.PurchaseReservation.Missing -> return PurchaseOutcome.Failed(tr("La orden ya no existe."))
         }
         val result = try {
             MantenimientoBridge.call(access, tenant, companyCode, userId, serverOwner, CreateRequestTool, requestArguments(order))
@@ -117,14 +118,14 @@ object MantenimientoPurchases {
         return when (result) {
             is MantenimientoBridge.BridgeResult.Unavailable -> {
                 release(tenant, orderId)
-                PurchaseOutcome.Failed("No se pudo crear la solicitud de compra: ${result.reason}.")
+                PurchaseOutcome.Failed(tr("No se pudo crear la solicitud de compra: {0}.", result.reason))
             }
             is MantenimientoBridge.BridgeResult.Ok -> {
                 val created = idAndFolioOf(result.json)
                 if (created == null) {
                     // Compras respondió Ok: la solicitud puede existir. La reserva se deja expirar para no duplicarla.
                     log.warn("Compras no devolvió el id de la solicitud de {}.", order.displayNumber)
-                    PurchaseOutcome.Failed("Compras no devolvió la solicitud creada.")
+                    PurchaseOutcome.Failed(tr("Compras no devolvió la solicitud creada."))
                 } else {
                     // Con la solicitud ya creada nunca se libera la reserva: se reintenta guardar una vez y, si falla, expira sola.
                     val saved = (1..2).any { runCatching { MantenimientoRepository.savePurchase(tenant, orderId, created.first, created.second) }.getOrDefault(false) }

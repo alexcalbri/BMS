@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiButton
@@ -55,7 +57,7 @@ object EventosScreens {
     const val PastLimit = 100
     const val RosterLimit = 500
     const val AgendaWeeks = 12
-    const val AutoPrice = "Automático"
+    val AutoPrice = msg("Automático")
     private val TimeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
     private val RegisterKeys = setOf("customer", "customer_id", "new_name", "new_email", "new_phone", "seats", "price_kind", "amount", "paid", "note")
     private val PaymentKeys = setOf("pay_date", "pay_amount", "pay_method", "pay_note")
@@ -82,13 +84,13 @@ object EventosScreens {
         val importEnabled: Boolean = false,
         val zone: ZoneId = ZoneId.systemDefault(),
     ) {
-        fun userName(id: UUID?): String? = id?.let { wanted -> users.firstOrNull { it.id == wanted }?.name ?: "Usuario retirado" }
+        fun userName(id: UUID?): String? = id?.let { wanted -> users.firstOrNull { it.id == wanted }?.name ?: tr("Usuario retirado") }
     }
 
     /** One ISO week of the agenda. */
     data class Week(val monday: LocalDate, val events: List<EventWithStats>) {
         val title: String
-            get() = "Semana ${monday.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR)}: $monday a ${monday.plusDays(6)}"
+            get() = tr("Semana {0}: {1} a {2}", monday.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR), monday, monday.plusDays(6))
     }
 
     /** Data of the event card: the event with its numbers, registrations that are not cancelled (public) and payments (private). */
@@ -116,9 +118,9 @@ object EventosScreens {
         value?.let { "${EventosRules.money(it).toPlainString()} $currency" } ?: "—"
 
     fun priceLabel(kind: PriceKind): String = when (kind) {
-        PriceKind.Member -> "Miembro"
-        PriceKind.General -> "General"
-        PriceKind.Courtesy -> "Cortesía"
+        PriceKind.Member -> msg("Miembro")
+        PriceKind.General -> msg("General")
+        PriceKind.Courtesy -> msg("Cortesía")
     }
 
     fun statusTone(status: EventStatus): String = when (status) {
@@ -133,20 +135,20 @@ object EventosScreens {
         val start = EventosRules.stamp(event.startsAt, zone)
         val end = event.endsAt ?: return start
         val sameDay = EventosRules.day(end, zone) == EventosRules.day(event.startsAt, zone)
-        return "$start a ${if (sameDay) end.atZone(zone).format(TimeFormat) else EventosRules.stamp(end, zone)}"
+        return tr("{0} a {1}", start, if (sameDay) end.atZone(zone).format(TimeFormat) else EventosRules.stamp(end, zone))
     }
 
     // ---- navigation ----
 
     fun navigation(caps: Caps, selected: String, import: Boolean = false): UiNavigation = UiNavigation(
-        title = EventosModule.displayName,
+        title = tr(EventosModule.displayName),
         items = listOfNotNull(
-            UiNavItem("proximos", "Próximos", UiNavigate("proximos")),
-            UiNavItem("pasados", "Pasados", UiNavigate("pasados")),
-            UiNavItem("nuevo", "Nuevo evento", UiNavigate("nuevo", mapOf("kind" to EventKind.Public.code))).takeIf { caps.manage },
-            UiNavItem("nuevo-privado", "Nuevo privado", UiNavigate("nuevo", mapOf("kind" to EventKind.Private.code))).takeIf { caps.manage },
-            UiNavItem("ajustes", "Ajustes", UiNavigate("ajustes")).takeIf { caps.manage },
-            UiNavItem(ImportScreen, "Importar", UiNavigate(ImportScreen)).takeIf { caps.import && import },
+            UiNavItem("proximos", tr("Próximos"), UiNavigate("proximos")),
+            UiNavItem("pasados", tr("Pasados"), UiNavigate("pasados")),
+            UiNavItem("nuevo", tr("Nuevo evento"), UiNavigate("nuevo", mapOf("kind" to EventKind.Public.code))).takeIf { caps.manage },
+            UiNavItem("nuevo-privado", tr("Nuevo privado"), UiNavigate("nuevo", mapOf("kind" to EventKind.Private.code))).takeIf { caps.manage },
+            UiNavItem("ajustes", tr("Ajustes"), UiNavigate("ajustes")).takeIf { caps.manage },
+            UiNavItem(ImportScreen, tr("Importar"), UiNavigate(ImportScreen)).takeIf { caps.import && import },
         ),
         selected = selected,
     )
@@ -157,10 +159,10 @@ object EventosScreens {
     fun statusActions(caps: Caps, event: Event): List<EventAction> {
         if (!caps.manage) return emptyList()
         return when (event.status) {
-            EventStatus.Draft -> listOf(EventAction(if (event.kind == EventKind.Private) "Confirmar" else "Publicar", EventStatus.Published))
+            EventStatus.Draft -> listOf(EventAction(if (event.kind == EventKind.Private) tr("Confirmar") else tr("Publicar"), EventStatus.Published))
             EventStatus.Published, EventStatus.Full ->
-                listOf(EventAction("Marcar realizado", EventStatus.Done, "secondary", "¿Marcar este evento como realizado?"))
-            EventStatus.Cancelled -> listOf(EventAction("Reabrir", EventStatus.Draft, "secondary"))
+                listOf(EventAction(tr("Marcar realizado"), EventStatus.Done, "secondary", "¿Marcar este evento como realizado?"))
+            EventStatus.Cancelled -> listOf(EventAction(tr("Reabrir"), EventStatus.Draft, "secondary"))
             EventStatus.Done -> emptyList()
         }
     }
@@ -180,17 +182,17 @@ object EventosScreens {
         if (!caps.register || registration.status == RegistrationStatus.Cancelled) return emptyList()
         val attendanceOpen = EventosRules.attendanceError(registration.status, event.status, event.startsAt, now, zone) == null
         return buildList {
-            if (registration.status == RegistrationStatus.Waitlist) add(RegistrationAction("Pasar a inscrito", "promote"))
+            if (registration.status == RegistrationStatus.Waitlist) add(RegistrationAction(tr("Pasar a inscrito"), "promote"))
             add(
-                if (registration.paid) RegistrationAction("Marcar no pagado", "unpaid", "secondary") else RegistrationAction("Marcar pagado", "paid"),
+                if (registration.paid) RegistrationAction(tr("Marcar no pagado"), "unpaid", "secondary") else RegistrationAction(tr("Marcar pagado"), "paid"),
             )
             if (attendanceOpen) {
                 add(
-                    if (registration.attendedAt != null) RegistrationAction("Quitar asistencia", "unattend", "secondary")
-                    else RegistrationAction("Registrar asistencia", "attend"),
+                    if (registration.attendedAt != null) RegistrationAction(tr("Quitar asistencia"), "unattend", "secondary")
+                    else RegistrationAction(tr("Registrar asistencia"), "attend"),
                 )
             }
-            add(RegistrationAction("Cancelar inscripción", "cancel", "danger", "¿Cancelar esta inscripción? No se puede deshacer."))
+            add(RegistrationAction(tr("Cancelar inscripción"), "cancel", "danger", "¿Cancelar esta inscripción? No se puede deshacer."))
         }
     }
 
@@ -215,17 +217,17 @@ object EventosScreens {
 
     fun occupancyLabel(item: EventWithStats): String {
         val event = item.event
-        if (event.kind == EventKind.Private) return "Privado"
+        if (event.kind == EventKind.Private) return tr("Privado")
         val capacity = event.capacity
-        return if (capacity != null) "${item.stats.occupied}/$capacity" else "${item.stats.occupied} inscritos"
+        return if (capacity != null) "${item.stats.occupied}/$capacity" else tr("{0} inscritos", item.stats.occupied)
     }
 
     fun eventBadges(item: EventWithStats): List<UiBadge> {
         val event = item.event
         return buildList {
-            add(UiBadge(EventosRules.statusLabel(event.kind, event.status), statusTone(event.status)))
+            add(UiBadge(tr(EventosRules.statusLabel(event.kind, event.status)), statusTone(event.status)))
             if (event.series.isNotBlank()) add(UiBadge(event.series))
-            if (event.kind == EventKind.Public && item.stats.waiting > 0) add(UiBadge("${item.stats.waiting} en espera", UiTone.Warning))
+            if (event.kind == EventKind.Public && item.stats.waiting > 0) add(UiBadge(tr("{0} en espera", item.stats.waiting), UiTone.Warning))
         }
     }
 
@@ -244,8 +246,8 @@ object EventosScreens {
 
     /** The label of the type filter for what the user picked (a label or a code); "Todos" for anything else. */
     fun kindFilterLabel(text: String?): String = when (EventosActions.kindFilter(text)) {
-        EventKind.Public -> "Públicos"
-        EventKind.Private -> "Privados"
+        EventKind.Public -> msg("Públicos")
+        EventKind.Private -> msg("Privados")
         null -> EventosActions.AllOption
     }
 
@@ -255,11 +257,11 @@ object EventosScreens {
 
     private fun filterCard(context: Context, params: Map<String, String>): UiNode {
         val fields = listOf(
-            UiField("tipo", "Tipo", type = "dropdown", options = listOf(EventosActions.AllOption, "Públicos", "Privados")),
-            UiField("categoria", "Categoría", type = "dropdown", options = withCurrent(context.settings.categories, params["categoria"])),
-            UiField("espacio", "Espacio", type = "dropdown", options = withCurrent(context.settings.spaces, params["espacio"])),
-            UiField("serie", "Serie"),
-            UiField("q", "Buscar", placeholder = "Título, serie, espacio o anfitrión"),
+            UiField("tipo", "Tipo", type = "dropdown", options = listOf(EventosActions.AllOption, msg("Públicos"), msg("Privados"))),
+            UiField("categoria", tr("Categoría"), type = "dropdown", options = withCurrent(context.settings.categories, params["categoria"])),
+            UiField("espacio", tr("Espacio"), type = "dropdown", options = withCurrent(context.settings.spaces, params["espacio"])),
+            UiField("serie", tr("Serie")),
+            UiField("q", tr("Buscar"), placeholder = tr("Título, serie, espacio o anfitrión")),
         )
         val values = mapOf(
             "tipo" to kindFilterLabel(params["tipo"]),
@@ -272,7 +274,7 @@ object EventosScreens {
             listOf(
                 UiForm(
                     "filters", fields, values,
-                    submit = UiButton("Filtrar", UiNavigate("proximos", formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate("proximos", formId = "filters"), style = "secondary"),
                     minFieldWidth = 200,
                 ),
             ),
@@ -285,55 +287,55 @@ object EventosScreens {
             add(
                 UiGrid(
                     listOf(
-                        UiCard(listOf(UiMetric("Próximos 30 días", overview.upcoming.toString()))),
-                        UiCard(listOf(UiMetric("Inscritos esta semana", overview.registeredThisWeek.toString()))),
-                        UiCard(listOf(UiMetric("Llenos", overview.full.toString(), captionTone = if (overview.full > 0) UiTone.Warning else UiTone.Neutral))),
+                        UiCard(listOf(UiMetric(tr("Próximos 30 días"), overview.upcoming.toString()))),
+                        UiCard(listOf(UiMetric(tr("Inscritos esta semana"), overview.registeredThisWeek.toString()))),
+                        UiCard(listOf(UiMetric(tr("Llenos"), overview.full.toString(), captionTone = if (overview.full > 0) UiTone.Warning else UiTone.Neutral))),
                     ),
                     minItemWidth = 180,
                 ),
             )
             add(filterCard(context, params))
-            if (events.size > ListLimit) add(hint("Se muestran los primeros $ListLimit eventos: usa los filtros para acotar.", UiTone.Warning))
+            if (events.size > ListLimit) add(hint(tr("Se muestran los primeros {0} eventos: usa los filtros para acotar.", ListLimit), UiTone.Warning))
             if (weeks.isEmpty()) {
                 add(
                     UiCard(
                         listOfNotNull(
-                            UiText("No hay eventos próximos con estos filtros."),
-                            UiButton("Nuevo evento", UiNavigate("nuevo", mapOf("kind" to EventKind.Public.code)), style = "secondary").takeIf { context.caps.manage },
+                            UiText(tr("No hay eventos próximos con estos filtros.")),
+                            UiButton(tr("Nuevo evento"), UiNavigate("nuevo", mapOf("kind" to EventKind.Public.code)), style = "secondary").takeIf { context.caps.manage },
                         ),
                     ),
                 )
             } else {
                 weeks.forEach { week ->
-                    add(UiCard(listOf(UiList(week.events.map { eventItem(it, context.zone) })), title = "${week.title} (${week.events.size})"))
+                    add(UiCard(listOf(UiList(week.events.map { eventItem(it, context.zone) })), title = tr("{0} ({1})", week.title, week.events.size)))
                 }
             }
         }
-        return screen(context, "Próximos eventos", "proximos", notice, body)
+        return screen(context, tr("Próximos eventos"), "proximos", notice, body)
     }
 
     // ---- Pasados ----
 
     fun pasados(context: Context, events: List<EventWithStats>, notice: UiNotice? = null): UiScreen {
         val body = buildList<UiNode> {
-            if (events.size > PastLimit) add(hint("Se muestran los últimos $PastLimit eventos.", UiTone.Warning))
-            add(UiCard(listOf(UiList(events.take(PastLimit).map { eventItem(it, context.zone) }, emptyText = "Aún no hay eventos realizados ni cancelados.")), title = "Realizados y cancelados"))
+            if (events.size > PastLimit) add(hint(tr("Se muestran los últimos {0} eventos.", PastLimit), UiTone.Warning))
+            add(UiCard(listOf(UiList(events.take(PastLimit).map { eventItem(it, context.zone) }, emptyText = tr("Aún no hay eventos realizados ni cancelados."))), title = tr("Realizados y cancelados")))
         }
-        return screen(context, "Eventos pasados", "pasados", notice, body)
+        return screen(context, tr("Eventos pasados"), "pasados", notice, body)
     }
 
     // ---- Evento ----
 
-    private fun fact(label: String, value: String?): UiNode? = value?.takeIf { it.isNotBlank() }?.let { hint("$label: $it") }
+    private fun fact(label: String, value: String?): UiNode? = value?.takeIf { it.isNotBlank() }?.let { hint(tr("{0}: {1}", label, it)) }
 
     private fun registrationItem(item: Registration, currency: String, zone: ZoneId, waiting: Boolean): UiListItem = UiListItem(
         title = item.customerName,
         subtitle = if (waiting) "En espera desde ${item.waitlistedAt?.let { EventosRules.stamp(it, zone) } ?: "—"}" else item.note,
-        trailing = if (waiting) EventosRules.seatsLabel(item.seats) else "${EventosRules.seatsLabel(item.seats)} · ${money(item.amount, currency)}",
+        trailing = if (waiting) EventosRules.seatsLabel(item.seats) else tr("{0} · {1}", EventosRules.seatsLabel(item.seats), money(item.amount, currency)),
         badges = buildList {
-            if (item.paid) add(UiBadge("Pagado", UiTone.Success))
-            if (item.attendedAt != null) add(UiBadge("Asistió", UiTone.Info))
-            if (item.priceKind != PriceKind.General) add(UiBadge(priceLabel(item.priceKind)))
+            if (item.paid) add(UiBadge(tr("Pagado"), UiTone.Success))
+            if (item.attendedAt != null) add(UiBadge(tr("Asistió"), UiTone.Info))
+            if (item.priceKind != PriceKind.General) add(UiBadge(tr(priceLabel(item.priceKind))))
         },
         action = open("inscripcion", item.id),
     )
@@ -342,37 +344,37 @@ object EventosScreens {
         val event = detail.event.event
         val free = EventosRules.available(event.capacity, detail.event.stats.occupied)
         val values = mapOf("seats" to "1", "price_kind" to AutoPrice, "paid" to "false") + submitted.orEmpty().filterKeys { it in RegisterKeys }
-        val newCustomer = "Cliente nuevo (si no está en la lista)"
+        val newCustomer = tr("Cliente nuevo (si no está en la lista)")
         val fields = listOf(
             UiField(
-                "customer", "Cliente", placeholder = "Escribe para buscar", section = "Cliente",
-                help = "Elige un cliente de la lista de sugerencias o escribe abajo los datos de uno nuevo.",
+                "customer", tr("Cliente"), placeholder = tr("Escribe para buscar"), section = tr("Cliente"),
+                help = tr("Elige un cliente de la lista de sugerencias o escribe abajo los datos de uno nuevo."),
                 suggest = UiSuggest(CustomerSuggestRoute),
             ),
-            UiField("new_name", "Nombre", section = newCustomer),
-            UiField("new_email", "Correo", type = "email", section = newCustomer),
-            UiField("new_phone", "Teléfono", type = "phone", section = newCustomer),
-            UiField("seats", "Plazas", type = "number", section = "Inscripción"),
+            UiField("new_name", tr("Nombre"), section = newCustomer),
+            UiField("new_email", tr("Correo"), type = "email", section = newCustomer),
+            UiField("new_phone", tr("Teléfono"), type = "phone", section = newCustomer),
+            UiField("seats", tr("Plazas"), type = "number", section = tr("Inscripción")),
             UiField(
-                "price_kind", "Tipo de precio", type = "dropdown", section = "Inscripción",
+                "price_kind", tr("Tipo de precio"), type = "dropdown", section = tr("Inscripción"),
                 options = listOf(AutoPrice, priceLabel(PriceKind.Member), priceLabel(PriceKind.General), priceLabel(PriceKind.Courtesy)),
-                help = "Automático propone el precio de miembro si el cliente tiene una membresía vigente.",
+                help = tr("Automático propone el precio de miembro si el cliente tiene una membresía vigente."),
             ),
-            UiField("amount", "Monto", section = "Inscripción", help = "Vacío = precio × plazas."),
-            UiField("paid", "Pagado", type = "boolean", section = "Inscripción"),
-            UiField("note", "Nota", type = "textarea", section = "Inscripción"),
+            UiField("amount", tr("Monto"), section = tr("Inscripción"), help = tr("Vacío = precio × plazas.")),
+            UiField("paid", tr("Pagado"), type = "boolean", section = tr("Inscripción")),
+            UiField("note", tr("Nota"), type = "textarea", section = tr("Inscripción")),
         )
-        val prices = "Precio de miembro: ${money(event.priceMember, event.currency)} · Precio general: ${money(event.pricePublic, event.currency)}"
+        val prices = tr("Precio de miembro: {0} · Precio general: {1}", money(event.priceMember, event.currency), money(event.pricePublic, event.currency))
         return UiCard(
             listOf(
                 hint(prices),
-                hint(free?.let { "Plazas libres: $it. Si no caben, queda en la lista de espera." } ?: "Sin límite de cupo."),
+                hint(free?.let { tr("Plazas libres: {0}. Si no caben, queda en la lista de espera.", it) } ?: tr("Sin límite de cupo.")),
                 UiForm(
                     "register", fields, values,
-                    submit = UiButton("Inscribir", post("evento", "register", mapOf("id" to event.id.toString()), formId = "register")),
+                    submit = UiButton(tr("Inscribir"), post("evento", "register", mapOf("id" to event.id.toString()), formId = "register")),
                 ),
             ),
-            title = "Inscribir",
+            title = tr("Inscribir"),
         )
     }
 
@@ -381,9 +383,9 @@ object EventosScreens {
         val manage = context.caps.manage
         val values = mapOf("pay_date" to context.today.toString()) + submitted.orEmpty().filterKeys { it in PaymentKeys }
         val table = UiTable(
-            columns = listOf(UiTableColumn("date", "Fecha"), UiTableColumn("amount", "Monto"), UiTableColumn("method", "Método"), UiTableColumn("note", "Nota")),
+            columns = listOf(UiTableColumn("date", tr("Fecha")), UiTableColumn("amount", tr("Monto")), UiTableColumn("method", tr("Método")), UiTableColumn("note", tr("Nota"))),
             rows = detail.payments.map { mapOf("date" to it.paidOn.toString(), "amount" to money(it.amount, event.currency), "method" to it.method, "note" to it.note) },
-            emptyText = "Sin abonos.",
+            emptyText = tr("Sin abonos."),
         )
         val children = buildList<UiNode> {
             add(table)
@@ -393,7 +395,7 @@ object EventosScreens {
                         UiColumn(
                             detail.payments.map { payment ->
                                 UiButton(
-                                    "Borrar abono ${payment.paidOn} · ${money(payment.amount, event.currency)}",
+                                    tr("Borrar abono {0} · {1}", payment.paidOn, money(payment.amount, event.currency)),
                                     post("evento", "payment-delete", mapOf("id" to event.id.toString(), "payment" to payment.id.toString()),
                                         confirm = "¿Borrar este abono de ${money(payment.amount, event.currency)}? No se puede deshacer."),
                                     style = "danger",
@@ -407,36 +409,36 @@ object EventosScreens {
                     UiForm(
                         "payment",
                         listOf(
-                            UiField("pay_date", "Fecha", type = "date", required = true),
-                            UiField("pay_amount", "Monto", required = true),
-                            UiField("pay_method", "Método", placeholder = "Efectivo, transferencia, tarjeta..."),
-                            UiField("pay_note", "Nota"),
+                            UiField("pay_date", tr("Fecha"), type = "date", required = true),
+                            UiField("pay_amount", tr("Monto"), required = true),
+                            UiField("pay_method", tr("Método"), placeholder = tr("Efectivo, transferencia, tarjeta...")),
+                            UiField("pay_note", tr("Nota")),
                         ),
                         values,
-                        submit = UiButton("Registrar abono", post("evento", "payment-add", mapOf("id" to event.id.toString()), formId = "payment")),
+                        submit = UiButton(tr("Registrar abono"), post("evento", "payment-add", mapOf("id" to event.id.toString()), formId = "payment")),
                     ),
                 )
             }
         }
-        return UiCard(children, title = "Abonos")
+        return UiCard(children, title = tr("Abonos"))
     }
 
     private fun clientCard(context: Context, detail: EventDetail): UiNode {
         val item = detail.event
         val event = item.event
         val balance = EventosRules.balance(event.agreedAmount, listOf(item.stats.paymentsTotal))
-        val balanceText = if (balance.signum() < 0) "Pagado de más: ${money(balance.negate(), event.currency)}" else "Saldo: ${money(balance, event.currency)}"
+        val balanceText = if (balance.signum() < 0) tr("Pagado de más: {0}", money(balance.negate(), event.currency)) else tr("Saldo: {0}", money(balance, event.currency))
         val clientId = event.clientCustomerId
         return UiCard(
             listOfNotNull(
-                UiText(event.clientName.ifBlank { if (clientId == null) "Sin contratante" else "Cliente no disponible" }, UiTextStyle.Subtitle),
-                event.guests?.let { hint("Invitados: $it") },
-                UiText("Monto acordado: ${money(event.agreedAmount, event.currency)}"),
-                UiText("Pagado: ${money(item.stats.paymentsTotal, event.currency)}"),
+                UiText(event.clientName.ifBlank { if (clientId == null) tr("Sin contratante") else tr("Cliente no disponible") }, UiTextStyle.Subtitle),
+                event.guests?.let { hint(tr("Invitados: {0}", it)) },
+                UiText(tr("Monto acordado: {0}", money(event.agreedAmount, event.currency))),
+                UiText(tr("Pagado: {0}", money(item.stats.paymentsTotal, event.currency))),
                 UiText(balanceText, tone = if (balance.signum() > 0) UiTone.Warning else UiTone.Success),
-                UiButton("Abrir ficha del cliente", UiOpenModule("clientes", "customer", mapOf("id" to clientId.toString())), style = "secondary").takeIf { clientId != null },
+                UiButton(tr("Abrir ficha del cliente"), UiOpenModule("clientes", "customer", mapOf("id" to clientId.toString())), style = "secondary").takeIf { clientId != null },
             ),
-            title = "Contratante",
+            title = tr("Contratante"),
         )
     }
 
@@ -450,8 +452,8 @@ object EventosScreens {
         val waiting = detail.registrations.filter { it.status == RegistrationStatus.Waitlist }
         val actions = UiRow(
             listOfNotNull(
-                UiButton("Editar", UiNavigate("editar", mapOf("id" to event.id.toString())), style = "secondary").takeIf { caps.manage },
-                UiButton("Duplicar", UiNavigate("duplicar", mapOf("id" to event.id.toString())), style = "secondary").takeIf { caps.manage },
+                UiButton(tr("Editar"), UiNavigate("editar", mapOf("id" to event.id.toString())), style = "secondary").takeIf { caps.manage },
+                UiButton(tr("Duplicar"), UiNavigate("duplicar", mapOf("id" to event.id.toString())), style = "secondary").takeIf { caps.manage },
             ) + statusActions(caps, event).map { action ->
                 UiButton(
                     action.label,
@@ -459,23 +461,23 @@ object EventosScreens {
                     style = action.style,
                 )
             } + listOfNotNull(
-                UiButton("Asistencia", UiNavigate("asistencia", mapOf("id" to event.id.toString()))).takeIf { canTakeAttendance(caps, event, context.now, context.zone) },
-                UiButton("Volver", UiNavigate("proximos"), style = "secondary"),
+                UiButton(tr("Asistencia"), UiNavigate("asistencia", mapOf("id" to event.id.toString()))).takeIf { canTakeAttendance(caps, event, context.now, context.zone) },
+                UiButton(tr("Volver"), UiNavigate("proximos"), style = "secondary"),
             ),
         )
         val metrics = if (isPublic) {
             listOf(
-                UiMetric("Inscritos", item.stats.occupied.toString() + (event.capacity?.let { "/$it" } ?: "")),
-                UiMetric("En espera", item.stats.waiting.toString()),
-                UiMetric("Asistieron", "${item.stats.attended}/${item.stats.registrations}"),
-                UiMetric("Cobrado", money(item.stats.collected, event.currency), caption = "Pendiente: ${money(item.stats.pending, event.currency)}"),
+                UiMetric(tr("Inscritos"), item.stats.occupied.toString() + (event.capacity?.let { "/$it" } ?: "")),
+                UiMetric(tr("En espera"), item.stats.waiting.toString()),
+                UiMetric(tr("Asistieron"), "${item.stats.attended}/${item.stats.registrations}"),
+                UiMetric(tr("Cobrado"), money(item.stats.collected, event.currency), caption = tr("Pendiente: {0}", money(item.stats.pending, event.currency))),
             )
         } else {
             val balance = EventosRules.balance(event.agreedAmount, listOf(item.stats.paymentsTotal))
             listOf(
-                UiMetric("Monto acordado", money(event.agreedAmount, event.currency)),
-                UiMetric("Pagado", money(item.stats.paymentsTotal, event.currency)),
-                UiMetric("Saldo", money(balance, event.currency), captionTone = if (balance.signum() > 0) UiTone.Warning else UiTone.Success),
+                UiMetric(tr("Monto acordado"), money(event.agreedAmount, event.currency)),
+                UiMetric(tr("Pagado"), money(item.stats.paymentsTotal, event.currency)),
+                UiMetric(tr("Saldo"), money(balance, event.currency), captionTone = if (balance.signum() > 0) UiTone.Warning else UiTone.Success),
             )
         }
         val body = buildList<UiNode> {
@@ -483,14 +485,14 @@ object EventosScreens {
             add(
                 UiCard(
                     listOfNotNull(
-                        UiStatus(EventosRules.statusLabel(event.kind, event.status), statusTone(event.status)),
+                        UiStatus(tr(EventosRules.statusLabel(event.kind, event.status)), statusTone(event.status)),
                         UiText(whenLabel(event, context.zone), UiTextStyle.Subtitle),
-                        fact("Espacio", event.space),
-                        fact("Categoría", event.category),
-                        fact("Serie", event.series),
-                        fact("Anfitrión", event.hostName),
-                        fact("Responsable", context.userName(event.responsibleUserId)),
-                        fact("Motivo de la cancelación", event.cancelReason.takeIf { event.status == EventStatus.Cancelled }),
+                        fact(tr("Espacio"), event.space),
+                        fact(tr("Categoría"), event.category),
+                        fact(tr("Serie"), event.series),
+                        fact(tr("Anfitrión"), event.hostName),
+                        fact(tr("Responsable"), context.userName(event.responsibleUserId)),
+                        fact(tr("Motivo de la cancelación"), event.cancelReason.takeIf { event.status == EventStatus.Cancelled }),
                         event.description.takeIf { it.isNotBlank() }?.let { UiText(it) },
                     ),
                     title = event.title,
@@ -499,32 +501,32 @@ object EventosScreens {
             add(UiGrid(metrics.map { UiCard(listOf(it)) }, minItemWidth = 180))
             if (isPublic) {
                 if (canRegister(caps, event)) add(registerCard(context, detail, submitted))
-                add(UiCard(listOf(UiList(registered.map { registrationItem(it, event.currency, context.zone, waiting = false) }, emptyText = "Aún no hay inscritos.")), title = "Inscritos (${registered.size})"))
+                add(UiCard(listOf(UiList(registered.map { registrationItem(it, event.currency, context.zone, waiting = false) }, emptyText = tr("Aún no hay inscritos."))), title = tr("Inscritos ({0})", registered.size)))
                 if (waiting.isNotEmpty()) {
-                    add(UiCard(listOf(UiList(waiting.map { registrationItem(it, event.currency, context.zone, waiting = true) })), title = "Lista de espera (${waiting.size})"))
+                    add(UiCard(listOf(UiList(waiting.map { registrationItem(it, event.currency, context.zone, waiting = true) })), title = tr("Lista de espera ({0})", waiting.size)))
                 }
             } else {
                 add(clientCard(context, detail))
                 add(paymentsCard(context, detail, submitted))
             }
-            if (event.notes.isNotBlank()) add(UiCard(listOf(UiText(event.notes)), title = "Notas"))
+            if (event.notes.isNotBlank()) add(UiCard(listOf(UiText(event.notes)), title = tr("Notas")))
             if (canCancel(caps, event)) {
                 add(
                     UiCard(
                         listOf(
                             UiForm(
                                 "cancel",
-                                listOf(UiField("reason", "Motivo de la cancelación", required = true)),
+                                listOf(UiField("reason", tr("Motivo de la cancelación"), required = true)),
                                 submitted.orEmpty().filterKeys { it == "reason" },
                                 submit = UiButton(
-                                    "Cancelar evento",
+                                    tr("Cancelar evento"),
                                     post("evento", "status", mapOf("id" to event.id.toString(), "status" to EventStatus.Cancelled.code),
                                         confirm = "¿Cancelar este evento? Podrás reabrirlo como borrador.", formId = "cancel"),
                                     style = "danger",
                                 ),
                             ),
                         ),
-                        title = "Cancelar evento", collapsible = true, expanded = false,
+                        title = tr("Cancelar evento"), collapsible = true, expanded = false,
                     ),
                 )
             }
@@ -538,9 +540,9 @@ object EventosScreens {
         val registration = detail.registration
         val event = detail.event
         val stateLabel = when (registration.status) {
-            RegistrationStatus.Registered -> "Inscrito"
-            RegistrationStatus.Waitlist -> "En lista de espera"
-            RegistrationStatus.Cancelled -> "Cancelada"
+            RegistrationStatus.Registered -> tr("Inscrito")
+            RegistrationStatus.Waitlist -> tr("En lista de espera")
+            RegistrationStatus.Cancelled -> tr("Cancelada")
         }
         val tone = when (registration.status) {
             RegistrationStatus.Registered -> UiTone.Success
@@ -554,9 +556,9 @@ object EventosScreens {
             add(
                 UiRow(
                     buttons + listOfNotNull(
-                        UiButton("Abrir ficha del cliente", UiOpenModule("clientes", "customer", mapOf("id" to registration.customerId.toString())), style = "secondary")
+                        UiButton(tr("Abrir ficha del cliente"), UiOpenModule("clientes", "customer", mapOf("id" to registration.customerId.toString())), style = "secondary")
                             .takeIf { context.caps.register },
-                        UiButton("Volver al evento", open("evento", event.id), style = "secondary"),
+                        UiButton(tr("Volver al evento"), open("evento", event.id), style = "secondary"),
                     ),
                 ),
             )
@@ -566,18 +568,18 @@ object EventosScreens {
                         UiStatus(stateLabel, tone),
                         UiText(event.title, UiTextStyle.Subtitle),
                         hint(whenLabel(event, context.zone)),
-                        fact("Correo", detail.email.takeIf { context.caps.register }),
+                        fact(tr("Correo"), detail.email.takeIf { context.caps.register }),
                         detail.membership?.let { hint(EventosMembership.label(it)) },
-                        UiText("${EventosRules.seatsLabel(registration.seats)} · ${priceLabel(registration.priceKind)} · ${money(registration.amount, registration.eventCurrency)}"),
+                        UiText(tr("{0} · {1} · {2}", EventosRules.seatsLabel(registration.seats), tr(priceLabel(registration.priceKind)), money(registration.amount, registration.eventCurrency))),
                         UiText(
-                            if (registration.paid) "Pagado" + (registration.paidAt?.let { " el ${EventosRules.stamp(it, context.zone)}" } ?: "") else "Sin pagar",
+                            if (registration.paid) tr("Pagado") + (registration.paidAt?.let { " " + tr("el {0}", EventosRules.stamp(it, context.zone)) } ?: "") else tr("Sin pagar"),
                             tone = if (registration.paid) UiTone.Success else UiTone.Warning,
                         ),
-                        fact("Nota del pago", registration.paymentNote),
-                        registration.attendedAt?.let { hint("Asistió: ${EventosRules.stamp(it, context.zone)}" + registration.attendedBy.takeIf { by -> by.isNotBlank() }?.let { by -> " ($by)" }.orEmpty()) },
-                        registration.waitlistedAt?.takeIf { registration.status == RegistrationStatus.Waitlist }?.let { hint("En espera desde ${EventosRules.stamp(it, context.zone)}") },
-                        fact("Nota", registration.note),
-                        fact("Inscrito por", registration.createdBy),
+                        fact(tr("Nota del pago"), registration.paymentNote),
+                        registration.attendedAt?.let { hint(tr("Asistió: {0}", EventosRules.stamp(it, context.zone)) + registration.attendedBy.takeIf { by -> by.isNotBlank() }?.let { by -> " " + tr("({0})", by) }.orEmpty()) },
+                        registration.waitlistedAt?.takeIf { registration.status == RegistrationStatus.Waitlist }?.let { hint(tr("En espera desde {0}", EventosRules.stamp(it, context.zone))) },
+                        fact(tr("Nota"), registration.note),
+                        fact(tr("Inscrito por"), registration.createdBy),
                     ),
                     title = registration.customerName,
                 ),
@@ -593,24 +595,24 @@ object EventosScreens {
         val arrived = people.count { it.attendedAt != null }
         val error = EventosRules.attendanceError(RegistrationStatus.Registered, event.status, event.startsAt, context.now, context.zone)
         val body = buildList<UiNode> {
-            add(UiRow(listOf(UiButton("Volver al evento", open("evento", event.id), style = "secondary"))))
-            add(UiCard(listOf(UiMetric("Asistieron", "$arrived/${people.size}", caption = event.title))))
+            add(UiRow(listOf(UiButton(tr("Volver al evento"), open("evento", event.id), style = "secondary"))))
+            add(UiCard(listOf(UiMetric(tr("Asistieron"), "$arrived/${people.size}", caption = event.title))))
             if (error != null) add(hint(error, UiTone.Warning))
             if (people.isEmpty()) {
-                add(UiText("No hay personas inscritas."))
+                add(UiText(tr("No hay personas inscritas.")))
             } else {
                 add(
                     UiGrid(
                         people.map { person ->
                             val button = if (person.attendedAt != null) {
-                                UiButton("Quitar", post("asistencia", "unattend", mapOf("id" to event.id.toString(), "registration" to person.id.toString())), style = "secondary")
+                                UiButton(tr("Quitar"), post("asistencia", "unattend", mapOf("id" to event.id.toString(), "registration" to person.id.toString())), style = "secondary")
                             } else {
-                                UiButton("Llegó", post("asistencia", "attend", mapOf("id" to event.id.toString(), "registration" to person.id.toString())))
+                                UiButton(tr("Llegó"), post("asistencia", "attend", mapOf("id" to event.id.toString(), "registration" to person.id.toString())))
                             }
                             UiCard(
                                 listOfNotNull(
                                     hint(EventosRules.seatsLabel(person.seats)),
-                                    UiStatus("Llegó", UiTone.Success).takeIf { person.attendedAt != null },
+                                    UiStatus(tr("Llegó"), UiTone.Success).takeIf { person.attendedAt != null },
                                 ),
                                 title = person.customerName,
                                 actions = listOf(button).takeIf { error == null && context.caps.register }.orEmpty(),
@@ -621,7 +623,7 @@ object EventosScreens {
                 )
             }
         }
-        return screen(context, "Asistencia: ${event.title}", "proximos", notice, body)
+        return screen(context, tr("Asistencia: {0}", event.title), "proximos", notice, body)
     }
 
     // ---- notices ----
@@ -630,12 +632,12 @@ object EventosScreens {
     fun registeredNotice(result: RegistrationResult): Pair<String, String> {
         val registration = result.registration
         if (result.waitlisted) {
-            return "${registration.customerName} quedó en la lista de espera: no hay plazas para ${EventosRules.seatsLabel(registration.seats)}." to UiTone.Warning
+            return tr("{0} quedó en la lista de espera: no hay plazas para {1}.", registration.customerName, EventosRules.seatsLabel(registration.seats)) to UiTone.Warning
         }
         val text = buildString {
-            append("${registration.customerName} inscrito: ${EventosRules.seatsLabel(registration.seats)} · ${money(registration.amount, result.currency)}.")
+            append(tr("{0} inscrito: {1} · {2}.", registration.customerName, EventosRules.seatsLabel(registration.seats), money(registration.amount, result.currency)))
             result.membership?.let { append(' ').append(EventosMembership.label(it)).append('.') }
-            if (result.eventBecameFull) append(" Evento lleno.")
+            if (result.eventBecameFull) append(" " + tr("Evento lleno."))
         }
         return text to UiTone.Success
     }

@@ -1,11 +1,14 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.server.modules.NotificationTarget
-import org.slf4j.LoggerFactory
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import java.sql.Connection
 import java.time.LocalDate
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /**
  * Avisos en el centro de notificaciones del Core. Un aviso nunca rompe el cambio que lo causó: cada uno se crea dentro de
@@ -14,19 +17,19 @@ import java.util.UUID
 object MantenimientoNotify {
     private val log = LoggerFactory.getLogger(MantenimientoNotify::class.java)
 
-    const val AssignedTitle = "Te asignaron una orden de mantenimiento"
-    const val ProjectRequestedTitle = "Nueva solicitud de proyecto"
-    const val ProjectApprovedTitle = "Proyecto aprobado"
-    const val ProjectRejectedTitle = "Proyecto rechazado"
-    const val BreakdownTitle = "Nueva avería reportada"
-    const val CompletedTitle = "Orden de mantenimiento completada"
-    const val DueSoonTitle = "Orden de mantenimiento por vencer"
-    const val OverdueTitle = "Orden de mantenimiento vencida"
+    val AssignedTitle = msg("Te asignaron una orden de mantenimiento")
+    val ProjectRequestedTitle = msg("Nueva solicitud de proyecto")
+    val ProjectApprovedTitle = msg("Proyecto aprobado")
+    val ProjectRejectedTitle = msg("Proyecto rechazado")
+    val BreakdownTitle = msg("Nueva avería reportada")
+    val CompletedTitle = msg("Orden de mantenimiento completada")
+    val DueSoonTitle = msg("Orden de mantenimiento por vencer")
+    val OverdueTitle = msg("Orden de mantenimiento vencida")
 
     fun target(orderId: UUID) = NotificationTarget("order", mapOf("id" to orderId.toString()))
 
     /** El texto de los avisos: "OT-0007 · título". */
-    fun text(order: Order): String = "${order.displayNumber} · ${order.title}"
+    fun text(order: Order): String = tr("{0} · {1}", order.displayNumber, order.title)
 
     // ---- destinatarios (puros) ----
 
@@ -44,14 +47,14 @@ object MantenimientoNotify {
     /** Una orden quedó asignada (pantalla, agente, generador). */
     fun assigned(tenant: Connection, notifier: ModuleNotifier?, order: Order, byUserId: UUID?) {
         val user = assignedRecipient(order.assigneeId, byUserId) ?: return
-        send(notifier, tenant, listOf(user), AssignedTitle, text(order), order.id)
+        send(notifier, tenant, listOf(user), AssignedTitle, { text(order) }, order.id)
     }
 
     /** Orden recién generada por un plan, con su responsable. */
     fun assignedByPlan(tenant: Connection, notifier: ModuleNotifier?, generated: GeneratedOrder) {
         val user = generated.assigneeId ?: return
         val shown = MantenimientoFolio.format(generated.number) + " · " + generated.title
-        send(notifier, tenant, listOf(user), AssignedTitle, shown, generated.orderId)
+        send(notifier, tenant, listOf(user), AssignedTitle, { shown }, generated.orderId)
     }
 
     /** Se creó una orden: un proyecto avisa a quienes gestionan, una avería sin responsable también; con responsable, a él. */
@@ -60,11 +63,11 @@ object MantenimientoNotify {
         when {
             order.kind == OrderKind.Project -> {
                 val managers = runCatching { MantenimientoRepository.managerIds(tenant) }.getOrDefault(emptyList())
-                send(notifier, tenant, managerRecipients(managers, byUserId), ProjectRequestedTitle, text(order), order.id)
+                send(notifier, tenant, managerRecipients(managers, byUserId), ProjectRequestedTitle, { text(order) }, order.id)
             }
             order.assigneeId == null && order.kind == OrderKind.Corrective -> {
                 val managers = runCatching { MantenimientoRepository.managerIds(tenant) }.getOrDefault(emptyList())
-                send(notifier, tenant, managerRecipients(managers, byUserId), BreakdownTitle, text(order), order.id)
+                send(notifier, tenant, managerRecipients(managers, byUserId), BreakdownTitle, { text(order) }, order.id)
             }
             else -> assigned(tenant, notifier, order, byUserId)
         }
@@ -79,8 +82,11 @@ object MantenimientoNotify {
             after.status == OrderStatus.Done && before.status != OrderStatus.Done -> CompletedTitle
             else -> return
         }
-        val extra = if (after.status == OrderStatus.Rejected && after.rejectedReason.isNotBlank()) " Motivo: ${after.rejectedReason}" else ""
-        send(notifier, tenant, listOf(requester), title, (text(after) + extra).take(1000), after.id)
+        val rejected = after.status == OrderStatus.Rejected && after.rejectedReason.isNotBlank()
+        send(notifier, tenant, listOf(requester), title, {
+            val extra = if (rejected) " " + tr("Motivo: {0}", after.rejectedReason) else ""
+            text(after) + extra
+        }, after.id)
     }
 
     /**
@@ -97,13 +103,12 @@ object MantenimientoNotify {
                 MantenimientoRepository.transaction(tenant) {
                     if (MantenimientoRepository.claimReminder(tenant, candidate.orderId, candidate.userId, candidate.kind, candidate.dueDate)) {
                         val overdue = candidate.kind == "overdue"
-                        notifier.notify(
-                            tenant,
-                            candidate.userId,
-                            if (overdue) OverdueTitle else DueSoonTitle,
-                            "${MantenimientoFolio.format(candidate.number)} · ${candidate.title} · vence el ${candidate.dueDate}",
-                            target(candidate.orderId),
-                        )
+                        notifier.notify(tenant, candidate.userId, target(candidate.orderId)) {
+                            NotificationText(
+                                tr(if (overdue) OverdueTitle else DueSoonTitle),
+                                tr("{0} · {1} · vence el {2}", MantenimientoFolio.format(candidate.number), candidate.title, candidate.dueDate),
+                            )
+                        }
                         sent++
                     }
                 }
@@ -126,8 +131,13 @@ object MantenimientoNotify {
         }
     }
 
-    private fun send(notifier: ModuleNotifier?, tenant: Connection, users: Collection<UUID>, title: String, text: String, orderId: UUID) {
+    /** Un aviso por destinatario, escrito en el idioma de cada uno: [text] se evalúa dentro de cada aviso. */
+    private fun send(notifier: ModuleNotifier?, tenant: Connection, users: Collection<UUID>, title: String, text: () -> String, orderId: UUID) {
         if (notifier == null || users.isEmpty()) return
-        users.forEach { userId -> safely("el aviso \"$title\"") { notifier.notify(tenant, userId, title, text.take(1000), target(orderId)) } }
+        users.forEach { userId ->
+            safely("el aviso \"$title\"") {
+                notifier.notify(tenant, userId, target(orderId)) { NotificationText(tr(title), text().take(1000)) }
+            }
+        }
     }
 }

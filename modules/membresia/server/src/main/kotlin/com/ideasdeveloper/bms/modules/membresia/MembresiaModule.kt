@@ -4,7 +4,7 @@ package com.ideasdeveloper.bms.modules.membresia
 object MembresiaModule {
     const val Id = "membresia"
     const val DisplayName = "Membresías"
-    const val Version = "0.3.1"
+    const val Version = "0.4.0"
     const val UiRoute = "/modules/membresia/ui"
 
     // Permisos (ModulePermissionDefinition).

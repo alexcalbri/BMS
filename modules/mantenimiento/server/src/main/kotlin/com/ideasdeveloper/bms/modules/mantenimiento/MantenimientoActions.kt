@@ -1,18 +1,20 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiFieldValues
 import com.ideasdeveloper.bms.ui.UiFileRef
 import com.ideasdeveloper.bms.ui.UiJson
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
 import java.util.UUID
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 
 /** Resultado de comparar los archivos de un formulario con los que ya están enlazados a la orden. */
 data class AttachmentChanges(val added: List<UiFileRef>, val removed: List<UUID>)
@@ -26,7 +28,7 @@ class Lookups(val users: List<MantenimientoUser>, val properties: List<Property>
  */
 class AssetOptions(assets: List<Asset>, /** La lista se recortó en el tope: faltan activos en el desplegable. */ val truncated: Boolean = false) {
     /** Texto de ayuda del desplegable cuando se recortó; vacío si está completo. */
-    val truncatedHelp: String get() = if (truncated) "Solo se listan los primeros activos por nombre; si falta uno, archiva los que ya no uses." else ""
+    val truncatedHelp: String get() = if (truncated) tr("Solo se listan los primeros activos por nombre; si falta uno, archiva los que ya no uses.") else ""
 
     private val byId = LinkedHashMap<UUID, String>()
     private val byLabel = HashMap<String, UUID>()
@@ -53,7 +55,7 @@ class AssetOptions(assets: List<Asset>, /** La lista se recortó en el tope: fal
     fun id(label: String?): UUID? {
         val clean = label?.trim().orEmpty()
         if (clean.isEmpty() || clean.equals(MantenimientoActions.NoAsset, ignoreCase = true)) return null
-        return byLabel[clean.lowercase()] ?: throw MantenimientoValidationException("Activo no válido: $clean. Elige uno de la lista.")
+        return byLabel[clean.lowercase()] ?: throw MantenimientoValidationException(tr("Activo no válido: {0}. Elige uno de la lista.", clean))
     }
 }
 
@@ -62,13 +64,13 @@ class AssetOptions(assets: List<Asset>, /** La lista se recortó en el tope: fal
  * base de datos: el repositorio aplica las reglas después.
  */
 object MantenimientoActions {
-    const val AllOption = "Todos"
+    val AllOption = msg("Todos")
 
     /** Días hacia atrás que abarca la vista de órdenes cerradas (por última actualización). */
     const val ClosedWindowDays = 90L
 
     /** Opción del filtro Estado que muestra las cerradas recientes; "Todos" muestra solo las activas. */
-    const val ClosedOption = "Cerradas (últimos 90 días)"
+    val ClosedOption = msg("Cerradas (últimos 90 días)")
 
     /** Desde cuándo se muestran las cerradas. Pura. */
     fun closedCutoff(now: Instant): Instant = now.minus(Duration.ofDays(ClosedWindowDays))
@@ -91,11 +93,11 @@ object MantenimientoActions {
     fun boardColumnFilter(base: OrderFilter, status: OrderStatus, limit: Int, now: Instant): OrderFilter =
         if (status.isActive) base.copy(status = status, activeOnly = false, limit = limit)
         else base.copy(status = status, activeOnly = false, closedSince = closedCutoff(now), sort = OrderSort.Recent, limit = limit)
-    const val NoProperty = "Sin propiedad"
-    const val NoAsset = "Sin activo"
-    const val NoAssignee = "Sin responsable"
-    const val RetiredUser = "Usuario retirado"
-    const val InvalidForm = "Formulario demasiado grande o no válido."
+    val NoProperty = msg("Sin propiedad")
+    val NoAsset = msg("Sin activo")
+    val NoAssignee = msg("Sin responsable")
+    val RetiredUser = msg("Usuario retirado")
+    val InvalidForm = msg("Formulario demasiado grande o no válido.")
     private const val MaxBodyChars = 1_000_000
 
     /** Valores de un formulario: textos tal cual y un arreglo JSON (menú múltiple) como su texto codificado. */
@@ -114,8 +116,8 @@ object MantenimientoActions {
 
     /** Como [bodyValues], pero un cuerpo demasiado grande o que no es un objeto JSON es un error para el usuario. */
     fun formValues(body: String): Map<String, String> {
-        if (body.length > MaxBodyChars) throw MantenimientoValidationException(InvalidForm)
-        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw MantenimientoValidationException(InvalidForm)
+        if (body.length > MaxBodyChars) throw MantenimientoValidationException(tr(InvalidForm))
+        val parsed = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: throw MantenimientoValidationException(tr(InvalidForm))
         return bodyValues(parsed.toString())
     }
 
@@ -128,7 +130,7 @@ object MantenimientoActions {
         return try {
             LocalDate.parse(clean)
         } catch (_: DateTimeParseException) {
-            throw MantenimientoValidationException("La fecha debe tener el formato AAAA-MM-DD.")
+            throw MantenimientoValidationException(tr("La fecha debe tener el formato AAAA-MM-DD."))
         }
     }
 
@@ -139,14 +141,14 @@ object MantenimientoActions {
         return try {
             BigDecimal(clean)
         } catch (_: NumberFormatException) {
-            throw MantenimientoValidationException("$label no es un número válido.")
+            throw MantenimientoValidationException(tr("{0} no es un número válido.", label))
         }
     }
 
     fun int(text: String?, label: String): Int? {
         val clean = text?.trim().orEmpty()
         if (clean.isEmpty()) return null
-        return clean.toIntOrNull() ?: throw MantenimientoValidationException("$label debe ser un número entero.")
+        return clean.toIntOrNull() ?: throw MantenimientoValidationException(tr("{0} debe ser un número entero.", label))
     }
 
     /** La moneda en mayúsculas; vacío es [default]. */
@@ -154,11 +156,11 @@ object MantenimientoActions {
 
     fun priority(text: String?): OrderPriority {
         if (text.isNullOrBlank()) return OrderPriority.Medium
-        return OrderPriority.fromLabel(text) ?: throw MantenimientoValidationException("Prioridad no válida: $text.")
+        return OrderPriority.fromLabel(text) ?: throw MantenimientoValidationException(tr("Prioridad no válida: {0}.", text))
     }
 
     fun status(text: String?): OrderStatus =
-        OrderStatus.fromId(text) ?: OrderStatus.fromLabel(text) ?: throw MantenimientoValidationException("Estado no válido: ${text.orEmpty()}.")
+        OrderStatus.fromId(text) ?: OrderStatus.fromLabel(text) ?: throw MantenimientoValidationException(tr("Estado no válido: {0}.", text.orEmpty()))
 
     /** La persona de esa etiqueta; vacío o "Sin responsable" es nadie. [current] se conserva si la etiqueta es la de un usuario retirado. */
     fun userId(label: String?, users: List<MantenimientoUser>, current: UUID? = null): UUID? {
@@ -166,7 +168,7 @@ object MantenimientoActions {
         if (clean.isEmpty() || clean.equals(NoAssignee, ignoreCase = true)) return null
         users.firstOrNull { it.label.equals(clean, ignoreCase = true) }?.let { return it.id }
         if (current != null && clean.equals(RetiredUser, ignoreCase = true)) return current
-        throw MantenimientoValidationException("Persona no válida: $clean. Elige solo personas de la lista.")
+        throw MantenimientoValidationException(tr("Persona no válida: {0}. Elige solo personas de la lista.", clean))
     }
 
     /** La propiedad de esa etiqueta; [current] (la de la orden, aunque esté archivada) también vale. */
@@ -175,7 +177,7 @@ object MantenimientoActions {
         if (clean.isEmpty() || clean.equals(NoProperty, ignoreCase = true)) return null
         properties.firstOrNull { it.name.equals(clean, ignoreCase = true) }?.let { return it.id }
         if (current.first != null && current.second?.equals(clean, ignoreCase = true) == true) return current.first
-        throw MantenimientoValidationException("Propiedad no válida: $clean. Elige una de la lista.")
+        throw MantenimientoValidationException(tr("Propiedad no válida: {0}. Elige una de la lista.", clean))
     }
 
     /** La propiedad que filtra una pantalla; "Todos" y las etiquetas desconocidas son sin filtro. */
@@ -205,10 +207,10 @@ object MantenimientoActions {
             dueDate = if (canManage && "due" in values) date(values["due"]) else existing?.dueDate,
             assigneeId = if (canManage && "assignee" in values) userId(values["assignee"], lookups.users, existing?.assigneeId) else existing?.assigneeId,
             department = text("department", existing?.department.orEmpty()),
-            quoteAmount = if ("quote" in values) amount(values["quote"], "La cotización") else existing?.quoteAmount,
+            quoteAmount = if ("quote" in values) amount(values["quote"], tr("La cotización")) else existing?.quoteAmount,
             quoteCurrency = if ("quote_currency" in values) currency(values["quote_currency"]) else existing?.quoteCurrency ?: "USD",
             quotedBy = if (canManage) text("quoted_by", existing?.quotedBy.orEmpty()) else existing?.quotedBy.orEmpty(),
-            costAmount = if ("cost" in values) amount(values["cost"], "El costo") else existing?.costAmount,
+            costAmount = if ("cost" in values) amount(values["cost"], tr("El costo")) else existing?.costAmount,
             costCurrency = if ("cost_currency" in values) currency(values["cost_currency"]) else existing?.costCurrency ?: "USD",
             resolution = text("resolution", existing?.resolution.orEmpty()),
         )
@@ -218,17 +220,17 @@ object MantenimientoActions {
     data class WorkValues(val costAmount: BigDecimal?, val costCurrency: String, val resolution: String)
 
     fun workValues(values: Map<String, String>, existing: Order): WorkValues = WorkValues(
-        costAmount = if ("cost" in values) amount(values["cost"], "El costo") else existing.costAmount,
+        costAmount = if ("cost" in values) amount(values["cost"], tr("El costo")) else existing.costAmount,
         costCurrency = if ("cost_currency" in values) currency(values["cost_currency"]) else existing.costCurrency,
         resolution = values["resolution"] ?: existing.resolution,
     )
 
     fun planInput(values: Map<String, String>, lookups: Lookups, checklist: List<String>, existing: Plan? = null): PlanInput {
         val frequency = values["frequency"]?.takeIf { it.isNotBlank() }?.let {
-            PlanFrequency.fromLabel(it) ?: throw MantenimientoValidationException("Frecuencia no válida: $it.")
+            PlanFrequency.fromLabel(it) ?: throw MantenimientoValidationException(tr("Frecuencia no válida: {0}.", it))
         } ?: existing?.frequency ?: PlanFrequency.Monthly
         val mode = values["schedule_mode"]?.takeIf { it.isNotBlank() }?.let {
-            ScheduleMode.fromLabel(it) ?: throw MantenimientoValidationException("Modo de calendario no válido: $it.")
+            ScheduleMode.fromLabel(it) ?: throw MantenimientoValidationException(tr("Modo de calendario no válido: {0}.", it))
         } ?: existing?.scheduleMode ?: ScheduleMode.Fixed
         return PlanInput(
             title = values["title"].orEmpty().trim(),
@@ -236,10 +238,10 @@ object MantenimientoActions {
             propertyId = propertyId(values["property"], lookups.properties, existing?.propertyId to existing?.propertyName),
             assetId = lookups.assets.id(values["asset"]),
             frequency = frequency,
-            intervalDays = if (frequency == PlanFrequency.EveryNDays) int(values["interval"], "Los días de la frecuencia") else null,
+            intervalDays = if (frequency == PlanFrequency.EveryNDays) int(values["interval"], tr("Los días de la frecuencia")) else null,
             scheduleMode = mode,
             nextDue = date(values["next_due"]),
-            leadDays = int(values["lead_days"], "Los días de anticipación") ?: 7,
+            leadDays = int(values["lead_days"], tr("Los días de anticipación")) ?: 7,
             defaultAssignee = userId(values["assignee"], lookups.users, existing?.defaultAssignee),
             priority = priority(values["priority"]),
             checklist = checklist,

@@ -1,10 +1,11 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.server.modules.StoredFileRef
 import com.ideasdeveloper.bms.ui.UiFileRef
-import org.slf4j.LoggerFactory
 import java.io.InputStream
 import java.math.BigDecimal
 import java.sql.Connection
@@ -16,6 +17,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /** Resultado de crear una orden: [created] es false cuando la clave de importación ya existía y se devolvió la orden de antes. */
 data class OrderCreated(val id: UUID, val created: Boolean)
@@ -169,8 +171,8 @@ object MantenimientoRepository {
 
     private fun cleanPropertyName(name: String): String {
         val clean = name.trim()
-        if (clean.isEmpty()) fail("El nombre de la propiedad es obligatorio.")
-        if (clean.length > MaxPropertyName) fail("El nombre de la propiedad admite hasta $MaxPropertyName caracteres.")
+        if (clean.isEmpty()) fail(tr("El nombre de la propiedad es obligatorio."))
+        if (clean.length > MaxPropertyName) fail(tr("El nombre de la propiedad admite hasta {0} caracteres.", MaxPropertyName))
         return clean
     }
 
@@ -181,7 +183,7 @@ object MantenimientoRepository {
             "INSERT INTO mantenimiento_properties (id, name, position) VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM mantenimiento_properties)) ON CONFLICT DO NOTHING",
             listOf(id, clean),
         )
-        if (inserted == 0) fail("Ya existe una propiedad con ese nombre.")
+        if (inserted == 0) fail(tr("Ya existe una propiedad con ese nombre."))
         return id
     }
 
@@ -191,7 +193,7 @@ object MantenimientoRepository {
         val updated = try {
             tenant.update("UPDATE mantenimiento_properties SET name = ? WHERE id = ?", listOf(clean, id))
         } catch (failure: java.sql.SQLException) {
-            if (failure.sqlState == "23505") fail("Ya existe una propiedad con ese nombre.")
+            if (failure.sqlState == "23505") fail(tr("Ya existe una propiedad con ese nombre."))
             throw failure
         }
         return updated > 0
@@ -201,7 +203,7 @@ object MantenimientoRepository {
         val updated = try {
             tenant.update("UPDATE mantenimiento_properties SET archived = ? WHERE id = ?", listOf(archived, id))
         } catch (failure: java.sql.SQLException) {
-            if (failure.sqlState == "23505") fail("Ya existe una propiedad activa con ese nombre.")
+            if (failure.sqlState == "23505") fail(tr("Ya existe una propiedad activa con ese nombre."))
             throw failure
         }
         return updated > 0
@@ -223,14 +225,14 @@ object MantenimientoRepository {
     /** La propiedad activa con ese nombre (sin mayúsculas); si no existe, se crea. Para importaciones. */
     fun findOrCreateProperty(tenant: Connection, name: String): UUID {
         val clean = name.trim().take(MaxPropertyName).trim()
-        if (clean.isEmpty()) fail("El nombre de la propiedad es obligatorio.")
+        if (clean.isEmpty()) fail(tr("El nombre de la propiedad es obligatorio."))
         fun existing() = tenant.query("SELECT id FROM mantenimiento_properties WHERE lower(name) = lower(?) AND NOT archived", listOf(clean)) { it.uuid("id") ?: NilId }.firstOrNull()
         return existing() ?: run {
             tenant.update(
                 "INSERT INTO mantenimiento_properties (id, name, position) VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM mantenimiento_properties)) ON CONFLICT DO NOTHING",
                 listOf(UUID.randomUUID(), clean),
             )
-            existing() ?: fail("No se pudo crear la propiedad.")
+            existing() ?: fail(tr("No se pudo crear la propiedad."))
         }
     }
 
@@ -268,7 +270,7 @@ object MantenimientoRepository {
     fun getAsset(tenant: Connection, id: UUID): Asset? = tenant.query("SELECT $AssetSelect WHERE a.id = ?", listOf(id)) { asset(it) }.firstOrNull()
 
     private fun requireProperty(tenant: Connection, propertyId: UUID?) {
-        if (propertyId != null && getProperty(tenant, propertyId) == null) fail("La propiedad ya no existe.")
+        if (propertyId != null && getProperty(tenant, propertyId) == null) fail(tr("La propiedad ya no existe."))
     }
 
     fun createAsset(tenant: Connection, input: AssetInput): UUID {
@@ -298,7 +300,7 @@ object MantenimientoRepository {
     /** El activo activo con ese nombre en esa propiedad (sin mayúsculas); si no existe, se crea. Para importaciones. */
     fun findOrCreateAsset(tenant: Connection, propertyId: UUID?, name: String): UUID {
         val clean = name.trim().take(AssetInput.MaxName).trim()
-        if (clean.isEmpty()) fail("El nombre del activo es obligatorio.")
+        if (clean.isEmpty()) fail(tr("El nombre del activo es obligatorio."))
         fun existing() = tenant.query(
             // Misma expresión del índice único (COALESCE(property_id, nil), lower(name)) para que lo use.
             "SELECT id FROM mantenimiento_assets WHERE COALESCE(property_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(?::uuid, '00000000-0000-0000-0000-000000000000'::uuid) AND lower(name) = lower(?) AND NOT archived ORDER BY created_at, id LIMIT 1",
@@ -307,7 +309,7 @@ object MantenimientoRepository {
         return existing() ?: run {
             // El índice único (propiedad, nombre) evita duplicados si dos importaciones corren a la vez: se relee lo que ganó.
             tenant.update("INSERT INTO mantenimiento_assets (id, property_id, name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", listOf(UUID.randomUUID(), propertyId, clean))
-            existing() ?: fail("No se pudo crear el activo.")
+            existing() ?: fail(tr("No se pudo crear el activo."))
         }
     }
 
@@ -319,13 +321,13 @@ object MantenimientoRepository {
         .firstOrNull() ?: MantenimientoSettings(null, null, 1)
 
     fun saveDueSoonDays(tenant: Connection, days: Int) {
-        if (days !in 0..30) fail("Los días de aviso por vencer van de 0 a 30.")
+        if (days !in 0..30) fail(tr("Los días de aviso por vencer van de 0 a 30."))
         tenant.update("UPDATE mantenimiento_settings SET due_soon_days = ?, updated_at = now() WHERE id = 1", listOf(days))
     }
 
     /** Guarda el tablero de Tareas y el usuario con cuyos permisos se publica; null en ambos apaga la integración. */
     fun saveTareasBoard(tenant: Connection, boardId: UUID?, publisherId: UUID?) {
-        if ((boardId == null) != (publisherId == null)) fail("El tablero y el usuario que publica van juntos.")
+        if ((boardId == null) != (publisherId == null)) fail(tr("El tablero y el usuario que publica van juntos."))
         transaction(tenant) {
             tenant.update("UPDATE mantenimiento_settings SET tareas_board_id = ?, tareas_publisher_id = ?, updated_at = now() WHERE id = 1", listOf(boardId, publisherId))
             // Al encender la integración se publican las órdenes que ya están abiertas y asignadas.
@@ -406,10 +408,10 @@ object MantenimientoRepository {
         requireProperty(tenant, propertyId)
         if (assetId != null) {
             val rows = tenant.query("SELECT property_id FROM mantenimiento_assets WHERE id = ?", listOf(assetId)) { it.uuid("property_id") }
-            if (rows.isEmpty()) fail("El activo ya no existe.")
+            if (rows.isEmpty()) fail(tr("El activo ya no existe."))
             if (property == null) property = rows.first()
         }
-        if (assigneeId != null && !isAssignable(tenant, assigneeId)) fail("Esa persona no puede ser responsable de órdenes de mantenimiento.")
+        if (assigneeId != null && !isAssignable(tenant, assigneeId)) fail(tr("Esa persona no puede ser responsable de órdenes de mantenimiento."))
         return property
     }
 
@@ -743,7 +745,7 @@ object MantenimientoRepository {
                 ),
             )
             if (inserted == 0) {
-                val existing = key?.let { getOrderByImportKey(tenant, it) } ?: fail("No se pudo crear la orden.")
+                val existing = key?.let { getOrderByImportKey(tenant, it) } ?: fail(tr("No se pudo crear la orden."))
                 return@transaction OrderCreated(existing.id, false)
             }
             insertNote(tenant, id, "system", if (clean.kind == OrderKind.Project) "Proyecto solicitado." else "Orden creada.", actor)
@@ -801,7 +803,7 @@ object MantenimientoRepository {
     /** Asigna (o quita con null) el responsable; solo a usuarios asignables. Devuelve la orden actualizada o null si no existe. */
     fun assignOrder(tenant: Connection, id: UUID, assigneeId: UUID?, actor: MantenimientoActor): Order? = transaction(tenant) {
         lockOrder(tenant, id) ?: return@transaction null
-        if (assigneeId != null && !isAssignable(tenant, assigneeId)) fail("Esa persona no puede ser responsable de órdenes de mantenimiento.")
+        if (assigneeId != null && !isAssignable(tenant, assigneeId)) fail(tr("Esa persona no puede ser responsable de órdenes de mantenimiento."))
         tenant.update("UPDATE mantenimiento_orders SET assignee_id = ?, updated_at = now() WHERE id = ?", listOf(assigneeId, id))
         insertNote(tenant, id, "assign", assignText(tenant, assigneeId), actor)
         markSync(tenant, id)
@@ -837,17 +839,17 @@ object MantenimientoRepository {
         reason: String = "",
         today: LocalDate = today(),
     ): Order = transaction(tenant) {
-        val current = lockOrder(tenant, id)?.takeIf { scope.seesOrder(it) } ?: fail("La orden ya no existe.")
+        val current = lockOrder(tenant, id)?.takeIf { scope.seesOrder(it) } ?: fail(tr("La orden ya no existe."))
         if (!OrderTransitions.allowed(current.kind, current.status, to, TransitionRole.of(scope, current))) {
-            fail("No puedes pasar la orden de ${current.status.label} a ${to.label}.")
+            fail(tr("No puedes pasar la orden de {0} a {1}.", tr(current.status.label), tr(to.label)))
         }
         // Reabrir una orden de un plan que ya generó otra abierta rompería "una sola orden abierta por plan".
         if (current.status == OrderStatus.Done && current.planId != null && hasOtherOpenOrder(tenant, current.planId, current.id)) {
-            fail("No se puede reabrir: el plan preventivo ya tiene otra orden abierta. Complétala o cancélala primero.")
+            fail(tr("No se puede reabrir: el plan preventivo ya tiene otra orden abierta. Complétala o cancélala primero."))
         }
         val cleanReason = reason.trim()
-        if (OrderTransitions.requiresReason(to) && cleanReason.isEmpty()) fail("Indica el motivo del rechazo.")
-        if (cleanReason.length > OrderTransitions.MaxReason) fail("El motivo admite hasta ${OrderTransitions.MaxReason} caracteres.")
+        if (OrderTransitions.requiresReason(to) && cleanReason.isEmpty()) fail(tr("Indica el motivo del rechazo."))
+        if (cleanReason.length > OrderTransitions.MaxReason) fail(tr("El motivo admite hasta {0} caracteres.", OrderTransitions.MaxReason))
         val done = to == OrderStatus.Done
         val approving = OrderTransitions.isApproval(current.kind, current.status, to)
         val rejecting = to == OrderStatus.Rejected
@@ -869,7 +871,7 @@ object MantenimientoRepository {
         insertNote(tenant, id, "status", note.take(MaxNoteLength), actor)
         if (current.planId != null && (done || to == OrderStatus.Cancelled)) advanceFloatingPlan(tenant, current.planId, done, today)
         markSync(tenant, id)
-        getOrder(tenant, id) ?: fail("La orden ya no existe.")
+        getOrder(tenant, id) ?: fail(tr("La orden ya no existe."))
     }
 
     private fun hasOtherOpenOrder(tenant: Connection, planId: UUID, exceptId: UUID): Boolean = tenant.query(
@@ -896,11 +898,11 @@ object MantenimientoRepository {
         scope: MantenimientoScope,
         today: LocalDate = today(),
     ): Order = transaction(tenant) {
-        val current = getOrder(tenant, id)?.takeIf { scope.seesOrder(it) } ?: fail("La orden ya no existe.")
-        if (!scope.canWork(current)) fail("No puedes trabajar esta orden.")
+        val current = getOrder(tenant, id)?.takeIf { scope.seesOrder(it) } ?: fail(tr("La orden ya no existe."))
+        if (!scope.canWork(current)) fail(tr("No puedes trabajar esta orden."))
         // La transición se valida antes de escribir nada (changeStatus la vuelve a comprobar con la fila bloqueada).
         if (!OrderTransitions.allowed(current.kind, current.status, OrderStatus.Done, TransitionRole.of(scope, current))) {
-            fail("No puedes pasar la orden de ${current.status.label} a ${OrderStatus.Done.label}.")
+            fail(tr("No puedes pasar la orden de {0} a {1}.", tr(current.status.label), tr(OrderStatus.Done.label)))
         }
         if (resolution != null || costAmount != null) {
             updateWork(tenant, id, costAmount ?: current.costAmount, current.costCurrency, resolution ?: current.resolution)
@@ -922,12 +924,12 @@ object MantenimientoRepository {
     /** Agrega una nota escrita (hasta [MaxNoteLength] caracteres y [MaxNotesPerOrder] por orden). */
     fun addNote(tenant: Connection, orderId: UUID, body: String, actor: MantenimientoActor): UUID {
         val clean = body.trim()
-        if (clean.isEmpty()) fail("La nota no puede estar vacía.")
-        if (clean.length > MaxNoteLength) fail("La nota admite hasta $MaxNoteLength caracteres.")
+        if (clean.isEmpty()) fail(tr("La nota no puede estar vacía."))
+        if (clean.length > MaxNoteLength) fail(tr("La nota admite hasta {0} caracteres.", MaxNoteLength))
         return transaction(tenant) {
-            lockOrder(tenant, orderId) ?: fail("La orden ya no existe.")
+            lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
             val total = tenant.query("SELECT count(*) AS total FROM mantenimiento_order_notes WHERE order_id = ?", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
-            if (total >= MaxNotesPerOrder) fail("La orden ya tiene el máximo de $MaxNotesPerOrder notas.")
+            if (total >= MaxNotesPerOrder) fail(tr("La orden ya tiene el máximo de {0} notas.", MaxNotesPerOrder))
             insertNote(tenant, orderId, "note", clean, actor)
         }
     }
@@ -976,12 +978,12 @@ object MantenimientoRepository {
 
     fun addCheckItem(tenant: Connection, orderId: UUID, text: String): UUID {
         val clean = text.trim()
-        if (clean.isEmpty()) fail("El elemento no puede estar vacío.")
-        if (clean.length > PlanInput.MaxChecklistText) fail("Cada elemento admite hasta ${PlanInput.MaxChecklistText} caracteres.")
+        if (clean.isEmpty()) fail(tr("El elemento no puede estar vacío."))
+        if (clean.length > PlanInput.MaxChecklistText) fail(tr("Cada elemento admite hasta {0} caracteres.", PlanInput.MaxChecklistText))
         return transaction(tenant) {
-            lockOrder(tenant, orderId) ?: fail("La orden ya no existe.")
+            lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
             val total = tenant.query("SELECT count(*) AS total FROM mantenimiento_order_checklist WHERE order_id = ?", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
-            if (total >= MaxChecklistItems) fail("La lista admite hasta $MaxChecklistItems elementos.")
+            if (total >= MaxChecklistItems) fail(tr("La lista admite hasta {0} elementos.", MaxChecklistItems))
             val id = UUID.randomUUID()
             tenant.update(
                 "INSERT INTO mantenimiento_order_checklist (id, order_id, text, position) VALUES (?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM mantenimiento_order_checklist WHERE order_id = ?))",
@@ -1026,17 +1028,17 @@ object MantenimientoRepository {
      */
     fun storeUpload(files: ModuleFiles, name: String, contentType: String, content: InputStream): StoredUpload {
         val fileName = cleanFileName(name)
-        if (fileName.isEmpty()) fail("El archivo no tiene nombre.")
+        if (fileName.isEmpty()) fail(tr("El archivo no tiene nombre."))
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         val stored = try {
             files.put(fileName, type, content, MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            fail("$fileName supera el máximo de ${MaxFileBytes / (1024 * 1024)} MB.")
+            fail(tr("{0} supera el máximo de {1} MB.", fileName, MaxFileBytes / (1024 * 1024)))
         }
         return StoredUpload(fileName, type, stored)
     }
 
-    private const val TooManyPending = "Tienes demasiados archivos sin guardar. Guarda o espera."
+    private val TooManyPending = msg("Tienes demasiados archivos sin guardar. Guarda o espera.")
 
     /** Borra un archivo guardado que se quedó sin fila; un fallo se registra (el archivo quedaría huérfano) y no tapa el error original. */
     fun discardStored(files: ModuleFiles, stored: StoredFileRef) {
@@ -1061,7 +1063,7 @@ object MantenimientoRepository {
         return pendingExceeded(pending.first, pending.second)
     }
 
-    fun tooManyPendingMessage(): String = TooManyPending
+    fun tooManyPendingMessage(): String = tr(TooManyPending)
 
     /**
      * Paso 2: transacción corta con el candado por usuario, el conteo y el INSERT. Las subidas que esperan su formulario (order_id NULL)
@@ -1077,7 +1079,7 @@ object MantenimientoRepository {
                     "SELECT count(*) AS total, COALESCE(sum(size), 0) AS bytes FROM mantenimiento_attachments WHERE order_id IS NULL AND NOT delete_pending AND uploaded_by IS NOT DISTINCT FROM ?",
                     listOf(uploadedBy),
                 ) { it.getInt("total") to it.getLong("bytes") }.firstOrNull() ?: (0 to 0L)
-                if (pendingExceeded(pending.first, pending.second)) fail(TooManyPending)
+                if (pendingExceeded(pending.first, pending.second)) fail(tr(TooManyPending))
                 tenant.update(
                     "INSERT INTO mantenimiento_attachments (id, name, path, content_type, size, backend, ref, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     listOf(UUID.fromString(ref.id), ref.name, ref.path, upload.type, ref.size, upload.stored.backend, upload.stored.ref, uploadedBy),
@@ -1098,9 +1100,9 @@ object MantenimientoRepository {
         val pending = ids.distinct()
         if (pending.isEmpty() || uploaderId == null) return emptyList()
         return transaction(tenant) {
-            lockOrder(tenant, orderId) ?: fail("La orden ya no existe.")
+            lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
             val total = tenant.query("SELECT count(*) AS total FROM mantenimiento_attachments WHERE order_id = ? AND NOT delete_pending", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
-            if (total + pending.size > MaxFilesPerOrder) fail("Una orden admite hasta $MaxFilesPerOrder archivos.")
+            if (total + pending.size > MaxFilesPerOrder) fail(tr("Una orden admite hasta {0} archivos.", MaxFilesPerOrder))
             tenant.query(
                 """
                 UPDATE mantenimiento_attachments SET order_id = ?

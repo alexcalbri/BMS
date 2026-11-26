@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import java.math.BigDecimal
 import java.sql.Connection
@@ -552,10 +553,10 @@ object EventosRepository {
         val email = input.email.trim()
         val phone = input.phone.trim()
         val errors = buildList {
-            if (name.isEmpty()) add("Escribe el nombre del cliente.")
-            if (name.length > 200) add("El nombre del cliente admite hasta 200 caracteres.")
-            if (email.isNotEmpty() && (!email.contains('@') || email.length > 254 || email.any { it.isWhitespace() })) add("Escribe un correo válido o déjalo vacío.")
-            if (phone.length > 40) add("El teléfono admite hasta 40 caracteres.")
+            if (name.isEmpty()) add(tr("Escribe el nombre del cliente."))
+            if (name.length > 200) add(tr("El nombre del cliente admite hasta 200 caracteres."))
+            if (email.isNotEmpty() && (!email.contains('@') || email.length > 254 || email.any { it.isWhitespace() })) add(tr("Escribe un correo válido o déjalo vacío."))
+            if (phone.length > 40) add(tr("El teléfono admite hasta 40 caracteres."))
         }
         if (errors.isNotEmpty()) throw EventosValidationException(errors)
         if (email.isNotEmpty()) {

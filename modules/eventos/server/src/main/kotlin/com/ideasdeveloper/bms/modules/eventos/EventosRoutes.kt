@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
@@ -19,14 +20,14 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.time.DayOfWeek
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.slf4j.LoggerFactory
 
 /**
  * Native screens of the module: GET /{screen} and POST /{screen}?op=... under /modules/eventos/ui. The literal route
@@ -69,7 +70,7 @@ object EventosRoutes {
             // Hard 1 MB cap: the body is read up to the cap + 1 byte, so a chunked body without Content-Length cannot get past it.
             val bytes = withContext(Dispatchers.IO) { call.receiveStream().use { it.readNBytes(MaxBodyBytes + 1) } }
             if (bytes.size > MaxBodyBytes) {
-                return@post call.respond(HttpStatusCode.PayloadTooLarge, EventosErrorResponse("payload_too_large", EventosActions.InvalidForm))
+                return@post call.respond(HttpStatusCode.PayloadTooLarge, EventosErrorResponse("payload_too_large", tr(EventosActions.InvalidForm)))
             }
             val values = try {
                 EventosActions.formValues(String(bytes, Charsets.UTF_8))
@@ -83,7 +84,7 @@ object EventosRoutes {
     }
 
     private suspend fun ApplicationCall.forbidden() =
-        respond(HttpStatusCode.Forbidden, EventosErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+        respond(HttpStatusCode.Forbidden, EventosErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
 
     // ---- loading screens ----
 
@@ -103,9 +104,9 @@ object EventosRoutes {
 
     private fun uuid(params: Map<String, String>, key: String): UUID? = EventosActions.uuid(params[key])
 
-    private fun requireId(params: Map<String, String>, key: String = "id"): UUID = uuid(params, key) ?: throw missing("Falta el elemento sobre el que actuar.")
+    private fun requireId(params: Map<String, String>, key: String = "id"): UUID = uuid(params, key) ?: throw missing(tr("Falta el elemento sobre el que actuar."))
 
-    private fun loadEvent(tenant: Connection, id: UUID): EventWithStats = EventosRepository.getEvent(tenant, id) ?: throw missing("Evento no encontrado.")
+    private fun loadEvent(tenant: Connection, id: UUID): EventWithStats = EventosRepository.getEvent(tenant, id) ?: throw missing(tr("Evento no encontrado."))
 
     private fun detail(tenant: Connection, id: UUID): EventosScreens.EventDetail {
         val item = loadEvent(tenant, id)
@@ -149,7 +150,7 @@ object EventosRoutes {
         }
         "evento" -> EventosScreens.evento(context, detail(tenant, requireId(params)), notice, submitted)
         "inscripcion" -> {
-            val registration = EventosRepository.getRegistration(tenant, requireId(params)) ?: throw missing("Inscripción no encontrada.")
+            val registration = EventosRepository.getRegistration(tenant, requireId(params)) ?: throw missing(tr("Inscripción no encontrada."))
             val event = loadEvent(tenant, registration.eventId).event
             val email = if (context.caps.register) EventosRepository.visibleCustomer(tenant, registration.customerId)?.email.orEmpty() else ""
             val membership = if (registration.status == RegistrationStatus.Cancelled) null else EventosMembership.activeMembership(tenant, registration.customerId)
@@ -157,25 +158,25 @@ object EventosRoutes {
         }
         "asistencia" -> {
             val event = loadEvent(tenant, requireId(params)).event
-            if (event.kind != EventKind.Public) throw missing("Los eventos privados no tienen asistencia.")
+            if (event.kind != EventKind.Public) throw missing(tr("Los eventos privados no tienen asistencia."))
             val people = EventosRepository.listRegistrations(tenant, event.id, RegistrationStatus.Registered, limit = EventosScreens.RosterLimit)
             EventosScreens.asistencia(context, event, people, notice)
         }
         "nuevo" -> {
-            if (!context.caps.manage) throw missing("No tienes permiso para crear eventos.")
+            if (!context.caps.manage) throw missing(tr("No tienes permiso para crear eventos."))
             EventosForms.eventForm(context, EventKind.fromCode(params["kind"]) ?: EventKind.Public, null, notice, submitted)
         }
         "editar" -> {
-            if (!context.caps.manage) throw missing("No tienes permiso para editar eventos.")
+            if (!context.caps.manage) throw missing(tr("No tienes permiso para editar eventos."))
             val event = loadEvent(tenant, requireId(params)).event
             EventosForms.eventForm(context, event.kind, event, notice, submitted)
         }
         "duplicar" -> {
-            if (!context.caps.manage) throw missing("No tienes permiso para duplicar eventos.")
+            if (!context.caps.manage) throw missing(tr("No tienes permiso para duplicar eventos."))
             EventosForms.duplicateForm(context, loadEvent(tenant, requireId(params)).event, notice, submitted)
         }
         "ajustes" -> {
-            if (!context.caps.manage) throw missing("No tienes permiso para cambiar los ajustes.")
+            if (!context.caps.manage) throw missing(tr("No tienes permiso para cambiar los ajustes."))
             EventosForms.settingsForm(context, notice, submitted)
         }
         else -> upcoming(tenant, context, params, notice)
@@ -207,13 +208,13 @@ object EventosRoutes {
         val caps = EventosScreens.Caps.of(permissions)
         val sources = EventosImportSources.enabled(tenant, permissions.companyCode)
         fun screen(body: List<UiNode>) = UiScreen(
-            title = "Importar",
+            title = tr("Importar"),
             navigation = EventosScreens.navigation(caps, ImportScreen, import = sources.isNotEmpty()),
             notice = notice,
             body = body,
         )
         if (sources.isEmpty()) {
-            return screen(listOf(UiText("No hay fuentes de importación activas. Instala y activa una extensión de importación de Eventos (por ejemplo Monday) y vuelve aquí.")))
+            return screen(listOf(UiText(tr("No hay fuentes de importación activas. Instala y activa una extensión de importación de Eventos (por ejemplo Monday) y vuelve aquí."))))
         }
         val chosen = sources.firstOrNull { it.sourceId == params["source"] } ?: sources.singleOrNull()
         val picker = if (sources.size > 1) {
@@ -221,7 +222,7 @@ object EventosRoutes {
         } else {
             emptyList()
         }
-        if (chosen == null) return screen(picker + UiText("Elige desde dónde quieres importar.", UiTextStyle.Caption))
+        if (chosen == null) return screen(picker + UiText(tr("Elige desde dónde quieres importar."), UiTextStyle.Caption))
         val body = try {
             chosen.screen(importContext(tenant, access, permissions), params)
         } catch (failure: EventosValidationException) {
@@ -230,14 +231,14 @@ object EventosRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("No se pudo mostrar la fuente de importación {} ({}).", chosen.sourceId, failure.javaClass.simpleName)
-            errorBody("No se pudo mostrar esta fuente de importación.")
+            errorBody(tr("No se pudo mostrar esta fuente de importación."))
         }
         return screen(picker + body)
     }
 
     private fun importAct(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): UiScreen {
         val source = EventosImportSources.enabled(tenant, permissions.companyCode).firstOrNull { it.sourceId == params["source"] }
-            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice("Esa fuente de importación no está disponible.", UiTone.Danger))
+            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice(tr("Esa fuente de importación no está disponible."), UiTone.Danger))
         val reply = try {
             source.action(importContext(tenant, access, permissions), params["op"].orEmpty(), values)
         } catch (failure: EventosValidationException) {
@@ -246,7 +247,7 @@ object EventosRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("Falló una operación de importación de {} ({}).", source.sourceId, failure.javaClass.simpleName)
-            EventosImportReply("No se pudo completar la operación.", error = true)
+            EventosImportReply(tr("No se pudo completar la operación."), error = true)
         }
         return importScreen(tenant, access, permissions, reply.params + ("source" to source.sourceId), UiNotice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
     }
@@ -302,21 +303,21 @@ object EventosRoutes {
                         success("evento", idOf(id), text, tone)
                     }
                     "status" -> {
-                        val target = EventStatus.fromCode(params["status"]) ?: throw missing("Estado no válido.")
+                        val target = EventStatus.fromCode(params["status"]) ?: throw missing(tr("Estado no válido."))
                         val event = EventosService.changeStatus(tenant, access, permissions, id, target, values["reason"].orEmpty().trim())
-                        success("evento", idOf(id), "Evento ${EventosRules.statusLabel(event.kind, event.status).lowercase()}.")
+                        success("evento", idOf(id), tr("Evento {0}.", tr(EventosRules.statusLabel(event.kind, event.status)).lowercase()))
                     }
                     "payment-add" -> {
                         val paidOn = EventosActions.date(values["pay_date"]) ?: context.today
-                        val amount = EventosActions.amount(values["pay_amount"], "El abono") ?: throw missing("Escribe el monto del abono.")
+                        val amount = EventosActions.amount(values["pay_amount"], tr("El abono")) ?: throw missing(tr("Escribe el monto del abono."))
                         EventosService.addPayment(tenant, access, permissions, id, paidOn, amount, values["pay_method"].orEmpty().trim(), values["pay_note"].orEmpty().trim())
-                        success("evento", idOf(id), "Abono registrado.")
+                        success("evento", idOf(id), tr("Abono registrado."))
                     }
                     "payment-delete" -> {
                         EventosService.deletePayment(tenant, permissions, id, requireId(params, "payment"))
-                        success("evento", idOf(id), "Abono borrado.")
+                        success("evento", idOf(id), tr("Abono borrado."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -326,21 +327,21 @@ object EventosRoutes {
                 when (op) {
                     "paid", "unpaid" -> {
                         EventosService.setPaid(tenant, permissions, id, paid = op == "paid")
-                        success("inscripcion", same, if (op == "paid") "Marcada como pagada." else "Marcada como no pagada.")
+                        success("inscripcion", same, if (op == "paid") tr("Marcada como pagada.") else tr("Marcada como no pagada."))
                     }
                     "attend", "unattend" -> {
                         EventosService.setAttendance(tenant, access, permissions, id, attended = op == "attend")
-                        success("inscripcion", same, if (op == "attend") "Asistencia registrada." else "Asistencia quitada.")
+                        success("inscripcion", same, if (op == "attend") tr("Asistencia registrada.") else tr("Asistencia quitada."))
                     }
                     "promote" -> {
                         EventosService.promote(tenant, access, permissions, id)
-                        success("inscripcion", same, "Pasó a inscrito.")
+                        success("inscripcion", same, tr("Pasó a inscrito."))
                     }
                     "cancel" -> {
                         val cancelled = EventosService.cancelRegistration(tenant, access, permissions, id)
-                        success("evento", idOf(cancelled.eventId), "Inscripción cancelada.")
+                        success("evento", idOf(cancelled.eventId), tr("Inscripción cancelada."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -348,13 +349,13 @@ object EventosRoutes {
                 val id = requireId(params)
                 val registration = requireId(params, "registration")
                 // The registration has to belong to the event of the screen (ids come from the request).
-                if (EventosRepository.getRegistration(tenant, registration)?.eventId != id) throw missing("Esa inscripción no pertenece a este evento.")
+                if (EventosRepository.getRegistration(tenant, registration)?.eventId != id) throw missing(tr("Esa inscripción no pertenece a este evento."))
                 when (op) {
                     "attend", "unattend" -> {
                         val updated = EventosService.setAttendance(tenant, access, permissions, registration, attended = op == "attend")
-                        success("asistencia", idOf(id), if (op == "attend") "${updated.customerName}: llegó." else "${updated.customerName}: asistencia quitada.")
+                        success("asistencia", idOf(id), if (op == "attend") tr("{0}: llegó.", updated.customerName) else tr("{0}: asistencia quitada.", updated.customerName))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -366,9 +367,9 @@ object EventosRoutes {
                         tenant, access, permissions, input,
                         publish = values["publish"] == "true", requireClient = kind == EventKind.Private,
                     )
-                    success("evento", idOf(created.id), "Evento creado.")
+                    success("evento", idOf(created.id), tr("Evento creado."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "editar" -> when (op) {
@@ -376,9 +377,9 @@ object EventosRoutes {
                     val id = requireId(params)
                     val kind = loadEvent(tenant, id).event.kind
                     EventosService.updateEvent(tenant, access, permissions, id, EventosActions.eventInput(kind, values, context.users, context.zone))
-                    success("evento", idOf(id), "Cambios guardados.")
+                    success("evento", idOf(id), tr("Cambios guardados."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "duplicar" -> when (op) {
@@ -386,9 +387,9 @@ object EventosRoutes {
                     val id = requireId(params)
                     val (startsAt, endsAt) = EventosActions.schedule(values["date"], values["start"], values["end"], context.zone)
                     val copy = EventosService.duplicateEvent(tenant, access, permissions, id, startsAt, endsAt)
-                    success("evento", idOf(copy.id), "Evento duplicado como borrador.")
+                    success("evento", idOf(copy.id), tr("Evento duplicado como borrador."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "ajustes" -> when (op) {
@@ -397,12 +398,12 @@ object EventosRoutes {
                         tenant, permissions, values["currency"].orEmpty(),
                         EventosRules.lines(values["spaces"].orEmpty()), EventosRules.lines(values["categories"].orEmpty()),
                     )
-                    success("ajustes", emptyMap(), "Ajustes guardados.")
+                    success("ajustes", emptyMap(), tr("Ajustes guardados."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
-            else -> throw missing("Acción no disponible.")
+            else -> throw missing(tr("Acción no disponible."))
         }
     }
 }
