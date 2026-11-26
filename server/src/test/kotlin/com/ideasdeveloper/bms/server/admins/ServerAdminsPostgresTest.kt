@@ -13,6 +13,7 @@ import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConf
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
+import com.ideasdeveloper.bms.server.company.application.CompanySelfException
 import com.ideasdeveloper.bms.server.company.application.ProvisioningAudit
 import com.ideasdeveloper.bms.server.modules.ModuleRegistry
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
@@ -128,11 +129,12 @@ class ServerAdminsPostgresTest {
     private val prefix get() = urlOf("X").substringBefore("/X") + "/"
     private val pgUser get() = Regex("user=([^&]+)").find(url!!)?.groupValues?.get(1) ?: "postgres"
 
-    private fun loginDatabases(limiter: PasswordAttemptLimiter? = null): LoginDatabases {
+    private fun loginDatabases(limiter: PasswordAttemptLimiter? = null, global: PasswordAttemptLimiter? = null): LoginDatabases {
         val data = source(central)
         return (
             if (limiter == null) LoginDatabases(data, Database.connect(data), urlOf(central), "[]", pgUser, "", prefix, 3600)
-            else LoginDatabases(data, Database.connect(data), urlOf(central), "[]", pgUser, "", prefix, 3600, limiter)
+            else if (global == null) LoginDatabases(data, Database.connect(data), urlOf(central), "[]", pgUser, "", prefix, 3600, limiter)
+            else LoginDatabases(data, Database.connect(data), urlOf(central), "[]", pgUser, "", prefix, 3600, limiter, global)
         ).also { opened += it }
     }
 
@@ -171,10 +173,11 @@ class ServerAdminsPostgresTest {
 
     private fun setup(
         limiter: PasswordAttemptLimiter? = null,
+        global: PasswordAttemptLimiter? = null,
         workspaceStaff: (LoginDatabases) -> ((UUID, AuditActor, String) -> Unit) = { { _, _, _ -> } },
     ): Setup {
         reset()
-        val databases = loginDatabases(limiter)
+        val databases = loginDatabases(limiter, global)
         val data = source(central)
         val store = databases.admins
         val service = ServerAdminService(
@@ -444,6 +447,112 @@ class ServerAdminsPostgresTest {
         // Attempts while throttled do not extend it: once the window ends the right password works.
         now = now.plus(Duration.ofMinutes(6))
         assertNotNull(s.databases.service.login(LoginCredentials("ana", initial)))
+    }
+
+    @Test
+    fun serverSignInThrottleIsPerAddressAndResetBySuccess() {
+        if (url == null) return
+        val now = Instant.parse("2026-11-26T10:00:00Z")
+        val s = setup(limiter = PasswordAttemptLimiter(maxFailures = 3, window = Duration.ofMinutes(5), clock = { now }))
+        s.createAna()
+        fun login(password: String, address: String) = s.databases.service.login(LoginCredentials("ana", password, null, address))
+        repeat(3) { assertNull(login("mala-0123456789-$it", "10.0.0.1")) }
+        // The attacker's address is throttled, even with the right password; the owner's address is not.
+        assertNull(login(initial, "10.0.0.1"))
+        assertNotNull(login(initial, "10.0.0.2"))
+        // A success resets that address: two failures, success, two failures never reach 3 in a row.
+        repeat(2) { assertNull(login("mala-0123456789-$it", "10.0.0.3")) }
+        assertNotNull(login(initial, "10.0.0.3"))
+        repeat(2) { assertNull(login("mala-0123456789-$it", "10.0.0.3")) }
+        assertNotNull(login(initial, "10.0.0.3"))
+    }
+
+    @Test
+    fun serverSignInGlobalCounterOnlyDelaysAndStillAcceptsTheRightPassword() {
+        if (url == null) return
+        val now = Instant.parse("2026-11-26T10:00:00Z")
+        val s = setup(
+            limiter = PasswordAttemptLimiter(maxFailures = 3, window = Duration.ofMinutes(5), clock = { now }),
+            global = PasswordAttemptLimiter(maxFailures = 4, window = Duration.ofMinutes(5), clock = { now }),
+        )
+        s.createAna()
+        fun credentials(password: String, address: String) = LoginCredentials("ana", password, null, address)
+        assertEquals(0L, s.databases.serverLoginDelayMillis(credentials("x", "a")))
+        // Failures from many addresses never refuse anyone, but past the threshold every attempt is delayed.
+        repeat(4) { assertNull(s.databases.service.login(credentials("mala-0123456789-$it", "10.0.1.$it"))) }
+        assertEquals(2000L, s.databases.serverLoginDelayMillis(credentials("x", "10.0.1.99")))
+        assertEquals(0L, s.databases.serverLoginDelayMillis(LoginCredentials("luis", "x", null, "10.0.1.99")))
+        assertEquals(2000L, s.databases.service.delayMillisFor(credentials("x", "10.0.1.99")))
+        assertNotNull(s.databases.service.login(credentials(initial, "10.0.1.50")))
+    }
+
+    @Test
+    fun removingWorkspaceSweepsBeforeSavingAndARetrySweepsAgain() {
+        if (url == null) return
+        var failures = 1
+        val swept = mutableListOf<UUID>()
+        val s = setup(workspaceStaff = { { id, _, _ -> if (failures-- > 0) error("sweep failed"); swept += id } })
+        val ana = s.createAna(ServerPermission.Workspace, ServerPermission.Settings)
+        assertFails { s.service.setPermissions(owner(), ana.id, listOf(ServerPermission.Settings.id), null, null) }
+        // The failed sweep failed the request: the permission is still there, so the state is consistent.
+        assertTrue(ServerPermission.Workspace in s.store.find(UUID.fromString(ana.id))!!.permissions)
+        s.service.setPermissions(owner(), ana.id, listOf(ServerPermission.Settings.id), null, null)
+        assertEquals(listOf(UUID.fromString(ana.id)), swept)
+        assertTrue(ServerPermission.Workspace !in s.store.find(UUID.fromString(ana.id))!!.permissions)
+        // Even when the permission was already gone, a further save sweeps again (idempotent).
+        s.service.setPermissions(owner(), ana.id, listOf(ServerPermission.Settings.id), null, null)
+        assertEquals(2, swept.size)
+    }
+
+    @Test
+    fun sweptStaffComesBackOnlyWithANewPassword() {
+        if (url == null) return
+        lateinit var self: CompanySelfService
+        val s = setup(workspaceStaff = { { id, by, reason -> self.deactivateWorkspaceStaffOf(id, by, reason) } })
+        val ana = s.createAna(ServerPermission.Workspace)
+        val luis = s.service.create(owner(), "luis", "Luis Admin", "luis@example.com", initial, listOf(ServerPermission.Workspace.id), true, emptyList())
+        val tokens = mapOf("ana" to actorOf(s.store, ana.id), "luis" to actorOf(s.store, luis.id), "owner" to owner())
+        self = CompanySelfService(
+            central = source(central),
+            loginDatabases = s.databases,
+            moduleRegistry = ModuleRegistry(emptyList()),
+            backupsRoot = java.nio.file.Files.createTempDirectory("sa-backups"),
+            serverActors = ServerActorResolver { token -> tokens[token]?.let { ServerActorLookup.Found(it) } ?: ServerActorLookup.None },
+        )
+        fun reactivate(by: String, user: String, password: String = "") = self.updateUser(
+            "servidor", by, user, com.ideasdeveloper.bms.server.company.api.UpdateCompanyUserRequest("caja", "Caja Uno", "caja@example.com", true, emptyList(), password),
+        )
+        fun creator(user: String) = scalar(central, "SELECT created_by FROM server_workspace_staff WHERE user_id = '$user'")
+        val staff = self.createUser("servidor", "ana", CreateCompanyUserRequest("caja", "caja-0123456789", emptyList(), "Caja Uno", "caja@example.com"))
+        s.service.setPermissions(owner(), ana.id, emptyList(), null, null)
+        assertEquals("f", scalar(workspaceDb, "SELECT is_active FROM application_users WHERE id = '${staff.userId}'"))
+
+        // Another administrator cannot bring it back while ana (who knows the password) is its creator.
+        val refused = assertFails { reactivate("luis", staff.userId) }
+        assertTrue(refused is CompanySelfException)
+        assertEquals("f", scalar(workspaceDb, "SELECT is_active FROM application_users WHERE id = '${staff.userId}'"))
+        assertNull(s.databases.service.login(LoginCredentials("caja", "caja-0123456789", "servidor")))
+        // The owner is told the same.
+        assertFails { reactivate("owner", staff.userId) }
+        // With a new password the account follows luis, and the old credentials do not work.
+        reactivate("luis", staff.userId, "caja-nueva-0123456789")
+        assertEquals("t", scalar(workspaceDb, "SELECT is_active FROM application_users WHERE id = '${staff.userId}'"))
+        assertEquals(luis.id, creator(staff.userId))
+        assertNull(s.databases.service.login(LoginCredentials("caja", "caja-0123456789", "servidor")))
+        assertNotNull(s.databases.service.login(LoginCredentials("caja", "caja-nueva-0123456789", "servidor")))
+
+        // Not swept (creator still holds server.workspace): a plain reactivation is fine.
+        val own = self.createUser("servidor", "luis", CreateCompanyUserRequest("propio", "propio-0123456789", emptyList(), "Propio Uno", "p@example.com"))
+        self.updateUser("servidor", "luis", own.userId, com.ideasdeveloper.bms.server.company.api.UpdateCompanyUserRequest("propio", "Propio Uno", "p@example.com", false, emptyList()))
+        self.updateUser("servidor", "luis", own.userId, com.ideasdeveloper.bms.server.company.api.UpdateCompanyUserRequest("propio", "Propio Uno", "p@example.com", true, emptyList()))
+        assertEquals("t", scalar(workspaceDb, "SELECT is_active FROM application_users WHERE id = '${own.userId}'"))
+
+        // Owner reactivating a swept account with a new password removes the tracking row.
+        s.service.setPermissions(owner(), luis.id, emptyList(), null, null)
+        assertEquals("f", scalar(workspaceDb, "SELECT is_active FROM application_users WHERE id = '${staff.userId}'"))
+        reactivate("owner", staff.userId, "caja-owner-0123456789")
+        assertEquals("t", scalar(workspaceDb, "SELECT is_active FROM application_users WHERE id = '${staff.userId}'"))
+        assertNull(creator(staff.userId))
     }
 
     @Test

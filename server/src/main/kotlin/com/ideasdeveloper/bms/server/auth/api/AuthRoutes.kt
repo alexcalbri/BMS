@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.auth.api
 
+import com.ideasdeveloper.bms.server.app.clientAddress
 import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.bms.server.auth.domain.LoginSuccessResponse
@@ -97,7 +98,7 @@ fun Route.authRoutes(
             )
 
             val credentials = try {
-                call.receive<LoginCredentials>()
+                call.receive<LoginCredentials>().withClientAddress(clientAddress(call))
             } catch (_: BadRequestException) {
                 call.respond(
                     HttpStatusCode.BadRequest,
@@ -118,6 +119,8 @@ fun Route.authRoutes(
                 return@post
             }
 
+            val pause = loginService.delayMillisFor(credentials)
+            if (pause > 0) kotlinx.coroutines.delay(pause)
             val response = try {
                 withContext(Dispatchers.IO) {
                     loginService.login(credentials)

@@ -49,6 +49,8 @@ class LoginDatabases(
     private val lifetimeSeconds: Long,
     // Failed server sign-ins per login (owner and administrators), in memory; see authenticateOnServer.
     private val serverLoginAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(maxFailures = ServerLoginMaxFailures, window = ServerLoginWindow),
+    // Failures per login across all addresses: never refuses, only slows (see authenticateOnServer).
+    private val serverLoginGlobalAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(maxFailures = ServerLoginGlobalMaxFailures, window = ServerLoginWindow),
 ) : AutoCloseable {
     private val configurations = Json.decodeFromString<List<TenantDatabaseConfig>>(tenantConfiguration)
         .also { entries -> require(entries.map { it.databaseName }.distinct().size == entries.size) }
@@ -59,7 +61,16 @@ class LoginDatabases(
     private val tenantDatabaseNamePattern = Regex("[a-z][a-z0-9_]{0,62}")
 
     private val tokens = SessionTokenGenerator()
-    private fun serverLoginKey(login: String) = "server-login/" + login.trim().lowercase()
+    private fun serverLoginKey(login: String, client: String) = "server-login/" + login.trim().lowercase() + "/" + client
+    private fun serverLoginGlobalKey(login: String) = "server-login-global/" + login.trim().lowercase()
+    private val logger = org.slf4j.LoggerFactory.getLogger(LoginDatabases::class.java)
+
+    /**
+     * Fixed delay to apply (non-blocking, by the route) before verifying a server sign-in whose login
+     * is under a distributed guessing attack; 0 otherwise. The attempt is still verified afterwards.
+     */
+    fun serverLoginDelayMillis(credentials: LoginCredentials): Long =
+        if (credentials.companyCode == null && serverLoginGlobalAttempts.isBlocked(serverLoginGlobalKey(credentials.username))) ServerLoginDelayMillis else 0L
 
     // Server administrators (control V015): read live on every sign-in, switch and company-session check.
     val admins = ServerAdminStore(central)
@@ -76,6 +87,7 @@ class LoginDatabases(
             }
         },
         companyScope = { name -> tenantScope(name) },
+        delayMillis = ::serverLoginDelayMillis,
     )
 
     /**
@@ -497,7 +509,9 @@ class LoginDatabases(
             // refused without checking the password until the window ends. It throttles, never locks:
             // nothing is stored, attempts while throttled do not extend the window, and the right
             // password works again once it ends. Only existing users are counted (bounded memory).
-            val throttleKey = user?.let { serverLoginKey(it.postgresRole) }
+            // Keyed by login AND client address, so someone who knows the owner's login cannot keep the
+            // owner out from another address; a success resets the key.
+            val throttleKey = user?.let { serverLoginKey(it.postgresRole, credentials.clientAddress) }
             if (throttleKey != null && serverLoginAttempts.isBlocked(throttleKey)) {
                 ServerAdminPasswords.spendDummyCheck(credentials.password)
                 return null
@@ -514,7 +528,18 @@ class LoginDatabases(
                     user.takeIf { ServerAdminPasswords.verify(credentials.password, admin.passwordHash) }
                 }
             }
-            if (result == null && throttleKey != null) serverLoginAttempts.recordFailure(throttleKey)
+            if (throttleKey != null) {
+                if (result != null) {
+                    serverLoginAttempts.reset(throttleKey)
+                } else {
+                    serverLoginAttempts.recordFailure(throttleKey)
+                    val globalKey = serverLoginGlobalKey(user.postgresRole)
+                    serverLoginGlobalAttempts.recordFailure(globalKey)
+                    if (serverLoginGlobalAttempts.failures(globalKey) == ServerLoginGlobalMaxFailures && isOwner(user)) {
+                        logger.warn("Many failed server sign-ins for the owner login '{}'; attempts are now delayed", user.postgresRole)
+                    }
+                }
+            }
             return result
         }
 
@@ -682,6 +707,10 @@ const val ServerNameSetting = "server.name"
 /** Failed server sign-ins of one login allowed per [ServerLoginWindow] before it is throttled. */
 const val ServerLoginMaxFailures = 10
 val ServerLoginWindow: java.time.Duration = java.time.Duration.ofMinutes(5)
+
+/** Failures of one login from any address per window after which each attempt is delayed (never refused). */
+const val ServerLoginGlobalMaxFailures = 50
+const val ServerLoginDelayMillis = 2000L
 
 /** How long a switcher row outlives the company session it tracks (clock differences, rounding). */
 const val SwitcherRowMarginSeconds = 3600L

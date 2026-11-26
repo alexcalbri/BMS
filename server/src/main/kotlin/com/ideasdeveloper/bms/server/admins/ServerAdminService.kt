@@ -73,13 +73,15 @@ class ServerAdminService(
         by.requireOwner()
         val admin = require(id)
         val granted = permissionsOf(permissions)
+        // Without server.workspace the staff accounts they created (or gave a password) stop working too.
+        // Idempotent and BEFORE saving, and a failure fails the request: a retry sweeps again, so the
+        // permission is never saved without the sweep having run.
+        if (ServerPermission.Workspace !in granted) {
+            deactivateWorkspaceStaff(admin.userId, by.audit, "workspace_permission_removed")
+        }
         store.setPermissions(admin.userId, granted)
         if (allCompanies != null || companies != null) setScope(by, admin, allCompanies ?: admin.allCompanies, companies ?: admin.companies.toList())
         audit(by.audit, "server_admin.permissions_updated", details(admin.userId, admin.login, "permissions" to granted.ids(), "previous" to admin.permissions.ids()))
-        // Without server.workspace the staff accounts they created (or gave a password) stop working too.
-        if (ServerPermission.Workspace in admin.permissions && ServerPermission.Workspace !in granted) {
-            deactivateWorkspaceStaff(admin.userId, by.audit, "workspace_permission_removed")
-        }
         return require(id).response()
     }
 

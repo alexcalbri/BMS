@@ -121,6 +121,17 @@ class PasswordAttemptLimiter(
         synchronized(entry) { entry.failures++ }
     }
 
+    /** Failures recorded for [key] in its current window (0 when none or expired). */
+    fun failures(key: String): Int {
+        val entry = entries[key] ?: return 0
+        synchronized(entry) { return if (live(entry, clock())) entry.failures else 0 }
+    }
+
+    /** Forgets [key] (a successful sign-in). */
+    fun reset(key: String) {
+        entries.remove(key)
+    }
+
     private fun live(entry: Entry, now: Instant) = entry.windowStart.plus(window).isAfter(now)
 }
 

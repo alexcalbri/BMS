@@ -460,12 +460,27 @@ class CompanySelfService(
             }
         }
         val takesCredentials = password.isNotEmpty() || emailChanged
+        // A swept account (its creator lost the workspace or was closed) comes back only with a new
+        // password, so whoever knew the old credentials does not.
+        val reactivatingSwept = request.isActive && context.serverActor != null &&
+            isInactiveUser(context.tenant, targetUserId) && staffRowIsStale(targetUserId)
+        if (reactivatingSwept && password.isEmpty()) {
+            throw CompanySelfException(tr("Esta cuenta se desactivo porque el administrador que la creo perdio el acceso; para reactivarla escribe una contrasena nueva."))
+        }
+        val reassigning = reactivatingSwept
         val details = auditDetails(
             "userId" to targetUserId.toString(), "username" to username, "active" to request.isActive,
             "passwordChanged" to password.isNotEmpty(), "emailChanged" to emailChanged, "permissions" to request.permissions.sorted(),
         )
         return context.audited("server_workspace.user_updated", details) { audit ->
             if (audit != null && takesCredentials) recordStaffCredentials(audit, targetUserId, context.serverActor)
+            // The owner resetting a swept account takes it over: nobody else knows its credentials.
+            if (audit != null && reassigning && context.serverActor?.kind == AuditActor.ServerOwnerKind) {
+                audit.prepareStatement("DELETE FROM server_workspace_staff WHERE user_id = ?").use { delete ->
+                    delete.setObject(1, targetUserId)
+                    delete.executeUpdate()
+                }
+            }
             tenantConnection(context.tenant).use { connection ->
                 syncPermissionCatalog(connection)
                 validatePermissions(connection, request.permissions)
@@ -910,6 +925,44 @@ class CompanySelfService(
             upsert.setString(3, by.kind)
             upsert.executeUpdate()
         }
+    }
+
+    private fun isInactiveUser(tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig, userId: UUID): Boolean =
+        tenantConnection(tenant).use { connection ->
+            connection.prepareStatement("SELECT is_active FROM application_users WHERE id = ?").use { query ->
+                query.setObject(1, userId)
+                query.executeQuery().use { rows -> rows.next() && !rows.getBoolean(1) }
+            }
+        }
+
+    /**
+     * Whether workspace staff account [userId] has a tracking row whose creator no longer holds the
+     * right to know its credentials: not an active server owner and not a usable administrator with
+     * server.workspace. Without the table (before control V015) there is no row.
+     */
+    private fun staffRowIsStale(userId: UUID): Boolean = try {
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT 1 FROM server_workspace_staff staff
+                WHERE staff.user_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM server_owners owners JOIN application_users users ON users.id = owners.user_id
+                      WHERE owners.user_id = staff.created_by AND users.is_active)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM server_admins admins JOIN application_users users ON users.id = admins.user_id
+                      JOIN server_admin_permissions permissions ON permissions.user_id = admins.user_id
+                      WHERE admins.user_id = staff.created_by AND admins.is_active AND users.is_active
+                        AND permissions.permission = ?)
+                """.trimIndent()
+            ).use { query ->
+                query.setObject(1, userId)
+                query.setString(2, com.ideasdeveloper.bms.ServerPermissionIds.Workspace)
+                query.executeQuery().use { it.next() }
+            }
+        }
+    } catch (failure: SQLException) {
+        if (failure.sqlState == "42P01") false else throw failure
     }
 
     /**

@@ -274,6 +274,19 @@ session trailers, no push. Never edit an existing migration.
   same `LOGIN_REJECTED`, without checking the password (one dummy hash is still computed). It
   throttles and never locks: nothing is stored, attempts while throttled do not extend the window,
   and an attacker can at most keep the login throttled while the attack lasts.
+- **N1, owner kept out by guessing.** The refusing throttle is keyed by (login, client address), the same
+  address the per-IP rate limit uses behind the proxy, and is reset by a successful sign-in; a second
+  per-login counter (50 failures / 5 min, any address) never refuses, it only delays each attempt by
+  2 s (still verified, so the real password always works) and logs a warning for an owner login.
+- **N2, sweep after a failed permission change.** Removing `server.workspace` runs the idempotent
+  workspace-staff sweep before saving the permissions and fails the request if the sweep fails, so a
+  retry sweeps again.
+- **N3, swept staff account reactivated with known credentials.** Reactivating a swept workspace
+  account whose tracking row names a creator who is no longer an active owner/administrator with
+  `server.workspace` needs a new password in the same request (the row moves to the acting
+  administrator, or is removed when the owner does it); otherwise it is refused.
+- **Operational note.** V015 changed during development; a database that applied an earlier V015 must be
+  recreated (no released server has it).
 - **Owner/administrator race.** Both V015 identity triggers take `pg_advisory_xact_lock` on the user
   id before checking, so two concurrent transactions cannot make one user both.
 - **Owner-only power that stays owner only.** MCP tools (`serverOwnerSessionUser`), workspace modules

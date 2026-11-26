@@ -487,7 +487,7 @@ fun Application.module() {
 }
 
 // IP del cliente; detras del proxy local se toma X-Real-IP.
-private fun clientAddress(call: ApplicationCall): String {
+internal fun clientAddress(call: ApplicationCall): String {
     val remoteAddress = call.request.local.remoteAddress
     // Solo se confia en X-Real-IP cuando la peticion llega del proxy local (IPv4 o IPv6).
     val fromLocalProxy = remoteAddress == "127.0.0.1" || remoteAddress == "::1" || remoteAddress == "0:0:0:0:0:0:0:1"

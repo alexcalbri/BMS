@@ -174,6 +174,7 @@
   "Escribe tu contrasena actual para cambiar el correo.": "Enter your current password to change the email.",
   "Ese nombre de usuario esta reservado; elige otro.": "That username is reserved; choose another one.",
   "Espacio del servidor": "Server workspace",
+  "Esta cuenta se desactivo porque el administrador que la creo perdio el acceso; para reactivarla escribe una contrasena nueva.": "This account was deactivated because the administrator who created it lost access; to reactivate it, enter a new password.",
   "Este modulo necesita el Core {0} o superior; el servidor tiene {1}. Actualiza el servidor primero.": "This module needs Core {0} or later; the server has {1}. Update the server first.",
   "Este modulo necesita la app {0} o superior; tu app es {1}. Actualizala antes de instalar.": "This module needs app {0} or later; your app is {1}. Update it before installing.",
   "Este servidor no puede autorizar modulos: falta la carpeta compiler/ de la instalacion.": "This server cannot authorize modules: the installation's compiler/ folder is missing.",
