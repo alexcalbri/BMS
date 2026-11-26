@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.GroupCompany
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -269,11 +271,11 @@ object ClientesSharing {
     }
 
     // Only the business owner learns who uses the email and in which company; anyone else gets this.
-    const val GenericEmailConflict = "Ya existe un cliente con ese correo en una empresa vinculada."
+    val GenericEmailConflict = msg("Ya existe un cliente con ese correo en una empresa vinculada.")
 
     /** Text that refuses an email change ([owner]: with the name of the other customer and its company). */
     fun emailConflictMessage(customerName: String, companyName: String, email: String, owner: Boolean = true): String =
-        if (!owner) GenericEmailConflict else "El correo $email ya lo usa el cliente \"$customerName\" ($companyName). Usa otro correo o fusiona los dos clientes antes de cambiarlo."
+        if (!owner) tr(GenericEmailConflict) else tr("El correo {0} ya lo usa el cliente \"{1}\" ({2}). Usa otro correo o fusiona los dos clientes antes de cambiarlo.", email, customerName, companyName)
 
     /**
      * Companies whose tab of the customer the user sees: the business owner every company of the
@@ -307,7 +309,7 @@ object ClientesSharing {
      */
     fun <T> onCompany(access: ModuleAccessService, tenant: Connection, currentCode: String, code: String, block: (Connection) -> T): T? {
         if (code == currentCode) return block(tenant)
-        if (access.linkedCompanies(currentCode, ClientesLinking.LinkPurpose).none { it.code == code }) throw ClientesSharingException("Cliente no encontrado.")
+        if (access.linkedCompanies(currentCode, ClientesLinking.LinkPurpose).none { it.code == code }) throw ClientesSharingException(tr("Cliente no encontrado."))
         return access.tenantConnectionForCompany(code)?.use(block)
     }
 

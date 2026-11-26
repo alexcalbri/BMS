@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CompanyLinkException
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -64,7 +66,7 @@ internal object ClientesLinkScreens {
                     withContext(Dispatchers.IO) { act(access, permissions, params) }
                 } catch (failure: ClientesSharingException) {
                     // Ocupado (otra operacion de vinculos en curso) es un aviso para reintentar, no un error.
-                    UiNotice(failure.message.orEmpty(), if (failure.message == ClientesLinking.BusyMessage) UiTone.Warning else UiTone.Danger)
+                    UiNotice(failure.message.orEmpty(), if (failure.message == tr(ClientesLinking.BusyMessage)) UiTone.Warning else UiTone.Danger)
                 } catch (failure: CompanyLinkException) {
                     UiNotice(failure.message.orEmpty(), UiTone.Danger)
                 }
@@ -74,14 +76,14 @@ internal object ClientesLinkScreens {
             get("/activity") {
                 val permissions = call.requireModuleAccess(access, ClientesModule.id) ?: return@get
                 if (!canSeeActivity(permissions)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", "Solo el business owner o quien administra los campos de clientes ve este registro."))
+                    return@get call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", tr("Solo el business owner o quien administra los campos de clientes ve este registro.")))
                 }
                 val screen = withContext(Dispatchers.IO) {
                     access.tenantConnectionForCompany(permissions.companyCode)?.use { tenant ->
                         activityScreen(ClientesActivity.companyEvents(tenant, ActivityLimit), permissions.businessOwner)
                     }
-                } ?: unavailable("Registro de Clientes")
-                call.respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
+                } ?: unavailable(tr("Registro de Clientes"))
+                call.respondText(UiJson.encodeToString(UiScreen.serializer(), localizedPayload(screen)), ContentType.Application.Json)
             }
         }
     }
@@ -90,13 +92,13 @@ internal object ClientesLinkScreens {
     private suspend fun ApplicationCall.linkPermissions(access: ModuleAccessService): ModulePermissions? {
         val permissions = requireModuleAccess(access, ClientesModule.id) ?: return null
         if (!canManageLinks(permissions)) {
-            respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", "Solo el business owner puede administrar las empresas vinculadas."))
+            respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", tr("Solo el business owner puede administrar las empresas vinculadas.")))
             return null
         }
         return permissions
     }
 
-    private fun unavailable(title: String) = UiScreen(title, notice = UiNotice("No se pudo abrir la empresa.", UiTone.Danger))
+    private fun unavailable(title: String) = UiScreen(title, notice = UiNotice(tr("No se pudo abrir la empresa."), UiTone.Danger))
 
     private suspend fun ApplicationCall.respondLinks(access: ModuleAccessService, permissions: ModulePermissions, notice: UiNotice?) {
         val screen = withContext(Dispatchers.IO) {
@@ -104,15 +106,15 @@ internal object ClientesLinkScreens {
             val reviews = ClientesLinking.reviews(access, permissions.companyCode)
             linksScreen(permissions.companyCode, status, reviews, canSeeActivity(permissions), notice)
         }
-        respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
+        respondText(UiJson.encodeToString(UiScreen.serializer(), localizedPayload(screen)), ContentType.Application.Json)
     }
 
     // Runs the action of a POST (params["op"]) and says how it went. The author is recorded where the change is made.
     private fun act(access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>): UiNotice {
         val currentCode = permissions.companyCode
         val company = params["company"].orEmpty().trim()
-        if (company.isEmpty()) throw ClientesSharingException("Elige una empresa.")
-        val tenant = access.tenantConnectionForCompany(currentCode) ?: throw ClientesSharingException("No se pudo abrir la empresa.")
+        if (company.isEmpty()) throw ClientesSharingException(tr("Elige una empresa."))
+        val tenant = access.tenantConnectionForCompany(currentCode) ?: throw ClientesSharingException(tr("No se pudo abrir la empresa."))
         return tenant.use { connection ->
             val author = ClientesActivity.author(connection, permissions, access)
             val message = when (params["op"]) {
@@ -121,36 +123,33 @@ internal object ClientesLinkScreens {
                 "separate" -> ClientesLinking.separate(access, currentCode, company, mergeId(params), author, connection)
                 "merge" -> ClientesLinking.mergeManually(access, currentCode, company, mergeId(params), author, connection)
                 "retry" -> ClientesLinking.retry(access, currentCode, company, mergeId(params), author, connection)
-                else -> throw ClientesSharingException("Accion desconocida.")
+                else -> throw ClientesSharingException(tr("Accion desconocida."))
             }
             UiNotice(message, UiTone.Success)
         }
     }
 
     private fun mergeId(params: Map<String, String>): UUID =
-        params["merge"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Fusion invalida.")
+        params["merge"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException(tr("Fusion invalida."))
 
     /** What the owner reads before linking: every customer is shared and duplicates are merged. */
     fun linkConfirm(currentName: String, targetName: String): String =
-        "Se vincularan $currentName y $targetName: se compartiran TODOS los clientes de ambas empresas. Los que tengan el mismo correo " +
-            "y el mismo nombre se fusionaran solos (queda el mas antiguo); con el mismo correo y otro nombre quedaran en \"Por revisar\" " +
-            "para que tu decidas. La copia se hace en segundo plano. Continuar?"
+        tr("Se vincularan {0} y {1}: se compartiran TODOS los clientes de ambas empresas. Los que tengan el mismo correo y el mismo nombre se fusionaran solos (queda el mas antiguo); con el mismo correo y otro nombre quedaran en \"Por revisar\" para que tu decidas. La copia se hace en segundo plano. Continuar?", currentName, targetName)
 
     /** Lo que se lee antes de fusionar a mano dos clientes con el mismo correo y nombre distinto. */
     fun mergeConfirm(item: MergeItem): String =
-        "Se fusionaran ${item.mergedName} y ${item.keptName}: queda el mas antiguo, el otro se archiva y se mueven sus referencias e historial " +
-            "al que queda. No se completan campos. Se puede deshacer con Separar. Continuar?"
+        tr("Se fusionaran {0} y {1}: queda el mas antiguo, el otro se archiva y se mueven sus referencias e historial al que queda. No se completan campos. Se puede deshacer con Separar. Continuar?", item.mergedName, item.keptName)
 
     const val NameDiffersCode = "name_differs"
 
     /** Motivo legible de una decision por revisar, segun su codigo; sin codigo conocido se usa el texto guardado. */
     fun reasonLabel(code: String, fallback: String): String = when (code) {
-        NameDiffersCode -> "Mismo correo, nombre distinto"
-        "accounts" -> "Los dos clientes tienen una cuenta de usuario enlazada"
-        "code" -> "Codigo de cliente repetido"
-        "incomplete" -> "Fusion incompleta"
-        "copy" -> "No se pudo copiar el cliente"
-        "edit" -> "No se pudo actualizar el cliente"
+        NameDiffersCode -> tr("Mismo correo, nombre distinto")
+        "accounts" -> tr("Los dos clientes tienen una cuenta de usuario enlazada")
+        "code" -> tr("Codigo de cliente repetido")
+        "incomplete" -> tr("Fusion incompleta")
+        "copy" -> tr("No se pudo copiar el cliente")
+        "edit" -> tr("No se pudo actualizar el cliente")
         else -> fallback
     }
 
@@ -162,32 +161,31 @@ internal object ClientesLinkScreens {
     }
 
     fun unlinkConfirm(targetName: String): String =
-        "$targetName dejara de ver los clientes de las demas empresas y las demas los suyos. No se borra ningun cliente. " +
-            "Las fusiones ya hechas se conservan: las notas y el historial que se movieron quedan en el cliente que se quedo. " +
-            "Si hace falta devolverlos, usa Separar en \"Por revisar\" antes de desvincular. Continuar?"
+        tr("{0} dejara de ver los clientes de las demas empresas y las demas los suyos. No se borra ningun cliente. Las fusiones ya hechas se conservan: las notas y el historial que se movieron quedan en el cliente que se quedo. Si hace falta devolverlos, usa Separar en \"Por revisar\" antes de desvincular. Continuar?", targetName)
 
     private fun jobStatusText(status: String): String = when (status) {
-        "pending" -> "pendiente"
-        "running" -> "copiando"
-        "done" -> "terminado"
-        "error" -> "con error"
+        "pending" -> tr("pendiente")
+        "running" -> tr("copiando")
+        "done" -> tr("terminado")
+        "error" -> tr("con error")
         else -> status
     }
 
     /** One line of the progress card: from where to where, how it goes and what needs attention. */
     fun jobLine(job: LinkJob): String = buildString {
-        append("${job.from.name} -> ${job.to.name}: ${jobStatusText(job.status)}, ${job.copied} de ${job.total} copiados")
-        if (job.merged > 0) append(", ${job.merged} fusionados")
-        if (job.review > 0) append(", ${job.review} por revisar")
-        if (job.error.isNotBlank()) append(". Error: ${job.error}")
+        append(tr("{0} -> {1}: {2}, {3} de {4} copiados", job.from.name, job.to.name, jobStatusText(job.status), job.copied, job.total))
+        if (job.merged > 0) append(tr(", {0} fusionados", job.merged))
+        if (job.review > 0) append(tr(", {0} por revisar", job.review))
+        // The stored error is Spanish; the generic ones of the job are marked with msg() and translate here.
+        if (job.error.isNotBlank()) append(tr(". Error: {0}", tr(job.error)))
     }
 
-    fun reviewTitle(item: MergeItem): String = "${item.mergedName} y ${item.keptName}"
+    fun reviewTitle(item: MergeItem): String = tr("{0} y {1}", item.mergedName, item.keptName)
 
     fun reviewSubtitle(item: MergeItem): String =
         listOf(
-            if (item.email.isNotBlank()) "Correo: ${item.email}" else "",
-            if (item.status == "merged") "Se fusiono en ${item.keptCompany}, donde queda ${item.keptName}." else reasonLabel(item.reasonCode, item.reason),
+            if (item.email.isNotBlank()) tr("Correo: {0}", item.email) else "",
+            if (item.status == "merged") tr("Se fusiono en {0}, donde queda {1}.", item.keptCompany, item.keptName) else reasonLabel(item.reasonCode, item.reason),
             item.company.name,
         ).filter { it.isNotBlank() }.joinToString(" - ")
 
@@ -198,18 +196,18 @@ internal object ClientesLinkScreens {
         fun post(op: String, extra: Map<String, String>, confirm: String? = null) = UiRequest(LinksRoute, params = mapOf("op" to op) + extra, confirm = confirm)
 
         val linked = UiCard(
-            title = "Empresas vinculadas",
+            title = tr("Empresas vinculadas"),
             children = buildList<UiNode> {
-                add(UiText("Las empresas vinculadas comparten TODOS sus clientes. Los que tienen el mismo correo y el mismo nombre se fusionan solos y queda el mas antiguo; el mismo correo con otro nombre y lo que no se pueda fusionar queda en \"Por revisar\" para que decidas.", UiTextStyle.Caption))
+                add(UiText(tr("Las empresas vinculadas comparten TODOS sus clientes. Los que tienen el mismo correo y el mismo nombre se fusionan solos y queda el mas antiguo; el mismo correo con otro nombre y lo que no se pueda fusionar queda en \"Por revisar\" para que decidas."), UiTextStyle.Caption))
                 if (others.isEmpty()) {
-                    add(UiText("$currentName no esta vinculada con otras empresas.", tone = UiTone.Neutral))
+                    add(UiText(tr("{0} no esta vinculada con otras empresas.", currentName), tone = UiTone.Neutral))
                 } else {
                     others.forEach { company ->
                         add(
                             UiRow(
                                 listOf(
                                     UiText(company.name),
-                                    UiButton("Desvincular", post("unlink", mapOf("company" to company.code), unlinkConfirm(company.name)), style = "danger"),
+                                    UiButton(tr("Desvincular"), post("unlink", mapOf("company" to company.code), unlinkConfirm(company.name)), style = "danger"),
                                 ),
                             ),
                         )
@@ -219,15 +217,15 @@ internal object ClientesLinkScreens {
         )
 
         val candidates = UiCard(
-            title = "Empresas que se pueden vincular",
+            title = tr("Empresas que se pueden vincular"),
             children = buildList<UiNode> {
-                if (status.candidates.isEmpty()) add(UiText("No hay otras empresas del mismo dueno para vincular.", UiTextStyle.Caption))
+                if (status.candidates.isEmpty()) add(UiText(tr("No hay otras empresas del mismo dueno para vincular."), UiTextStyle.Caption))
                 status.candidates.forEach { company ->
                     add(
                         UiRow(
                             listOf(
                                 UiText(company.name),
-                                UiButton("Vincular", post("link", mapOf("company" to company.code), linkConfirm(currentName, company.name))),
+                                UiButton(tr("Vincular"), post("link", mapOf("company" to company.code), linkConfirm(currentName, company.name))),
                             ),
                         ),
                     )
@@ -236,18 +234,18 @@ internal object ClientesLinkScreens {
         )
 
         val progress = UiCard(
-            title = "Progreso de la copia",
+            title = tr("Progreso de la copia"),
             children = if (status.jobs.isEmpty()) {
-                listOf(UiText("No hay copias en curso.", UiTextStyle.Caption))
+                listOf(UiText(tr("No hay copias en curso."), UiTextStyle.Caption))
             } else {
                 status.jobs.map { job -> UiText(jobLine(job), tone = if (job.status == "error") UiTone.Danger else null) }
             },
         )
 
         val toReview = UiCard(
-            title = "Por revisar (${status.reviewCount})",
+            title = tr("Por revisar ({0})", status.reviewCount),
             children = if (reviews.isEmpty()) {
-                listOf(UiText("Nada por revisar.", UiTextStyle.Caption))
+                listOf(UiText(tr("Nada por revisar."), UiTextStyle.Caption))
             } else {
                 reviews.map { item ->
                     val params = mapOf("company" to item.company.code, "merge" to item.id.toString())
@@ -258,11 +256,11 @@ internal object ClientesLinkScreens {
                             UiRow(
                                 reviewOps(item).map { op ->
                                     when (op) {
-                                        "merge" -> UiButton("Fusionar", post("merge", params, mergeConfirm(item)))
-                                        "retry" -> UiButton("Reintentar", post("retry", params), style = "secondary")
+                                        "merge" -> UiButton(tr("Fusionar"), post("merge", params, mergeConfirm(item)))
+                                        "retry" -> UiButton(tr("Reintentar"), post("retry", params), style = "secondary")
                                         else -> UiButton(
-                                            if (item.status == "review" && item.reasonCode == NameDiffersCode) "Dejar separados" else "Separar",
-                                            post("separate", params, "Los clientes quedan separados y no se volveran a fusionar solos. Continuar?"),
+                                            if (item.status == "review" && item.reasonCode == NameDiffersCode) tr("Dejar separados") else tr("Separar"),
+                                            post("separate", params, tr("Los clientes quedan separados y no se volveran a fusionar solos. Continuar?")),
                                             style = if (item.status == "review" && item.reasonCode == NameDiffersCode) "secondary" else "danger",
                                         )
                                     }
@@ -279,15 +277,15 @@ internal object ClientesLinkScreens {
             add(candidates)
             add(progress)
             add(toReview)
-            if (canSeeActivity) add(UiButton("Registro de Clientes", UiNavigate("activity"), style = "secondary"))
+            if (canSeeActivity) add(UiButton(tr("Registro de Clientes"), UiNavigate("activity"), style = "secondary"))
         }
-        return UiScreen("Empresas vinculadas", notice = notice, body = body)
+        return UiScreen(tr("Empresas vinculadas"), notice = notice, body = body)
     }
 
     fun activityScreen(events: List<ClientesActivity.CompanyEvent>, businessOwner: Boolean): UiScreen = UiScreen(
-        "Registro de Clientes",
+        tr("Registro de Clientes"),
         body = listOfNotNull(
-            UiText("Cambios de la empresa en Clientes: campos personalizados creados o borrados y empresas vinculadas o desvinculadas. Los cambios de cada cliente estan en su ficha.", UiTextStyle.Caption),
+            UiText(tr("Cambios de la empresa en Clientes: campos personalizados creados o borrados y empresas vinculadas o desvinculadas. Los cambios de cada cliente estan en su ficha."), UiTextStyle.Caption),
             UiList(
                 items = events.map { event ->
                     UiListItem(
@@ -296,9 +294,9 @@ internal object ClientesLinkScreens {
                         trailing = event.at.toLocalDate().toString(),
                     )
                 },
-                emptyText = "Sin eventos todavia.",
+                emptyText = tr("Sin eventos todavia."),
             ),
-            if (businessOwner) UiButton("Empresas vinculadas", UiNavigate("links"), style = "secondary") else null,
+            if (businessOwner) UiButton(tr("Empresas vinculadas"), UiNavigate("links"), style = "secondary") else null,
         ),
     )
 }

@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CompanyLinkException
 import com.ideasdeveloper.bms.server.modules.GroupCompany
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -76,7 +78,11 @@ object ClientesLinking {
 
     // How long an HTTP route waits for the group lock before answering that a copy is running.
     private const val HttpLockWaitMillis = 5_000L
-    const val BusyMessage = "Hay una copia en curso, intenta en un minuto."
+    // Shown to the owner: marked with msg() and translated (tr) where it is thrown and where it is compared.
+    val BusyMessage = msg("Hay una copia en curso, intenta en un minuto.")
+
+    // Generic error stored in customer_link_jobs.error (Spanish, as stored); the screen translates it with tr().
+    private val ProcessFailed = msg("Un cliente no se pudo procesar; el detalle esta en el registro del servidor.")
 
     // Author of what the background job does.
     private val SystemAuthor: Pair<UUID?, String> = null to "Sistema"
@@ -117,7 +123,7 @@ object ClientesLinking {
 
     // HTTP routes never wait without a limit: busy means a copy is running.
     private fun <T : Any> withHttpLock(access: ModuleAccessService, code: String, block: () -> T): T =
-        withShortLock(access, code, HttpLockWaitMillis, block) ?: throw ClientesSharingException(BusyMessage)
+        withShortLock(access, code, HttpLockWaitMillis, block) ?: throw ClientesSharingException(tr(BusyMessage))
 
     /** Class and SQLState of a failure for the log: the SQL message carries customer data (emails), so it is never logged. */
     fun describe(failure: Throwable?): String {
@@ -284,7 +290,7 @@ object ClientesLinking {
         val group = try {
             access.linkCompany(currentCode, targetCode, LinkPurpose, author.first?.toString() ?: author.second)
         } catch (failure: CompanyLinkException) {
-            throw ClientesSharingException(failure.message ?: "No se pudo vincular la empresa.")
+            throw ClientesSharingException(failure.message ?: tr("No se pudo vincular la empresa."))
         }
         val names = group.associate { it.code to it.name }
         val targetName = names[targetCode] ?: targetCode
@@ -300,7 +306,7 @@ object ClientesLinking {
         }
         val failed = group.filter { !prepare(it) }
         failed.forEach { prepare(it) }
-        return "Se vinculo $targetName. Todos los clientes se estan compartiendo en segundo plano; puede tardar unos minutos y lo que no se pueda unir queda en Por revisar."
+        return tr("Se vinculo {0}. Todos los clientes se estan compartiendo en segundo plano; puede tardar unos minutos y lo que no se pueda unir queda en Por revisar.", targetName)
     }
 
     /**
@@ -322,7 +328,7 @@ object ClientesLinking {
         try {
             access.unlinkCompany(currentCode, targetCode, LinkPurpose)
         } catch (failure: CompanyLinkException) {
-            throw ClientesSharingException(failure.message ?: "No se pudo desvincular la empresa.")
+            throw ClientesSharingException(failure.message ?: tr("No se pudo desvincular la empresa."))
         }
         val remaining = before.filter { it.code != targetCode }
         val remainingCodes = remaining.map { it.code }
@@ -348,7 +354,7 @@ object ClientesLinking {
         val order = (listOf(currentCode) + remainingCodes + targetCode).distinct()
         val failed = order.filter { !hide(it) }
         failed.forEach { hide(it) }
-        return "Se desvinculo $targetName. Sus clientes dejan de verse entre las dos empresas; las fusiones ya hechas se conservan."
+        return tr("Se desvinculo {0}. Sus clientes dejan de verse entre las dos empresas; las fusiones ya hechas se conservan.", targetName)
     }
 
     // Creates the job rows of new destinations (no customer is rewritten: the first full copy starts at cursor NULL).
@@ -678,7 +684,7 @@ object ClientesLinking {
                             if (isConnectionFailure(failure)) throw failure
                             undo(tenant, own, hooks)
                             log.warn("Could not process customer {} of company {} ({})", row.id, code, describe(failure))
-                            unavailable[only ?: targets.first().code] = "Un cliente no se pudo procesar; el detalle esta en el registro del servidor."
+                            unavailable[only ?: targets.first().code] = ProcessFailed
                         }
                         lastDone = row.id
                         processed++
@@ -727,7 +733,7 @@ object ClientesLinking {
         } catch (failure: Exception) {
             runCatching { db.close() }
             if (isConnectionFailure(failure)) {
-                unavailable[company.code] = "No se pudo abrir la empresa ${company.name}; se reintentara mas tarde."
+                unavailable[company.code] = tr("No se pudo abrir la empresa {0}; se reintentara mas tarde.", company.name)
                 return
             }
             throw failure
@@ -736,7 +742,7 @@ object ClientesLinking {
             connections[company.code] = db
         } else {
             runCatching { db.close() }
-            unavailable[company.code] = "Actualiza el modulo Clientes de ${company.name}."
+            unavailable[company.code] = tr("Actualiza el modulo Clientes de {0}.", company.name)
         }
     }
 
@@ -780,11 +786,11 @@ object ClientesLinking {
         } catch (failure: Exception) {
             if (isConnectionFailure(failure)) {
                 log.warn("Company {} did not give a connection ({})", company.code, describe(failure))
-                throw ClientesMerge.CompanyUnavailableException("No se pudo abrir la empresa ${company.name}; se reintentara mas tarde.", company.code)
+                throw ClientesMerge.CompanyUnavailableException(tr("No se pudo abrir la empresa {0}; se reintentara mas tarde.", company.name), company.code)
             }
             throw failure
         }
-        return connection ?: throw ClientesMerge.CompanyUnavailableException("No se pudo abrir la empresa ${company.name}; se reintentara mas tarde.", company.code)
+        return connection ?: throw ClientesMerge.CompanyUnavailableException(tr("No se pudo abrir la empresa {0}; se reintentara mas tarde.", company.name), company.code)
     }
 
     /** Whether [failure] (or its cause) says the database could not be reached: pool timeout, SQLState 08xxx, refused or broken connection. */
@@ -832,7 +838,7 @@ object ClientesLinking {
         } catch (failure: Exception) {
             if (isConnectionFailure(failure)) {
                 log.warn("Lost the connection while copying customer {} to company {} ({})", row.id, target.code, describe(failure))
-                throw ClientesMerge.CompanyUnavailableException("Se perdio la conexion con ${target.name}; se reintentara mas tarde.", target.code)
+                throw ClientesMerge.CompanyUnavailableException(tr("Se perdio la conexion con {0}; se reintentara mas tarde.", target.name), target.code)
             }
             undo(targetDb, savepoint, hooks)
             log.warn("Could not copy customer {} to company {} ({})", row.id, target.code, describe(failure))
@@ -1128,7 +1134,7 @@ object ClientesLinking {
     // Linked companies read inside the lock; [companyCode] must be one of them.
     private fun requireLinked(access: ModuleAccessService, currentCode: String, companyCode: String): List<GroupCompany> {
         val group = access.linkedCompanies(currentCode, LinkPurpose)
-        if (group.none { it.code == companyCode }) throw ClientesSharingException("Esa empresa no esta vinculada con la actual.")
+        if (group.none { it.code == companyCode }) throw ClientesSharingException(tr("Esa empresa no esta vinculada con la actual."))
         return group
     }
 
@@ -1141,10 +1147,10 @@ object ClientesLinking {
         withHttpLock(access, currentCode) {
             val group = requireLinked(access, currentCode, companyCode)
             val names = group.associate { it.code to it.name }
-            useDb(access, tenant, currentCode, companyCode, "No se pudo abrir la empresa.") { db ->
-                val row = loadMerge(db, mergeId) ?: throw ClientesSharingException("No se encontro esa decision.")
+            useDb(access, tenant, currentCode, companyCode, tr("No se pudo abrir la empresa.")) { db ->
+                val row = loadMerge(db, mergeId) ?: throw ClientesSharingException(tr("No se encontro esa decision."))
                 when (row.status) {
-                    "separated" -> throw ClientesSharingException("Ya estaban separados.")
+                    "separated" -> throw ClientesSharingException(tr("Ya estaban separados."))
                     "review" -> {
                         db.prepareStatement("UPDATE customer_merges SET status = 'separated', resolved_by = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'review'").use { update ->
                             update.setString(1, author.second)
@@ -1152,15 +1158,15 @@ object ClientesLinking {
                             update.executeUpdate()
                         }
                         when {
-                            row.copyProblem && row.reasonCode == "edit" -> "Listo: se descarta ese cambio pendiente; las demas empresas lo recibiran en la proxima edicion."
-                            row.copyProblem -> "Listo: ese cliente no se copiara a esa empresa."
+                            row.copyProblem && row.reasonCode == "edit" -> tr("Listo: se descarta ese cambio pendiente; las demas empresas lo recibiran en la proxima edicion.")
+                            row.copyProblem -> tr("Listo: ese cliente no se copiara a esa empresa.")
                             else -> {
                                 // An edit that was held back by this pair now goes through (they are different customers).
                                 if (row.reasonCode == "edit") {
                                     runCatching { ClientesSharing.propagate(access, db, companyCode, row.mergedId) }
                                         .onFailure { log.warn("Could not send the held edit of customer {} ({})", row.mergedId, describe(it)) }
                                 }
-                                "Listo: los dos clientes quedan separados y no se fusionaran automaticamente."
+                                tr("Listo: los dos clientes quedan separados y no se fusionaran automaticamente.")
                             }
                         }
                     }
@@ -1183,7 +1189,7 @@ object ClientesLinking {
         // Every linked company is involved (the winner's copies may have completed fields), and every company named in the log must still be linked.
         val named = (row.moved.map { it.company } + companyCode + row.keptCompany).toSet()
         named.firstOrNull { it !in names }?.let {
-            throw ClientesSharingException("No se puede separar: la empresa $it ya no esta vinculada. Vincula de nuevo las empresas y vuelve a intentarlo.")
+            throw ClientesSharingException(tr("No se puede separar: la empresa {0} ya no esta vinculada. Vincula de nuevo las empresas y vuelve a intentarlo.", it))
         }
         val opened = mutableListOf<Connection>()
         val previous = LinkedHashMap<Connection, Boolean>()
@@ -1195,15 +1201,15 @@ object ClientesLinking {
                     // The connection the route already holds is reused (the pool is small).
                     code == currentCode && tenant != null -> tenant
                     else -> access.tenantConnectionForCompany(code)?.also { opened += it }
-                        ?: throw ClientesSharingException("No se pudo abrir la empresa ${names[code]}; intenta de nuevo.")
+                        ?: throw ClientesSharingException(tr("No se pudo abrir la empresa {0}; intenta de nuevo.", names[code]))
                 }
-                if (!supportsLinking(connection)) throw ClientesSharingException("Actualiza el modulo Clientes de ${names[code]}.")
+                if (!supportsLinking(connection)) throw ClientesSharingException(tr("Actualiza el modulo Clientes de {0}.", names[code]))
                 connections[code] = connection
             }
             connections.values.forEach { previous[it] = it.autoCommit; it.autoCommit = false }
             try {
-                val loserRow = ClientesSharing.row(db, row.mergedId) ?: throw ClientesSharingException("El cliente fusionado ya no existe.")
-                val winnerRow = ClientesSharing.row(connections.getValue(row.keptCompany), row.keptId) ?: throw ClientesSharingException("El cliente que se conserva ya no existe.")
+                val loserRow = ClientesSharing.row(db, row.mergedId) ?: throw ClientesSharingException(tr("El cliente fusionado ya no existe."))
+                val winnerRow = ClientesSharing.row(connections.getValue(row.keptCompany), row.keptId) ?: throw ClientesSharingException(tr("El cliente que se conserva ya no existe."))
                 val report = ClientesMerge.separate(
                     access, connections, names, row.id,
                     ClientesMerge.Candidate(loserRow, companyCode), ClientesMerge.Candidate(winnerRow, row.keptCompany),
@@ -1213,10 +1219,14 @@ object ClientesLinking {
                 connections.values.filter { it !== db }.forEach { it.commit() }
                 db.commit()
                 val hadFilled = row.moved.any { it.kind == "filled" }
-                return "Separados: ${loserRow.displayName} y ${winnerRow.displayName} vuelven a ser dos clientes. Se devolvieron ${report.returned} registros." +
-                    (if (report.irreversible > 0) " ${report.irreversible} registros no se pudieron devolver y siguen con el cliente conservado." else "") +
-                    (if (report.notesGone > 0) " ${report.notesGone} notas ya no existian y no se restauraron." else "") +
-                    (if (hadFilled && report.filledReverted) " Se devolvieron los datos que se habian completado." else if (hadFilled) " Los datos completados al fusionar se conservan porque se editaron despues." else "")
+                return listOfNotNull(
+                    tr("Separados: {0} y {1} vuelven a ser dos clientes. Se devolvieron {2} registros.", loserRow.displayName, winnerRow.displayName, report.returned),
+                    if (report.irreversible > 0) tr("{0} registros no se pudieron devolver y siguen con el cliente conservado.", report.irreversible) else null,
+                    if (report.notesGone > 0) tr("{0} notas ya no existian y no se restauraron.", report.notesGone) else null,
+                    if (hadFilled && report.filledReverted) tr("Se devolvieron los datos que se habian completado.")
+                    else if (hadFilled) tr("Los datos completados al fusionar se conservan porque se editaron despues.")
+                    else null,
+                ).joinToString(" ")
             } catch (failure: Throwable) {
                 connections.values.forEach { runCatching { it.rollback() } }
                 throw failure
@@ -1231,10 +1241,10 @@ object ClientesLinking {
     fun retry(access: ModuleAccessService, currentCode: String, companyCode: String, mergeId: UUID, author: Pair<UUID?, String>, tenant: Connection? = null): String =
         withHttpLock(access, currentCode) {
             val group = requireLinked(access, currentCode, companyCode)
-            useDb(access, tenant, currentCode, companyCode, "No se pudo abrir la empresa.") { db ->
-                val row = loadMerge(db, mergeId) ?: throw ClientesSharingException("No se encontro esa decision.")
-                if (row.status != "review") throw ClientesSharingException("Esa decision ya no esta por revisar.")
-                val loserRow = ClientesSharing.row(db, row.mergedId) ?: throw ClientesSharingException("El cliente ya no existe.")
+            useDb(access, tenant, currentCode, companyCode, tr("No se pudo abrir la empresa.")) { db ->
+                val row = loadMerge(db, mergeId) ?: throw ClientesSharingException(tr("No se encontro esa decision."))
+                if (row.status != "review") throw ClientesSharingException(tr("Esa decision ya no esta por revisar."))
+                val loserRow = ClientesSharing.row(db, row.mergedId) ?: throw ClientesSharingException(tr("El cliente ya no existe."))
                 if (row.copyProblem && row.reasonCode == "edit") {
                     // A held edit: close the mark and send the change again (a failure leaves a new mark).
                     db.prepareStatement("DELETE FROM customer_merges WHERE id = ? AND status = 'review'").use { delete ->
@@ -1246,17 +1256,17 @@ object ClientesLinking {
                         q.setObject(1, row.mergedId)
                         q.executeQuery().use { it.next() }
                     }
-                    if (failed.isNotEmpty() || stillHeld) throw ClientesSharingException("Sigue por revisar: el cambio no llego a ${failed.joinToString().ifBlank { "las demas empresas" }}.")
-                    return@useDb "Listo: el cambio de ${loserRow.displayName} llego a las demas empresas."
+                    if (failed.isNotEmpty() || stillHeld) throw ClientesSharingException(tr("Sigue por revisar: el cambio no llego a {0}.", failed.joinToString().ifBlank { tr("las demas empresas") }))
+                    return@useDb tr("Listo: el cambio de {0} llego a las demas empresas.", loserRow.displayName)
                 }
                 if (!row.copyProblem && (row.reasonCode == "name_differs" || row.reasonCode == "edit")) {
-                    throw ClientesSharingException("Los nombres son distintos: usa Fusionar a mano o Dejar separados.")
+                    throw ClientesSharingException(tr("Los nombres son distintos: usa Fusionar a mano o Dejar separados."))
                 }
                 // The other company must still be linked before it is opened.
                 val other = group.firstOrNull { it.code == row.keptCompany && it.code != companyCode }
-                    ?: throw ClientesSharingException("La empresa del otro cliente ya no esta vinculada.")
-                useDb(access, tenant, currentCode, other.code, "No se pudo abrir ${other.name}.") { destination ->
-                    if (!supportsLinking(destination)) throw ClientesSharingException("Actualiza el modulo Clientes de ${other.name}.")
+                    ?: throw ClientesSharingException(tr("La empresa del otro cliente ya no esta vinculada."))
+                useDb(access, tenant, currentCode, other.code, tr("No se pudo abrir {0}.", other.name)) { destination ->
+                    if (!supportsLinking(destination)) throw ClientesSharingException(tr("Actualiza el modulo Clientes de {0}.", other.name))
                     if (row.copyProblem) {
                         when (copyGuarded(access, group, companyCode, db, other, mapOf(companyCode to db, other.code to destination), loserRow, emptySet(), HashMap(), hooks = BatchHooks {})) {
                             ShareOutcome.Review -> {
@@ -1264,23 +1274,23 @@ object ClientesLinking {
                                     q.setObject(1, mergeId)
                                     q.executeQuery().use { it.next(); it.getString(1) }
                                 }
-                                throw ClientesSharingException("Sigue por revisar. $reason")
+                                throw ClientesSharingException(tr("Sigue por revisar. {0}", reason))
                             }
                             ShareOutcome.Skipped ->
-                                throw ClientesSharingException("Ese cliente se omitio porque ya esta separado o fusionado; la decision no cambia.")
+                                throw ClientesSharingException(tr("Ese cliente se omitio porque ya esta separado o fusionado; la decision no cambia."))
                             ShareOutcome.Copied, ShareOutcome.Merged -> {
                                 db.prepareStatement("DELETE FROM customer_merges WHERE id = ? AND status = 'review'").use { delete ->
                                     delete.setObject(1, mergeId)
                                     delete.executeUpdate()
                                 }
-                                "Listo: ${loserRow.displayName} se copio a ${other.name}."
+                                tr("Listo: {0} se copio a {1}.", loserRow.displayName, other.name)
                             }
                         }
                     } else {
-                        val winnerRow = ClientesSharing.row(destination, row.keptId) ?: throw ClientesSharingException("El otro cliente ya no existe.")
+                        val winnerRow = ClientesSharing.row(destination, row.keptId) ?: throw ClientesSharingException(tr("El otro cliente ya no existe."))
                         // Both must still be active with the same email, or the merge no longer makes sense.
                         if (loserRow.status == "archived" || winnerRow.status == "archived" || loserRow.email.isBlank() || !ClientesMerge.sameEmail(loserRow.email, winnerRow.email)) {
-                            throw ClientesSharingException("Los clientes ya no coinciden (correo distinto o alguno archivado). Usa Separar para cerrar esta decision.")
+                            throw ClientesSharingException(tr("Los clientes ya no coinciden (correo distinto o alguno archivado). Usa Separar para cerrar esta decision."))
                         }
                         val result = ClientesMerge.merge(
                             access, group, provided(tenant, currentCode, companyCode to db, other.code to destination),
@@ -1288,8 +1298,8 @@ object ClientesLinking {
                             row.email, author, userCompany = currentCode,
                         )
                         when (result) {
-                            is ClientesMerge.Result.Merged -> "Listo: ${loserRow.displayName} se fusiono con ${winnerRow.displayName}."
-                            is ClientesMerge.Result.Review -> throw ClientesSharingException("Sigue por revisar. ${result.reason}")
+                            is ClientesMerge.Result.Merged -> tr("Listo: {0} se fusiono con {1}.", loserRow.displayName, winnerRow.displayName)
+                            is ClientesMerge.Result.Review -> throw ClientesSharingException(tr("Sigue por revisar. {0}", result.reason))
                         }
                     }
                 }
@@ -1321,23 +1331,23 @@ object ClientesLinking {
         withHttpLock(access, currentCode) {
             val group = requireLinked(access, currentCode, companyCode)
             val names = group.associate { it.code to it.name }
-            useDb(access, tenant, currentCode, companyCode, "No se pudo abrir la empresa.") { db ->
-                val row = loadMerge(db, mergeId) ?: throw ClientesSharingException("No se encontro esa decision.")
-                if (row.status != "review") throw ClientesSharingException("Esa decision ya no esta por revisar.")
-                if (row.copyProblem) throw ClientesSharingException("Ese pendiente no es un par de clientes con el mismo correo; usa Reintentar o Dejar separados.")
+            useDb(access, tenant, currentCode, companyCode, tr("No se pudo abrir la empresa.")) { db ->
+                val row = loadMerge(db, mergeId) ?: throw ClientesSharingException(tr("No se encontro esa decision."))
+                if (row.status != "review") throw ClientesSharingException(tr("Esa decision ya no esta por revisar."))
+                if (row.copyProblem) throw ClientesSharingException(tr("Ese pendiente no es un par de clientes con el mismo correo; usa Reintentar o Dejar separados."))
                 val other = group.firstOrNull { it.code == row.keptCompany && it.code != companyCode }
-                    ?: throw ClientesSharingException("La empresa del otro cliente ya no esta vinculada.")
-                val mine = ClientesSharing.row(db, row.mergedId) ?: throw ClientesSharingException("El cliente ya no existe.")
-                useDb(access, tenant, currentCode, other.code, "No se pudo abrir ${other.name}.") { destination ->
-                    if (!supportsLinking(destination)) throw ClientesSharingException("Actualiza el modulo Clientes de ${other.name}.")
-                    val theirs = ClientesSharing.row(destination, row.keptId) ?: throw ClientesSharingException("El otro cliente ya no existe.")
+                    ?: throw ClientesSharingException(tr("La empresa del otro cliente ya no esta vinculada."))
+                val mine = ClientesSharing.row(db, row.mergedId) ?: throw ClientesSharingException(tr("El cliente ya no existe."))
+                useDb(access, tenant, currentCode, other.code, tr("No se pudo abrir {0}.", other.name)) { destination ->
+                    if (!supportsLinking(destination)) throw ClientesSharingException(tr("Actualiza el modulo Clientes de {0}.", other.name))
+                    val theirs = ClientesSharing.row(destination, row.keptId) ?: throw ClientesSharingException(tr("El otro cliente ya no existe."))
                     if (mine.status == "archived" || theirs.status == "archived" || mine.email.isBlank() || !ClientesMerge.sameEmail(mine.email, theirs.email)) {
-                        throw ClientesSharingException("Los clientes ya no coinciden (correo distinto o alguno archivado). Usa Dejar separados para cerrar esta decision.")
+                        throw ClientesSharingException(tr("Los clientes ya no coinciden (correo distinto o alguno archivado). Usa Dejar separados para cerrar esta decision."))
                     }
                     val first = ClientesMerge.Candidate(mine, originOf(db, mine.id, companyCode))
                     val second = ClientesMerge.Candidate(theirs, originOf(destination, theirs.id, other.code))
-                    if (first.origin !in names || second.origin !in names) throw ClientesSharingException("Una de las empresas de esos clientes ya no esta vinculada.")
-                    if (first.origin == second.origin) throw ClientesSharingException("Los dos clientes son de la misma empresa: no se fusionan desde aqui.")
+                    if (first.origin !in names || second.origin !in names) throw ClientesSharingException(tr("Una de las empresas de esos clientes ya no esta vinculada."))
+                    if (first.origin == second.origin) throw ClientesSharingException(tr("Los dos clientes son de la misma empresa: no se fusionan desde aqui."))
                     val (winner, loser) = ClientesMerge.order(first, second)
                     val result = ClientesMerge.merge(
                         access, group, provided(tenant, currentCode, companyCode to db, other.code to destination),
@@ -1351,10 +1361,10 @@ object ClientesLinking {
                                 delete.executeUpdate()
                             }
                             val same = ClientesMerge.sameName(winner.row.displayName, loser.row.displayName)
-                            "Listo: se conserva ${winner.row.displayName} (el mas antiguo) y ${loser.row.displayName} queda archivado." +
-                                if (same) "" else " Los nombres eran distintos: no se completo ningun dato."
+                            val done = tr("Listo: se conserva {0} (el mas antiguo) y {1} queda archivado.", winner.row.displayName, loser.row.displayName)
+                            if (same) done else done + " " + tr("Los nombres eran distintos: no se completo ningun dato.")
                         }
-                        is ClientesMerge.Result.Review -> throw ClientesSharingException("Sigue por revisar. ${result.reason}")
+                        is ClientesMerge.Result.Review -> throw ClientesSharingException(tr("Sigue por revisar. {0}", result.reason))
                     }
                 }
             }
