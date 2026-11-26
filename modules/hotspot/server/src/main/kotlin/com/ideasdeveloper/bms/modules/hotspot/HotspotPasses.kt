@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.i18n.msg
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
@@ -48,8 +49,8 @@ object HotspotPasses {
 
     // Customers of type hotspot, shown next to the pass sources of a customer-code network.
     val hotspotCustomers = PassSource(
-        HotspotCustomers, "Clientes tipo hotspot",
-        "Los que se registraron en el portal; usan el tiempo de acceso y de reconexion de la red.",
+        HotspotCustomers, msg("Clientes tipo hotspot"),
+        msg("Los que se registraron en el portal; usan el tiempo de acceso y de reconexion de la red."),
     )
 
     // What a customer-code network may list: customers of type hotspot and the enabled pass sources.

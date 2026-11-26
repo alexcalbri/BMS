@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.tareas
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerReference
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -120,8 +122,8 @@ object TareasServerModule : ServerModule {
         id = TareasModule.id,
         displayName = TareasModule.displayName,
         description = "Tableros de tareas con grupos, varios responsables, revisor, lista de comprobacion, comentarios, adjuntos, avisos de vencimiento y vistas de lista, kanban, agenda y carga de trabajo.",
-        version = "0.3.2",
-        minCoreVersion = "0.8.0",
+        version = "0.4.0",
+        minCoreVersion = "0.10.0",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -156,18 +158,18 @@ object TareasServerModule : ServerModule {
             post("/files") {
                 val permissions = call.requireModuleAccess(access, TareasModule.id) ?: return@post
                 if (!permissions.has(TareasModule.View)) {
-                    return@post call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@post call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val length = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
                 if (length != null && length > TareasRepository.MaxFileBytes) {
-                    return@post call.respond(HttpStatusCode.PayloadTooLarge, TareasErrorResponse("too_large", "El archivo supera el maximo de ${TareasRepository.MaxFileBytes / (1024 * 1024)} MB."))
+                    return@post call.respond(HttpStatusCode.PayloadTooLarge, TareasErrorResponse("too_large", tr("El archivo supera el maximo de {0} MB.", TareasRepository.MaxFileBytes / (1024 * 1024))))
                 }
                 fun header(name: String) = call.request.headers[name]?.let { runCatching { URLDecoder.decode(it, Charsets.UTF_8) }.getOrNull() }.orEmpty()
                 val name = header("X-File-Name")
                 val path = header("X-File-Path")
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
-                    ?: return@post call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 // The body goes straight to the file storage; it is never held in memory whole.
                 val body = call.receiveChannel().toInputStream()
                 val result = withContext(Dispatchers.IO) {
@@ -176,7 +178,7 @@ object TareasServerModule : ServerModule {
                             TareasRepository.upload(tenant, access.files(companyCode, TareasModule.id), name, path, contentType, body, permissions.userId)
                         }
                     }
-                } ?: return@post call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+                } ?: return@post call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
                 result.fold(
                     onSuccess = { ref -> call.respondText(UiJson.encodeToString(UiFileRef.serializer(), ref), ContentType.Application.Json) },
                     onFailure = { failure ->
@@ -184,7 +186,7 @@ object TareasServerModule : ServerModule {
                             call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("invalid_file", failure.message.orEmpty()))
                         } else {
                             log.warn("No se pudo guardar un archivo de tareas ({}).", failure.javaClass.simpleName)
-                            call.respond(HttpStatusCode.InternalServerError, TareasErrorResponse("DATABASE_ERROR", "No se pudo guardar el archivo."))
+                            call.respond(HttpStatusCode.InternalServerError, TareasErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))
                         }
                     },
                 )
@@ -194,12 +196,12 @@ object TareasServerModule : ServerModule {
             get("/files/{id}") {
                 val permissions = call.requireModuleAccess(access, TareasModule.id) ?: return@get
                 if (!permissions.has(TareasModule.View)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@get call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@get call.respond(HttpStatusCode.NotFound)
                 val companyCode = access.companyCode(call)
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
                 val file = withContext(Dispatchers.IO) {
                     access.tenantConnectionForCompany(companyCode)?.use { tenant ->
                         TareasRepository.file(tenant, access.files(companyCode, TareasModule.id), id)?.takeIf { stored ->
@@ -210,10 +212,10 @@ object TareasServerModule : ServerModule {
                             scope.seesTask(task) && (task.archivedAt == null || scope.admin)
                         }
                     }
-                } ?: return@get call.respond(HttpStatusCode.NotFound, TareasErrorResponse("not_found", "Ese archivo ya no esta disponible."))
+                } ?: return@get call.respond(HttpStatusCode.NotFound, TareasErrorResponse("not_found", tr("Ese archivo ya no esta disponible.")))
                 val type = runCatching { ContentType.parse(safeContentType(file.attachment.contentType)) }.getOrDefault(ContentType.Application.OctetStream)
                 val content = withContext(Dispatchers.IO) { file.open() }
-                    ?: return@get call.respond(HttpStatusCode.NotFound, TareasErrorResponse("missing_content", "El archivo ya no esta en el almacenamiento del servidor."))
+                    ?: return@get call.respond(HttpStatusCode.NotFound, TareasErrorResponse("missing_content", tr("El archivo ya no esta en el almacenamiento del servidor.")))
                 // Headers only when the content is really going to be sent (an error answer must not carry them).
                 call.response.header(
                     HttpHeaders.ContentDisposition,
@@ -227,7 +229,7 @@ object TareasServerModule : ServerModule {
             get("/suggest/customers") {
                 val permissions = call.requireModuleAccess(access, TareasModule.id) ?: return@get
                 if (!permissions.has(TareasModule.Manage)) {
-                    return@get call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@get call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 val customers = withContext(Dispatchers.IO) {
                     try {
@@ -240,7 +242,7 @@ object TareasServerModule : ServerModule {
                     }
                 }
                 if (customers !is ModulePermissionLookup.Granted || !customers.permissions.has("clientes.view")) {
-                    return@get call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", "No tienes permiso para ver clientes."))
+                    return@get call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", tr("No tienes permiso para ver clientes.")))
                 }
                 val typed = call.request.queryParameters["q"].orEmpty().take(200)
                 call.respondTareas(access, UiSuggestions.serializer()) { tenant ->
@@ -277,16 +279,16 @@ data class TareasErrorResponse(val code: String, val message: String)
  */
 suspend fun <T> ApplicationCall.respondTareas(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
     val companyCode = access.companyCode(this)
-        ?: return respond(HttpStatusCode.BadRequest, TareasErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+        ?: return respond(HttpStatusCode.BadRequest, TareasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
     val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
-        ?: return respond(HttpStatusCode.Forbidden, TareasErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+        ?: return respond(HttpStatusCode.Forbidden, TareasErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
     try {
         val result = withContext(Dispatchers.IO) { connection.use { tenant -> block(tenant) } }
-        respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
+        respondText(UiJson.encodeToString(serializer, localizedPayload(result)), ContentType.Application.Json)
     } catch (failure: TareasValidationException) {
         respond(HttpStatusCode.BadRequest, TareasErrorResponse("invalid_request", failure.message.orEmpty()))
     } catch (failure: SQLException) {
-        respond(HttpStatusCode.InternalServerError, TareasErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+        respond(HttpStatusCode.InternalServerError, TareasErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
     }
 }
 

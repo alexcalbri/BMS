@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.agentes
 
+import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -59,9 +62,9 @@ import java.util.concurrent.ConcurrentHashMap
 object AgentesServerModule : ServerModule {
     private val log = LoggerFactory.getLogger(AgentesServerModule::class.java)
     // One answer for every company a business owner's agent may not act in, so it never tells whether the company exists.
-    private const val OutOfReach = "No puedes actuar en esa empresa: no pertenece a tu grupo o no esta disponible."
+    private val OutOfReach = msg("No puedes actuar en esa empresa: no pertenece a tu grupo o no esta disponible.")
     // What this company's log keeps when a call in another company of the group fails; the agent gets the real message.
-    private const val ElsewhereDetail = "No se completo en la empresa de destino."
+    private val ElsewhereDetail = msg("No se completo en la empresa de destino.")
     private val rateLimiter = AgentRateLimiter(perMinute = 120)
     private const val ActivityDays = 180
     private const val MaxBodyBytes = 1_000_000
@@ -83,8 +86,8 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.4.0",
-        minCoreVersion = "0.9.1",
+        version = "0.5.0",
+        minCoreVersion = "0.10.0",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,
@@ -133,7 +136,7 @@ object AgentesServerModule : ServerModule {
                     UiJson.parseToJsonElement(call.receiveText()).jsonObject.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
                 }.getOrNull().orEmpty()
                 if (!permissions.has(AgentesScreens.Connect) && !permissions.has(AgentesScreens.Manage)) {
-                    return@post call.respond(HttpStatusCode.Forbidden, AgentesErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                    return@post call.respond(HttpStatusCode.Forbidden, AgentesErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
                 }
                 call.respondScreen(access, permissions) { context -> action(context, screen, params, values) }
             }
@@ -146,7 +149,7 @@ object AgentesServerModule : ServerModule {
 
         return when ("$screen:${params["op"]}") {
             "new:create" -> {
-                if (!context.permissions.has(AgentesScreens.Connect)) return show("team", UiNotice("No tienes permiso para conectar agentes.", UiTone.Danger), emptyMap())
+                if (!context.permissions.has(AgentesScreens.Connect)) return show("team", UiNotice(tr("No tienes permiso para conectar agentes."), UiTone.Danger), emptyMap())
                 val request = try {
                     AgentesScreens.parseNewToken(values, context.toolModules.map { it.first })
                 } catch (failure: AgentesValidationException) {
@@ -162,11 +165,11 @@ object AgentesServerModule : ServerModule {
             "token:revoke" -> {
                 val token = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { AgentTokens.find(context.tenant, it) }
                     ?.takeIf { context.owns(it) && context.permissions.has(AgentesScreens.Connect) || context.canManage }
-                    ?: return show(AgentesScreens.home(context.permissions), UiNotice("Ese agente no existe o no es tuyo.", UiTone.Warning), emptyMap())
+                    ?: return show(AgentesScreens.home(context.permissions), UiNotice(tr("Ese agente no existe o no es tuyo."), UiTone.Warning), emptyMap())
                 AgentTokens.revoke(context.tenant, token.id, context.owner.name)
-                show("token", UiNotice("Acceso revocado. El agente ya no puede usar BMS.", UiTone.Success))
+                show("token", UiNotice(tr("Acceso revocado. El agente ya no puede usar BMS."), UiTone.Success))
             }
-            else -> show(screen, UiNotice("Accion no reconocida.", UiTone.Warning))
+            else -> show(screen, UiNotice(tr("Accion no reconocida."), UiTone.Warning))
         }
     }
 
@@ -237,7 +240,7 @@ object AgentesServerModule : ServerModule {
             instructions = AgentesMcp.instructions(instructions(token, this.access.companyCode, ownerGroup), modules, visible),
             tools = { visible },
             invoke = { tool, arguments -> runTool(tenant, access, tool, arguments) },
-            denied = { name -> AgentTokens.log(tenant, token.id, if (name.isBlank()) "(sin nombre)" else AgentesMcp.logTool(name), "denied", "Herramienta desconocida o sin permiso.") },
+            denied = { name -> AgentTokens.log(tenant, token.id, if (name.isBlank()) "(sin nombre)" else AgentesMcp.logTool(name), "denied", msg("Herramienta desconocida o sin permiso.")) },
         )
     }
 
@@ -335,7 +338,7 @@ object AgentesServerModule : ServerModule {
             ToolOutcome.Failure(failure.message.orEmpty())
         } catch (failure: Exception) {
             log.error("Agent tool {} failed for company {}", tool.name, permissions.companyCode, failure)
-            runCatching { AgentTokens.log(logTenant, token.id, logName, "error", "Error interno") }
+            runCatching { AgentTokens.log(logTenant, token.id, logName, "error", msg("Error interno")) }
             there("error")
             ToolOutcome.Failure("No se pudo completar la operacion.")
         }
@@ -412,14 +415,14 @@ object AgentesServerModule : ServerModule {
     private suspend fun ApplicationCall.screenId(permissions: ModulePermissions): String? {
         val requested = parameters["screen"].orEmpty()
         val screen = if (requested == "home") AgentesScreens.home(permissions) else requested.takeIf { AgentesScreens.isScreen(it) }
-        if (screen == null) respond(HttpStatusCode.NotFound, AgentesErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada."))
+        if (screen == null) respond(HttpStatusCode.NotFound, AgentesErrorResponse("UNKNOWN_SCREEN", tr("Seccion no encontrada.")))
         return screen
     }
 
     private suspend fun ApplicationCall.respondScreen(access: ModuleAccessService, permissions: ModulePermissions, block: (AgentesScreens.Context) -> UiScreen) {
         val endpoint = publicBase() + AgentesScreens.McpRoute
         val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(permissions.companyCode) }
-            ?: return respond(HttpStatusCode.Forbidden, AgentesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+            ?: return respond(HttpStatusCode.Forbidden, AgentesErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
         try {
             val screen = connection.use { tenant ->
                 withContext(Dispatchers.IO) {
@@ -429,10 +432,10 @@ object AgentesServerModule : ServerModule {
                     block(AgentesScreens.Context(tenant, permissions, owner, userTools, endpoint))
                 }
             }
-            respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
+            respondText(UiJson.encodeToString(UiScreen.serializer(), localizedPayload(screen)), ContentType.Application.Json)
         } catch (failure: SQLException) {
             log.error("Agentes screen failed for company {}", permissions.companyCode, failure)
-            respond(HttpStatusCode.InternalServerError, AgentesErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
+            respond(HttpStatusCode.InternalServerError, AgentesErrorResponse("DATABASE_ERROR", tr("No se pudo completar la operacion.")))
         }
     }
 

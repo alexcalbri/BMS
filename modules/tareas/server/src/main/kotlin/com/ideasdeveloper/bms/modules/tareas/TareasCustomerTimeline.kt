@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.CustomerTimelineEntry
 import com.ideasdeveloper.bms.ui.UiOpenModule
@@ -29,14 +30,14 @@ object TareasCustomerTimeline {
                     CustomerTimelineEntry(
                         at = task.createdAt,
                         kind = "task_created",
-                        title = "Tarea: ${task.title}".take(300),
-                        detail = "${task.boardName} · ${task.status.label}",
+                        title = tr("Tarea: {0}", task.title).take(300),
+                        detail = tr("{0} · {1}", task.boardName, tr(task.status.label)),
                     ).also { it.link = link },
                     completedAt?.let {
                         CustomerTimelineEntry(
                             at = it,
                             kind = "task_done",
-                            title = "Tarea completada: ${task.title}".take(300),
+                            title = tr("Tarea completada: {0}", task.title).take(300),
                             detail = task.boardName,
                         ).also { entry -> entry.link = link }
                     },

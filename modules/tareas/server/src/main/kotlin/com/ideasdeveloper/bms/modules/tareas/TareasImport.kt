@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.tareas
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -264,12 +265,12 @@ object TareasImportApply {
      */
     fun ensureBoard(tenant: Connection, importKey: String, name: String, targetBoardId: UUID?, actorId: UUID?): UUID {
         if (targetBoardId != null) {
-            val board = TareasRepository.getBoard(tenant, targetBoardId) ?: throw TareasValidationException("El tablero de destino ya no existe.")
-            if (board.archived) throw TareasValidationException("El tablero de destino está archivado.")
+            val board = TareasRepository.getBoard(tenant, targetBoardId) ?: throw TareasValidationException(tr("El tablero de destino ya no existe."))
+            if (board.archived) throw TareasValidationException(tr("El tablero de destino está archivado."))
             return board.id
         }
         val key = importKey.trim()
-        if (key.isEmpty() || key.length > 200) throw TareasValidationException("La clave de importación del tablero no es válida.")
+        if (key.isEmpty() || key.length > 200) throw TareasValidationException(tr("La clave de importación del tablero no es válida."))
         fun existing() = tenant.rows("SELECT id FROM tareas_boards WHERE import_key = ?", listOf(key)) { it.getObject("id", UUID::class.java) }.firstOrNull()
         return TareasRepository.transaction(tenant) {
             existing() ?: run {
@@ -281,7 +282,7 @@ object TareasImportApply {
                     """.trimIndent(),
                     listOf(UUID.randomUUID(), clip(name.trim().ifEmpty { "Importado" }, MaxBoardName), actorId, key),
                 )
-                existing() ?: throw TareasValidationException("No se pudo crear el tablero.")
+                existing() ?: throw TareasValidationException(tr("No se pudo crear el tablero."))
             }
         }
     }
@@ -292,7 +293,7 @@ object TareasImportApply {
      */
     fun apply(tenant: Connection, source: String, boardId: UUID, row: ImportedTask, users: List<TareasUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
         if (!ExternalTaskRequest.SourcePattern.matches(source) || source in ExternalTaskRequest.ReservedSources) {
-            throw TareasValidationException("El origen de la importación no es válido.")
+            throw TareasValidationException(tr("El origen de la importación no es válido."))
         }
         val key = row.key.trim()
         if (key.isEmpty()) return ImportOutcome.Skipped("El ítem no tiene identificador.")
@@ -342,7 +343,7 @@ object TareasImportApply {
                 resolved = TareasRepository.findByExternalRef(tenant, boardId, source, key)?.id
             }
         }
-        val taskId: UUID = resolved ?: throw TareasValidationException("No se pudo guardar el ítem $key.")
+        val taskId: UUID = resolved ?: throw TareasValidationException(tr("No se pudo guardar el ítem {0}.", key))
         if (!created) {
             tenant.exec(
                 """
@@ -434,17 +435,17 @@ object TareasImportApply {
      */
     fun attachFile(tenant: Connection, files: ModuleFiles, taskId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
         val key = importKey.trim().take(200)
-        if (key.isEmpty()) throw TareasValidationException("La clave del archivo no es válida.")
+        if (key.isEmpty()) throw TareasValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM tareas_attachments WHERE task_id = ? AND import_key = ?", listOf(taskId, key)) { it.getInt("found") }.isNotEmpty()
         if (already) return false
         val total = tenant.rows("SELECT count(*) AS total FROM tareas_attachments WHERE task_id = ? AND NOT delete_pending", listOf(taskId)) { it.getInt("total") }.firstOrNull() ?: 0
-        if (total >= TareasRepository.MaxFilesPerTask) throw TareasValidationException("La tarea ya tiene el máximo de ${TareasRepository.MaxFilesPerTask} archivos.")
+        if (total >= TareasRepository.MaxFilesPerTask) throw TareasValidationException(tr("La tarea ya tiene el máximo de {0} archivos.", TareasRepository.MaxFilesPerTask))
         val fileName = TareasRepository.cleanFileName(name).ifEmpty { "archivo" }
         val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
         val stored = try {
             files.put(fileName, type, content, TareasRepository.MaxFileBytes)
         } catch (_: FileTooLargeException) {
-            throw TareasValidationException("$fileName supera el máximo de ${TareasRepository.MaxFileBytes / (1024 * 1024)} MB.")
+            throw TareasValidationException(tr("{0} supera el máximo de {1} MB.", fileName, TareasRepository.MaxFileBytes / (1024 * 1024)))
         }
         try {
             val inserted = tenant.exec(

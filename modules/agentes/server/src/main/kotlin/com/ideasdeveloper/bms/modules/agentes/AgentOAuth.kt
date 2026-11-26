@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.agentes
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.RegisteredMcpTool
 import com.ideasdeveloper.bms.server.modules.VerifiedUser
@@ -219,10 +220,10 @@ object AgentOAuth {
 
     private fun validate(key: ByteArray, params: Parameters): Validation {
         val client = params["client_id"]?.let { OAuthClients.parse(key, it) }
-            ?: return Validation.Page("El cliente no esta registrado en este servidor. Vuelve a agregar el conector.")
+            ?: return Validation.Page(tr("El cliente no esta registrado en este servidor. Vuelve a agregar el conector."))
         val redirectUri = params["redirect_uri"] ?: client.redirectUris.singleOrNull()
-            ?: return Validation.Page("Falta redirect_uri.")
-        if (redirectUri !in client.redirectUris) return Validation.Page("La direccion de retorno no pertenece a este cliente.")
+            ?: return Validation.Page(tr("Falta redirect_uri."))
+        if (redirectUri !in client.redirectUris) return Validation.Page(tr("La direccion de retorno no pertenece a este cliente."))
         val state = params["state"]
         fun fail(error: String, description: String) = Validation.Redirect(redirect(redirectUri, mapOf("error" to error, "error_description" to description, "state" to state)))
         if (params["response_type"] != "code") return fail("unsupported_response_type", "Solo se admite response_type=code.")
@@ -252,7 +253,7 @@ object AgentOAuth {
         when (form["step"]) {
             "signin" -> signIn(access, form)
             "consent", "cancel" -> consent(access, form)
-            else -> respondPage(HttpStatusCode.BadRequest, OAuthPages.error("Solicitud invalida."))
+            else -> respondPage(HttpStatusCode.BadRequest, OAuthPages.error(tr("Solicitud invalida.")))
         }
     }
 
@@ -265,17 +266,16 @@ object AgentOAuth {
         }
         val company = form["company"].orEmpty().trim().lowercase()
         fun again(message: String) = OAuthPages.signIn(request, form, message, company)
-        if (!signInLimiter.allow(clientIp())) return respondPage(HttpStatusCode.TooManyRequests, again("Demasiados intentos. Espera un minuto."))
+        if (!signInLimiter.allow(clientIp())) return respondPage(HttpStatusCode.TooManyRequests, again(tr("Demasiados intentos. Espera un minuto.")))
         val username = form["username"].orEmpty().trim()
         val password = form["password"].orEmpty()
-        if (username.isEmpty() || password.isEmpty()) return respondPage(HttpStatusCode.OK, again("Escribe tu usuario y contrasena."))
-        if (company.isNotEmpty() && !Regex("[a-z][a-z0-9_]{0,62}").matches(company)) return respondPage(HttpStatusCode.OK, again("El codigo de empresa no es valido."))
+        if (username.isEmpty() || password.isEmpty()) return respondPage(HttpStatusCode.OK, again(tr("Escribe tu usuario y contrasena.")))
+        if (company.isNotEmpty() && !Regex("[a-z][a-z0-9_]{0,62}").matches(company)) return respondPage(HttpStatusCode.OK, again(tr("El codigo de empresa no es valido.")))
 
         val result = withContext(Dispatchers.IO) {
             val user = access.verifyCredentials(company.ifEmpty { null }, username, password)
-                ?: return@withContext SignInResult.Rejected("Usuario, contrasena o empresa incorrectos.")
-            val tools = eligibility(access, user) ?: return@withContext SignInResult.Rejected(
-                "Tu usuario no puede conectar agentes en esta empresa: el modulo Agentes IA debe estar activo y necesitas el permiso \"Conectar agentes IA\".",
+                ?: return@withContext SignInResult.Rejected(tr("Usuario, contrasena o empresa incorrectos."))
+            val tools = eligibility(access, user) ?: return@withContext SignInResult.Rejected(tr("Tu usuario no puede conectar agentes en esta empresa: el modulo Agentes IA debe estar activo y necesitas el permiso \"Conectar agentes IA\"."),
             )
             SignInResult.Accepted(user, tools)
         }
@@ -306,18 +306,18 @@ object AgentOAuth {
 
     private suspend fun ApplicationCall.consent(access: ModuleAccessService, form: Parameters) {
         val ticketId = form["ticket"].orEmpty()
-        val ticket = store.ticket(ticketId) ?: return respondPage(HttpStatusCode.BadRequest, OAuthPages.error("La autorizacion vencio. Vuelve a intentarlo desde tu aplicacion."))
+        val ticket = store.ticket(ticketId) ?: return respondPage(HttpStatusCode.BadRequest, OAuthPages.error(tr("La autorizacion vencio. Vuelve a intentarlo desde tu aplicacion.")))
         val request = ticket.request
         if (form["step"] == "cancel") {
             store.dropTicket(ticketId)
             return respondRedirect(redirect(request.redirectUri, mapOf("error" to "access_denied", "error_description" to "El usuario cancelo.", "state" to request.state)))
         }
         val tools = withContext(Dispatchers.IO) { eligibility(access, ticket.user) }
-            ?: return respondPage(HttpStatusCode.Forbidden, OAuthPages.error("Tu usuario ya no puede conectar agentes en esta empresa."))
+            ?: return respondPage(HttpStatusCode.Forbidden, OAuthPages.error(tr("Tu usuario ya no puede conectar agentes en esta empresa.")))
         val modules = tools.map { it.moduleId }.distinct()
         val values = form.entries().associate { it.key to it.value.firstOrNull().orEmpty() } + ("name" to request.client.name.take(80))
         val consent = try {
-            if (modules.isEmpty()) throw AgentesValidationException("Aun no tienes funciones que un agente pueda usar.")
+            if (modules.isEmpty()) throw AgentesValidationException(tr("Aun no tienes funciones que un agente pueda usar."))
             AgentesScreens.parseNewToken(values, modules)
         } catch (failure: AgentesValidationException) {
             return respondPage(HttpStatusCode.OK, OAuthPages.consent(ticketId, request, ticket.user, tools, failure.message))

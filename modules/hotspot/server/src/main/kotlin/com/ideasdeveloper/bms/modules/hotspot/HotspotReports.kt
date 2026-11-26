@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiChartPoint
 import com.ideasdeveloper.bms.ui.UiTableColumn
 import java.sql.Connection
@@ -12,15 +15,18 @@ object HotspotReports {
     private val timestampFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     private val dayFormat = DateTimeFormatter.ofPattern("dd/MM")
 
-    val columns = listOf(
-        UiTableColumn("createdAt", "Fecha"),
-        UiTableColumn("name", "Nombre"),
-        UiTableColumn("email", "Correo"),
-        UiTableColumn("phone", "Celular"),
-        UiTableColumn("mac", "Dispositivo"),
-        UiTableColumn("access", "Acceso"),
-        UiTableColumn("connected", "Conectado"),
+    // Column keys with their Spanish labels (the CSV export keeps these headers, whatever the language).
+    private val columnLabels = listOf(
+        "createdAt" to msg("Fecha"),
+        "name" to msg("Nombre"),
+        "email" to msg("Correo"),
+        "phone" to msg("Celular"),
+        "mac" to msg("Dispositivo"),
+        "access" to msg("Acceso"),
+        "connected" to msg("Conectado"),
     )
+
+    val columns: List<UiTableColumn> get() = columnLabels.map { (key, label) -> UiTableColumn(key, tr(label)) }
 
     data class RangeSummary(val registrations: Long, val visitors: Long, val connections: Long, val failures: Long)
 
@@ -85,10 +91,13 @@ object HotspotReports {
         return Page(registrations(connection, filter, arguments, limit, offset), total)
     }
 
-    fun csv(connection: Connection, from: LocalDate, to: LocalDate): String = buildString {
-        appendLine((columns.map { it.label } + "Cumpleanos").joinToString(";") { csvCell(it) })
-        latest(connection, from, to, limit = 50_000).forEach { row ->
-            appendLine((columns.map { row[it.key].orEmpty() } + row["birthday"].orEmpty()).joinToString(";") { csvCell(it) })
+    // A file for staff to process: headers and values stay in Spanish, like the stored data.
+    fun csv(connection: Connection, from: LocalDate, to: LocalDate): String = I18n.withLanguage(I18n.Source) {
+        buildString {
+            appendLine((columnLabels.map { it.second } + "Cumpleanos").joinToString(";") { csvCell(it) })
+            latest(connection, from, to, limit = 50_000).forEach { row ->
+                appendLine((columnLabels.map { row[it.first].orEmpty() } + row["birthday"].orEmpty()).joinToString(";") { csvCell(it) })
+            }
         }
     }
 
@@ -122,8 +131,8 @@ object HotspotReports {
                                 "phone" to rows.getString("phone"),
                                 "birthday" to (rows.getDate("birthday")?.toLocalDate()?.toString() ?: ""),
                                 "mac" to rows.getString("mac"),
-                                "access" to HotspotNetworks.modeLabel(rows.getString("access_mode")),
-                                "connected" to if (rows.getBoolean("connected")) "Si" else "No",
+                                "access" to tr(HotspotNetworks.modeLabel(rows.getString("access_mode"))),
+                                "connected" to if (rows.getBoolean("connected")) tr("Si") else tr("No"),
                             )
                         )
                     }

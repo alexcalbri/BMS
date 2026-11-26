@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 
 /**
@@ -112,8 +114,8 @@ object HotspotIntegrations {
     // Integrations defined by the hotspot itself (network controllers from extensions + Usuarios).
     val builtIn: List<HotspotIntegration> get() = controllers.map { HotspotIntegration(it.id, Network, it.name, it.description) } +
         HotspotIntegration(
-            Users, Module, "Usuarios",
-            "Los usuarios de la empresa se conectan con su codigo de usuario a las redes con acceso \"Codigo de usuario\".",
+            Users, Module, msg("Usuarios"),
+            msg("Los usuarios de la empresa se conectan con su codigo de usuario a las redes con acceso \"Codigo de usuario\"."),
         )
 
     // Built-in integrations plus the access pass sources registered by other modules.
@@ -121,7 +123,7 @@ object HotspotIntegrations {
         HotspotPasses.sources(connection).map { source ->
             HotspotIntegration(
                 source.id, Module, source.name,
-                source.description.ifBlank { "Sus clientes se conectan con su codigo de cliente mientras tengan un pase vigente." },
+                source.description.ifBlank { msg("Sus clientes se conectan con su codigo de cliente mientras tengan un pase vigente.") },
             )
         }
 
@@ -141,7 +143,7 @@ object HotspotIntegrations {
 
     /** Turns an integration on or off; enabling a network controller disables the other ones. */
     fun setEnabled(connection: Connection, id: String, enabled: Boolean) {
-        val integration = catalog(connection).firstOrNull { it.id == id } ?: throw HotspotValidationException("Integracion desconocida.")
+        val integration = catalog(connection).firstOrNull { it.id == id } ?: throw HotspotValidationException(tr("Integracion desconocida."))
         val autoCommit = connection.autoCommit
         connection.autoCommit = false
         try {
