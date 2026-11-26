@@ -107,6 +107,9 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V013__create_company_links.sql
     database/control/migrations/V014__add_company_default_language.sql
     database/control/migrations/V015__create_server_admins.sql
+    # Tenant migrations are applied by the server when it creates a company; the activity log
+    # (append-only, ACTIVITY_LOG.md) must ship with the source.
+    database/tenant/migrations/V011__create_activity_log.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1

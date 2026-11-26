@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.server.auth.application
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
+import com.ideasdeveloper.bms.server.activity.CoreActivity
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.ApplicationPasswordHasher
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
@@ -243,6 +248,20 @@ class AccountService(
                         update.executeUpdate()
                     }
                 }
+                // The company's activity log, in the same transaction (ACTIVITY_LOG.md §3).
+                if (companyCode != null) {
+                    val changes = ActivityChanges.diff(
+                        mapOf("displayName" to account.displayName, "email" to account.email, "language" to if (newLanguage == KeepLanguage) null else userLanguage(connection, account.id)),
+                        mapOf("displayName" to displayName.trim(), "email" to email.trim(), "language" to if (newLanguage == KeepLanguage) null else newLanguage),
+                        mapOf("displayName" to "Nombre", "email" to "Correo", "language" to "Idioma"),
+                    )
+                    if (changes.isNotEmpty()) {
+                        CoreActivity.record(
+                            connection, sessionActivityActor(connection, companyCode, accessToken, account.id, account.username), "user", account.id.toString(),
+                            account.username, ActivityActions.Updated, "Modifico sus datos de usuario.", changes,
+                        )
+                    }
+                }
                 // Con otro correo, las demas sesiones (la de un posible atacante) se cierran; la actual se conserva.
                 if (emailChanges) {
                     connection.prepareStatement(
@@ -398,6 +417,14 @@ class AccountService(
             deleteCode(connection, account.id)
             setPassword(connection, account, companyCode, newPassword)
             store.clear(name)
+            // Recovery with the emailed code, recorded in the company (the password is never stored).
+            if (companyCode != null) {
+                val actor = CoreActivity.tenantPerson(connection, account.id) ?: ActivityActor.user(account.id, account.username)
+                CoreActivity.record(
+                    connection, actor, "user", account.id.toString(), account.username, ActivityActions.PasswordChanged,
+                    "Recupero su contrasena con el codigo enviado a su correo.", listOf(ActivityChange.secret("password", "Contrasena")),
+                )
+            }
         }
     }
 
@@ -610,6 +637,13 @@ class AccountService(
             revoke.setObject(1, account.id)
             revoke.executeUpdate()
         }
+    }
+
+    // The person behind a company session: the user, or the server person of a switcher session.
+    private fun sessionActivityActor(connection: Connection, companyCode: String, accessToken: String, userId: UUID, username: String): ActivityActor {
+        val own = CoreActivity.tenantPerson(connection, userId) ?: ActivityActor.user(userId, username)
+        val opener = loginDatabases.companySessionOpener(companyCode, accessToken) ?: return own
+        return ActivityActor.switcher(userId, own.name, opener.kind, opener.userId, opener.name)
     }
 
     private fun deleteCode(connection: Connection, userId: UUID) {

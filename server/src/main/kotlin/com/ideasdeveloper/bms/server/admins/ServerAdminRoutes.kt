@@ -14,6 +14,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -28,7 +29,13 @@ import java.sql.SQLException
  * (owner or server.audit.view), and the caller's own view and password. What each route needs is in
  * [ServerRoutePolicies]; the services check the owner again.
  */
-fun Route.serverAdminRoutes(resolver: ServerActorResolver, admins: ServerAdminService?, audit: ServerAudit?) {
+fun Route.serverAdminRoutes(
+    resolver: ServerActorResolver,
+    admins: ServerAdminService?,
+    audit: ServerAudit?,
+    // The companies' activity logs (ACTIVITY_LOG.md §3): owner, or server.audit.view within the scope.
+    activity: com.ideasdeveloper.bms.server.activity.ServerActivity? = null,
+) {
     val notServer = tr("Debes iniciar sesion como server_owner.")
 
     get("/server/me") {
@@ -157,6 +164,36 @@ fun Route.serverAdminRoutes(resolver: ServerActorResolver, admins: ServerAdminSe
             )
         }
     }
+
+    serverActivityRoutes(resolver, activity, notServer)
+}
+
+/** GET /server/activity (+ /export): the company filter is checked against the scope by [ServerActivity]. */
+private fun Route.serverActivityRoutes(resolver: ServerActorResolver, activity: com.ideasdeveloper.bms.server.activity.ServerActivity?, notServer: String) {
+    suspend fun ApplicationCall.read(block: (ServerActor, com.ideasdeveloper.bms.server.activity.ActivityFilter, String?) -> Any) {
+        noStore()
+        val actor = serverActor(resolver, notServer) ?: return
+        val service = activity ?: return unavailable()
+        val parameters = request.queryParameters
+        val result = try {
+            val filter = com.ideasdeveloper.bms.server.activity.ActivityFilter.of { parameters[it] }
+            withContext(Dispatchers.IO) { block(actor, filter, parameters["company"]) }
+        } catch (failure: Exception) {
+            val refusal = com.ideasdeveloper.bms.server.activity.activityRefusal(failure)
+                ?: if (failure is SQLException) Triple(503, "DATABASE_UNAVAILABLE", tr("La operacion no se pudo completar.")) else throw failure
+            return respond(HttpStatusCode.fromValue(refusal.first), CompanyErrorResponse(refusal.second, refusal.third))
+        }
+        when (result) {
+            is String -> {
+                response.headers.append(HttpHeaders.ContentDisposition, "attachment; filename=\"actividad.csv\"")
+                respondText(result, io.ktor.http.ContentType.Text.CSV.withParameter("charset", "utf-8"))
+            }
+            is com.ideasdeveloper.bms.ActivityLogPage -> respond(HttpStatusCode.OK, result)
+            else -> respond(HttpStatusCode.OK)
+        }
+    }
+    get("/server/activity") { call.read { actor, filter, company -> activity!!.page(actor, company, filter) } }
+    get("/server/activity/export") { call.read { actor, filter, company -> activity!!.export(actor, company, filter) } }
 }
 
 private fun ApplicationCall.noStore() = response.headers.append(HttpHeaders.CacheControl, "no-store")

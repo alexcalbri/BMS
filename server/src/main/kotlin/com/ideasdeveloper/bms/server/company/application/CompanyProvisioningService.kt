@@ -273,6 +273,7 @@ class CompanyProvisioningService(
                 ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
 
+        val oldLogo = central.connection.use { previousLogo(it, normalizedCompanyCode, null) }
         central.connection.use { connection ->
             connection.autoCommit = false
             try {
@@ -301,6 +302,14 @@ class CompanyProvisioningService(
                     moduleId = null,
                     details = auditDetails("previousName" to company.name, "name" to companyName, "databaseName" to company.databaseName),
                 )
+                // The company's own log too (written before the central commit; a failure stops the change).
+                companyActivity(company.databaseName, actor, "company", normalizedCompanyCode, companyName,
+                    com.ideasdeveloper.bms.server.activity.ActivityActions.SettingsChanged, "Cambio desde el servidor los datos de la empresa.",
+                    com.ideasdeveloper.bms.server.activity.ActivityChanges.diff(
+                        mapOf("name" to company.name, "logoUrl" to oldLogo),
+                        mapOf("name" to companyName, "logoUrl" to logoUrl),
+                        mapOf("name" to "Nombre", "logoUrl" to "Logo"),
+                    ))
                 connection.commit()
             } catch (failure: Exception) {
                 connection.rollback()
@@ -781,6 +790,14 @@ class CompanyProvisioningService(
                 }
             }
             tenantRuntimeConnection(tenantConfig).use { tenant ->
+                // A reset from the server is recorded in the company (recovery by email code is recorded by AccountService).
+                if (actor != null) {
+                    com.ideasdeveloper.bms.server.activity.CoreActivity.record(
+                        tenant, com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(actor, actorName(actor)), "user", ownerId.toString(), ownerRole,
+                        com.ideasdeveloper.bms.server.activity.ActivityActions.PasswordChanged, "Puso desde el servidor una contrasena nueva al business owner $ownerRole.",
+                        listOf(com.ideasdeveloper.bms.server.activity.ActivityChange.secret("password", "Contrasena")),
+                    )
+                }
                 // An application password would keep the old one working; owners sign in with their role.
                 tenant.prepareStatement("DELETE FROM application_user_credentials WHERE user_id = ?").use { delete ->
                     delete.setObject(1, ownerId)
@@ -938,6 +955,15 @@ class CompanyProvisioningService(
             try {
                 ownerTenants.forEach { tenant ->
                     tenantRuntimeConnection(tenant).use { connection ->
+                      // The change and (from the server) its activity row in one company transaction.
+                      connection.autoCommit = false
+                      try {
+                        val previous = connection.prepareStatement(
+                            "SELECT display_name, email FROM application_users WHERE postgres_role = ? AND id IN (SELECT user_id FROM business_owner)"
+                        ).use { query ->
+                            query.setString(1, owner.role)
+                            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null to null }
+                        }
                         val ownerIds = connection.prepareStatement(
                             """
                             UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?
@@ -966,6 +992,27 @@ class CompanyProvisioningService(
                                 }
                             }
                         }
+                        // A change made from the server (the business owner's own edit is logged by CompanySelfService).
+                        if (actor != null) {
+                            val changes = com.ideasdeveloper.bms.server.activity.ActivityChanges.diff(
+                                mapOf("username" to owner.role, "displayName" to previous.first, "email" to previous.second),
+                                mapOf("username" to username, "displayName" to displayName, "email" to email),
+                                mapOf("username" to "Usuario", "displayName" to "Nombre", "email" to "Correo"),
+                            ) + listOfNotNull(if (password.isNotEmpty()) com.ideasdeveloper.bms.server.activity.ActivityChange.secret("password", "Contrasena") else null)
+                            ownerIds.forEach { id ->
+                                com.ideasdeveloper.bms.server.activity.CoreActivity.record(
+                                    connection, com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(actor, actorName(actor)), "user", id.toString(), username,
+                                    com.ideasdeveloper.bms.server.activity.ActivityActions.Updated, "Modifico desde el servidor los datos del business owner $username.", changes,
+                                )
+                            }
+                        }
+                        connection.commit()
+                      } catch (failure: Throwable) {
+                        runCatching { connection.rollback() }
+                        throw failure
+                      } finally {
+                        runCatching { connection.autoCommit = true }
+                      }
                     }
                 }
             } catch (failure: Exception) {
@@ -1104,6 +1151,10 @@ class CompanyProvisioningService(
                         upsert.setBoolean(4, enabled)
                         upsert.executeUpdate()
                     }
+                    // The company's own log, written first on the runtime connection (committed with this change).
+                    companyActivity(tenantConfig.databaseName, actor, "module", definition.id, definition.displayName,
+                        if (enabled) com.ideasdeveloper.bms.server.activity.ActivityActions.Enabled else com.ideasdeveloper.bms.server.activity.ActivityActions.Disabled,
+                        if (enabled) "Activo el modulo ${definition.displayName} en la empresa." else "Desactivo el modulo ${definition.displayName} en la empresa.")
                     tenant.commit()
                 } catch (failure: Exception) {
                     tenant.rollback()
@@ -1543,6 +1594,11 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("Language migrations failed for company {}", companyCode, failure)
                     }
+                    try {
+                        applyActivityLogMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Activity log migration failed for company {}", companyCode, failure)
+                    }
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1877,6 +1933,36 @@ class CompanyProvisioningService(
         applyExtensionsMigration(connection)
         applyCompanyMailMigration(connection)
         applyLanguageMigrations(connection)
+        applyActivityLogMigration(connection)
+    }
+
+    /**
+     * Company activity log (tenant V011, ACTIVITY_LOG.md): append-only, so the runtime role gets only
+     * SELECT and INSERT (plus the id sequence) and loses anything else it might hold on it. Also
+     * brought to existing companies at startup.
+     */
+    private fun applyActivityLogMigration(connection: Connection) {
+        val relativePath = "database/tenant/migrations/V011__create_activity_log.sql"
+        applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        grantIfMissing(connection, config.runtimeUser, ActivityLogTable, listOf("SELECT", "INSERT"))
+        grantSequenceIfMissing(connection, config.runtimeUser, ActivityLogTable, "activity_log_id_seq", listOf("USAGE", "SELECT"))
+        revokeIfPresent(connection, config.runtimeUser, ActivityLogTable, listOf("UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"))
+    }
+
+    /** Takes [privileges] on [table] away from [runtimeUser] when it holds any of them (as the table owner). */
+    private fun revokeIfPresent(connection: Connection, runtimeUser: String, table: String, privileges: List<String>) {
+        val held = privileges.filter { privilege ->
+            connection.prepareStatement("SELECT has_table_privilege(?, ?, ?)").use { query ->
+                query.setString(1, runtimeUser)
+                query.setString(2, quoteIdentifier(table))
+                query.setString(3, privilege)
+                query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+            }
+        }
+        if (held.isEmpty()) return
+        runAsTableOwner(connection, table) { statement ->
+            statement.executeUpdate("REVOKE ${held.joinToString(", ")} ON ${quoteIdentifier(table)} FROM ${quoteIdentifier(runtimeUser)}")
+        }
     }
 
     // Language of each user (core V006) and the cache of translated user texts (tenant V010), I18N.md;
@@ -2059,8 +2145,10 @@ class CompanyProvisioningService(
         module.migrationPaths.forEach { relativePath ->
             applyMigration(connection, module.migrationModule, relativePath, migrationSql(module, relativePath))
         }
-        if (module.runtimeTables.isNotEmpty()) {
-            val tables = module.runtimeTables.joinToString(", ") { quoteIdentifier(it) }
+        // activity_log is append-only: a module listing it never gets UPDATE/DELETE on it.
+        val moduleTables = module.runtimeTables.filterNot { it.equals(ActivityLogTable, ignoreCase = true) }
+        if (moduleTables.isNotEmpty()) {
+            val tables = moduleTables.joinToString(", ") { quoteIdentifier(it) }
             connection.createStatement().use { statement ->
                 statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON $tables TO ${quoteIdentifier(config.runtimeUser)}")
             }
@@ -2299,6 +2387,32 @@ class CompanyProvisioningService(
         }
     }
 
+    /**
+     * One row of a company's activity log for a change made from the server by [actor], on the
+     * runtime role (which may insert there); throws when it cannot be written, so the caller's
+     * change, still uncommitted, fails with it.
+     */
+    private fun companyActivity(
+        databaseName: String, actor: AuditActor, entityType: String, entityId: String?, label: String, action: String, summary: String,
+        changes: List<com.ideasdeveloper.bms.server.activity.ActivityChange> = emptyList(),
+    ) {
+        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return
+        tenantRuntimeConnection(tenantConfig).use { tenant ->
+            com.ideasdeveloper.bms.server.activity.CoreActivity.record(
+                tenant, com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(actor, actorName(actor)), entityType, entityId, label, action, summary, changes,
+            )
+        }
+    }
+
+    // Display name of a server person for the activity log (their login when unknown).
+    private fun actorName(actor: AuditActor): String? = actor.userId?.let { id -> loginDatabases.serverPerson(id)?.name }
+
+    private fun previousLogo(connection: Connection, code: String, fallback: String?): String? =
+        connection.prepareStatement("SELECT logo_url FROM companies WHERE code = ?").use { query ->
+            query.setString(1, code)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else fallback }
+        }
+
     /** Audit entry written by other Core services (extensions); [details] is a JSON object. */
     fun recordAudit(actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) {
         central.connection.use { connection -> insertAudit(connection, actor, action, companyCode, moduleId, details) }
@@ -2330,8 +2444,9 @@ class CompanyProvisioningService(
                     ?: throw CompanyProvisioningException(tr("Falta la migracion {0} de la extension {1}.", path, extension.manifest.id))
                 applyMigration(tenant, migrationModule, path, sql)
             }
-            if (extension.runtimeTables.isNotEmpty()) {
-                val tables = extension.runtimeTables.joinToString(", ") { quoteIdentifier(it) }
+            val extensionTables = extension.runtimeTables.filterNot { it.equals(ActivityLogTable, ignoreCase = true) }
+            if (extensionTables.isNotEmpty()) {
+                val tables = extensionTables.joinToString(", ") { quoteIdentifier(it) }
                 tenant.createStatement().use { statement ->
                     statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON $tables TO ${quoteIdentifier(config.runtimeUser)}")
                 }
@@ -2445,3 +2560,6 @@ private class ModuleInstallState(val status: String, private val text: () -> Str
 
     val message: String get() = text()
 }
+
+// Tenant table of the company activity log (tenant V011); never granted beyond SELECT/INSERT.
+private const val ActivityLogTable = "activity_log"

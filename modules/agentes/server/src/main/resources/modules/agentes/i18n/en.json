@@ -127,6 +127,7 @@
   "{0} podra usar BMS como {1}.": "{0} will be able to use BMS as {1}.",
   "{0} por {1}": "{0} by {1}",
   "{0} quiere conectarse a BMS en tu nombre.": "{0} wants to connect to BMS on your behalf.",
+  "{0} · administrador del servidor (solo lectura de la auditoria)": "{0} · server administrator (audit read only)",
   "{0} · empresa {1}": "{0} · company {1}",
   "{0} · {1}": "{0} · {1}",
   "{0}: {1}": "{0}: {1}"

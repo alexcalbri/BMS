@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.bms.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
@@ -65,6 +67,8 @@ class ModuleAccessService(
     private val customerReferenceSources: () -> List<CustomerReferenceSource> = { emptyList() },
     // Registered extension id -> id of its module, to place history rows written by extensions.
     private val extensionModules: () -> Map<String, String> = { emptyMap() },
+    // Display name of a module id (ModuleRegistry), for activity log rows.
+    private val moduleNames: (String) -> String? = { null },
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(ModuleAccessService::class.java)
     private val tenantPools = TenantPools()
@@ -198,6 +202,55 @@ class ModuleAccessService(
         }
     }
 
+    /**
+     * The company activity log: `access.activity.record(connection, permissions.activityActor, entry)`
+     * on the same connection and transaction as the change (ACTIVITY_LOG_MODULE_GUIDE.md).
+     */
+    val activity: ActivityLog get() = ActivityLog
+
+    /** Name of [moduleId] as activity rows show it ("Empresa" for Core's own "core" rows), Spanish as stored. */
+    fun activityModuleName(moduleId: String): String =
+        if (moduleId == com.ideasdeveloper.bms.server.activity.CoreModuleId) "Empresa" else moduleNames(moduleId) ?: moduleId
+
+    /**
+     * The activity actor of the session [token] of [userId] in [companyCode]: a switcher session is
+     * the business owner user plus the server person who opened it ("<nombre> (desde el servidor)").
+     */
+    fun sessionActor(companyCode: String, token: String, userId: UUID, businessOwner: Boolean): ActivityActor {
+        val tenantActor = tenantConnectionForCompany(companyCode)?.use { tenantUserActor(it, userId, businessOwner) }
+            ?: fallbackActor(businessOwner, false, userId)
+        if (!businessOwner || token.isEmpty()) return tenantActor
+        val opener = loginDatabases.companySessionOpener(companyCode, token) ?: return tenantActor
+        return ActivityActor.switcher(userId, tenantActor.name, opener.kind, opener.userId, opener.name)
+    }
+
+    /** A tenant user (or business owner) of [tenant] as the activity log names them. */
+    fun tenantUserActor(tenant: Connection, userId: UUID, businessOwner: Boolean): ActivityActor {
+        val name = personName(tenant, userId) ?: if (businessOwner) "Business owner" else "Usuario"
+        return if (businessOwner) ActivityActor.businessOwner(userId, name) else ActivityActor.user(userId, name)
+    }
+
+    /**
+     * A server owner or administrator (central [userId]) acting in [companyCode]: themself in the
+     * server workspace, "<nombre> (desde el servidor)" in a company (a server owner's agent there).
+     */
+    fun serverPersonActor(userId: UUID, companyCode: String): ActivityActor {
+        val person = loginDatabases.serverPerson(userId)
+        val kind = person?.kind ?: ActivityActor.Kinds.ServerOwner
+        val name = person?.name ?: "Dueno del servidor"
+        val actor = if (kind == ActivityActor.Kinds.ServerAdmin) ActivityActor.serverAdmin(userId, name) else ActivityActor.serverOwner(userId, name)
+        return if (companyCode == ServerWorkspace.Code) actor else actor.copy(display = "$name (desde el servidor)")
+    }
+
+    private fun personName(connection: Connection, userId: UUID): String? = try {
+        connection.prepareStatement("SELECT display_name, postgres_role FROM application_users WHERE id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1)?.takeIf { it.isNotBlank() } ?: rows.getString(2) else null }
+        }
+    } catch (_: SQLException) {
+        null
+    }
+
     /** Where [moduleId] stores the files of [companyCode]; the table of the module keeps the returned refs. */
     fun files(companyCode: String, moduleId: String): ModuleFiles = companyFiles.module(companyCode, moduleId)
 
@@ -216,10 +269,13 @@ class ModuleAccessService(
      * signs in a server owner, who then acts in the server workspace. Null when rejected or when a
      * server owner has no server workspace. Callers must rate limit attempts.
      */
-    fun verifyCredentials(companyCode: String?, username: String, password: String): VerifiedUser? {
+    fun verifyCredentials(companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false): VerifiedUser? {
         val session = login(LoginCredentials(username, password, companyCode)) ?: return null
         val serverOwner = session.scope == "server"
-        // Server administrators never sign in here: no agent or module acts with server rights for them.
+        // Server administrators never act here with server rights: no agent or module does. The one
+        // exception (ACTIVITY_LOG.md §7): with [allowAuditAdmin], an administrator holding
+        // server.audit.view may connect an agent that gets ONLY the two audit read tools
+        // (serverAuditAgent); the session is closed either way.
         if (serverOwner && session.role != com.ideasdeveloper.bms.ServerRoles.Owner) {
             central.connection.use { connection ->
                 connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?").use {
@@ -227,7 +283,11 @@ class ModuleAccessService(
                     it.executeUpdate()
                 }
             }
-            return null
+            if (!allowAuditAdmin || session.mustChangePassword) return null
+            val adminId = UUID.fromString(session.userId)
+            serverAuditAgent(adminId) ?: return null
+            val workspace = activeServerWorkspace() ?: return null
+            return VerifiedUser(adminId, session.username, workspace, serverOwner = false, serverAdmin = true)
         }
         val tokenHash = tokenGenerator.hash(session.accessToken)
         val revoke = "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?"
@@ -241,6 +301,44 @@ class ModuleAccessService(
     }
 
     /**
+     * What the AI agent of server administrator [userId] may use now (ACTIVITY_LOG.md §7): only the
+     * two audit read tools of the server MCP (list_server_audit, list_company_activity), never any
+     * other server tool, module tool, company or serverOwner flag. Null unless the user is an active
+     * administrator (not the owner) holding server.audit.view without a pending password change.
+     * Read live: call it on every request and every tool call.
+     */
+    fun serverAuditAgent(userId: UUID): ServerAuditAgent? {
+        val admin = loginDatabases.admins.find(userId)
+            ?.takeIf { it.usable && !it.mustChangePassword && com.ideasdeveloper.bms.server.admins.ServerPermission.AuditView in it.permissions }
+            ?: return null
+        if (isActiveServerOwner(userId)) return null
+        val tools = moduleMcp().filter { it.moduleId == ServerMcpModuleId }.flatMap { it.tools }
+            .filter { it.qualifiedName in com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools.AdminAgentToolNames }
+        val name = admin.displayName?.takeIf { it.isNotBlank() } ?: admin.login
+        val permissions = ModulePermissions(
+            ServerWorkspace.Code, accessToken = "", businessOwner = false, granted = emptySet(), userId = userId, serverOwner = false,
+            activityActor = ActivityActor.serverAdmin(userId, name),
+        )
+        return ServerAuditAgent(userId, admin.login, name, tools, permissions)
+    }
+
+    /** Audits an event of a server administrator's agent (connected, revoked, refused) in provisioning_audit_log. */
+    fun auditServerAdminAgent(userId: UUID, login: String, action: String, details: Map<String, Any?>) {
+        central.connection.use { connection ->
+            com.ideasdeveloper.bms.server.company.application.ProvisioningAudit.insert(
+                connection, com.ideasdeveloper.bms.server.admins.AuditActor(login, userId, com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind),
+                action, null, null, com.ideasdeveloper.bms.server.company.application.auditDetails(*details.toList().toTypedArray()),
+            )
+        }
+    }
+
+    private fun activeServerWorkspace(): String? = central.connection.use { connection ->
+        connection.prepareStatement("SELECT code FROM companies WHERE is_server_workspace AND is_active").use { query ->
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+    }
+
+    /**
      * Module access of a user for requests authenticated without a session, such as an AI agent token
      * stored in the tenant. Same rules as [permissions]: an inactive user (or a server owner that no
      * longer is one) gets null, and permissions are read now, so revoking one applies to the next call.
@@ -249,7 +347,7 @@ class ModuleAccessService(
         val enabled = enabledModules(tenant)
         if (serverOwner) {
             if (companyCode != ServerWorkspace.Code || !isServerWorkspace(companyCode) || !isActiveServerOwner(userId)) return null
-            return UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, moduleInstalled)
+            return UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, actorResolver = { serverPersonActor(userId, companyCode) }, installed = moduleInstalled)
         }
         val businessOwner = tenant.prepareStatement(
             """
@@ -267,7 +365,7 @@ class ModuleAccessService(
             query.setObject(1, userId)
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
         }
-        return UserModuleAccess(companyCode, userId, businessOwner, serverOwner = false, granted, enabled, moduleInstalled)
+        return UserModuleAccess(companyCode, userId, businessOwner, serverOwner = false, granted, enabled, actorResolver = { tenantUserActor(tenant, userId, businessOwner) }, installed = moduleInstalled)
     }
 
     /**
@@ -284,7 +382,7 @@ class ModuleAccessService(
             tenant.close()
             throw failure
         }
-        return tenant to UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, moduleInstalled)
+        return tenant to UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, actorResolver = { serverPersonActor(userId, companyCode) }, installed = moduleInstalled)
     }
 
     /**
@@ -620,6 +718,41 @@ class ModuleAccessService(
         return UserSessionLookup.Granted(companyCode, userId)
     }
 
+    /**
+     * Who may read the company activity log of this request (GET /companies/me/activity): its
+     * business owner, a user holding empresa.activity.view, or the server owner in the server
+     * workspace. Same session rules as [userSession] (switcher sessions re-checked).
+     */
+    fun activityReader(call: ApplicationCall): ActivityReaderLookup {
+        val (companyCode, userId) = when (val lookup = userSession(call)) {
+            is UserSessionLookup.Denied -> return ActivityReaderLookup.Denied(lookup.decision)
+            is UserSessionLookup.Granted -> lookup.companyCode to lookup.userId
+        }
+        val token = accessToken(call).orEmpty()
+        if (companyCode == ServerWorkspace.Code && isActiveServerOwner(userId)) {
+            return ActivityReaderLookup.Granted(companyCode, userId) { serverPersonActor(userId, companyCode) }
+        }
+        val (businessOwner, permitted) = tenantConnectionForCompany(companyCode)?.use { tenant ->
+            tenant.prepareStatement(
+                """
+                SELECT EXISTS (SELECT 1 FROM business_owner owner WHERE owner.user_id = users.id),
+                       EXISTS (SELECT 1 FROM application_user_permissions granted WHERE granted.user_id = users.id AND granted.permission_id = ?)
+                FROM application_users users WHERE users.id = ? AND users.is_active
+                """.trimIndent()
+            ).use { query ->
+                query.setString(1, com.ideasdeveloper.bms.ActivityPermissionIds.View)
+                query.setObject(2, userId)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getBoolean(1) to rows.getBoolean(2) else false to false }
+            }
+        } ?: (false to false)
+        if (!businessOwner && !permitted) {
+            return ActivityReaderLookup.Denied(
+                ModuleAccessDecision.Forbidden("ACTIVITY_PERMISSION_REQUIRED", tr("Necesitas el permiso para ver el registro de actividad.")),
+            )
+        }
+        return ActivityReaderLookup.Granted(companyCode, userId) { sessionActor(companyCode, token, userId, businessOwner) }
+    }
+
     // Active companies (the server workspace included) that have [moduleId] enabled; used by module jobs.
     fun companiesWithModule(moduleId: String): List<String> {
         if (!isInstalled(moduleId)) return emptyList()
@@ -674,7 +807,10 @@ class ModuleAccessService(
                     ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", tr("El modulo no esta activo en el espacio del servidor.")))
                 } else {
                     ModulePermissionLookup.Granted(
-                        ModulePermissions(companyCode, token, businessOwner = true, granted = emptySet(), userId = serverOwnerId, serverOwner = true)
+                        ModulePermissions(
+                            companyCode, token, businessOwner = true, granted = emptySet(), userId = serverOwnerId, serverOwner = true,
+                            actorResolver = { serverPersonActor(serverOwnerId, companyCode) },
+                        )
                     )
                 }
             }
@@ -721,7 +857,12 @@ class ModuleAccessService(
                 query.setObject(1, user.id)
                 query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
             }
-            ModulePermissionLookup.Granted(ModulePermissions(companyCode, token, user.businessOwner, granted, userId = user.id))
+            ModulePermissionLookup.Granted(
+                ModulePermissions(
+                    companyCode, token, user.businessOwner, granted, userId = user.id,
+                    actorResolver = { sessionActor(companyCode, token, user.id, user.businessOwner) },
+                )
+            )
         }
     }
 
@@ -815,7 +956,23 @@ class ModulePermissions(
     // A server owner (a central user, not in the tenant's users): in the server workspace, or in any
     // company through their AI agent (ModuleAccessService.serverOwnerAccess).
     val serverOwner: Boolean = false,
+    // Who acts, for the activity log; tests pass one, Core passes [actorResolver] (read on first use).
+    activityActor: ActivityActor? = null,
+    private val actorResolver: (() -> ActivityActor)? = null,
 ) {
+    /**
+     * The real person behind this request for the activity log (ACTIVITY_LOG.md §1.4): the user, the
+     * server person of a switcher session, "Agente de <usuario>" for an AI agent... Resolved by Core
+     * on first use; pass it to ActivityLog.record / access.activity.record unchanged.
+     */
+    val activityActor: ActivityActor by lazy {
+        activityActor ?: actorResolver?.invoke() ?: fallbackActor(businessOwner, serverOwner, userId)
+    }
+
+    /** The same permissions acting as [actor] (the agent bridge uses it; modules never need it). */
+    fun withActivityActor(actor: ActivityActor): ModulePermissions =
+        ModulePermissions(companyCode, accessToken, businessOwner, granted, userId, serverOwner, actor)
+
     fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
 
     /** Whether the user holds any permission whose id starts with [prefix] (e.g. "crm."). */
@@ -886,7 +1043,15 @@ private const val CustomersModuleId = "clientes"
 data class UserIdentity(val userId: UUID, val name: String, val email: String?, val username: String)
 
 // A user whose password was checked: a tenant user, or a server owner acting in the server workspace.
-data class VerifiedUser(val userId: UUID, val username: String, val companyCode: String, val serverOwner: Boolean)
+// [serverAdmin]: a server administrator connecting an audit-only agent (see serverAuditAgent); never serverOwner.
+data class VerifiedUser(val userId: UUID, val username: String, val companyCode: String, val serverOwner: Boolean, val serverAdmin: Boolean = false)
+
+/**
+ * What a server administrator's AI agent may use (ModuleAccessService.serverAuditAgent): exactly the
+ * audit read tools, with [permissions] that hold nothing (no module permission, no business owner,
+ * no server owner) in the server workspace.
+ */
+class ServerAuditAgent(val userId: UUID, val login: String, val name: String, val tools: List<RegisteredMcpTool>, val permissions: ModulePermissions)
 
 /** What a user may do in every module of a company, loaded once per request (see ModuleAccessService.userAccess). */
 class UserModuleAccess internal constructor(
@@ -896,13 +1061,20 @@ class UserModuleAccess internal constructor(
     val serverOwner: Boolean,
     private val granted: Set<String>,
     private val enabledModules: Set<String>,
+    // Who this user is for the activity log, resolved once on first use.
+    private val actorResolver: (() -> ActivityActor)? = null,
     private val installed: (String) -> Boolean,
 ) {
+    private val actor: ActivityActor by lazy { actorResolver?.invoke() ?: fallbackActor(businessOwner, serverOwner, userId) }
+
+    /** This user as the activity log names them (without any agent). */
+    val activityActor: ActivityActor get() = actor
+
     // The user's permissions in the module, or null when the module is not installed or not enabled.
     // The server's own tools (ServerMcpModuleId) belong to server owners only.
     fun permissions(moduleId: String): ModulePermissions? {
-        val usable = if (moduleId == ServerMcpModuleId) serverOwner else moduleId in enabledModules && installed(moduleId)
-        return if (usable) ModulePermissions(companyCode, accessToken = "", businessOwner, granted, userId, serverOwner) else null
+        val usable = if (moduleId == ServerMcpModuleId) serverOwner else (moduleId in enabledModules || moduleId in AlwaysEnabledModules) && installed(moduleId)
+        return if (usable) ModulePermissions(companyCode, accessToken = "", businessOwner, granted, userId, serverOwner, actorResolver = { actor }) else null
     }
     // Whether the user can use the tool somewhere: a server owner in every company of the server
     // (ModuleAccessService.serverOwnerAccess), anyone else where the module is enabled and permitted.
@@ -910,6 +1082,24 @@ class UserModuleAccess internal constructor(
     fun enabledModuleIds(): Set<String> = enabledModules.filter(installed).toSet()
 
     fun mayUse(tool: RegisteredMcpTool): Boolean = serverOwner || permissions(tool.moduleId)?.has(tool.tool.permission) == true
+}
+
+// Base modules that every company has without a tenant_modules row (company administration; its agent tools).
+internal val AlwaysEnabledModules = setOf("empresa")
+
+// Before Core resolves anyone (tests building permissions by hand): the kind and id, no name.
+internal fun fallbackActor(businessOwner: Boolean, serverOwner: Boolean, userId: UUID?): ActivityActor = when {
+    serverOwner -> ActivityActor.serverOwner(userId, "Dueno del servidor")
+    businessOwner -> ActivityActor.businessOwner(userId ?: UUID(0, 0), "Business owner")
+    else -> ActivityActor.user(userId ?: UUID(0, 0), "Usuario")
+}
+
+// Who may read a company's activity log (see ModuleAccessService.activityReader).
+sealed class ActivityReaderLookup {
+    class Granted(val companyCode: String, val userId: UUID, private val resolve: () -> ActivityActor) : ActivityReaderLookup() {
+        val actor: ActivityActor by lazy(resolve)
+    }
+    data class Denied(val decision: ModuleAccessDecision) : ActivityReaderLookup()
 }
 
 // Who a Core request belongs to (see ModuleAccessService.userSession).

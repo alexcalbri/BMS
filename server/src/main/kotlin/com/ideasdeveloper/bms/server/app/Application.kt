@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.server.app
 
 import com.ideasdeveloper.bms.server.admins.ServerAudit
+import com.ideasdeveloper.bms.server.activity.companyActivityRoutes
 import com.ideasdeveloper.bms.server.admins.serverAdminRoutes
 import com.ideasdeveloper.bms.sayHello
 import com.ideasdeveloper.bms.server.auth.api.authRoutes
@@ -216,10 +217,35 @@ fun Application.module() {
     // Built below; the server MCP reads them only when an extension tool runs.
     lateinit var extensionService: ExtensionService
     lateinit var extensionPackages: ExtensionPackageService
+    // Activity logs of the companies for the server (GET /server/activity and the server agent tools).
+    val activityModuleName: (String) -> String = { id ->
+        if (id == com.ideasdeveloper.bms.server.activity.CoreModuleId) "Empresa" else moduleRegistry.availableDefinition(id)?.displayName ?: id
+    }
+    val serverActivity = com.ideasdeveloper.bms.server.activity.ServerActivity(
+        central = DatabaseFactory.getDataSource(),
+        openTenant = { databaseName ->
+            loginDatabases.tenantConfig(databaseName)?.let { tenant ->
+                org.postgresql.ds.PGSimpleDataSource().apply {
+                    setURL(tenant.jdbcUrl)
+                    user = tenant.user
+                    password = tenant.password
+                }.connection
+            }
+        },
+        moduleName = activityModuleName,
+    )
+    val serverAudit = ServerAudit(DatabaseFactory.getDataSource())
+    val serverAuditTools = com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools(
+        central = DatabaseFactory.getDataSource(),
+        audit = { serverAudit },
+        activity = { serverActivity },
+        liveActor = { userId -> ServerOwnerAuthorizer.liveActor(loginDatabases.admins, DatabaseFactory.getDataSource(), userId) },
+    )
     val serverMcp = ServerMcpTools.mcp(
         companyProvisioning,
         extensions = { role -> ExtensionMcpTools.tools({ extensionService }, { extensionPackages }, role) },
         extensionInstructions = ExtensionMcpTools.Instructions,
+        auditTools = serverAuditTools.tools,
     )
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
     val moduleAccessService = ModuleAccessService(
@@ -248,6 +274,7 @@ fun Application.module() {
                 references.takeIf { it.isNotEmpty() }?.let { CustomerReferenceSource(extension.manifest.module, extension.manifest.id, it) }
             }
         },
+        moduleNames = { id -> moduleRegistry.availableDefinition(id)?.displayName },
     )
     // Extensions installed per company (EXTENSIONS.md): bundled in the modules or loaded from packages.
     val extensionConnections = ExtensionConnections.from(moduleAccessService)
@@ -461,7 +488,9 @@ fun Application.module() {
                 ),
                 addToScope = { userId, code -> loginDatabases.admins.addCompany(userId, code) },
             )
-            serverAdminRoutes(serverActors, serverAdmins, ServerAudit(DatabaseFactory.getDataSource()))
+            serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity)
+            // The company's own activity log (ACTIVITY_LOG.md §3).
+            companyActivityRoutes(moduleAccessService, activityModuleName)
         }
         // Centro de notificaciones del Core: la campana de la app lee y marca las del usuario.
         rateLimit(RateLimitName("public")) {

@@ -81,7 +81,13 @@ data class ExtensionActor(
     val companyCode: String? = null,
     val audit: AuditActor = if (serverOwner) AuditActor.owner(role, null) else AuditActor.businessOwner(role),
     val serverAdmin: ServerAdminScope? = null,
-)
+    // Who acts for the company activity log; null: derived from [audit].
+    val activity: com.ideasdeveloper.bms.server.activity.ActivityActor? = null,
+) {
+    /** The activity log actor: the session's person, or the server person "(desde el servidor)". */
+    val activityActor: com.ideasdeveloper.bms.server.activity.ActivityActor
+        get() = activity ?: com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(audit)
+}
 
 /**
  * Company scope of a server administrator acting on extensions; [companies] null means every
@@ -185,6 +191,15 @@ class ExtensionService(
                         if (value.isEmpty()) storage.deleteSetting(tenant, extensionId, key)
                         else storage.putSetting(tenant, extensionId, key, value, definitions.getValue(key).secret)
                     }
+                    recordActivity(
+                        tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.SettingsChanged,
+                        "Cambio los ajustes de la extension ${manifest.displayName}.",
+                        changes.keys.sorted().map { key ->
+                            val definition = definitions.getValue(key)
+                            if (definition.secret) com.ideasdeveloper.bms.server.activity.ActivityChange.secret(key, definition.label)
+                            else com.ideasdeveloper.bms.server.activity.ActivityChange.of(key, definition.label, current[key], merged[key])
+                        },
+                    )
                 }
             } catch (_: SecretsUnavailableException) {
                 throw ExtensionException("SECRETS_UNAVAILABLE", tr("El servidor no tiene BMS_MASTER_KEY configurada: no se pueden guardar secretos."), ExtensionException.Kind.Unavailable)
@@ -198,7 +213,7 @@ class ExtensionService(
     fun enable(companyCode: String, extensionId: String, actor: ExtensionActor): ExtensionSummary {
         authorize(actor, companyCode)
         val extension = requireExtension(extensionId)
-        enableOne(companyCode, extension)
+        enableOne(companyCode, extension, actor)
         audit(actor.audit, "extension.enable", companyCode, extension.manifest.module, details("extension" to extensionId))
         return summary(companyCode, extension)
     }
@@ -212,6 +227,7 @@ class ExtensionService(
                 if (row.status != ExtensionStatus.Disabled) {
                     ExtensionLifecycle.require(row.status, ExtensionStatus.Disabled)
                     setStatus(tenant, extensionId, ExtensionStatus.Disabled)
+                    recordActivity(tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Disabled, "Desactivo la extension ${extension.manifest.displayName}.")
                 }
             }
         }
@@ -234,7 +250,7 @@ class ExtensionService(
         authorize(actor, companyCode)
         val extension = requireExtension(extensionId)
         val choices = UninstallChoices.resolve(extension.manifest.uninstall.options, answers)
-        uninstallOne(companyCode, extension, choices)
+        uninstallOne(companyCode, extension, choices, actor)
         audit(actor.audit, "extension.uninstall", companyCode, extension.manifest.module, details("extension" to extensionId, choices = choices))
     }
 
@@ -483,11 +499,12 @@ class ExtensionService(
                     statement.setTimestamp(6, now)
                     statement.executeUpdate()
                 }
+                recordActivity(tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Installed, "Instalo la extension ${manifest.displayName} ${manifest.version}.")
             }
         }
     }
 
-    private fun enableOne(companyCode: String, extension: ServerExtension) {
+    private fun enableOne(companyCode: String, extension: ServerExtension, actor: ExtensionActor?) {
         val manifest = extension.manifest
         withTenant(companyCode) { tenant ->
             tenant.inTransaction {
@@ -506,11 +523,12 @@ class ExtensionService(
                 }
                 extension.onEnable(ExtensionContext(companyCode, tenant, manifest.id, storage.settings(tenant, manifest.id)))
                 setStatus(tenant, manifest.id, ExtensionStatus.Enabled)
+                recordActivity(tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Enabled, "Activo la extension ${manifest.displayName}.")
             }
         }
     }
 
-    private fun uninstallOne(companyCode: String, extension: ServerExtension, choices: Map<String, String>) {
+    private fun uninstallOne(companyCode: String, extension: ServerExtension, choices: Map<String, String>, actor: ExtensionActor?) {
         val manifest = extension.manifest
         withTenant(companyCode) { tenant ->
             // One transaction: an extension that throws leaves settings, objects and status as they were.
@@ -530,6 +548,10 @@ class ExtensionService(
                     it.executeUpdate()
                 }
                 setStatus(tenant, manifest.id, ExtensionStatus.Removed)
+                recordActivity(
+                    tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Uninstalled, "Desinstalo la extension ${manifest.displayName}.",
+                    choices.toSortedMap().map { (option, choice) -> com.ideasdeveloper.bms.server.activity.ActivityChange(option, option, null, choice) },
+                )
             }
         }
         // After the commit; what lives outside the company's database is released here, best effort.
@@ -628,7 +650,7 @@ class ExtensionService(
             val choices = UninstallChoices.resolve(manifest.uninstall.options, request.choices)
             return { code ->
                 val installed = withTenant(code) { storage.row(it, manifest.id)?.status }
-                if (installed != null && installed != ExtensionStatus.Removed) uninstallOne(code, extension, choices)
+                if (installed != null && installed != ExtensionStatus.Removed) uninstallOne(code, extension, choices, actor)
                 audit(actor.audit, "extension.uninstall", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, choices = choices))
             }
         }
@@ -642,7 +664,7 @@ class ExtensionService(
                     values.forEach { (key, value) -> storage.putSetting(tenant, manifest.id, key, value, secret = key in secretKeys) }
                 }
             }
-            enableOne(code, extension)
+            enableOne(code, extension, actor)
             audit(actor.audit, "extension.apply", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, keys = values.keys.sorted()))
         }
     }
@@ -816,6 +838,14 @@ class ExtensionService(
         tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
         }
+
+    // One row of the company's activity log, in the transaction of the change (ACTIVITY_LOG.md §3).
+    private fun recordActivity(tenant: Connection, actor: ExtensionActor?, extension: ServerExtension, action: String, summary: String, changes: List<com.ideasdeveloper.bms.server.activity.ActivityChange> = emptyList()) {
+        com.ideasdeveloper.bms.server.activity.CoreActivity.record(
+            tenant, actor?.activityActor ?: com.ideasdeveloper.bms.server.activity.ActivityActor.system(), "extension", extension.manifest.id,
+            extension.manifest.displayName, action, summary, changes,
+        )
+    }
 
     private fun setStatus(tenant: Connection, extensionId: String, status: String) {
         tenant.prepareStatement(

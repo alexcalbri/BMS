@@ -91,6 +91,12 @@ class McpToolCall(
     // Creates notifications for users with this module as their origin.
     val notifier: ModuleNotifier get() = access.notificationsFor(moduleId)
 
+    /**
+     * Who acts, for the activity log: the user behind the agent, already shown as "Agente de <usuario>"
+     * (with the switcher or owner-group origin when there is one). Same as `permissions.activityActor`.
+     */
+    val activityActor: com.ideasdeveloper.bms.server.activity.ActivityActor get() = permissions.activityActor
+
     private fun primitive(key: String): String? = (arguments[key] as? JsonPrimitive)?.contentOrNull?.trim()
 
     fun string(key: String, maxLength: Int = 2_000): String = primitive(key).orEmpty().take(maxLength)

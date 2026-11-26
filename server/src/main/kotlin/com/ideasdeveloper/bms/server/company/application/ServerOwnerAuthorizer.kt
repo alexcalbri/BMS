@@ -39,6 +39,29 @@ class ServerOwnerAuthorizer(
                 ServerActor(userId, user.postgresRole, ServerActorKind.Owner, emptySet(), true, emptySet(), user.postgresRole),
             )
         }
+        return liveAdmin(admins, userId)
+    }
+
+    companion object {
+        /**
+         * The server actor of central user [userId] read now, without a session (an AI agent of a
+         * server owner or administrator, re-checked on every call): None when no longer an active owner
+         * or administrator.
+         */
+        fun liveActor(admins: ServerAdminStore, central: DataSource, userId: UUID): ServerActorLookup {
+            if (admins.isOwner(userId)) {
+                val login = central.connection.use { connection ->
+                    connection.prepareStatement("SELECT postgres_role FROM application_users WHERE id = ?").use { query ->
+                        query.setObject(1, userId)
+                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                    }
+                } ?: return ServerActorLookup.None
+                return ServerActorLookup.Found(ServerActor(userId, login, ServerActorKind.Owner, emptySet(), true, emptySet(), login))
+            }
+            return liveAdmin(admins, userId)
+        }
+
+        private fun liveAdmin(admins: ServerAdminStore, userId: UUID): ServerActorLookup {
         val admin = admins.find(userId)?.takeIf { it.usable } ?: return ServerActorLookup.None
         val executor = admins.executorRole() ?: return ServerActorLookup.NoExecutor
         val actor = ServerActor(
@@ -54,6 +77,7 @@ class ServerOwnerAuthorizer(
             email = admin.email,
         )
         return if (admin.mustChangePassword) ServerActorLookup.PasswordChangeRequired(actor) else ServerActorLookup.Found(actor)
+        }
     }
 }
 

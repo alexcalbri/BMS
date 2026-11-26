@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.agentes
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.localizedPayload
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -74,6 +75,7 @@ object AgentesServerModule : ServerModule {
         "modules/agentes/migrations/V002__refresh_reuse_detection.sql",
         "modules/agentes/migrations/V003__refresh_history.sql",
         "modules/agentes/migrations/V004__group_scope.sql",
+        "modules/agentes/migrations/V005__server_admin_agents.sql",
     )
 
     override val runtimeTables = listOf("agent_tokens", "agent_activity", "agent_refresh_history", "agent_group_activity")
@@ -86,8 +88,8 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.5.0",
-        minCoreVersion = "0.10.0",
+        version = "0.6.0",
+        minCoreVersion = "0.12.0",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,
@@ -197,6 +199,10 @@ object AgentesServerModule : ServerModule {
             val tenant = access.tenantConnectionForCompany(companyCode) ?: return@withContext null
             tenant.use { connection ->
                 try {
+                    // A server administrator's audit-only agent never takes the path of the other tokens.
+                    adminProtocol(connection, access, companyCode, token)?.let { protocol ->
+                        return@use protocol.map { it.handle(message) }
+                    }
                     val session = authenticate(connection, access, companyCode, token) ?: return@use null
                     AgentTokens.touch(connection, session.token.id)
                     Result.success(session.protocol(connection, access).handle(message))
@@ -207,17 +213,96 @@ object AgentesServerModule : ServerModule {
             }
         } ?: return unauthorized("El token no es valido, vencio, fue revocado o el usuario ya no tiene acceso.")
 
-        val answer = outcome.getOrElse { return respond(HttpStatusCode.ServiceUnavailable, AgentesErrorResponse("tenant_error", "No se pudo abrir la empresa.")) }
+        val answer = outcome.getOrElse { failure ->
+            if (failure is AdminAgentRevoked) return unauthorized("El token no es valido, vencio, fue revocado o el usuario ya no tiene acceso.")
+            return respond(HttpStatusCode.ServiceUnavailable, AgentesErrorResponse("tenant_error", "No se pudo abrir la empresa."))
+        }
         if (answer == null) respond(HttpStatusCode.Accepted) else respondJson(HttpStatusCode.OK, answer)
     }
 
     private class AgentSession(val token: AgentToken, val access: UserModuleAccess)
 
+    /**
+     * The protocol of a server administrator's agent (ACTIVITY_LOG.md §7), or null when [value] is not
+     * such a token (the other paths handle it). Its tools are exactly ModuleAccessService.serverAuditAgent's
+     * (the two audit read tools), checked again on every call: when the administrator lost
+     * server.audit.view, was deactivated or must change the password, the connection is revoked, audited
+     * and the request refused (failure result, answered as 401). A token of another company is refused.
+     */
+    private fun adminProtocol(tenant: Connection, access: ModuleAccessService, companyCode: String, value: String): Result<AgentesMcp>? {
+        if (!AgentTokens.moduleEnabled(tenant)) return null
+        val token = AgentTokens.resolve(tenant, value)?.takeIf { it.serverAdmin } ?: return null
+        val agent = (if (companyCode == com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code) access.serverAuditAgent(token.userId) else null)
+            ?: return Result.failure(AdminAgentRevoked(revokeAdminAgent(tenant, access, token, "lost_access")))
+        AgentTokens.touch(tenant, token.id)
+        val visible = agent.tools.map { VisibleTool(it, agent.permissions) }
+        return Result.success(
+            AgentesMcp(
+                instructions = adminInstructions(agent.name),
+                tools = { visible },
+                invoke = { tool, arguments -> runAdminTool(tenant, access, token, tool, arguments) },
+                denied = { name ->
+                    val logged = if (name.isBlank()) "(sin nombre)" else AgentesMcp.logTool(name)
+                    AgentTokens.log(tenant, token.id, logged, "denied", msg("Herramienta desconocida o sin permiso."))
+                    runCatching { access.auditServerAdminAgent(token.userId, agent.login, "server_admin.agent_denied", mapOf("agent" to token.name, "tool" to logged)) }
+                        .onFailure { log.warn("Refused call of an administrator agent not audited: {}", it.message) }
+                },
+            ),
+        )
+    }
+
+    private class AdminAgentRevoked(val revoked: Boolean) : Exception("revoked")
+
+    // Revokes an administrator's agent and audits it; true when it was active.
+    private fun revokeAdminAgent(tenant: Connection, access: ModuleAccessService, token: AgentToken, reason: String): Boolean {
+        val revoked = AgentTokens.revoke(tenant, token.id, "Sistema (el administrador perdio el acceso)")
+        if (revoked) {
+            runCatching {
+                access.auditServerAdminAgent(token.userId, token.userName, "server_admin.agent_revoked", mapOf("agent" to token.name, "tokenId" to token.id.toString(), "reason" to reason))
+            }.onFailure { log.warn("Revocation of an administrator agent not audited: {}", it.message) }
+        }
+        return revoked
+    }
+
+    // One tool call of an administrator's agent: its rights are read again first; nothing but the audit tools ever runs.
+    private fun runAdminTool(tenant: Connection, access: ModuleAccessService, token: AgentToken, tool: VisibleTool, arguments: JsonObject): ToolOutcome {
+        if (!AgentTokens.stillActive(tenant, token.id)) return ToolOutcome.Failure("Esta conexion fue revocada o vencio.")
+        val agent = access.serverAuditAgent(token.userId)
+        if (agent == null) {
+            revokeAdminAgent(tenant, access, token, "lost_access")
+            return ToolOutcome.Failure("Tu usuario ya no puede leer la auditoria del servidor; esta conexion fue revocada.")
+        }
+        val allowed = agent.tools.firstOrNull { it.qualifiedName == tool.name && it.qualifiedName in com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools.AdminAgentToolNames }
+            ?: return ToolOutcome.Failure("Herramienta desconocida o sin permiso: ${tool.name}")
+        if (arguments.containsKey(AgentesMcp.ActingCompany)) {
+            AgentTokens.log(tenant, token.id, tool.name, "denied", msg("Herramienta desconocida o sin permiso."))
+            return ToolOutcome.Failure("Esta herramienta no admite ${AgentesMcp.ActingCompany}.")
+        }
+        val call = McpToolCall(arguments, agent.permissions.withActivityActor(agent.permissions.activityActor.viaAgent(token.name)), tenant, access, token.name, allowed.moduleId)
+        return try {
+            val result = allowed.tool.handler(call)
+            AgentTokens.log(tenant, token.id, tool.name, "ok")
+            ToolOutcome.Success(result)
+        } catch (failure: McpToolException) {
+            AgentTokens.log(tenant, token.id, tool.name, "error", failure.message.orEmpty())
+            ToolOutcome.Failure(failure.message.orEmpty())
+        } catch (failure: Exception) {
+            log.error("Administrator agent tool {} failed", tool.name, failure)
+            runCatching { AgentTokens.log(tenant, token.id, tool.name, "error", msg("Error interno")) }
+            ToolOutcome.Failure("No se pudo completar la operacion.")
+        }
+    }
+
+    private fun adminInstructions(name: String): String =
+        "Estas conectado a BMS en nombre de $name, administrador del servidor. Solo puedes leer la auditoria del servidor " +
+            "(servidor_list_server_audit) y el registro de actividad de las empresas a su alcance (servidor_list_company_activity). " +
+            "No puedes cambiar nada ni entrar a ninguna empresa. Cada consulta queda registrada a nombre del administrador."
+
     /** The token's session, when the token is active, its user still active and allowed to connect agents. */
     private fun authenticate(tenant: Connection, access: ModuleAccessService, companyCode: String, value: String): AgentSession? {
         // Companies that never enabled the module have no token tables.
         if (!AgentTokens.moduleEnabled(tenant)) return null
-        val token = AgentTokens.resolve(tenant, value) ?: return null
+        val token = AgentTokens.resolve(tenant, value)?.takeIf { !it.serverAdmin } ?: return null
         val userAccess = access.userAccess(tenant, companyCode, token.userId, token.serverOwner) ?: return null
         val own = userAccess.permissions(AgentesModule.id) ?: return null
         if (!own.has(AgentesScreens.Connect)) return null
@@ -320,7 +405,14 @@ object AgentesServerModule : ServerModule {
         // A business owner's agent acting in another company of its group: the error text stays out of this company's log.
         elsewhere: Boolean,
     ): ToolOutcome {
-        val call = McpToolCall(arguments, permissions, tenant, access, token.name, tool.registered.moduleId)
+        // The activity log names the real person: "Agente de <usuario>", with the company of origin
+        // when a business owner's agent acts in another company of its group (ACTIVITY_LOG.md §1.4).
+        val actor = if (elsewhere) {
+            ActivityActor.groupAgent(permissions.activityActor, this.access.activityActor, this.access.companyCode, token.name)
+        } else {
+            permissions.activityActor.viaAgent(token.name)
+        }
+        val call = McpToolCall(arguments, permissions.withActivityActor(actor), tenant, access, token.name, tool.registered.moduleId)
         // The company where it acted keeps its own row too, so its people see who came from outside.
         fun there(outcome: String) {
             if (!elsewhere) return

@@ -28,6 +28,8 @@ data class AgentToken(
     val oauthClient: String? = null,
     // A business owner's connection that may also act in the other companies of its owner group.
     val groupScope: Boolean = false,
+    // A server administrator's audit-only agent (server workspace; ModuleAccessService.serverAuditAgent).
+    val serverAdmin: Boolean = false,
 ) {
     fun isActive(now: Instant = Instant.now()): Boolean = revokedAt == null && (expiresAt == null || expiresAt.isAfter(now))
 
@@ -52,7 +54,7 @@ object AgentTokens {
     const val Prefix = "bmsmcp"
     const val RefreshPrefix = "bmsmcpr"
     private const val Columns =
-        "id, user_id, server_owner, user_name, name, token_hint, allowed_modules, read_only, created_at, expires_at, last_used_at, revoked_at, revoked_by, oauth_client, group_scope"
+        "id, user_id, server_owner, user_name, name, token_hint, allowed_modules, read_only, created_at, expires_at, last_used_at, revoked_at, revoked_by, oauth_client, group_scope, server_admin"
     private val companyPattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val secretPattern = Regex("[A-Za-z0-9_-]{43}")
     private val generator = SessionTokenGenerator()
@@ -150,6 +152,7 @@ object AgentTokens {
         expiresAt: Instant?,
         accessLifetime: Duration,
         groupScope: Boolean = false,
+        serverAdmin: Boolean = false,
     ): OAuthTokens {
         val access = newValue(Prefix, companyCode)
         val refresh = newValue(RefreshPrefix, companyCode)
@@ -157,8 +160,8 @@ object AgentTokens {
         tenant.prepareStatement(
             """
             INSERT INTO agent_tokens (id, user_id, server_owner, user_name, name, token_hash, token_hint, allowed_modules, read_only, expires_at,
-                                      oauth_client, refresh_hash, access_expires_at, group_scope)
-            VALUES (?, ?, ?, ?, ?, ?, 'oauth', ?, ?, ?, ?, ?, ?, ?)
+                                      oauth_client, refresh_hash, access_expires_at, group_scope, server_admin)
+            VALUES (?, ?, ?, ?, ?, ?, 'oauth', ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, id)
@@ -173,7 +176,8 @@ object AgentTokens {
             insert.setString(10, clientId)
             insert.setString(11, hash(refresh))
             insert.setTimestamp(12, Timestamp.from(Instant.now().plus(accessLifetime)))
-            insert.setBoolean(13, groupScope)
+            insert.setBoolean(13, groupScope && !serverAdmin)
+            insert.setBoolean(14, serverAdmin)
             insert.executeUpdate()
         }
         return OAuthTokens(find(tenant, id)!!, access, refresh)
@@ -381,5 +385,6 @@ object AgentTokens {
         revokedBy = getString("revoked_by"),
         oauthClient = getString("oauth_client"),
         groupScope = getBoolean("group_scope"),
+        serverAdmin = getBoolean("server_admin"),
     )
 }
