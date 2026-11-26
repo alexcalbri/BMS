@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.sql.Connection
 import java.sql.ResultSet
@@ -66,9 +67,9 @@ object ComprasRepository {
         approvalCurrency = getString("approval_currency"),
     )
 
-    private fun notFound() = ComprasValidationException("La solicitud no existe o no tienes acceso a ella.")
+    private fun notFound() = ComprasValidationException(tr("La solicitud no existe o no tienes acceso a ella."))
 
-    private fun changed() = ComprasValidationException("La solicitud cambio, recarga.")
+    private fun changed() = ComprasValidationException(tr("La solicitud cambio, recarga."))
 
     // ---- Ajustes ----
 
@@ -101,7 +102,7 @@ object ComprasRepository {
     fun saveDepartment(tenant: Connection, actor: Actor, id: UUID?, name: String): UUID {
         requireManage(actor)
         val clean = name.trim()
-        if (clean.isEmpty() || clean.length > 80) throw ComprasValidationException("El nombre del departamento debe tener entre 1 y 80 caracteres.")
+        if (clean.isEmpty() || clean.length > 80) throw ComprasValidationException(tr("El nombre del departamento debe tener entre 1 y 80 caracteres."))
         try {
             if (id == null) {
                 val newId = UUID.randomUUID()
@@ -119,10 +120,10 @@ object ComprasRepository {
                 update.setObject(2, id)
                 update.executeUpdate()
             }
-            if (updated == 0) throw ComprasValidationException("El departamento no existe.")
+            if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
             return id
         } catch (failure: SQLException) {
-            if (failure.sqlState == "23505") throw ComprasValidationException("Ya existe un departamento con ese nombre.")
+            if (failure.sqlState == "23505") throw ComprasValidationException(tr("Ya existe un departamento con ese nombre."))
             throw failure
         }
     }
@@ -135,11 +136,11 @@ object ComprasRepository {
             update.setObject(2, id)
             update.executeUpdate()
         }
-        if (updated == 0) throw ComprasValidationException("El departamento no existe.")
+        if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
     }
 
     private fun requireManage(actor: Actor) {
-        if (!actor.can(ComprasModule.Manage)) throw ComprasValidationException("No tienes permiso para administrar compras.")
+        if (!actor.can(ComprasModule.Manage)) throw ComprasValidationException(tr("No tienes permiso para administrar compras."))
     }
 
     // ---- Usuarios y aprobadores ----
@@ -208,7 +209,7 @@ object ComprasRepository {
             query.setObject(1, userId)
             query.executeQuery().use { it.next() }
         }
-        if (!exists) throw ComprasValidationException("El usuario no existe.")
+        if (!exists) throw ComprasValidationException(tr("El usuario no existe."))
         tenant.prepareStatement(
             """
             INSERT INTO compras_approvers (user_id, max_amount, limit_currency, active, updated_by) VALUES (?, ?, ?, ?, ?)
@@ -274,8 +275,8 @@ object ComprasRepository {
             query.setObject(1, departmentId)
             query.executeQuery().use { rows -> if (rows.next()) rows.getBoolean(1) else null }
         }
-        if (active == null) throw ComprasValidationException("El departamento no existe.")
-        if (!active) throw ComprasValidationException("El departamento esta desactivado.")
+        if (active == null) throw ComprasValidationException(tr("El departamento no existe."))
+        if (!active) throw ComprasValidationException(tr("El departamento esta desactivado."))
     }
 
     /**
@@ -283,12 +284,12 @@ object ComprasRepository {
      * (kind, ref): si ya existe una para ese origen se devuelve esa. Registra el evento "created".
      */
     fun create(tenant: Connection, actor: Actor, draft: RequestDraft, source: SourceRef? = null): PurchaseRequest {
-        if (!actor.can(ComprasModule.Create)) throw ComprasValidationException("No tienes permiso para crear solicitudes de compra.")
-        val requesterId = actor.userId ?: throw ComprasValidationException("No se pudo identificar al usuario.")
+        if (!actor.can(ComprasModule.Create)) throw ComprasValidationException(tr("No tienes permiso para crear solicitudes de compra."))
+        val requesterId = actor.userId ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
         val clean = draft.validated()
         if (source != null) {
             if (source.kind.isBlank() || source.ref.isBlank() || source.kind.length > 100 || source.ref.length > 200) {
-                throw ComprasValidationException("El origen de la solicitud no es valido.")
+                throw ComprasValidationException(tr("El origen de la solicitud no es valido."))
             }
             idBySource(tenant, source)?.let { existing -> return load(tenant, existing) ?: throw notFound() }
         }
@@ -337,7 +338,7 @@ object ComprasRepository {
         lockRequest(tenant, id)
         val current = get(tenant, id, actor) ?: throw notFound()
         if (!ComprasFlow.canEdit(current.status, actor, current.requesterId)) {
-            throw ComprasValidationException("No puedes editar el monto ni las cotizaciones en estado ${current.status.label}; retira la solicitud a borrador.")
+            throw ComprasValidationException(tr("No puedes editar el monto ni las cotizaciones en estado {0}; retira la solicitud a borrador.", tr(current.status.label)))
         }
         return current
     }
@@ -353,13 +354,13 @@ object ComprasRepository {
             val current = get(tenant, id, actor) ?: throw notFound()
             if (!ComprasFlow.canEdit(current.status, actor, current.requesterId)) {
                 if (!ComprasFlow.canEditText(current.status, actor)) {
-                    throw ComprasValidationException("No puedes editar esta solicitud en estado ${current.status.label}.")
+                    throw ComprasValidationException(tr("No puedes editar esta solicitud en estado {0}.", tr(current.status.label)))
                 }
                 val before = current.estimatedAmount
                 val after = clean.estimatedAmount
                 val sameAmount = if (before == null || after == null) before == after else before.compareTo(after) == 0
                 if (!sameAmount || clean.currency != current.currency) {
-                    throw ComprasValidationException("El monto y la moneda solo se cambian en borrador o cotizacion; retira la solicitud a borrador.")
+                    throw ComprasValidationException(tr("El monto y la moneda solo se cambian en borrador o cotizacion; retira la solicitud a borrador."))
                 }
             }
             checkDepartment(tenant, clean.departmentId, current.departmentId)
@@ -460,7 +461,7 @@ object ComprasRepository {
     fun transition(tenant: Connection, actor: Actor, id: UUID, to: RequestStatus, reason: String? = null): TransitionResult {
         val cleanReason = reason?.trim()?.take(1000)?.takeIf { it.isNotEmpty() }
         if ((to == RequestStatus.Approved || to == RequestStatus.Rejected) && actor.userId == null) {
-            throw ComprasValidationException("No se pudo identificar al usuario que decide.")
+            throw ComprasValidationException(tr("No se pudo identificar al usuario que decide."))
         }
         return ComprasSql.transaction(tenant) {
             // Fila bloqueada antes de leer el monto y el limite: dos decisiones o un cambio de monto no se cruzan.
@@ -515,8 +516,8 @@ object ComprasRepository {
 
     private fun cleanQuote(supplier: String, amount: BigDecimal, currency: String, notes: String): Triple<String, BigDecimal, String> {
         val name = supplier.trim()
-        if (name.isEmpty() || name.length > 200) throw ComprasValidationException("El proveedor debe tener entre 1 y 200 caracteres.")
-        if (notes.length > 2000) throw ComprasValidationException("Las notas admiten hasta 2000 caracteres.")
+        if (name.isEmpty() || name.length > 200) throw ComprasValidationException(tr("El proveedor debe tener entre 1 y 200 caracteres."))
+        if (notes.length > 2000) throw ComprasValidationException(tr("Las notas admiten hasta 2000 caracteres."))
         return Triple(name, ComprasMoney.check(amount), ComprasMoney.currency(currency))
     }
 
@@ -530,7 +531,7 @@ object ComprasRepository {
 
     // La cotizacion debe pertenecer a la solicitud indicada.
     private fun quoteOf(tenant: Connection, requestId: UUID, quoteId: UUID): Quote =
-        quote(tenant, quoteId)?.takeIf { it.requestId == requestId } ?: throw ComprasValidationException("La cotizacion no existe en esta solicitud.")
+        quote(tenant, quoteId)?.takeIf { it.requestId == requestId } ?: throw ComprasValidationException(tr("La cotizacion no existe en esta solicitud."))
 
     /** Agrega una cotizacion (la solicitud debe estar en borrador o cotizacion y ser editable por [actor]). */
     fun addQuote(tenant: Connection, actor: Actor, requestId: UUID, supplier: String, amount: BigDecimal, currency: String, notes: String = ""): Quote {
@@ -541,7 +542,7 @@ object ComprasRepository {
                 query.setObject(1, requestId)
                 query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
             }
-            if (count >= MaxQuotesPerRequest) throw ComprasValidationException("Una solicitud admite hasta $MaxQuotesPerRequest cotizaciones.")
+            if (count >= MaxQuotesPerRequest) throw ComprasValidationException(tr("Una solicitud admite hasta {0} cotizaciones.", MaxQuotesPerRequest))
             val id = UUID.randomUUID()
             tenant.prepareStatement(
                 "INSERT INTO compras_quotes (id, request_id, supplier, amount, currency, notes, quoted_by, quoted_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"

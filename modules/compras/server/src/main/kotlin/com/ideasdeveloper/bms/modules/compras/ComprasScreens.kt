@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiBarChart
 import com.ideasdeveloper.bms.ui.UiBoard
@@ -107,23 +109,23 @@ object ComprasScreens {
     // ---- Menu y permisos ----
 
     private val Titles = mapOf(
-        "home" to "Inicio",
-        "requests" to "Solicitudes",
-        "board" to "Tablero",
-        "approvals" to "Por aprobar",
-        "high" to "Altas y criticas",
-        "totals" to "Totales",
-        "import" to "Importar",
-        "request" to "Solicitud",
-        "new" to "Nueva solicitud",
-        "settings" to "Ajustes",
+        "home" to msg("Inicio"),
+        "requests" to msg("Solicitudes"),
+        "board" to msg("Tablero"),
+        "approvals" to msg("Por aprobar"),
+        "high" to msg("Altas y criticas"),
+        "totals" to msg("Totales"),
+        "import" to msg("Importar"),
+        "request" to msg("Solicitud"),
+        "new" to msg("Nueva solicitud"),
+        "settings" to msg("Ajustes"),
     )
 
     val Screens: Set<String> = Titles.keys
 
     fun isScreen(id: String): Boolean = id in Screens
 
-    fun title(screen: String): String = Titles[screen] ?: ComprasModule.displayName
+    fun title(screen: String): String = Titles[screen]?.let { tr(it) } ?: tr(ComprasModule.displayName)
 
     /** Quien con [can] puede abrir [screen]. El detalle y la nueva solicitud no estan en el menu. */
     fun canOpen(screen: String, can: (String) -> Boolean): Boolean = when (screen) {
@@ -140,7 +142,7 @@ object ComprasScreens {
     fun menu(can: (String) -> Boolean): List<Section> =
         listOf("home", "requests", "board", "approvals", "high", "totals", "import", "settings")
             .filter { canOpen(it, can) }
-            .map { Section(it, Titles.getValue(it)) }
+            .map { Section(it, tr(Titles.getValue(it))) }
 
     /** Seccion del menu que queda marcada cuando se abre [screen]. */
     fun selectedOf(screen: String): String = when (screen) {
@@ -151,7 +153,7 @@ object ComprasScreens {
     fun frame(actor: Actor, selected: String, title: String, notice: UiNotice?, body: List<UiNode>) = UiScreen(
         title = title,
         navigation = UiNavigation(
-            title = ComprasModule.displayName,
+            title = tr(ComprasModule.displayName),
             items = menu(actor::can).map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },
             selected = selectedOf(selected),
         ),
@@ -165,19 +167,19 @@ object ComprasScreens {
 
     fun time(instant: Instant): String = DateTime.format(instant)
 
-    fun money(amount: BigDecimal?, currency: String): String = amount?.let { ComprasMoney.format(it, currency) } ?: "Sin monto"
+    fun money(amount: BigDecimal?, currency: String): String = amount?.let { ComprasMoney.format(it, currency) } ?: tr("Sin monto")
 
     fun requestTitle(request: PurchaseRequest) = request.folio + Dot + request.title
 
     fun badges(request: PurchaseRequest): List<UiBadge> =
-        listOf(UiBadge(request.status.label, request.status.tone), UiBadge(request.priority.label, request.priority.tone))
+        listOf(UiBadge(tr(request.status.label), request.status.tone), UiBadge(tr(request.priority.label), request.priority.tone))
 
     private fun open(request: PurchaseRequest) = UiNavigate("request", mapOf("id" to request.id.toString()))
 
     private fun subtitle(request: PurchaseRequest): String = listOfNotNull(
-        request.departmentName ?: NoDepartment,
+        request.departmentName ?: tr(NoDepartment),
         request.requesterName,
-        request.requiredDate?.let { "Requerida $it" },
+        request.requiredDate?.let { tr("Requerida {0}", it) },
     ).joinToString(Dot)
 
     fun listItem(request: PurchaseRequest) = UiListItem(
@@ -226,7 +228,7 @@ object ComprasScreens {
         importContext: (() -> ComprasImportContext)? = null,
     ): UiScreen {
         if (!canOpen(screen, actor::can)) {
-            return frame(actor, "home", ComprasModule.displayName, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
+            return frame(actor, "home", tr(ComprasModule.displayName), UiNotice(tr("No tienes permiso para ver esta seccion."), UiTone.Danger), emptyList())
         }
         return when (screen) {
             "requests" -> loadRequests(tenant, actor, params, notice)
@@ -296,7 +298,7 @@ object ComprasScreens {
         val from = parsedFrom ?: today.withDayOfYear(1)
         val to = parsedTo ?: today
         if (from.isAfter(to)) {
-            return totalsScreen(actor, TotalsData(from, to, emptyList(), emptyList(), emptyList()), UiNotice("La fecha inicial es posterior a la final.", UiTone.Warning))
+            return totalsScreen(actor, TotalsData(from, to, emptyList(), emptyList(), emptyList()), UiNotice(tr("La fecha inicial es posterior a la final."), UiTone.Warning))
         }
         val filter = ComprasRepository.TotalsFilter(from = from, to = to)
         val data = TotalsData(
@@ -311,7 +313,7 @@ object ComprasScreens {
     private fun loadDetail(tenant: Connection, actor: Actor, params: Map<String, String>, notice: UiNotice?, submitted: Map<String, String>?): UiScreen {
         val id = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         val request = id?.let { ComprasRepository.get(tenant, it, actor) }
-            ?: return frame(actor, "requests", title("request"), notice ?: UiNotice("Esa solicitud no existe o no tienes acceso a ella.", UiTone.Warning), emptyList())
+            ?: return frame(actor, "requests", title("request"), notice ?: UiNotice(tr("Esa solicitud no existe o no tienes acceso a ella."), UiTone.Warning), emptyList())
         val data = DetailData(
             request = request,
             approver = ComprasRepository.approver(tenant, actor),
@@ -330,7 +332,7 @@ object ComprasScreens {
 
     fun importScreen(actor: Actor, cards: List<ImportCard>, notice: UiNotice? = null): UiScreen {
         val body: List<UiNode> = if (cards.isEmpty()) {
-            listOf(UiText("Instala la extension Importar desde Monday para traer tus tableros.", UiTextStyle.Caption))
+            listOf(UiText(tr("Instala la extension Importar desde Monday para traer tus tableros."), UiTextStyle.Caption))
         } else {
             cards.map { UiCard(it.nodes, title = it.label) }
         }
@@ -346,28 +348,28 @@ object ComprasScreens {
                     UiCard(
                         listOf(
                             UiMetric(
-                                "Por aprobar por mi", data.pendingForMe.toString(),
-                                caption = if (data.pendingForMe > 0) "Revisa Por aprobar" else "Al dia",
+                                tr("Por aprobar por mi"), data.pendingForMe.toString(),
+                                caption = if (data.pendingForMe > 0) tr("Revisa Por aprobar") else tr("Al dia"),
                                 captionTone = if (data.pendingForMe > 0) UiTone.Warning else UiTone.Success,
                             ),
                         ),
                     ),
                 )
             }
-            add(UiCard(listOf(UiMetric("Mis abiertas", data.myOpen.toString()))))
-            add(UiCard(listOf(UiMetric("Altas y criticas abiertas", data.highOpen.toString(), captionTone = UiTone.Warning))))
+            add(UiCard(listOf(UiMetric(tr("Mis abiertas"), data.myOpen.toString()))))
+            add(UiCard(listOf(UiMetric(tr("Altas y criticas abiertas"), data.highOpen.toString(), captionTone = UiTone.Warning))))
             data.approvedThisMonth?.let { rows ->
                 if (rows.isEmpty()) {
-                    add(UiCard(listOf(UiMetric("Aprobado este mes", "0.00"))))
+                    add(UiCard(listOf(UiMetric(tr("Aprobado este mes"), "0.00"))))
                 } else {
-                    rows.forEach { row -> add(UiCard(listOf(UiMetric("Aprobado este mes (${row.currency})", money(row.total, row.currency), caption = "${row.count} solicitudes")))) }
+                    rows.forEach { row -> add(UiCard(listOf(UiMetric(tr("Aprobado este mes ({0})", row.currency), money(row.total, row.currency), caption = tr("{0} solicitudes", row.count))))) }
                 }
             }
         }
         val body = buildList<UiNode> {
             add(UiGrid(metrics, minItemWidth = 180))
-            if (actor.can(ComprasModule.Create)) add(UiRow(listOf(UiButton("Nueva solicitud", UiNavigate("new")))))
-            add(UiCard(listOf(UiList(data.recent.map(::listItem), emptyText = "Aun no hay solicitudes.")), title = "Mas recientes"))
+            if (actor.can(ComprasModule.Create)) add(UiRow(listOf(UiButton(tr("Nueva solicitud"), UiNavigate("new")))))
+            add(UiCard(listOf(UiList(data.recent.map(::listItem), emptyText = tr("Aun no hay solicitudes."))), title = tr("Mas recientes")))
         }
         return frame(actor, "home", title("home"), notice, body)
     }
@@ -376,11 +378,11 @@ object ComprasScreens {
 
     fun requestsScreen(actor: Actor, data: RequestsData, notice: UiNotice? = null): UiScreen {
         val fields = listOf(
-            UiField("q", "Buscar", placeholder = "Folio, titulo, descripcion o solicitante"),
-            UiField("fStatus", "Estado", type = "dropdown", options = listOf(All) + RequestStatus.entries.map { it.label }),
-            UiField("fPriority", "Prioridad", type = "dropdown", options = listOf(All) + Priority.entries.map { it.label }),
-            UiField("fDepartment", "Departamento", type = "dropdown", options = listOf(All) + data.departments.map { it.name }),
-            UiField("mine", "Solo mias", type = "boolean"),
+            UiField("q", tr("Buscar"), placeholder = tr("Folio, titulo, descripcion o solicitante")),
+            UiField("fStatus", tr("Estado"), type = "dropdown", options = listOf(All) + RequestStatus.entries.map { it.label }),
+            UiField("fPriority", tr("Prioridad"), type = "dropdown", options = listOf(All) + Priority.entries.map { it.label }),
+            UiField("fDepartment", tr("Departamento"), type = "dropdown", options = listOf(All) + data.departments.map { it.name }),
+            UiField("mine", tr("Solo mias"), type = "boolean"),
         )
         val values = fields.associate { field ->
             field.key to (data.params[field.key] ?: if (field.type == "dropdown") All else if (field.type == "boolean") "false" else "")
@@ -389,22 +391,22 @@ object ComprasScreens {
             listOf(
                 UiForm(
                     "filters", fields, values,
-                    submit = UiButton("Filtrar", UiNavigate("requests", formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate("requests", formId = "filters"), style = "secondary"),
                     minFieldWidth = 200,
                 ),
             ),
         )
         val more = if (data.items.size >= data.limit && data.total > data.items.size && data.limit < MaxPageSize) {
-            listOf(UiButton("Ver mas", UiNavigate("requests", keepFilters(data.params) + ("limit" to (data.limit + PageSize).toString())), style = "secondary"))
+            listOf(UiButton(tr("Ver mas"), UiNavigate("requests", keepFilters(data.params) + ("limit" to (data.limit + PageSize).toString())), style = "secondary"))
         } else {
             emptyList()
         }
         val header = buildList<UiNode> {
-            if (actor.can(ComprasModule.Create)) add(UiRow(listOf(UiButton("Nueva solicitud", UiNavigate("new")))))
+            if (actor.can(ComprasModule.Create)) add(UiRow(listOf(UiButton(tr("Nueva solicitud"), UiNavigate("new")))))
             add(filters)
         }
-        val caption = UiText("Mostrando ${data.items.size} de ${data.total} solicitudes.", UiTextStyle.Caption)
-        return frame(actor, "requests", title("requests"), notice, header + UiList(data.items.map(::listItem), emptyText = "No hay solicitudes con esos filtros.") + caption + more)
+        val caption = UiText(tr("Mostrando {0} de {1} solicitudes.", data.items.size, data.total), UiTextStyle.Caption)
+        return frame(actor, "requests", title("requests"), notice, header + UiList(data.items.map(::listItem), emptyText = tr("No hay solicitudes con esos filtros.")) + caption + more)
     }
 
     // ---- Tablero ----
@@ -417,7 +419,7 @@ object ComprasScreens {
         title = requestTitle(request),
         subtitle = subtitle(request),
         details = listOf(money(request.approvalAmount, request.approvalCurrency)),
-        badges = listOf(UiBadge(request.priority.label, request.priority.tone)),
+        badges = listOf(UiBadge(tr(request.priority.label), request.priority.tone)),
         action = open(request),
     )
 
@@ -427,14 +429,14 @@ object ComprasScreens {
             columns = columns.map { column ->
                 UiBoardColumn(
                     id = column.status.id,
-                    title = column.status.label,
+                    title = tr(column.status.label),
                     tone = column.status.tone,
-                    caption = if (column.total == 1) "1 solicitud" else "${column.total} solicitudes",
+                    caption = if (column.total == 1) tr("1 solicitud") else tr("{0} solicitudes", column.total),
                     cards = column.cards.take(BoardPerColumn).map(::boardCard),
                 )
             },
             move = if (canMove) UiRequest("$UiRoute/board", params = mapOf("op" to "move")) else null,
-            emptyText = "Sin solicitudes.",
+            emptyText = tr("Sin solicitudes."),
         )
         return frame(actor, "board", title("board"), notice, listOf(board))
     }
@@ -446,13 +448,13 @@ object ComprasScreens {
             val approver = data.approver
             if (!actor.isOwner) {
                 if (approver == null) {
-                    add(UiText("Tienes permiso para aprobar, pero no estas en la lista de aprobadores: pide a quien administra Compras que te agregue en Ajustes.", tone = UiTone.Warning))
+                    add(UiText(tr("Tienes permiso para aprobar, pero no estas en la lista de aprobadores: pide a quien administra Compras que te agregue en Ajustes."), tone = UiTone.Warning))
                 } else if (!approver.active) {
-                    add(UiText("Tu aprobador esta inactivo: pide a quien administra Compras que lo active en Ajustes.", tone = UiTone.Warning))
+                    add(UiText(tr("Tu aprobador esta inactivo: pide a quien administra Compras que lo active en Ajustes."), tone = UiTone.Warning))
                 }
             }
             if (data.items.isEmpty()) {
-                add(UiText("No hay solicitudes pendientes dentro de tu limite.", UiTextStyle.Caption))
+                add(UiText(tr("No hay solicitudes pendientes dentro de tu limite."), UiTextStyle.Caption))
             }
             data.items.forEach { request ->
                 val form = "decision-${request.id}"
@@ -463,12 +465,12 @@ object ComprasScreens {
                         children = listOf(
                             UiText(subtitle(request)),
                             UiText("Monto: " + money(request.approvalAmount, request.approvalCurrency), UiTextStyle.Subtitle),
-                            UiForm(form, listOf(UiField("reason", "Motivo o comentario", type = "textarea", help = "Obligatorio al rechazar.")), minFieldWidth = 320),
+                            UiForm(form, listOf(UiField("reason", tr("Motivo o comentario"), type = "textarea", help = tr("Obligatorio al rechazar."))), minFieldWidth = 320),
                             UiRow(
                                 listOf(
-                                    UiButton("Aprobar", UiRequest("$UiRoute/approvals", params = params + ("op" to "approve"), formId = form)),
-                                    UiButton("Rechazar", UiRequest("$UiRoute/approvals", params = params + ("op" to "reject"), formId = form), style = "danger"),
-                                    UiButton("Ver detalle", open(request), style = "secondary"),
+                                    UiButton(tr("Aprobar"), UiRequest("$UiRoute/approvals", params = params + ("op" to "approve"), formId = form)),
+                                    UiButton(tr("Rechazar"), UiRequest("$UiRoute/approvals", params = params + ("op" to "reject"), formId = form), style = "danger"),
+                                    UiButton(tr("Ver detalle"), open(request), style = "secondary"),
                                 ),
                             ),
                         ),
@@ -493,20 +495,20 @@ object ComprasScreens {
     fun highScreen(actor: Actor, items: List<PurchaseRequest>, notice: UiNotice? = null): UiScreen =
         frame(
             actor, "high", title("high"), notice,
-            listOf(UiList(sortHigh(items).map(::listItem), emptyText = "No hay solicitudes altas o criticas abiertas.")),
+            listOf(UiList(sortHigh(items).map(::listItem), emptyText = tr("No hay solicitudes altas o criticas abiertas."))),
         )
 
     // ---- Totales ----
 
-    private fun statusLabel(id: String) = RequestStatus.fromId(id)?.label ?: id
+    private fun statusLabel(id: String) = RequestStatus.fromId(id)?.let { tr(it.label) } ?: id
 
     private fun totalsBlock(title: String, rows: List<TotalRow>, labelOf: (String) -> String, chart: Boolean): UiNode {
-        if (rows.isEmpty()) return UiCard(listOf(UiText("Sin datos en este periodo.", UiTextStyle.Caption)), title = title)
+        if (rows.isEmpty()) return UiCard(listOf(UiText(tr("Sin datos en este periodo."), UiTextStyle.Caption)), title = title)
         val children = rows.groupBy { it.currency }.toSortedMap().flatMap { (currency, group) ->
             listOfNotNull<UiNode>(
                 UiText(currency, UiTextStyle.Subtitle),
                 UiTable(
-                    columns = listOf(UiTableColumn("label", "Concepto"), UiTableColumn("count", "Solicitudes"), UiTableColumn("total", "Total")),
+                    columns = listOf(UiTableColumn("label", tr("Concepto")), UiTableColumn("count", tr("Solicitudes")), UiTableColumn("total", tr("Total"))),
                     rows = group.map { mapOf("label" to labelOf(it.label), "count" to it.count.toString(), "total" to ComprasMoney.format(it.total, currency)) },
                 ),
                 // Double solo para dibujar el grafico: las tablas muestran el monto exacto.
@@ -521,19 +523,19 @@ object ComprasScreens {
             listOf(
                 UiForm(
                     "range",
-                    listOf(UiField("from", "Desde", type = "date"), UiField("to", "Hasta", type = "date")),
+                    listOf(UiField("from", tr("Desde"), type = "date"), UiField("to", tr("Hasta"), type = "date")),
                     mapOf("from" to data.from.toString(), "to" to data.to.toString()),
-                    submit = UiButton("Ver", UiNavigate("totals", formId = "range"), style = "secondary"),
+                    submit = UiButton(tr("Ver"), UiNavigate("totals", formId = "range"), style = "secondary"),
                     minFieldWidth = 200,
                 ),
-                UiText("Por departamento y por mes cuentan solicitudes aprobadas, compradas y completadas (por fecha de decision). Por estado cuenta las creadas en el rango. Sin conversion entre monedas.", UiTextStyle.Caption),
+                UiText(tr("Por departamento y por mes cuentan solicitudes aprobadas, compradas y completadas (por fecha de decision). Por estado cuenta las creadas en el rango. Sin conversion entre monedas."), UiTextStyle.Caption),
             ),
         )
         val body = listOf(
             range,
-            totalsBlock("Por departamento", data.byDepartment, { it }, chart = true),
-            totalsBlock("Por mes (ultimos 12)", data.byMonth, { it }, chart = true),
-            totalsBlock("Por estado", data.byStatus, ::statusLabel, chart = false),
+            totalsBlock(tr("Por departamento"), data.byDepartment, { if (it == NoDepartment) tr(NoDepartment) else it }, chart = true),
+            totalsBlock(tr("Por mes (ultimos 12)"), data.byMonth, { it }, chart = true),
+            totalsBlock(tr("Por estado"), data.byStatus, ::statusLabel, chart = false),
         )
         return frame(actor, "totals", title("totals"), notice, body)
     }
@@ -544,14 +546,14 @@ object ComprasScreens {
         listOf(NoDepartment) + (departments.filter { it.active }.map { it.name } + listOfNotNull(current)).distinct().filter { it != NoDepartment }
 
     private fun requestFields(departments: List<Department>, currentDepartment: String?, withFiles: Boolean): List<UiField> = buildList {
-        add(UiField("title", "Titulo", required = true, placeholder = "Que se necesita comprar"))
-        add(UiField("description", "Descripcion", type = "textarea"))
-        add(UiField("department", "Departamento", type = "dropdown", options = departmentOptions(departments, currentDepartment)))
-        add(UiField("amount", "Monto estimado", type = "number", help = "Puedes dejarlo vacio si vas a cotizar; para pedir aprobacion hace falta un monto."))
-        add(UiField("currency", "Moneda", help = "Codigo de 3 letras, por ejemplo USD."))
-        add(UiField("requiredDate", "Fecha requerida", type = "date"))
-        add(UiField("priority", "Prioridad", type = "dropdown", options = Priority.entries.map { it.label }))
-        if (withFiles) add(UiField("files", "Archivos de respaldo", type = "files", files = Files, help = "Facturas, proformas, cotizaciones..."))
+        add(UiField("title", tr("Titulo"), required = true, placeholder = tr("Que se necesita comprar")))
+        add(UiField("description", tr("Descripcion"), type = "textarea"))
+        add(UiField("department", tr("Departamento"), type = "dropdown", options = departmentOptions(departments, currentDepartment)))
+        add(UiField("amount", tr("Monto estimado"), type = "number", help = tr("Puedes dejarlo vacio si vas a cotizar; para pedir aprobacion hace falta un monto.")))
+        add(UiField("currency", tr("Moneda"), help = tr("Codigo de 3 letras, por ejemplo USD.")))
+        add(UiField("requiredDate", tr("Fecha requerida"), type = "date"))
+        add(UiField("priority", tr("Prioridad"), type = "dropdown", options = Priority.entries.map { it.label }))
+        if (withFiles) add(UiField("files", tr("Archivos de respaldo"), type = "files", files = Files, help = tr("Facturas, proformas, cotizaciones...")))
     }
 
     fun valuesOf(request: PurchaseRequest): Map<String, String> = mapOf(
@@ -571,9 +573,9 @@ object ComprasScreens {
                 listOf(
                     UiForm(
                         "request", requestFields(data.departments, null, withFiles = true), values,
-                        submit = UiButton("Guardar borrador", UiRequest("$UiRoute/new", params = mapOf("op" to "create"), formId = "request"), style = "secondary"),
+                        submit = UiButton(tr("Guardar borrador"), UiRequest("$UiRoute/new", params = mapOf("op" to "create"), formId = "request"), style = "secondary"),
                     ),
-                    UiRow(listOf(UiButton("Enviar a aprobacion", UiRequest("$UiRoute/new", params = mapOf("op" to "create", "submit" to "true"), formId = "request")))),
+                    UiRow(listOf(UiButton(tr("Enviar a aprobacion"), UiRequest("$UiRoute/new", params = mapOf("op" to "create", "submit" to "true"), formId = "request")))),
                 ),
             ),
         )
@@ -584,18 +586,18 @@ object ComprasScreens {
 
     /** Texto del boton que lleva la solicitud de [from] a [to]. */
     fun transitionLabel(from: RequestStatus, to: RequestStatus): String = when (to) {
-        RequestStatus.Quoting -> "Enviar a cotizacion"
-        RequestStatus.PendingApproval -> "Enviar a aprobacion"
-        RequestStatus.Approved -> "Aprobar"
-        RequestStatus.Rejected -> "Rechazar"
+        RequestStatus.Quoting -> tr("Enviar a cotizacion")
+        RequestStatus.PendingApproval -> tr("Enviar a aprobacion")
+        RequestStatus.Approved -> tr("Aprobar")
+        RequestStatus.Rejected -> tr("Rechazar")
         RequestStatus.Draft -> when (from) {
-            RequestStatus.PendingApproval -> "Retirar"
-            RequestStatus.Rejected -> "Reabrir"
-            else -> "Volver a borrador"
+            RequestStatus.PendingApproval -> tr("Retirar")
+            RequestStatus.Rejected -> tr("Reabrir")
+            else -> tr("Volver a borrador")
         }
-        RequestStatus.InProgress -> "Marcar comprada / en progreso"
-        RequestStatus.Completed -> "Completar"
-        RequestStatus.Cancelled -> "Cancelar solicitud"
+        RequestStatus.InProgress -> tr("Marcar comprada / en progreso")
+        RequestStatus.Completed -> tr("Completar")
+        RequestStatus.Cancelled -> tr("Cancelar solicitud")
     }
 
     private fun transitionButton(request: PurchaseRequest, to: RequestStatus) = UiButton(
@@ -603,7 +605,7 @@ object ComprasScreens {
         UiRequest(
             "$UiRoute/request",
             params = mapOf("id" to request.id.toString(), "op" to "transition", "to" to to.id),
-            confirm = if (to == RequestStatus.Cancelled) "Se cancela la solicitud y ya no se podra reabrir. Continuar?" else null,
+            confirm = if (to == RequestStatus.Cancelled) tr("Se cancela la solicitud y ya no se podra reabrir. Continuar?") else null,
         ),
         style = when (to) {
             RequestStatus.Cancelled -> "danger"
@@ -614,20 +616,20 @@ object ComprasScreens {
 
     private fun decisionText(request: PurchaseRequest): String? {
         val at = request.decidedAt ?: return null
-        val who = request.decidedByName ?: "Alguien"
-        val verb = if (request.status == RequestStatus.Rejected) "Rechazada" else "Aprobada"
-        val amount = request.approvedAmount?.let { " Monto aprobado: ${money(it, request.approvedCurrency ?: request.approvalCurrency)}." }.orEmpty()
+        val who = request.decidedByName ?: tr("Alguien")
+        val verb = if (request.status == RequestStatus.Rejected) tr("Rechazada") else tr("Aprobada")
+        val amount = request.approvedAmount?.let { tr(" Monto aprobado: {0}.", money(it, request.approvedCurrency ?: request.approvalCurrency)) }.orEmpty()
         val reason = request.decisionReason?.takeIf { it.isNotBlank() }?.let { " Motivo: $it" }.orEmpty()
-        return "$verb por $who el ${time(at)}.$amount$reason"
+        return tr("{0} por {1} el {2}.{3}{4}", verb, who, time(at), amount, reason)
     }
 
     private fun eventEntry(event: RequestEvent): UiTimelineEntry {
         val title = when (event.kind) {
-            "created" -> "Solicitud creada"
-            "edited" -> "Editada"
-            "status" -> (event.fromStatus?.label?.let { "$it -> " }.orEmpty()) + (event.toStatus?.label ?: "")
-            "quote" -> "Cotizacion"
-            "attachment" -> "Archivos"
+            "created" -> tr("Solicitud creada")
+            "edited" -> tr("Editada")
+            "status" -> (event.fromStatus?.label?.let { "${tr(it)} -> " }.orEmpty()) + (event.toStatus?.label?.let { tr(it) } ?: "")
+            "quote" -> tr("Cotizacion")
+            "attachment" -> tr("Archivos")
             else -> event.kind
         }
         return UiTimelineEntry(title, event.detail, "${event.actorName} - ${time(event.at)}", event.toStatus?.tone ?: UiTone.Neutral)
@@ -643,14 +645,14 @@ object ComprasScreens {
         val header = UiCard(
             title = requestTitle(request),
             children = buildList {
-                add(UiRow(listOf(UiStatus(request.status.label, request.status.tone), UiStatus(request.priority.label, request.priority.tone))))
+                add(UiRow(listOf(UiStatus(tr(request.status.label), request.status.tone), UiStatus(tr(request.priority.label), request.priority.tone))))
                 add(
                     UiGrid(
                         listOf(
-                            UiMetric("Monto a aprobar", money(request.approvalAmount, request.approvalCurrency), caption = if (request.approvedAmount != null) "Aprobado" else ""),
-                            UiMetric("Departamento", request.departmentName ?: NoDepartment),
-                            UiMetric("Solicitante", request.requesterName, caption = time(request.createdAt)),
-                            UiMetric("Fecha requerida", request.requiredDate?.toString() ?: "Sin fecha"),
+                            UiMetric(tr("Monto a aprobar"), money(request.approvalAmount, request.approvalCurrency), caption = if (request.approvedAmount != null) tr("Aprobado") else ""),
+                            UiMetric(tr("Departamento"), request.departmentName ?: tr(NoDepartment)),
+                            UiMetric(tr("Solicitante"), request.requesterName, caption = time(request.createdAt)),
+                            UiMetric(tr("Fecha requerida"), request.requiredDate?.toString() ?: tr("Sin fecha")),
                         ),
                         minItemWidth = 180,
                     ),
@@ -667,9 +669,9 @@ object ComprasScreens {
             if (decisions.isNotEmpty()) {
                 add(
                     UiCard(
-                        title = "Decision",
+                        title = tr("Decision"),
                         children = listOf(
-                            UiForm("decision", listOf(UiField("reason", "Motivo o comentario", type = "textarea", help = "Obligatorio al rechazar.")), minFieldWidth = 320),
+                            UiForm("decision", listOf(UiField("reason", tr("Motivo o comentario"), type = "textarea", help = tr("Obligatorio al rechazar."))), minFieldWidth = 320),
                             UiRow(
                                 decisions.map { to ->
                                     UiButton(
@@ -689,11 +691,11 @@ object ComprasScreens {
             val values = submitted?.takeIf { it.containsKey("title") } ?: valuesOf(request)
             listOf(
                 UiCard(
-                    title = "Datos de la solicitud",
+                    title = tr("Datos de la solicitud"),
                     children = listOf(
                         UiForm(
                             "request", requestFields(data.departments, request.departmentName, withFiles = false), values,
-                            submit = UiButton("Guardar cambios", UiRequest("$UiRoute/request", params = id + ("op" to "save"), formId = "request")),
+                            submit = UiButton(tr("Guardar cambios"), UiRequest("$UiRoute/request", params = id + ("op" to "save"), formId = "request")),
                         ),
                     ),
                 ),
@@ -703,7 +705,7 @@ object ComprasScreens {
         }
 
         val body = listOf<UiNode>(header) + actions + editCard + quotesCard(actor, data, canEdit, submitted) + filesCard(actor, data, context) +
-            UiCard(listOf(UiTimeline(data.events.map(::eventEntry))), title = "Historial")
+            UiCard(listOf(UiTimeline(data.events.map(::eventEntry))), title = tr("Historial"))
         return frame(actor, "requests", requestTitle(request), notice, body)
     }
 
@@ -712,12 +714,12 @@ object ComprasScreens {
         val id = mapOf("id" to request.id.toString())
         val table = UiTable(
             columns = listOf(
-                UiTableColumn("supplier", "Proveedor"), UiTableColumn("amount", "Monto"), UiTableColumn("notes", "Notas"), UiTableColumn("chosen", "Elegida"),
+                UiTableColumn("supplier", tr("Proveedor")), UiTableColumn("amount", tr("Monto")), UiTableColumn("notes", tr("Notas")), UiTableColumn("chosen", tr("Elegida")),
             ),
             rows = data.quotes.map {
                 mapOf("supplier" to it.supplier, "amount" to money(it.amount, it.currency), "notes" to it.notes, "chosen" to if (it.selected) "Si" else "")
             },
-            emptyText = "Sin cotizaciones (son opcionales).",
+            emptyText = tr("Sin cotizaciones (son opcionales)."),
         )
         val rows = if (canEdit) {
             data.quotes.map { quote ->
@@ -725,13 +727,13 @@ object ComprasScreens {
                     listOfNotNull(
                         UiText(quote.supplier + Dot + money(quote.amount, quote.currency)),
                         if (quote.selected) {
-                            UiButton("Quitar eleccion", UiRequest("$UiRoute/request", params = id + mapOf("op" to "quoteSelect", "quote" to "none")), style = "secondary")
+                            UiButton(tr("Quitar eleccion"), UiRequest("$UiRoute/request", params = id + mapOf("op" to "quoteSelect", "quote" to "none")), style = "secondary")
                         } else {
-                            UiButton("Elegir", UiRequest("$UiRoute/request", params = id + mapOf("op" to "quoteSelect", "quote" to quote.id.toString())))
+                            UiButton(tr("Elegir"), UiRequest("$UiRoute/request", params = id + mapOf("op" to "quoteSelect", "quote" to quote.id.toString())))
                         },
                         UiButton(
-                            "Quitar",
-                            UiRequest("$UiRoute/request", params = id + mapOf("op" to "quoteDelete", "quote" to quote.id.toString()), confirm = "Se quita la cotizacion de ${quote.supplier}. Continuar?"),
+                            tr("Quitar"),
+                            UiRequest("$UiRoute/request", params = id + mapOf("op" to "quoteDelete", "quote" to quote.id.toString()), confirm = tr("Se quita la cotizacion de {0}. Continuar?", quote.supplier)),
                             style = "danger",
                         ),
                     ),
@@ -746,20 +748,20 @@ object ComprasScreens {
                 UiForm(
                     "quote",
                     listOf(
-                        UiField("supplier", "Proveedor", required = true),
-                        UiField("quoteAmount", "Monto", type = "number", required = true),
-                        UiField("quoteCurrency", "Moneda", help = "Codigo de 3 letras."),
-                        UiField("quoteNotes", "Notas", type = "textarea"),
-                        UiField("quoteFiles", "Archivo de la cotizacion", type = "files", files = Files),
+                        UiField("supplier", tr("Proveedor"), required = true),
+                        UiField("quoteAmount", tr("Monto"), type = "number", required = true),
+                        UiField("quoteCurrency", tr("Moneda"), help = tr("Codigo de 3 letras.")),
+                        UiField("quoteNotes", tr("Notas"), type = "textarea"),
+                        UiField("quoteFiles", tr("Archivo de la cotizacion"), type = "files", files = Files),
                     ),
                     values,
-                    submit = UiButton("Agregar cotizacion", UiRequest("$UiRoute/request", params = id + ("op" to "quoteAdd"), formId = "quote"), style = "secondary"),
+                    submit = UiButton(tr("Agregar cotizacion"), UiRequest("$UiRoute/request", params = id + ("op" to "quoteAdd"), formId = "quote"), style = "secondary"),
                 ),
             )
         } else {
             emptyList()
         }
-        return UiCard(listOf<UiNode>(table) + rows + form, title = "Cotizaciones")
+        return UiCard(listOf<UiNode>(table) + rows + form, title = tr("Cotizaciones"))
     }
 
     private fun filesCard(actor: Actor, data: DetailData, context: FlowContext): List<UiNode> {
@@ -772,13 +774,13 @@ object ComprasScreens {
             "files",
             listOf(
                 UiField(
-                    "files", "Archivos de respaldo", type = "files", readOnly = !editable, files = Files,
-                    help = if (canRemove) "Facturas, proformas, cotizaciones..." else "Puedes agregar archivos; quitarlos solo en borrador o cotizacion.",
+                    "files", tr("Archivos de respaldo"), type = "files", readOnly = !editable, files = Files,
+                    help = if (canRemove) "Facturas, proformas, cotizaciones..." else tr("Puedes agregar archivos; quitarlos solo en borrador o cotizacion."),
                 ),
             ),
             mapOf("files" to UiFieldValues.files(data.attachments.map { it.ref })),
-            submit = if (editable) UiButton("Guardar archivos", UiRequest("$UiRoute/request", params = mapOf("id" to request.id.toString(), "op" to "saveFiles"), formId = "files"), style = "secondary") else null,
+            submit = if (editable) UiButton(tr("Guardar archivos"), UiRequest("$UiRoute/request", params = mapOf("id" to request.id.toString(), "op" to "saveFiles"), formId = "files"), style = "secondary") else null,
         )
-        return listOf(UiCard(listOf(form), title = "Archivos"))
+        return listOf(UiCard(listOf(form), title = tr("Archivos")))
     }
 }

@@ -1,7 +1,9 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.server.modules.NotificationTarget
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.util.UUID
@@ -11,23 +13,18 @@ import java.util.UUID
  * se registra el fallo. Con [notifier] nulo no se envia nada. Bloqueante (JDBC): usar en withContext(Dispatchers.IO).
  */
 object ComprasNotify {
-    const val SubmittedTitlePrefix = "Compra por aprobar: "
-    const val ApprovedTitlePrefix = "Compra aprobada: "
-    const val RejectedTitlePrefix = "Compra rechazada: "
-    const val CompletedTitlePrefix = "Compra completada: "
     private val log = LoggerFactory.getLogger(ComprasNotify::class.java)
 
     private fun target(request: PurchaseRequest) = NotificationTarget("request", mapOf("id" to request.id.toString()))
 
     private fun amountText(request: PurchaseRequest): String =
-        request.approvalAmount?.let { ComprasMoney.format(it, request.approvalCurrency) } ?: "sin monto"
+        request.approvalAmount?.let { ComprasMoney.format(it, request.approvalCurrency) } ?: tr("sin monto")
 
-    private fun title(prefix: String, request: PurchaseRequest) = prefix + request.title.take(120)
-
-    private fun send(tenant: Connection, notifier: ModuleNotifier?, userId: UUID, title: String, text: String, request: PurchaseRequest): Boolean {
+    /** Escrito por [build] en el idioma de cada destinatario (ModuleNotifier.notify con builder). */
+    private fun send(tenant: Connection, notifier: ModuleNotifier?, userId: UUID, request: PurchaseRequest, build: () -> NotificationText): Boolean {
         if (notifier == null) return false
         return try {
-            notifier.notify(tenant, userId, title, text.take(500), target(request))
+            notifier.notify(tenant, userId, target(request)) { build().let { NotificationText(it.title, it.text.take(500)) } }
             true
         } catch (failure: Exception) {
             log.warn("No se pudo crear el aviso de compras ({}).", failure.javaClass.simpleName)
@@ -64,9 +61,14 @@ object ComprasNotify {
             val amount = request.approvalAmount ?: return 0
             var recipients = ComprasApproval.eligibleApprovers(tenant, amount, request.approvalCurrency).filter { it != request.requesterId }
             if (recipients.isEmpty()) recipients = ComprasApproval.unlimitedApprovers(tenant).filter { it != request.requesterId }
-            val department = request.departmentName?.let { " Departamento: $it." }.orEmpty()
-            val text = "${request.requesterName} pide ${amountText(request)}.$department"
-            recipients.count { send(tenant, notifier, it, title(SubmittedTitlePrefix, request), text, request) }
+            recipients.count {
+                send(tenant, notifier, it, request) {
+                    NotificationText(
+                        tr("Compra por aprobar: {0}", request.title.take(120)),
+                        tr("{0} pide {1}.", request.requesterName, amountText(request)) + request.departmentName?.let { " " + tr("Departamento: {0}.", it) }.orEmpty(),
+                    )
+                }
+            }
         } catch (failure: Exception) {
             log.warn("No se pudo avisar a los aprobadores de compras ({}).", failure.javaClass.simpleName)
             0
@@ -76,15 +78,18 @@ object ComprasNotify {
     /** Aprobada o rechazada: al solicitante, si no fue el quien decidio. */
     fun decided(tenant: Connection, notifier: ModuleNotifier?, request: PurchaseRequest, actor: Actor, approved: Boolean) {
         if (actor.isUser(request.requesterId)) return
-        val prefix = if (approved) ApprovedTitlePrefix else RejectedTitlePrefix
-        val reason = request.decisionReason?.takeIf { it.isNotBlank() }?.let { " Motivo: $it" }.orEmpty()
-        val text = "${request.folio}: ${amountText(request)}.${actor.name.let { " Por $it." }}$reason"
-        send(tenant, notifier, request.requesterId, title(prefix, request), text, request)
+        send(tenant, notifier, request.requesterId, request) {
+            val reason = request.decisionReason?.takeIf { it.isNotBlank() }?.let { " " + tr("Motivo: {0}", it) }.orEmpty()
+            val title = if (approved) tr("Compra aprobada: {0}", request.title.take(120)) else tr("Compra rechazada: {0}", request.title.take(120))
+            NotificationText(title, tr("{0}: {1}.", request.folio, amountText(request)) + " " + tr("Por {0}.", actor.name) + reason)
+        }
     }
 
     /** Completada: al solicitante, si la completo otra persona. */
     fun completed(tenant: Connection, notifier: ModuleNotifier?, request: PurchaseRequest, actor: Actor) {
         if (actor.isUser(request.requesterId)) return
-        send(tenant, notifier, request.requesterId, title(CompletedTitlePrefix, request), "${request.folio}: ${amountText(request)}. Completada por ${actor.name}.", request)
+        send(tenant, notifier, request.requesterId, request) {
+            NotificationText(tr("Compra completada: {0}", request.title.take(120)), tr("{0}: {1}. Completada por {2}.", request.folio, amountText(request), actor.name))
+        }
     }
 }

@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.compras
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
@@ -174,26 +175,26 @@ object ComprasImportEngine {
      */
     fun plan(item: ImportedRequest, now: Instant, canManage: Boolean): RequestPlan {
         val key = item.key.trim()
-        if (key.isEmpty() || key.length > 200 || ':' !in key) throw ComprasValidationException("La clave de origen no es valida.")
+        if (key.isEmpty() || key.length > 200 || ':' !in key) throw ComprasValidationException(tr("La clave de origen no es valida."))
         val title = item.title.trim().take(RequestDraft.MaxTitle)
-        if (title.isEmpty()) throw ComprasValidationException("La fila no tiene titulo.")
+        if (title.isEmpty()) throw ComprasValidationException(tr("La fila no tiene titulo."))
         val problems = mutableListOf<String>()
         val currency = ComprasMoney.currency(item.currency)
         val description = item.description.trim().let {
-            if (it.length > RequestDraft.MaxDescription) problems += "La descripcion se recorto a ${RequestDraft.MaxDescription} caracteres."
+            if (it.length > RequestDraft.MaxDescription) problems += tr("La descripcion se recorto a {0} caracteres.", RequestDraft.MaxDescription)
             it.take(RequestDraft.MaxDescription)
         }
         val estimated = item.estimatedAmount?.let { amount ->
             try {
                 ComprasMoney.check(amount)
             } catch (failure: ComprasValidationException) {
-                problems += "Monto omitido: ${failure.message}"
+                problems += tr("Monto omitido: {0}", failure.message)
                 null
             }
         }
         var incomplete = false
         val status = if (item.status in DecidedStatuses && !canManage) {
-            problems += "Estado ${item.status.label} importado como pendiente: hace falta Administrar compras"
+            problems += tr("Estado {0} importado como pendiente: hace falta Administrar compras", tr(item.status.label))
             RequestStatus.PendingApproval
         } else {
             item.status
@@ -203,13 +204,13 @@ object ComprasImportEngine {
         item.quotes.distinctBy { it.key }.forEach { quote ->
             if (quote.key.isBlank() || quote.key.length > 200) {
                 incomplete = true
-                problems += "Cotizacion omitida: clave no valida."
+                problems += tr("Cotizacion omitida: clave no valida.")
                 return@forEach
             }
             val money = try {
                 ComprasMoney.check(quote.amount) to ComprasMoney.currency(quote.currency)
             } catch (failure: ComprasValidationException) {
-                problems += "Cotizacion omitida: ${failure.message}"
+                problems += tr("Cotizacion omitida: {0}", failure.message)
                 incomplete = true
                 return@forEach
             }
@@ -278,9 +279,9 @@ object ComprasImportEngine {
         val plan = try {
             plan(item, Instant.now(), canManage)
         } catch (failure: ComprasValidationException) {
-            return ImportResult(ImportOutcome.Failed, null, listOf(failure.message ?: "Fila no valida."))
+            return ImportResult(ImportOutcome.Failed, null, listOf(failure.message ?: tr("Fila no valida.")))
         }
-        val importerId = importer.userId ?: return ImportResult(ImportOutcome.Failed, null, listOf("No se pudo identificar al usuario que importa."))
+        val importerId = importer.userId ?: return ImportResult(ImportOutcome.Failed, null, listOf(tr("No se pudo identificar al usuario que importa.")))
         val run = Run(plan.problems.toMutableList(), plan.incomplete)
         return try {
             val tenant = ctx.tenant
@@ -293,12 +294,12 @@ object ComprasImportEngine {
                 if (file.key.isBlank() || idByKey(tenant, "compras_attachments", file.key) != null) return@forEach
                 val name = ComprasAttachments.cleanName(file.name).ifEmpty { "archivo" }
                 if (existingFiles + toStore.size >= ComprasAttachments.MaxFilesPerRequest) {
-                    run.missing("$name: se alcanzo el maximo de ${ComprasAttachments.MaxFilesPerRequest} archivos.")
+                    run.missing(tr("{0}: se alcanzo el maximo de {1} archivos.", name, ComprasAttachments.MaxFilesPerRequest))
                     return@forEach
                 }
                 val ref = storeFile(ctx.files, file, name)
                 if (ref == null) {
-                    run.missing("$name: no se pudo traer el archivo.")
+                    run.missing(tr("{0}: no se pudo traer el archivo.", name))
                     return@forEach
                 }
                 run.stored += ref
@@ -320,8 +321,8 @@ object ComprasImportEngine {
         } catch (failure: Exception) {
             run.stored.forEach { runCatching { ctx.files.delete(it) } }
             log.warn("No se pudo importar la solicitud {}.", plan.key, failure)
-            val detail = if (failure is SQLException) "SQLState ${failure.sqlState ?: "desconocido"}" else "error interno"
-            ImportResult(ImportOutcome.Failed, null, run.problems + "No se pudo guardar la solicitud ($detail).")
+            val detail = if (failure is SQLException) tr("SQLState {0}", failure.sqlState ?: tr("desconocido")) else tr("error interno")
+            ImportResult(ImportOutcome.Failed, null, run.problems + tr("No se pudo guardar la solicitud ({0}).", detail))
         }
     }
 
@@ -372,7 +373,7 @@ object ComprasImportEngine {
         }
         find()?.let { return it }
         if (!canManage) {
-            run.problems += "Departamento '$name' no existe: hace falta Administrar compras para crearlo."
+            run.problems += tr("Departamento '{0}' no existe: hace falta Administrar compras para crearlo.", name)
             return null
         }
         tenant.prepareStatement(
@@ -455,7 +456,7 @@ object ComprasImportEngine {
                 )
                 update.executeUpdate()
             }
-            if (moved == 1) run.problems += "Estado actualizado a \"${plan.status.label}\": la solicitud seguia en borrador."
+            if (moved == 1) run.problems += tr("Estado actualizado a \"{0}\": la solicitud seguia en borrador.", tr(plan.status.label))
         }
         val quoteIds = mutableMapOf<String, UUID>()
         var addedQuotes = 0
@@ -478,7 +479,7 @@ object ComprasImportEngine {
                 insert.executeUpdate()
             }
             if (inserted == 0) {
-                run.missing("Cotizacion ${quote.supplier}: ya existe en otra solicitud.")
+                run.missing(tr("Cotizacion {0}: ya existe en otra solicitud.", quote.supplier))
                 return@forEach
             }
             quoteIds[quote.key] = id
@@ -508,7 +509,7 @@ object ComprasImportEngine {
             if (inserted == 0) {
                 // Otro proceso ya trajo ese archivo: el recien guardado sobra y se borra al confirmar.
                 run.dropped += pending.ref
-                run.missing("${pending.name}: ya existe en otra solicitud.")
+                run.missing(tr("{0}: ya existe en otra solicitud.", pending.name))
             } else {
                 addedFiles++
             }
