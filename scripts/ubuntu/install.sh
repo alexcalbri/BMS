@@ -91,6 +91,7 @@ readonly REQUIRED_FILES=(
     database/core/migrations/V003__add_application_user_profile.sql
     database/core/migrations/V004__add_application_user_code.sql
     database/core/migrations/V005__create_notifications.sql
+    database/core/migrations/V006__add_application_user_language.sql
     database/control/migrations/V001__create_server_registry.sql
     database/control/migrations/V002__create_provisioning_audit_log.sql
     database/control/migrations/V003__create_server_modules.sql
@@ -104,6 +105,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V011__create_extensions.sql
     database/control/migrations/V012__extension_zip_url_sources.sql
     database/control/migrations/V013__create_company_links.sql
+    database/control/migrations/V014__add_company_default_language.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -642,6 +644,7 @@ apply_migration "$DB_NAME" core database/core/migrations/V001__create_applicatio
 apply_migration "$DB_NAME" core database/core/migrations/V002__create_application_sessions.sql
 apply_migration "$DB_NAME" core database/core/migrations/V003__add_application_user_profile.sql
 apply_migration "$DB_NAME" core database/core/migrations/V004__add_application_user_code.sql
+apply_migration "$DB_NAME" core database/core/migrations/V006__add_application_user_language.sql
 apply_migration "$DB_NAME" control database/control/migrations/V001__create_server_registry.sql
 apply_migration "$DB_NAME" control database/control/migrations/V002__create_provisioning_audit_log.sql
 apply_migration "$DB_NAME" control database/control/migrations/V003__create_server_modules.sql
@@ -655,6 +658,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V010__create_core
 apply_migration "$DB_NAME" control database/control/migrations/V011__create_extensions.sql
 apply_migration "$DB_NAME" control database/control/migrations/V012__extension_zip_url_sources.sql
 apply_migration "$DB_NAME" control database/control/migrations/V013__create_company_links.sql
+apply_migration "$DB_NAME" control database/control/migrations/V014__add_company_default_language.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -673,6 +677,7 @@ GRANT USAGE ON SCHEMA public TO :"db_user";
 GRANT SELECT ON application_users, server_owners TO :"db_user";
 GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
 GRANT SELECT, UPDATE (user_code) ON application_users TO :"db_user";
+GRANT UPDATE (language) ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT ON provisioning_audit_log TO :"db_user";

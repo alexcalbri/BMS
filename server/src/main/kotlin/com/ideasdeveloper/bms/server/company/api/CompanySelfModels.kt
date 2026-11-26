@@ -11,6 +11,8 @@ data class CompanyProfileResponse(
     val primaryColor: String,
     val secondaryColor: String,
     val accentColor: String,
+    // Idioma por defecto de la empresa ("es", "en"), I18N.md §7.
+    val defaultLanguage: String = "es",
 )
 
 @Serializable
@@ -21,6 +23,8 @@ data class UpdateCompanyProfileRequest(
     val primaryColor: String,
     val secondaryColor: String,
     val accentColor: String,
+    // Idioma por defecto de la empresa ("es", "en"); null lo deja como esta.
+    val defaultLanguage: String? = null,
 )
 
 @Serializable

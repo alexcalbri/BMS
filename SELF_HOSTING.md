@@ -554,6 +554,14 @@ Modules and extension packages are compiled on the server and loaded by restarti
 -   a package that fails to build does not stop the others, and one that keeps taking the server
     down while building is dropped after three tries. A ZIP or URL install is not resumed.
 
+### Languages (Core 0.10.0)
+
+The server answers in Spanish or English (`I18N.md`). `update.sh` applies the new migrations before
+the new runtime starts: core `V006` (users' `language`, central and every company), control `V014`
+(`companies.default_language`, default `es`) and tenant `V010` (`text_translations`, the cache of
+translated stage names and notes); the server also brings companies up to date at startup. Nothing
+changes for a company until a user or the company picks English.
+
 Disabling a module should preserve data by default.
 
 Uninstalling may be destructive and must require explicit administrative

@@ -4,6 +4,7 @@ import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.bms.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.bms.server.auth.domain.SwitchTargetsResponse
+import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.server.routing.get
 import kotlinx.serialization.Serializable
 import io.ktor.http.HttpHeaders
@@ -47,12 +48,12 @@ fun Route.authRoutes(
             call.response.headers.append(HttpHeaders.CacheControl, "no-store")
             val targets = switchTargets ?: return@get call.respond(HttpStatusCode.NotFound)
             val (fromCode, token) = call.switchContext()
-                ?: return@get call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", "Falta la sesion."))
+                ?: return@get call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Falta la sesion.")))
             val response = try {
                 withContext(Dispatchers.IO) { targets(fromCode, token) }
             } catch (_: SQLException) {
-                return@get call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", "No se pudieron cargar las empresas."))
-            } ?: return@get call.respond(HttpStatusCode.Forbidden, AuthErrorResponse("SWITCH_REJECTED", "Tu sesion no puede cambiar de empresa."))
+                return@get call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", tr("No se pudieron cargar las empresas.")))
+            } ?: return@get call.respond(HttpStatusCode.Forbidden, AuthErrorResponse("SWITCH_REJECTED", tr("Tu sesion no puede cambiar de empresa.")))
             call.respond(HttpStatusCode.OK, response)
         }
 
@@ -60,16 +61,16 @@ fun Route.authRoutes(
             call.response.headers.append(HttpHeaders.CacheControl, "no-store")
             val switch = switchTo ?: return@post call.respond(HttpStatusCode.NotFound)
             val (fromCode, token) = call.switchContext()
-                ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", "Falta la sesion."))
+                ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Falta la sesion.")))
             val target = runCatching { call.receive<SwitchCompanyRequest>() }.getOrNull()?.companyCode?.trim()?.takeIf { it.isNotEmpty() }
             if (target != null && !codePattern.matches(target)) {
-                return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", "Codigo de empresa invalido."))
+                return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Codigo de empresa invalido.")))
             }
             val response = try {
                 withContext(Dispatchers.IO) { switch(fromCode, token, target) }
             } catch (_: SQLException) {
-                return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", "No se pudo cambiar de empresa. Intentalo mas tarde."))
-            } ?: return@post call.respond(HttpStatusCode.Forbidden, AuthErrorResponse("SWITCH_REJECTED", "No puedes entrar ahi con tu sesion."))
+                return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", tr("No se pudo cambiar de empresa. Intentalo mas tarde.")))
+            } ?: return@post call.respond(HttpStatusCode.Forbidden, AuthErrorResponse("SWITCH_REJECTED", tr("No puedes entrar ahi con tu sesion.")))
             call.respond(HttpStatusCode.OK, response)
         }
 
@@ -77,11 +78,11 @@ fun Route.authRoutes(
             call.response.headers.append(HttpHeaders.CacheControl, "no-store")
             val close = logout ?: return@post call.respond(HttpStatusCode.NotFound)
             val (fromCode, token) = call.switchContext()
-                ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", "Falta la sesion."))
+                ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Falta la sesion.")))
             try {
                 withContext(Dispatchers.IO) { close(fromCode, token) }
             } catch (_: SQLException) {
-                return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", "No se pudo cerrar la sesion. Intentalo mas tarde."))
+                return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", tr("No se pudo cerrar la sesion. Intentalo mas tarde.")))
             }
             // Idempotente: 204 aunque el token ya no existiera, para no revelar si era valido.
             call.respond(HttpStatusCode.NoContent)
@@ -102,7 +103,7 @@ fun Route.authRoutes(
                     HttpStatusCode.BadRequest,
                     AuthErrorResponse(
                         code = "INVALID_REQUEST",
-                        message = "Debes enviar un JSON válido con username y password.",
+                        message = tr("Debes enviar un JSON válido con username y password."),
                     ),
                 )
                 return@post
@@ -111,7 +112,7 @@ fun Route.authRoutes(
                     HttpStatusCode.BadRequest,
                     AuthErrorResponse(
                         code = "INVALID_REQUEST",
-                        message = "Debes enviar un JSON válido con username y password.",
+                        message = tr("Debes enviar un JSON válido con username y password."),
                     ),
                 )
                 return@post
@@ -126,7 +127,7 @@ fun Route.authRoutes(
                     HttpStatusCode.ServiceUnavailable,
                     AuthErrorResponse(
                         code = "AUTH_UNAVAILABLE",
-                        message = "No se pudo procesar el inicio de sesión. Inténtalo más tarde.",
+                        message = tr("No se pudo procesar el inicio de sesión. Inténtalo más tarde."),
                     ),
                 )
                 return@post
@@ -137,7 +138,7 @@ fun Route.authRoutes(
                     HttpStatusCode.Unauthorized,
                     AuthErrorResponse(
                         code = "LOGIN_REJECTED",
-                        message = "No se pudo iniciar sesión con las credenciales proporcionadas.",
+                        message = tr("No se pudo iniciar sesión con las credenciales proporcionadas."),
                     ),
                 )
                 return@post

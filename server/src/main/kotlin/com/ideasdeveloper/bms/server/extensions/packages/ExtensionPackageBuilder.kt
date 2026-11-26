@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions.packages
 
+import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.extensions.ExtensionManifest
 import com.ideasdeveloper.bms.server.extensions.ExtensionSignatureFile
 import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
@@ -203,7 +204,7 @@ class ExtensionPackageBuilder(
         val work = Files.createDirectories(packagesRoot.resolve(extensionId)).resolve("build-${System.currentTimeMillis()}")
         Files.createDirectories(work)
         try {
-            progress("Extrayendo el ZIP")
+            progress(msg("Extrayendo el ZIP"))
             val packageDir = extractZip(zip, extensionId, work.resolve("source"))
             return buildFromDirectory(extensionId, packageDir, work, sourceUrl, progress).copy(sourceType = sourceType)
         } finally {
@@ -217,7 +218,7 @@ class ExtensionPackageBuilder(
         val work = Files.createDirectories(packagesRoot.resolve(extensionId)).resolve("download-${System.currentTimeMillis()}")
         Files.createDirectories(work)
         try {
-            progress("Descargando el paquete")
+            progress(msg("Descargando el paquete"))
             val archive = downloadZip(url.trim(), work.resolve("package.zip"))
             return buildFromZip(extensionId, archive, progress, url.trim(), ExtensionSourceType.Url)
         } finally {
@@ -250,10 +251,10 @@ class ExtensionPackageBuilder(
 
     /** Verifica, valida, compila y empaqueta una carpeta ya extraida. */
     fun buildFromDirectory(extensionId: String, packageDir: Path, work: Path, sourceUrl: String, progress: (String) -> Unit): BuiltExtension {
-        progress("Verificando hash y firma")
+        progress(msg("Verificando hash y firma"))
         val verified = verify(extensionId, packageDir, sourceUrl)
 
-        progress("Validando el manifiesto y las migraciones")
+        progress(msg("Validando el manifiesto y las migraciones"))
         val problems = validator.validate(verified.manifest, extensionId, packageDir) + structureProblems(extensionId, packageDir)
         if (problems.isNotEmpty()) throw ExtensionPackageException("La extension no cumple las reglas: " + problems.joinToString(" "))
 
@@ -261,7 +262,7 @@ class ExtensionPackageBuilder(
         val classes = Files.createDirectories(work.resolve("classes"))
         compile(packageDir.resolve("server/src/main/kotlin"), classes, work, verified.manifest.module)
 
-        progress("Empaquetando")
+        progress(msg("Empaquetando"))
         val folder = Files.createDirectories(packagesRoot.resolve(extensionId))
         val temporary = work.resolve("$extensionId.jar")
         writeJar(verified.manifest, packageDir, classes, temporary)

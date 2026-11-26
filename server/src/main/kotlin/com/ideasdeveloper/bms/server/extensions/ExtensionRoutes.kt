@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -157,7 +158,7 @@ private suspend fun ApplicationCall.deny(decision: ModuleAccessDecision) {
 }
 
 private suspend fun ApplicationCall.invalidRequest() =
-    respond(HttpStatusCode.BadRequest, ExtensionErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+    respond(HttpStatusCode.BadRequest, ExtensionErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
 
 private val routeLog = LoggerFactory.getLogger("com.ideasdeveloper.bms.server.extensions.ExtensionRoutes")
 
@@ -194,20 +195,20 @@ private suspend inline fun <reified T : Any> ApplicationCall.respondService(stat
     } catch (refusal: CompanyProvisioningException) {
         respond(HttpStatusCode.Conflict, ExtensionErrorResponse(refusal.code ?: "COMPANY_ERROR", refusal.message.orEmpty()))
     } catch (_: SecretsUnavailableException) {
-        respond(HttpStatusCode.ServiceUnavailable, ExtensionErrorResponse("SECRETS_UNAVAILABLE", "El servidor no tiene BMS_MASTER_KEY configurada: no se pueden guardar ni leer secretos."))
+        respond(HttpStatusCode.ServiceUnavailable, ExtensionErrorResponse("SECRETS_UNAVAILABLE", tr("El servidor no tiene BMS_MASTER_KEY configurada: no se pueden guardar ni leer secretos.")))
     } catch (_: SecretDecryptionException) {
-        respond(HttpStatusCode.Conflict, ExtensionErrorResponse("SECRET_DECRYPTION_FAILED", "No se pudo descifrar un secreto de la empresa; vuelve a escribirlo."))
+        respond(HttpStatusCode.Conflict, ExtensionErrorResponse("SECRET_DECRYPTION_FAILED", tr("No se pudo descifrar un secreto de la empresa; vuelve a escribirlo.")))
     } catch (_: IllegalArgumentException) {
-        respond(HttpStatusCode.BadRequest, ExtensionErrorResponse("INVALID_REQUEST", "La solicitud no es valida."))
+        respond(HttpStatusCode.BadRequest, ExtensionErrorResponse("INVALID_REQUEST", tr("La solicitud no es valida.")))
     } catch (failure: SQLException) {
         // Only the SQLSTATE is logged: the message of a database error can contain data.
         routeLog.warn("Extension request failed in the database (SQLSTATE {})", failure.sqlState)
         when {
             failure is SQLTransientConnectionException || failure.sqlState?.startsWith("08") == true ->
-                respond(HttpStatusCode.ServiceUnavailable, ExtensionErrorResponse("DATABASE_UNAVAILABLE", "No se pudo conectar con la base de datos."))
+                respond(HttpStatusCode.ServiceUnavailable, ExtensionErrorResponse("DATABASE_UNAVAILABLE", tr("No se pudo conectar con la base de datos.")))
             failure.sqlState?.startsWith("23") == true ->
-                respond(HttpStatusCode.Conflict, ExtensionErrorResponse("DATA_CONFLICT", "La operacion choca con datos existentes."))
-            else -> respond(HttpStatusCode.InternalServerError, ExtensionErrorResponse("DATABASE_ERROR", "La operacion no se pudo completar."))
+                respond(HttpStatusCode.Conflict, ExtensionErrorResponse("DATA_CONFLICT", tr("La operacion choca con datos existentes.")))
+            else -> respond(HttpStatusCode.InternalServerError, ExtensionErrorResponse("DATABASE_ERROR", tr("La operacion no se pudo completar.")))
         }
     }
 }

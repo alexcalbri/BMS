@@ -145,6 +145,9 @@ data class UiField(
     val multiple: Boolean = false,
     // Type "files": where files are uploaded and downloaded. The value is a JSON array of UiFileRef.
     val files: UiFiles? = null,
+    // What the app shows for each of [options] (same size and order) while it submits [options] itself;
+    // null shows the options as they are. Filled by the server in the user's language (I18N.md §5).
+    val optionLabels: List<String>? = null,
 )
 
 /**
@@ -474,6 +477,9 @@ data class UiTimelineEntry(
     // Who and when, e.g. "ana - 2026-10-28 14:05".
     val caption: String = "",
     val tone: String = UiTone.Neutral,
+    // [body] translated into the viewer's language (user-written notes, I18N.md §8). The app shows it
+    // under the original, which is never replaced; null when there is none. Older clients ignore it.
+    val translation: String? = null,
 )
 
 // Chronological entries (newest first as sent), e.g. the activity of a record.

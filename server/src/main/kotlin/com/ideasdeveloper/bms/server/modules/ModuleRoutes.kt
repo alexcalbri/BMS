@@ -14,6 +14,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import com.ideasdeveloper.bms.ui.UiAppThemes
+import com.ideasdeveloper.bms.server.i18n.localized
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.Serializable
 import java.net.URLEncoder
 import java.security.SecureRandom
@@ -23,12 +25,12 @@ import java.util.concurrent.ConcurrentHashMap
 fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
     route("/modules") {
         get {
-            call.respond(HttpStatusCode.OK, registry.definitions)
+            call.respond(HttpStatusCode.OK, registry.definitions.map { it.localized() })
         }
 
         // Public so the login screen can use them too; themes hold only colors and names.
         get("/themes") {
-            call.respond(HttpStatusCode.OK, UiAppThemes(registry.themes()))
+            call.respond(HttpStatusCode.OK, UiAppThemes(registry.themes().map { it.copy(name = tr(it.name)) }))
         }
 
         get("/{moduleId}/metadata") {
@@ -38,7 +40,7 @@ fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
                 call.respond(HttpStatusCode.NotFound)
                 return@get
             }
-            call.respond(HttpStatusCode.OK, definition)
+            call.respond(HttpStatusCode.OK, definition.localized())
         }
 
         // Web-UI modules: the app exchanges its session for a one-time ticket and opens the
@@ -46,7 +48,7 @@ fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
         post("/{moduleId}/web-session") {
             val moduleId = call.parameters["moduleId"].orEmpty()
             val ui = registry.definition(moduleId)?.ui?.takeIf { it.type == "web" }
-                ?: return@post call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("no_web_ui", "El modulo no tiene interfaz web."))
+                ?: return@post call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("no_web_ui", tr("El modulo no tiene interfaz web.")))
             val permissions = call.requireModuleAccess(access, moduleId) ?: return@post
             val ticket = ModuleWebTickets.issue(moduleId, permissions.companyCode, permissions.accessToken)
             call.respond(HttpStatusCode.OK, ModuleWebSessionResponse("/modules/$moduleId/web-entry?ticket=$ticket", ui.entry))
@@ -57,7 +59,7 @@ fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
             val ui = registry.definition(moduleId)?.ui?.takeIf { it.type == "web" && it.entry.startsWith("/modules/$moduleId/") }
                 ?: return@get call.respond(HttpStatusCode.NotFound)
             val session = ModuleWebTickets.consume(call.request.queryParameters["ticket"].orEmpty(), moduleId)
-                ?: return@get call.respond(HttpStatusCode.Unauthorized, ModuleAccessErrorResponse("invalid_ticket", "El enlace vencio. Abre el modulo de nuevo desde la app."))
+                ?: return@get call.respond(HttpStatusCode.Unauthorized, ModuleAccessErrorResponse("invalid_ticket", tr("El enlace vencio. Abre el modulo de nuevo desde la app.")))
             val secure = call.request.headers["X-Forwarded-Proto"] == "https" || call.request.origin.scheme == "https"
             listOf(
                 ModuleAccessService.TokenCookie to session.accessToken,

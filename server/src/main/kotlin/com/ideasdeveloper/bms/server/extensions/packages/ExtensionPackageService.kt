@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions.packages
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.ModuleVersion
 import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
@@ -127,7 +128,12 @@ class ExtensionPackageService(
 ) {
     private val log = LoggerFactory.getLogger(ExtensionPackageService::class.java)
 
-    private class InstallState(val status: String, val message: String, val waitingFor: String? = null)
+    // The message is rendered when it is shown (viewer's language); builds run without a request language.
+    private class InstallState(val status: String, private val text: () -> String, val waitingFor: String? = null) {
+        constructor(status: String, message: String, waitingFor: String? = null) : this(status, { message }, waitingFor)
+
+        val message: String get() = text()
+    }
 
     private val states = ConcurrentHashMap<String, InstallState>()
 
@@ -139,8 +145,8 @@ class ExtensionPackageService(
             ExtensionPackageEntry(
                 id = manifest.id,
                 module = manifest.module,
-                displayName = manifest.displayName,
-                description = manifest.description,
+                displayName = tr(manifest.displayName),
+                description = tr(manifest.description),
                 version = manifest.version,
                 minModuleVersion = manifest.minModuleVersion,
                 permissions = manifest.permissions,
@@ -164,7 +170,7 @@ class ExtensionPackageService(
         states[id]?.waitingFor?.let { module ->
             if (!moduleLoaded(module) && !modulePending(module)) {
                 installQueue?.done(PackageInstallQueue.Extension, id)
-                states[id] = InstallState("error", "El modulo '$module' no se instalo; instalalo y vuelve a pedir la extension.")
+                states[id] = InstallState("error", tr("El modulo '{0}' no se instalo; instalalo y vuelve a pedir la extension.", module))
             }
         }
         states[id]?.let { state ->
@@ -182,19 +188,19 @@ class ExtensionPackageService(
     // Si el catalogo no se pudo leer, el fallo es de GitHub y no de la extension: se dice asi y no "no esta en el catalogo".
     private fun notInCatalog(id: String): ExtensionPackageServiceException = catalogProblem()
         ?.let { ExtensionPackageServiceException(it, "CATALOG_UNAVAILABLE") }
-        ?: ExtensionPackageServiceException("La extension '$id' no esta en el catalogo configurado.", "NOT_FOUND")
+        ?: ExtensionPackageServiceException(tr("La extension '{0}' no esta en el catalogo configurado.", id), "NOT_FOUND")
 
     /** Empieza a compilar el paquete en un hilo aparte y devuelve el estado inicial. */
     fun install(id: String, actorRole: String): ExtensionPackageStatus {
         val remote = catalogSource().firstOrNull { it.manifest.id == id } ?: throw notInCatalog(id)
         val stored = store.find(id)
         if (id in bundledIds() || stored?.sourceType == ExtensionSourceType.Bundled) {
-            throw ExtensionPackageServiceException("La extension '$id' ya viene incluida en su modulo.", "ALREADY_BUNDLED")
+            throw ExtensionPackageServiceException(tr("La extension '{0}' ya viene incluida en su modulo.", id), "ALREADY_BUNDLED")
         }
         checkNoDowngrade(id, remote.manifest.version, stored)
         val activeBuilder = builder
             ?: throw ExtensionPackageServiceException(
-                "Este servidor no puede compilar extensiones: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh.",
+                tr("Este servidor no puede compilar extensiones: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh."),
                 "BUILDER_UNAVAILABLE",
             )
         // Una extension no se instala hasta que su modulo esta instalado del todo (cargado tras el reinicio).
@@ -203,14 +209,14 @@ class ExtensionPackageService(
             val queue = installQueue
             if (queue == null || !modulePending(module)) {
                 throw ExtensionPackageServiceException(
-                    "La extension '$id' necesita el modulo '$module': instalalo primero en Modulos del servidor.", "MODULE_NOT_INSTALLED",
+                    tr("La extension '{0}' necesita el modulo '{1}': instalalo primero en Modulos del servidor.", id, module), "MODULE_NOT_INSTALLED",
                 )
             }
             queue.add(PackageInstallQueue.Extension, id, actorRole)
-            states[id] = InstallState("installing", "En espera: se instalara cuando el modulo '$module' termine de instalarse", waitingFor = module)
+            states[id] = InstallState("installing", tr("En espera: se instalara cuando el modulo '{0}' termine de instalarse", module), waitingFor = module)
             return status(id)
         }
-        val queued = InstallState("installing", "En cola para compilar")
+        val queued = InstallState("installing", tr("En cola para compilar"))
         if (states.compute(id) { _, current -> if (current?.status == "installing" && current.waitingFor == null) current else queued } !== queued) return status(id)
         installQueue?.add(PackageInstallQueue.Extension, id, actorRole)
         installQueue?.queued()
@@ -228,14 +234,14 @@ class ExtensionPackageService(
         queue.pending().filter { it.kind == PackageInstallQueue.Extension }.forEach { entry ->
             if (!queue.attempt(entry.kind, entry.id)) {
                 log.warn("Extension package {} is not installed again: it was tried {} times.", entry.id, PackageInstallQueue.MaxAttempts)
-                states[entry.id] = InstallState("error", "No se pudo instalar tras varios intentos; vuelve a pedirlo.")
+                states[entry.id] = InstallState("error", tr("No se pudo instalar tras varios intentos; vuelve a pedirlo."))
                 return@forEach
             }
             try {
                 install(entry.id, entry.actor)
             } catch (failure: Exception) {
                 log.warn("Pending install of extension package {} was dropped: {}", entry.id, failure.message)
-                states[entry.id] = InstallState("error", failure.message ?: "No se pudo reanudar la instalacion.")
+                states[entry.id] = InstallState("error", failure.message ?: tr("No se pudo reanudar la instalacion."))
                 queue.done(entry.kind, entry.id)
             }
         }
@@ -252,16 +258,16 @@ class ExtensionPackageService(
 
     private fun checkExternalId(id: String) {
         if (!com.ideasdeveloper.bms.server.extensions.ExtensionIdPattern.matches(id)) {
-            throw ExtensionPackageServiceException("Identificador de extension invalido.", "INVALID_ID")
+            throw ExtensionPackageServiceException(tr("Identificador de extension invalido."), "INVALID_ID")
         }
         if (id in bundledIds() || store.find(id)?.sourceType == ExtensionSourceType.Bundled) {
-            throw ExtensionPackageServiceException("La extension '$id' ya viene incluida en su modulo.", "ALREADY_BUNDLED")
+            throw ExtensionPackageServiceException(tr("La extension '{0}' ya viene incluida en su modulo.", id), "ALREADY_BUNDLED")
         }
     }
 
     private fun requireBuilder(): ExtensionPackageBuilding = builder
         ?: throw ExtensionPackageServiceException(
-            "Este servidor no puede compilar extensiones: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh.",
+            tr("Este servidor no puede compilar extensiones: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh."),
             "BUILDER_UNAVAILABLE",
         )
 
@@ -288,7 +294,7 @@ class ExtensionPackageService(
             active.inspectZip(id, file, sourceUrl)
         } catch (failure: ExtensionPackageException) {
             runCatching { Files.deleteIfExists(file) }
-            throw ExtensionPackageServiceException(failure.message ?: "El paquete no es valido.", "PACKAGE_REJECTED")
+            throw ExtensionPackageServiceException(failure.message ?: tr("El paquete no es valido."), "PACKAGE_REJECTED")
         }
         val token = file.fileName.toString().removeSuffix(".zip")
         staged[token] = Staged(id, kind, file, sourceUrl, inspected.packageSha256, System.currentTimeMillis())
@@ -304,8 +310,8 @@ class ExtensionPackageService(
     fun inspectZip(id: String, fileName: String?, bytes: ByteArray): ExtensionPackageStagedInspection {
         checkExternalId(id)
         val active = requireBuilder()
-        if (bytes.isEmpty()) throw ExtensionPackageServiceException("El archivo esta vacio.", "INVALID_ZIP")
-        if (bytes.size > MaxZipBytes) throw ExtensionPackageServiceException("El ZIP es demasiado grande (maximo ${MaxZipBytes / 1024 / 1024} MB).", "PAYLOAD_TOO_LARGE")
+        if (bytes.isEmpty()) throw ExtensionPackageServiceException(tr("El archivo esta vacio."), "INVALID_ZIP")
+        if (bytes.size > MaxZipBytes) throw ExtensionPackageServiceException(tr("El ZIP es demasiado grande (maximo {0} MB).", MaxZipBytes / 1024 / 1024), "PAYLOAD_TOO_LARGE")
         purgeStaging()
         val file = Files.createDirectories(stagingDir).resolve("${newToken()}.zip")
         Files.write(file, bytes)
@@ -320,7 +326,7 @@ class ExtensionPackageService(
         try {
             ExtensionUrlDownloader.validate(clean)
         } catch (failure: ExtensionPackageException) {
-            throw ExtensionPackageServiceException(failure.message ?: "La URL no es valida.", "URL_REJECTED")
+            throw ExtensionPackageServiceException(failure.message ?: tr("La URL no es valida."), "URL_REJECTED")
         }
         purgeStaging()
         val file = Files.createDirectories(stagingDir).resolve("${newToken()}.zip")
@@ -328,7 +334,7 @@ class ExtensionPackageService(
             active.downloadZip(clean, file)
         } catch (failure: ExtensionPackageException) {
             runCatching { Files.deleteIfExists(file) }
-            throw ExtensionPackageServiceException(failure.message ?: "No se pudo descargar el paquete.", "PACKAGE_UNAVAILABLE")
+            throw ExtensionPackageServiceException(failure.message ?: tr("No se pudo descargar el paquete."), "PACKAGE_UNAVAILABLE")
         }
         return stage(id, ExtensionSourceType.Url, file, clean, active)
     }
@@ -336,7 +342,7 @@ class ExtensionPackageService(
     private fun stagedFor(token: String): Staged {
         val item = staged[token.trim()]
         if (item == null || !Files.isRegularFile(item.file) || item.createdAt < System.currentTimeMillis() - StagingMinutes * 60_000L) {
-            throw ExtensionPackageServiceException("El paquete en preparacion no existe o caduco. Subelo otra vez.", "NOT_FOUND")
+            throw ExtensionPackageServiceException(tr("El paquete en preparacion no existe o caduco. Subelo otra vez."), "NOT_FOUND")
         }
         return item
     }
@@ -348,16 +354,16 @@ class ExtensionPackageService(
     fun authorizeStaged(token: String, actorRole: String, confirmationText: String, expectedPackageSha256: String): UnsignedAuthorizationResponse {
         val text = confirmationText.trim()
         if (text.length < MinConfirmationLength) {
-            throw ExtensionPackageServiceException("Escribe la confirmacion con tus palabras (al menos $MinConfirmationLength caracteres).", "CONFIRMATION_REQUIRED")
+            throw ExtensionPackageServiceException(tr("Escribe la confirmacion con tus palabras (al menos {0} caracteres).", MinConfirmationLength), "CONFIRMATION_REQUIRED")
         }
         if (!Sha256Pattern.matches(expectedPackageSha256.trim())) {
-            throw ExtensionPackageServiceException("Indica el hash (64 hex) que revisaste.", "EXPECTED_REQUIRED")
+            throw ExtensionPackageServiceException(tr("Indica el hash (64 hex) que revisaste."), "EXPECTED_REQUIRED")
         }
         // La confirmacion debe nombrar el hash revisado (primeros 8 hex), como hace la app: "autorizar {id} {sha8}".
         val shortHash = expectedPackageSha256.trim().take(ShortHashLength)
         if (!text.contains(shortHash, ignoreCase = true)) {
             throw ExtensionPackageServiceException(
-                "La confirmacion debe incluir los primeros $ShortHashLength caracteres del hash del paquete (${shortHash.lowercase()}).", "CONFIRMATION_HASH_REQUIRED",
+                tr("La confirmacion debe incluir los primeros {0} caracteres del hash del paquete ({1}).", ShortHashLength, shortHash.lowercase()), "CONFIRMATION_HASH_REQUIRED",
             )
         }
         val item = stagedFor(token)
@@ -365,18 +371,18 @@ class ExtensionPackageService(
         val inspected = try {
             requireBuilder().inspectZip(item.id, item.file, item.sourceUrl)
         } catch (failure: ExtensionPackageException) {
-            throw ExtensionPackageServiceException(failure.message ?: "El paquete no es valido.", "PACKAGE_REJECTED")
+            throw ExtensionPackageServiceException(failure.message ?: tr("El paquete no es valido."), "PACKAGE_REJECTED")
         }
         if (!inspected.packageSha256.equals(expectedPackageSha256.trim(), ignoreCase = true)) {
             throw ExtensionPackageServiceException(
-                "El paquete cambio desde que lo revisaste (ahora: hash ${inspected.packageSha256}). Revisalo otra vez.", "PACKAGE_CHANGED",
+                tr("El paquete cambio desde que lo revisaste (ahora: hash {0}). Revisalo otra vez.", inspected.packageSha256), "PACKAGE_CHANGED",
             )
         }
         if (inspected.signed) {
-            throw ExtensionPackageServiceException("La extension '${item.id}' esta firmada; no necesita autorizacion.", "ALREADY_SIGNED")
+            throw ExtensionPackageServiceException(tr("La extension '{0}' esta firmada; no necesita autorizacion.", item.id), "ALREADY_SIGNED")
         }
         inspected.signatureProblem?.let {
-            throw ExtensionPackageServiceException("La extension '${item.id}' trae una firma que no vale ($it); no se puede autorizar.", "SIGNATURE_INVALID")
+            throw ExtensionPackageServiceException(tr("La extension '{0}' trae una firma que no vale ({1}); no se puede autorizar.", item.id, it), "SIGNATURE_INVALID")
         }
         authorizations.authorize(inspected.packageSha256, item.id, item.sourceUrl, actorRole, text)
         audit(
@@ -409,7 +415,7 @@ class ExtensionPackageService(
         try {
             ExtensionUrlDownloader.validate(url)
         } catch (failure: ExtensionPackageException) {
-            throw ExtensionPackageServiceException(failure.message ?: "La URL no es valida.", "URL_REJECTED")
+            throw ExtensionPackageServiceException(failure.message ?: tr("La URL no es valida."), "URL_REJECTED")
         }
         return enqueueExternal(id, actorRole) { active, progress -> active.buildFromUrl(id, url.trim(), progress) }
     }
@@ -422,7 +428,7 @@ class ExtensionPackageService(
     ): ExtensionPackageStatus {
         checkExternalId(id)
         val activeBuilder = requireBuilder()
-        val queued = InstallState("installing", "En cola para compilar")
+        val queued = InstallState("installing", tr("En cola para compilar"))
         if (states.compute(id) { _, current -> if (current?.status == "installing") current else queued } !== queued) return status(id)
         // Un ZIP o una URL no se pueden reanudar tras un reinicio, pero el reinicio si espera a que terminen.
         installQueue?.queued()
@@ -433,7 +439,7 @@ class ExtensionPackageService(
     private fun checkNoDowngrade(id: String, version: String, stored: StoredExtensionPackage?) {
         if (stored != null && stored.status != "removed" && ModuleVersion.compare(version, stored.version) < 0) {
             throw ExtensionPackageServiceException(
-                "La extension '$id' ya esta en la version ${stored.version}; no se instala una anterior ($version).", "DOWNGRADE",
+                tr("La extension '{0}' ya esta en la version {1}; no se instala una anterior ({2}).", id, stored.version, version), "DOWNGRADE",
             )
         }
     }
@@ -452,7 +458,7 @@ class ExtensionPackageService(
         produce: (ExtensionPackageBuilding, (String) -> Unit) -> BuiltExtension,
     ) {
         try {
-            val built = produce(builder) { step -> states[id] = InstallState("installing", step) }
+            val built = produce(builder) { step -> states[id] = InstallState("installing", { tr(step) }) }
             val previous = store.find(id)
             check(built.manifest.id == id) { "El paquete compilado declara otro id." }
             checkNoDowngrade(id, built.manifest.version, previous)
@@ -476,7 +482,7 @@ class ExtensionPackageService(
             finishBuild(id, needsRestart = true)
         } catch (failure: Exception) {
             log.warn("Extension package {} could not be installed: {}", id, failure.message)
-            states[id] = InstallState("error", failure.message ?: "No se pudo instalar la extension.")
+            states[id] = InstallState("error", failure.message ?: tr("No se pudo instalar la extension."))
             finishBuild(id, needsRestart = false)
         }
     }
@@ -496,11 +502,11 @@ class ExtensionPackageService(
     fun inspect(id: String): ExtensionPackageInspection {
         val remote = catalogSource().firstOrNull { it.manifest.id == id } ?: throw notInCatalog(id)
         val activeBuilder = builder
-            ?: throw ExtensionPackageServiceException("Este servidor no puede revisar paquetes: falta la carpeta compiler/ de la instalacion.", "BUILDER_UNAVAILABLE")
+            ?: throw ExtensionPackageServiceException(tr("Este servidor no puede revisar paquetes: falta la carpeta compiler/ de la instalacion."), "BUILDER_UNAVAILABLE")
         val inspected = try {
             activeBuilder.inspect(id, remote.source)
         } catch (failure: ExtensionPackageException) {
-            throw ExtensionPackageServiceException(failure.message ?: "No se pudo descargar el paquete.", "PACKAGE_UNAVAILABLE")
+            throw ExtensionPackageServiceException(failure.message ?: tr("No se pudo descargar el paquete."), "PACKAGE_UNAVAILABLE")
         }
         return ExtensionPackageInspection(
             id = id,
@@ -528,25 +534,25 @@ class ExtensionPackageService(
     ): UnsignedAuthorizationResponse {
         val text = confirmationText.trim()
         if (text.length < MinConfirmationLength) {
-            throw ExtensionPackageServiceException("Escribe la confirmacion con tus palabras (al menos $MinConfirmationLength caracteres).", "CONFIRMATION_REQUIRED")
+            throw ExtensionPackageServiceException(tr("Escribe la confirmacion con tus palabras (al menos {0} caracteres).", MinConfirmationLength), "CONFIRMATION_REQUIRED")
         }
         if (!Sha256Pattern.matches(expectedPackageSha256.trim()) || !CommitPattern.matches(expectedCommit.trim().lowercase())) {
-            throw ExtensionPackageServiceException("Indica el hash (64 hex) y el commit (40 hex) que revisaste.", "EXPECTED_REQUIRED")
+            throw ExtensionPackageServiceException(tr("Indica el hash (64 hex) y el commit (40 hex) que revisaste."), "EXPECTED_REQUIRED")
         }
         val inspection = inspect(id)
         if (!inspection.packageSha256.equals(expectedPackageSha256.trim(), ignoreCase = true) ||
             !inspection.commit.equals(expectedCommit.trim(), ignoreCase = true)
         ) {
             throw ExtensionPackageServiceException(
-                "El paquete cambio desde que lo revisaste (ahora: commit ${inspection.commit}, hash ${inspection.packageSha256}). Revisalo otra vez.",
+                tr("El paquete cambio desde que lo revisaste (ahora: commit {0}, hash {1}). Revisalo otra vez.", inspection.commit, inspection.packageSha256),
                 "PACKAGE_CHANGED",
             )
         }
         if (inspection.signed) {
-            throw ExtensionPackageServiceException("La extension '$id' esta firmada; no necesita autorizacion.", "ALREADY_SIGNED")
+            throw ExtensionPackageServiceException(tr("La extension '{0}' esta firmada; no necesita autorizacion.", id), "ALREADY_SIGNED")
         }
         inspection.signatureProblem?.let {
-            throw ExtensionPackageServiceException("La extension '$id' trae una firma que no vale ($it); no se puede autorizar.", "SIGNATURE_INVALID")
+            throw ExtensionPackageServiceException(tr("La extension '{0}' trae una firma que no vale ({1}); no se puede autorizar.", id, it), "SIGNATURE_INVALID")
         }
         val module = catalogSource().firstOrNull { it.manifest.id == id }?.manifest?.module
         authorizations.authorize(inspection.packageSha256, id, inspection.commitUrl, actorRole, text)
@@ -567,7 +573,7 @@ class ExtensionPackageService(
     fun remove(id: String, actorRole: String): ExtensionPackageStatus {
         val stored = store.find(id)
         if (stored == null || stored.sourceType !in ExtensionSourceType.External || stored.status == "removed") {
-            throw ExtensionPackageServiceException("La extension '$id' no esta instalada como paquete externo.", "NOT_FOUND")
+            throw ExtensionPackageServiceException(tr("La extension '{0}' no esta instalada como paquete externo.", id), "NOT_FOUND")
         }
         store.markRemoved(id)
         states.remove(id)

@@ -429,6 +429,12 @@ apply_control_migrations() {
         die 'No se encontro database/core/migrations/V004__add_application_user_code.sql.'
     [[ -f database/core/migrations/V005__create_notifications.sql ]] ||
         die 'No se encontro database/core/migrations/V005__create_notifications.sql.'
+    [[ -f database/core/migrations/V006__add_application_user_language.sql ]] ||
+        die 'No se encontro database/core/migrations/V006__add_application_user_language.sql.'
+    [[ -f database/control/migrations/V014__add_company_default_language.sql ]] ||
+        die 'No se encontro database/control/migrations/V014__add_company_default_language.sql.'
+    [[ -f database/tenant/migrations/V010__create_text_translations.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V010__create_text_translations.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
@@ -444,11 +450,14 @@ apply_control_migrations() {
 apply_migration "$db_name" control database/control/migrations/V011__create_extensions.sql
 apply_migration "$db_name" control database/control/migrations/V012__extension_zip_url_sources.sql
 apply_migration "$db_name" control database/control/migrations/V013__create_company_links.sql
+apply_migration "$db_name" control database/control/migrations/V014__add_company_default_language.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
+    apply_migration "$db_name" core database/core/migrations/V006__add_application_user_language.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
 GRANT SELECT, UPDATE (user_code) ON application_users TO :"db_user";
+GRANT UPDATE (language) ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
@@ -491,12 +500,15 @@ SQL
         apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
         apply_migration "$tenant_db" core database/core/migrations/V003__add_application_user_profile.sql
         apply_migration "$tenant_db" core database/core/migrations/V005__create_notifications.sql
+        apply_migration "$tenant_db" core database/core/migrations/V006__add_application_user_language.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V010__create_text_translations.sql
         runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_user";
 GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
 SQL
     done <<< "$tenant_list"
     cd /

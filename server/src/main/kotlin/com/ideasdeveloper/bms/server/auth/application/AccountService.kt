@@ -3,6 +3,11 @@ package com.ideasdeveloper.bms.server.auth.application
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.ApplicationPasswordHasher
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.SessionLanguages
+import com.ideasdeveloper.bms.server.i18n.companyLanguage
+import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.userLanguage
 import com.ideasdeveloper.bms.server.modules.MailException
 import com.ideasdeveloper.bms.server.modules.MailSender
 import com.ideasdeveloper.bms.server.modules.SmtpSettings
@@ -54,7 +59,7 @@ object EmailChangeRule {
     ) {
         if (!isChange(storedEmail, requestedEmail)) return
         PasswordConfirmation.require(
-            currentPassword, attempts, attemptKey, "Escribe tu contrasena actual para cambiar el correo.", passwordMatches,
+            currentPassword, attempts, attemptKey, tr("Escribe tu contrasena actual para cambiar el correo."), passwordMatches,
         )
     }
 }
@@ -75,11 +80,11 @@ object PasswordConfirmation {
         if (currentPassword.isNullOrEmpty()) throw AccountException("PASSWORD_REQUIRED", requiredMessage)
         // El bloqueo se mira antes de comparar: un usuario bloqueado no sirve de oraculo de contrasenas.
         if (attempts != null && attempts.isBlocked(attemptKey)) {
-            throw AccountException("TOO_MANY_ATTEMPTS", "Demasiados intentos. Espera unos minutos e intentalo de nuevo.")
+            throw AccountException("TOO_MANY_ATTEMPTS", tr("Demasiados intentos. Espera unos minutos e intentalo de nuevo."))
         }
         if (!passwordMatches(currentPassword)) {
             attempts?.recordFailure(attemptKey)
-            throw AccountException("INVALID_PASSWORD", "La contrasena actual no es correcta.")
+            throw AccountException("INVALID_PASSWORD", tr("La contrasena actual no es correcta."))
         }
     }
 }
@@ -126,7 +131,12 @@ data class AccountProfile(
     val email: String?,
     val profileComplete: Boolean,
     val userCode: String,
+    // The user's own language ("es", "en"), null when they follow the company default (I18N.md §7).
+    val language: String? = null,
 )
+
+/** Value of UpdateAccountProfileRequest.language when the request does not change the language. */
+const val KeepLanguage = "keep"
 
 /** How a password is set for each kind of user; owners sign in with a database role (CompanyProvisioningService). */
 class AccountPasswords(
@@ -169,16 +179,16 @@ class AccountService(
         const val MaxThrottleEntries = 10_000
     }
 
-    private class Account(val id: UUID, val username: String, val displayName: String?, val email: String?, val userCode: String?) {
-        fun profile(userCode: String) = AccountProfile(
-            username, displayName, email, UserProfileRules.isComplete(displayName, email), userCode,
+    private class Account(val id: UUID, val username: String, val displayName: String?, val email: String?, val userCode: String?, val language: String? = null) {
+        fun profile(userCode: String, language: String? = null) = AccountProfile(
+            username, displayName, email, UserProfileRules.isComplete(displayName, email), userCode, language,
         )
     }
 
     fun profile(accessToken: String, companyCode: String?): AccountProfile = database(companyCode).use { connection ->
         val account = sessionAccount(connection, accessToken, companyCode == null)
-            ?: throw AccountException("INVALID_SESSION", "La sesion no es valida.")
-        account.profile(ApplicationUserCodes.ensure(connection, account.id))
+            ?: throw AccountException("INVALID_SESSION", tr("La sesion no es valida."))
+        account.profile(ApplicationUserCodes.ensure(connection, account.id), userLanguage(connection, account.id))
     }
 
     fun updateProfile(
@@ -187,11 +197,17 @@ class AccountService(
         displayName: String,
         email: String,
         currentPassword: String? = null,
+        // "es", "en", null (follow the company) or KeepLanguage (unchanged: older apps do not send it).
+        language: String? = KeepLanguage,
     ): AccountProfile {
         UserProfileRules.problem(displayName, email)?.let { throw AccountException("INVALID_PROFILE", it.replaceFirstChar(Char::uppercase)) }
+        val newLanguage = language?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        if (newLanguage != null && newLanguage != KeepLanguage && newLanguage !in I18n.Languages) {
+            throw AccountException("INVALID_LANGUAGE", tr("El idioma no es valido."))
+        }
         return database(companyCode).use { connection ->
             val account = sessionAccount(connection, accessToken, companyCode == null)
-                ?: throw AccountException("INVALID_SESSION", "La sesion no es valida.")
+                ?: throw AccountException("INVALID_SESSION", tr("La sesion no es valida."))
             // Cambiar el correo propio exige la contrasena actual; cambiar solo el nombre no.
             val emailChanges = EmailChangeRule.isChange(account.email, email)
             val attemptKey = "${companyCode.orEmpty()}/${account.username}"
@@ -204,6 +220,13 @@ class AccountService(
                     update.setString(2, email.trim())
                     update.setObject(3, account.id)
                     update.executeUpdate()
+                }
+                if (newLanguage != KeepLanguage) {
+                    connection.prepareStatement("UPDATE application_users SET language = ? WHERE id = ?").use { update ->
+                        update.setString(1, newLanguage)
+                        update.setObject(2, account.id)
+                        update.executeUpdate()
+                    }
                 }
                 // Con otro correo, las demas sesiones (la de un posible atacante) se cierran; la actual se conserva.
                 if (emailChanges) {
@@ -222,8 +245,14 @@ class AccountService(
             } finally {
                 connection.autoCommit = true
             }
+            val stored = if (newLanguage == KeepLanguage) userLanguage(connection, account.id) else newLanguage
+            if (newLanguage != KeepLanguage) {
+                SessionLanguages.rememberUser(SessionLanguages.userKey(companyCode, account.id), stored)
+                // The answer already comes in the new language (the company default when following it).
+                I18n.overrideRequestLanguage(stored ?: companyCode?.let { code -> central.connection.use { companyLanguage(it, code) } } ?: I18n.Source)
+            }
             Account(account.id, account.username, displayName.trim(), email.trim(), account.userCode)
-                .profile(ApplicationUserCodes.ensure(connection, account.id))
+                .profile(ApplicationUserCodes.ensure(connection, account.id), stored)
         }
     }
 
@@ -233,14 +262,15 @@ class AccountService(
      */
     fun requestPasswordReset(username: String, companyCode: String?) {
         val settings = mail()?.takeIf { it.isUsable }
-            ?: throw AccountException("MAIL_NOT_CONFIGURED", "El servidor no tiene correo configurado. Pide al administrador que cambie tu contrasena.")
+            ?: throw AccountException("MAIL_NOT_CONFIGURED", tr("El servidor no tiene correo configurado. Pide al administrador que cambie tu contrasena."))
         val name = username.trim()
         if (!identifierPattern.matches(name) || (companyCode != null && !identifierPattern.matches(companyCode))) return
         // Todo el trabajo (consulta, codigo y correo SMTP) va en segundo plano: la respuesta tarda
         // lo mismo exista o no el usuario y tenga o no correo.
+        val language = I18n.language()
         background.launch {
             try {
-                issueResetCode(settings, name, companyCode)
+                issueResetCode(settings, name, companyCode, language)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -249,7 +279,7 @@ class AccountService(
         }
     }
 
-    private fun issueResetCode(settings: SmtpSettings, name: String, companyCode: String?) {
+    private fun issueResetCode(settings: SmtpSettings, name: String, companyCode: String?, language: String) {
         val (account, code) = databaseOrNull(companyCode)?.use { connection ->
             val account = accountByUsername(connection, name, companyCode == null)
                 ?.takeIf { it.email != null && UserProfileRules.validEmail(it.email) } ?: return@use null
@@ -291,15 +321,15 @@ class AccountService(
             }
         } ?: return
         try {
-            MailSender.sendText(
-                settings,
-                account.email!!,
-                "Codigo para cambiar tu contrasena de BMS",
-                "Hola ${account.displayName ?: account.username}:\n\n" +
-                    "Tu codigo para cambiar la contrasena del usuario ${account.username}" +
-                    (companyCode?.let { " (empresa $it)" } ?: " (dueno del servidor)") + " es:\n\n    $code\n\n" +
-                    "Vence en ${CodeLifetime.toMinutes()} minutos. Si no lo pediste, ignora este correo; tu contrasena no cambia.\n",
-            )
+            // In the user's own language when set, else the language of the request that asked for it.
+            val (subject, body) = I18n.withLanguage(account.language ?: language) {
+                tr("Codigo para cambiar tu contrasena de BMS") to
+                    tr("Hola {0}:", account.displayName ?: account.username) + "\n\n" +
+                    tr("Tu codigo para cambiar la contrasena del usuario {0}", account.username) +
+                    (companyCode?.let { tr(" (empresa {0})", it) } ?: tr(" (dueno del servidor)")) + tr(" es:") + "\n\n    $code\n\n" +
+                    tr("Vence en {0} minutos. Si no lo pediste, ignora este correo; tu contrasena no cambia.", CodeLifetime.toMinutes()) + "\n"
+            }
+            MailSender.sendText(settings, account.email!!, subject, body)
         } catch (failure: MailException) {
             log.warn("Password reset code for {} could not be sent", account.username, failure)
         }
@@ -307,14 +337,14 @@ class AccountService(
 
     /** Sets the new password when the code is right and still valid, and closes the user's sessions. */
     fun confirmPasswordReset(username: String, companyCode: String?, code: String, newPassword: String) {
-        val invalid = AccountException("INVALID_CODE", "El codigo no es valido o ya vencio. Pide uno nuevo.")
+        val invalid = AccountException("INVALID_CODE", tr("El codigo no es valido o ya vencio. Pide uno nuevo."))
         val name = username.trim()
         if (!identifierPattern.matches(name) || (companyCode != null && !identifierPattern.matches(companyCode))) throw invalid
         if (!codePattern.matches(code.trim())) throw invalid
-        if (newPassword.length < 12) throw AccountException("WEAK_PASSWORD", "La contrasena debe tener al menos 12 caracteres.")
+        if (newPassword.length < 12) throw AccountException("WEAK_PASSWORD", tr("La contrasena debe tener al menos 12 caracteres."))
         // Server owners sign in to PostgreSQL itself, with the installer's rule.
         if (companyCode == null && (newPassword.length < 16 || newPassword.any { it !in ' '..'~' })) {
-            throw AccountException("WEAK_PASSWORD", "La contrasena del dueno del servidor debe tener al menos 16 caracteres ASCII.")
+            throw AccountException("WEAK_PASSWORD", tr("La contrasena del dueno del servidor debe tener al menos 16 caracteres ASCII."))
         }
         val connection = databaseOrNull(companyCode) ?: throw invalid
         connection.use {
@@ -573,7 +603,7 @@ class AccountService(
 
     // The central database for server owners (no company), or the active company's tenant database.
     private fun database(companyCode: String?): Connection =
-        databaseOrNull(companyCode) ?: throw AccountException("COMPANY_NOT_FOUND", "La empresa no esta activa.")
+        databaseOrNull(companyCode) ?: throw AccountException("COMPANY_NOT_FOUND", tr("La empresa no esta activa."))
 
     private fun databaseOrNull(companyCode: String?): Connection? {
         if (companyCode == null) return central.connection
@@ -620,7 +650,7 @@ class AccountService(
     ).use { query ->
         query.setString(1, username)
         query.executeQuery().use { rows -> if (rows.next()) account(rows) else null }
-    }
+    }?.let { account -> Account(account.id, account.username, account.displayName, account.email, account.userCode, userLanguage(connection, account.id)) }
 
     private fun account(rows: java.sql.ResultSet) = Account(
         id = rows.getObject(1, UUID::class.java),

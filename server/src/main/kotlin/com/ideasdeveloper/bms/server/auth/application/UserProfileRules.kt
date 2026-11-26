@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.server.auth.application
 
+import com.ideasdeveloper.bms.server.i18n.tr
+
 /** Name and email every user must have (changes are recorded with them; the email gets reset codes). */
 object UserProfileRules {
     const val MaxNameLength = 120
@@ -12,8 +14,8 @@ object UserProfileRules {
 
     // The first problem with a name and email, or null when both are valid.
     fun problem(name: String, email: String): String? = when {
-        !validName(name) -> "escribe un nombre de 2 a $MaxNameLength caracteres."
-        !validEmail(email) -> "escribe un correo valido."
+        !validName(name) -> tr("escribe un nombre de 2 a {0} caracteres.", MaxNameLength)
+        !validEmail(email) -> tr("escribe un correo valido.")
         else -> null
     }
 

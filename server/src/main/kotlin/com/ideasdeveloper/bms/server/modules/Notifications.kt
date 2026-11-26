@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.I18n
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -217,9 +218,35 @@ internal class JdbcNotificationStore(private val tenant: Connection) : Notificat
  * Notificador de un modulo: crea notificaciones siempre con el id del propio modulo como origen, de modo
  * que un modulo no puede hacerse pasar por otro. Se obtiene con `access.notificationsFor(moduleId)`, o ya
  * ligado en `ModuleJobContext.notifier` y `McpToolCall.notifier`.
+ *
+ * Las notificaciones se guardan ya escritas (I18N.md §7): para que cada destinatario la lea en su idioma,
+ * usa la sobrecarga que recibe un constructor, que se ejecuta bajo el idioma del destinatario:
+ *
+ *     notifier.notify(tenant, userId, target) { NotificationText(tr("Te asignaron un lead"), lead.name) }
  */
-class ModuleNotifier internal constructor(val moduleId: String, private val service: NotificationService) {
+class ModuleNotifier internal constructor(
+    val moduleId: String,
+    private val service: NotificationService,
+    // Idioma de un destinatario (ModuleAccessService.recipientLanguage): el suyo, el de la empresa o "es".
+    private val recipientLanguage: (Connection, UUID) -> String = { _, _ -> I18n.Source },
+) {
     /** Crea la notificacion para [userId] y devuelve su id; el clic abre [target] en este modulo. */
     fun notify(tenant: Connection, userId: UUID, title: String, text: String = "", target: NotificationTarget? = null): UUID =
         service.notify(tenant, NewNotification(userId, moduleId, title, text, target))
+
+    /**
+     * Crea la notificacion para [userId] escrita por [build] en el idioma del destinatario (el suyo, si no
+     * el de la empresa, si no "es"); dentro de [build] `tr(...)` ya devuelve ese idioma.
+     */
+    fun notify(tenant: Connection, userId: UUID, target: NotificationTarget? = null, build: () -> NotificationText): UUID {
+        val text = I18n.withLanguage(recipientLanguage(tenant, userId)) { build() }
+        return service.notify(tenant, NewNotification(userId, moduleId, text.title, text.text, target))
+    }
+
+    /** [notify] with [build] for each of [userIds], each one in its own language; returns the ids in the same order. */
+    fun notifyEach(tenant: Connection, userIds: Collection<UUID>, target: NotificationTarget? = null, build: () -> NotificationText): List<UUID> =
+        userIds.map { userId -> notify(tenant, userId, target, build) }
 }
+
+/** Title and text of a notification built for one recipient (see [ModuleNotifier.notify]). */
+data class NotificationText(val title: String, val text: String = "")

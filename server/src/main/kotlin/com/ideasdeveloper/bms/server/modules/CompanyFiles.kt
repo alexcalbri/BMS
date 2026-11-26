@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.io.FilterInputStream
 import java.io.InputStream
 import java.nio.file.Files
@@ -30,7 +31,7 @@ interface FileBackend {
     fun deleteCompany(companyCode: String) = Unit
 }
 
-class FileTooLargeException(val maxBytes: Long) : Exception("El archivo supera el maximo de ${maxBytes / (1024 * 1024)} MB.")
+class FileTooLargeException(val maxBytes: Long) : Exception(tr("El archivo supera el maximo de {0} MB.", maxBytes / (1024 * 1024)))
 
 /** A file written for a module: what the module stores in its table to read or delete it later. */
 data class StoredFileRef(val backend: String, val ref: String, val size: Long)
@@ -106,7 +107,7 @@ class CompanyFiles(
     }
 
     private fun backend(id: String) = backends.firstOrNull { it.id == id }
-        ?: throw IllegalStateException("El almacenamiento '$id' no esta disponible en este servidor.")
+        ?: throw IllegalStateException(tr("El almacenamiento '{0}' no esta disponible en este servidor.", id))
 
     fun module(companyCode: String, moduleId: String) = ModuleFiles(this, companyCode, moduleId)
 

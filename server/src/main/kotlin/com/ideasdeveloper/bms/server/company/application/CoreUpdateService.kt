@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.company.application
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.Serializable
 import java.sql.Connection
 import java.sql.ResultSet
@@ -46,7 +47,7 @@ data class CoreUpdateRow(
 )
 
 /** Ya hay una solicitud pending o running (indice unico). */
-class CoreUpdateActiveException : RuntimeException("Ya hay una actualizacion en curso.")
+class CoreUpdateActiveException : RuntimeException(tr("Ya hay una actualizacion en curso."))
 
 /** Acceso a datos de las solicitudes; se separa para poder probar la logica sin base de datos. */
 interface CoreUpdateStore {

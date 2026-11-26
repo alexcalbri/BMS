@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.app.BMSVersion
 import com.ideasdeveloper.bms.server.extensions.ExtensionSignatureFile
 import com.ideasdeveloper.bms.server.extensions.packages.ExtensionPackageException
@@ -135,15 +136,15 @@ class ModulePackageBuilder(
 
     /** Validates, compiles and packages a module folder that follows the modules/<id>/ layout. */
     fun buildFromDirectory(moduleId: String, moduleDir: Path, work: Path, progress: (String) -> Unit): BuiltModule {
-        progress("Validando la estructura del modulo")
+        progress(msg("Validando la estructura del modulo"))
         val manifest = validate(moduleId, moduleDir)
         val version = manifest["version"]!!.jsonPrimitive.content
 
         // Nada se compila ni se carga hasta que el paquete esta firmado o autorizado por hash.
-        progress("Verificando la firma del paquete")
+        progress(msg("Verificando la firma del paquete"))
         verify(moduleId, moduleDir)
 
-        progress("Compilando contra el nucleo instalado")
+        progress(msg("Compilando contra el nucleo instalado"))
         val classes = Files.createDirectories(work.resolve("classes"))
         compile(moduleDir.resolve("server/src/main/kotlin"), classes, work)
 

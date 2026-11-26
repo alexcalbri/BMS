@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.modules.ModuleAccessDecision
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -29,7 +30,7 @@ class ExtensionActors(
     /** The server owner behind the Bearer token, or a refusal. */
     suspend fun serverOwner(call: ApplicationCall): ExtensionActorLookup {
         val role = bearerToken(call)?.let { token -> withContext(Dispatchers.IO) { authorizer.serverOwnerRole(token) } }
-            ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Forbidden("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+            ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Forbidden("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
         return ExtensionActorLookup.Found(ExtensionActor(role, serverOwner = true))
     }
 
@@ -39,16 +40,16 @@ class ExtensionActors(
      */
     suspend fun currentCompany(call: ApplicationCall): ExtensionActorLookup {
         val token = bearerToken(call)
-            ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", "La sesion es requerida."))
+            ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", tr("La sesion es requerida.")))
         val company = call.request.headers["X-Company-Code"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", "La empresa es requerida."))
+            ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", tr("La empresa es requerida.")))
         val serverRole = withContext(Dispatchers.IO) { authorizer.serverOwnerRole(token) }
         if (serverRole != null) return ExtensionActorLookup.Found(ExtensionActor(serverRole, serverOwner = true, companyCode = company))
         return when (val session = withContext(Dispatchers.IO) { access.userSession(call) }) {
             is UserSessionLookup.Denied -> ExtensionActorLookup.Denied(session.decision)
             is UserSessionLookup.Granted -> {
                 val role = withContext(Dispatchers.IO) { businessOwnerRole(session.companyCode, session.userId) }
-                    ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Forbidden("BUSINESS_OWNER_REQUIRED", "Solo el business owner puede administrar las extensiones."))
+                    ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Forbidden("BUSINESS_OWNER_REQUIRED", tr("Solo el business owner puede administrar las extensiones.")))
                 ExtensionActorLookup.Found(ExtensionActor(role, serverOwner = false, companyCode = session.companyCode))
             }
         }

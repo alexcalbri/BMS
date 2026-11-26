@@ -2,6 +2,8 @@ package com.ideasdeveloper.bms.server.auth.api
 
 import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountService
+import com.ideasdeveloper.bms.server.auth.application.KeepLanguage
+import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -24,6 +26,8 @@ data class UpdateAccountProfileRequest(
     val email: String,
     // Obligatoria solo si el correo cambia.
     val currentPassword: String? = null,
+    // "es", "en" or null to follow the company default; left out, the language does not change.
+    val language: String? = KeepLanguage,
 )
 
 @Serializable
@@ -39,14 +43,14 @@ data class AccountMessageResponse(val message: String)
 fun Route.accountProfileRoutes(service: AccountService) {
     get("/auth/profile") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val token = call.bearer() ?: return@get call.respond(HttpStatusCode.Unauthorized, AuthErrorResponse("INVALID_SESSION", "La sesion es requerida."))
+        val token = call.bearer() ?: return@get call.respond(HttpStatusCode.Unauthorized, AuthErrorResponse("INVALID_SESSION", tr("La sesion es requerida.")))
         call.answer { service.profile(token, call.companyCode()) }
     }
     put("/auth/profile") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val token = call.bearer() ?: return@put call.respond(HttpStatusCode.Unauthorized, AuthErrorResponse("INVALID_SESSION", "La sesion es requerida."))
+        val token = call.bearer() ?: return@put call.respond(HttpStatusCode.Unauthorized, AuthErrorResponse("INVALID_SESSION", tr("La sesion es requerida.")))
         val request = call.receiveOrNull<UpdateAccountProfileRequest>() ?: return@put
-        call.answer { service.updateProfile(token, call.companyCode(), request.displayName, request.email, request.currentPassword) }
+        call.answer { service.updateProfile(token, call.companyCode(), request.displayName, request.email, request.currentPassword, request.language) }
     }
 }
 
@@ -57,7 +61,7 @@ fun Route.passwordResetRoutes(service: AccountService) {
         val request = call.receiveOrNull<PasswordResetRequest>() ?: return@post
         call.answer {
             service.requestPasswordReset(request.username, request.companyCode?.trim()?.takeIf { it.isNotEmpty() })
-            AccountMessageResponse("Si el usuario existe y tiene correo registrado, enviamos un codigo que vence en 15 minutos.")
+            AccountMessageResponse(tr("Si el usuario existe y tiene correo registrado, enviamos un codigo que vence en 15 minutos."))
         }
     }
     post("/auth/password-reset/confirm") {
@@ -65,7 +69,7 @@ fun Route.passwordResetRoutes(service: AccountService) {
         val request = call.receiveOrNull<PasswordResetConfirmation>() ?: return@post
         call.answer {
             service.confirmPasswordReset(request.username, request.companyCode?.trim()?.takeIf { it.isNotEmpty() }, request.code, request.newPassword)
-            AccountMessageResponse("Contrasena actualizada. Ya puedes iniciar sesion.")
+            AccountMessageResponse(tr("Contrasena actualizada. Ya puedes iniciar sesion."))
         }
     }
 }
@@ -81,10 +85,10 @@ private fun ApplicationCall.companyCode(): String? = request.headers["X-Company-
 private suspend inline fun <reified T : Any> ApplicationCall.receiveOrNull(): T? = try {
     receive<T>()
 } catch (_: BadRequestException) {
-    respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+    respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
     null
 } catch (_: ContentTransformationException) {
-    respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+    respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
     null
 }
 
@@ -100,7 +104,7 @@ private suspend inline fun <reified T : Any> ApplicationCall.answer(crossinline 
         }
         return respond(status, AuthErrorResponse(failure.code, failure.message.orEmpty()))
     } catch (_: SQLException) {
-        return respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("ACCOUNT_UNAVAILABLE", "No se pudo completar la operacion. Intentalo mas tarde."))
+        return respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("ACCOUNT_UNAVAILABLE", tr("No se pudo completar la operacion. Intentalo mas tarde.")))
     }
     respond(HttpStatusCode.OK, result)
 }
