@@ -675,7 +675,7 @@ object CrmRepository {
 
     fun activity(tenant: Connection, leadId: UUID, limit: Int): List<CrmActivity> = tenant.prepareStatement(
         """
-        SELECT a.kind, a.body, fs.name, ts.name, a.author, a.created_at, a.id
+        SELECT a.kind, a.body, fs.name, ts.name, a.author, a.created_at, a.id, a.user_id
         FROM crm_activity a
         LEFT JOIN crm_stages fs ON fs.id = a.from_stage_id
         LEFT JOIN crm_stages ts ON ts.id = a.to_stage_id
@@ -689,7 +689,7 @@ object CrmRepository {
         query.executeQuery().use { rows ->
             buildList {
                 while (rows.next()) add(
-                    CrmActivity(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getTimestamp(6).toInstant(), rows.getObject(7, UUID::class.java))
+                    CrmActivity(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getTimestamp(6).toInstant(), rows.getObject(7, UUID::class.java), rows.getObject(8, UUID::class.java))
                 )
             }
         }

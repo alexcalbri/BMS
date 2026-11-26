@@ -26,8 +26,10 @@ class TextTranslationTest {
             finds++
             return hashes.mapNotNull { hash -> rows[hash to language]?.let { hash to it.first } }.toMap()
         }
-        override fun saveAutomatic(tenant: Connection, language: String, translations: Map<String, String>) {
+        val sources = ConcurrentHashMap<String, String>()
+        override fun saveAutomatic(tenant: Connection, language: String, translations: Map<String, String>, keepSource: Boolean) {
             translations.forEach { (source, translated) ->
+                sources[TextTranslation.hash(source)] = if (keepSource) source else ""
                 val key = TextTranslation.hash(source) to language
                 if (rows[key]?.second != true) rows[key] = translated to false
             }
@@ -43,9 +45,10 @@ class TextTranslationTest {
             if (failing) throw SQLException("relation \"text_translations\" does not exist") else hashes.mapNotNull { hash -> rows[hash to language]?.takeIf { it.second }?.let { hash to it.first } }.toMap()
     }
 
-    private class CountingTranslator(private val answer: (String) -> String = { "EN:$it" }) : TextTranslator {
+    private class CountingTranslator(private val notes: Boolean = true, private val answer: (String) -> String = { "EN:$it" }) : TextTranslator {
         val calls = mutableListOf<List<String>>()
         var sources = mutableListOf<String>()
+        override fun notesAllowed(tenant: Connection) = notes
         override fun translate(tenant: Connection, texts: List<String>, source: String, target: String): List<String> {
             synchronized(this) {
                 calls += texts
@@ -238,6 +241,48 @@ class TextTranslationTest {
         }
         translation.translate("acme", connection, listOf("Uno"), "en")
         assertTrue(interrupted.await(3, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun notesAreSentOnlyWhenTheProviderAllowsThemAndNeverKeepTheirText() {
+        val off = service()
+        val denied = CountingTranslator(notes = false)
+        off.registerTextTranslator("crm", denied)
+        assertEquals(listOf<String?>(null), off.noteTranslations("acme", connection, listOf("Llamar"), "en"))
+        assertTrue(denied.calls.isEmpty())
+        // Names do not depend on the notes switch and keep their source text (the editor needs it).
+        assertEquals(listOf("EN:Nuevo"), off.translate("acme", connection, listOf("Nuevo"), "en"))
+        repeat(50) { if (store.sources.isEmpty()) Thread.sleep(20) }
+        assertEquals("Nuevo", store.sources.getValue(TextTranslation.hash("Nuevo")))
+        // Notes allowed: translated, hash only in the cache.
+        val on = service()
+        on.registerTextTranslator("crm", CountingTranslator())
+        assertEquals(listOf<String?>("EN:Llamar"), on.noteTranslations("acme", connection, listOf("Llamar"), "en"))
+        assertEquals("", store.sources.getValue(TextTranslation.hash("Llamar")))
+        assertEquals("EN:Llamar", store.rows.getValue(TextTranslation.hash("Llamar") to "en").first)
+    }
+
+    @Test
+    fun aCancelledFillKeepsTheCompanyBusyUntilTheProviderCallReallyEnds() {
+        var now = 0L
+        val hold = CountDownLatch(1)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val translation = service(waitMillis = 20, budget = 100, clock = { now })
+        translation.registerTextTranslator("stubborn") { _, texts, _, _ ->
+            calls.incrementAndGet()
+            // Ignores the interrupt, like a blocking socket read can.
+            while (hold.count > 0) runCatching { hold.await(5, TimeUnit.SECONDS) }
+            texts
+        }
+        translation.translate("acme", connection, listOf("Uno"), "en")
+        Thread.sleep(400)
+        // The watchdog has cancelled the task, the provider call still runs: no second call for this company, even after the cooldown.
+        now += TextTranslation.FailureCooldownMillis + 1
+        translation.translate("acme", connection, listOf("Dos"), "en")
+        assertEquals(1, calls.get())
+        hold.countDown()
+        repeat(100) { if (calls.get() < 2) { translation.translate("acme", connection, listOf("Tres $it"), "en"); Thread.sleep(20) } }
+        assertEquals(2, calls.get())
     }
 
     @Test

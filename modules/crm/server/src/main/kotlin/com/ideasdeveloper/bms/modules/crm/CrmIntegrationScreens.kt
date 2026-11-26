@@ -73,8 +73,12 @@ object CrmIntegrationScreens {
                                 "languageMap", tr("Equivalencias de idioma"), type = "textarea", visibleWhen = on,
                                 help = tr("Una por linea: Valor = codigo. Por ejemplo Ingles = en. Si el valor ya es un codigo (en, fr) no hace falta."),
                             ),
+                            UiField(
+                                "translateNotes", tr("Traducir notas del personal"), type = "boolean", visibleWhen = on,
+                                help = tr("Si se activa, las notas que escribe el personal se envian al proveedor de traduccion configurado para mostrarlas traducidas, y pueden mencionar a clientes. Las notas importadas nunca se envian. Los nombres de etapas y tableros se traducen aparte."),
+                            ),
                         ),
-                        CrmTranslate.toFormValues(settings, context.fields) + submitted.orEmpty().filterKeys { it in setOf("provider", "model", "languageField", "languageMap") },
+                        CrmTranslate.toFormValues(settings, context.fields) + submitted.orEmpty().filterKeys { it in setOf("provider", "model", "languageField", "languageMap", "translateNotes") },
                         submit = UiButton(tr("Guardar"), UiRequest(UiRoute + "/integrations", params = mapOf("op" to "translationSave"), formId = "translation")),
                         minFieldWidth = 220,
                     ),

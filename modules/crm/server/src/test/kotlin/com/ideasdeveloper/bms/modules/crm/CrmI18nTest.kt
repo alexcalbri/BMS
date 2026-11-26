@@ -32,6 +32,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -196,9 +197,11 @@ class CrmI18nTest {
 
     private class Cache : TextTranslationStore {
         val rows = mutableMapOf<Pair<String, String>, String>()
+        val keptSources = mutableListOf<Boolean>()
         override fun find(tenant: Connection, language: String, hashes: Collection<String>) =
             hashes.mapNotNull { hash -> rows[language to hash]?.let { hash to it } }.toMap()
-        override fun saveAutomatic(tenant: Connection, language: String, translations: Map<String, String>) {
+        override fun saveAutomatic(tenant: Connection, language: String, translations: Map<String, String>, keepSource: Boolean) {
+            keptSources += keepSource
             translations.forEach { (source, translated) -> rows[language to TextTranslation.hash(source)] = translated }
         }
         override fun saveManual(tenant: Connection, language: String, source: String, translated: String) {
@@ -240,7 +243,7 @@ class CrmI18nTest {
         // Core opens the company's database for the background fill and closes it: a connection that accepts that.
         val openable = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(Connection::class.java)) { _, _, _ -> null } as Connection
         val service = TextTranslation({ openable }, { "es" }, cache, waitMillis = 3_000)
-        service.registerTextTranslator(CrmModule.id, CrmTranslate.textTranslator(http) { CrmTranslationSettings(provider = "anthropic", apiKey = "i18n-test-key") })
+        service.registerTextTranslator(CrmModule.id, CrmTranslate.textTranslator(http) { CrmTranslationSettings(provider = "anthropic", apiKey = "i18n-test-key", translateNotes = true) })
         service.setManual(tenant, "Nuevo", "en", "Brand new")
         // One batch for the whole screen; the manual translation is not asked again.
         val names = service.translate("acme", tenant, listOf("Nuevo", "Contactado", "Ganado"), "en")
@@ -253,6 +256,49 @@ class CrmI18nTest {
         http.asked.clear()
         assertEquals(listOf("Nuevo"), service.translate("acme", tenant, listOf("Nuevo"), "es"))
         assertTrue(http.asked.isEmpty())
+    }
+
+    @Test
+    fun theNotesSwitchIsOffByDefaultAndNamesDoNotDependOnIt() {
+        val http = Provider()
+        val cache = Cache()
+        val openable = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(Connection::class.java)) { _, _, _ -> null } as Connection
+        val service = TextTranslation({ openable }, { "es" }, cache, waitMillis = 3_000)
+        val off = CrmTranslationSettings(provider = "anthropic", apiKey = "i18n-test-key")
+        assertFalse(off.translateNotes)
+        service.registerTextTranslator(CrmModule.id, CrmTranslate.textTranslator(http) { off })
+        assertEquals(listOf<String?>(null), service.noteTranslations("acme", tenant, listOf("Llamar manana"), "en"))
+        assertTrue(http.asked.isEmpty())
+        // Names are translated all the same.
+        assertEquals(listOf("EN Nuevo"), service.translate("acme", tenant, listOf("Nuevo"), "en"))
+        assertEquals(listOf("Nuevo"), http.asked)
+        // The switch needs a ready provider; on, notes go and no source text is kept.
+        assertFalse(CrmTranslate.textTranslator(http) { CrmTranslationSettings(translateNotes = true) }.notesAllowed(tenant))
+        val on = CrmTranslate.merge(off, mapOf("translateNotes" to "true"), emptyList())
+        assertTrue(on.translateNotes)
+        assertFalse(CrmTranslate.merge(on, mapOf("translateNotes" to "false"), emptyList()).translateNotes)
+        assertTrue(CrmTranslate.merge(on, emptyMap(), emptyList()).translateNotes)
+        val enabled = TextTranslation({ openable }, { "es" }, cache, waitMillis = 3_000)
+        enabled.registerTextTranslator(CrmModule.id, CrmTranslate.textTranslator(http) { on })
+        assertEquals(listOf<String?>("EN Llamar"), enabled.noteTranslations("acme", tenant, listOf("Llamar"), "en"))
+        assertEquals(listOf(false), cache.keptSources.takeLast(1))
+    }
+
+    @Test
+    fun importedNotesAreNeverSentToTheProvider() {
+        val at = java.time.Instant.now()
+        val staff = CrmActivity("note", "Llamar manana", null, null, "Ana", at, UUID.randomUUID(), UUID.randomUUID())
+        val imported = CrmActivity("note", "Cliente dice que su pasaporte es X", null, null, "monday", at, UUID.randomUUID(), null)
+        val system = CrmActivity("stage", "Nuevo -> Ganado", null, null, "Sistema", at, UUID.randomUUID(), null)
+        val blank = CrmActivity("note", "  ", null, null, "Ana", at, UUID.randomUUID(), UUID.randomUUID())
+        val noted = CrmTexts.staffNotes(listOf(imported, staff, system, blank))
+        assertEquals(listOf(staff), noted)
+        val http = Provider()
+        val openable = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(Connection::class.java)) { _, _, _ -> null } as Connection
+        val service = TextTranslation({ openable }, { "es" }, Cache(), waitMillis = 3_000)
+        service.registerTextTranslator(CrmModule.id, CrmTranslate.textTranslator(http) { CrmTranslationSettings(provider = "anthropic", apiKey = "i18n-test-key", translateNotes = true) })
+        assertEquals(listOf<String?>("EN Llamar manana"), service.noteTranslations("acme", tenant, noted.map { it.body }, "en"))
+        assertEquals(listOf("Llamar manana"), http.asked)
     }
 
     @Test
