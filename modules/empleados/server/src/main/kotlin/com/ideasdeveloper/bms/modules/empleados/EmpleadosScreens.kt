@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiCard
@@ -85,12 +86,12 @@ object EmpleadosScreens {
     fun navigation(scope: EmpleadosScope, selected: String, import: Boolean = false): UiNavigation = UiNavigation(
         title = EmpleadosModule.displayName,
         items = listOfNotNull(
-            UiNavItem("mine", "Mi horario", UiNavigate("mine")),
-            UiNavItem("team", "Equipo", UiNavigate("team")),
-            UiNavItem("week", "Semana", UiNavigate("week")).takeIf { scope.canShifts || scope.canManage },
-            UiNavItem("absences", "Ausencias", UiNavigate("absences")),
-            UiNavItem("admin", "Administrar", UiNavigate("admin")).takeIf { scope.canManage },
-            UiNavItem("importar", "Importar", UiNavigate("importar")).takeIf { import },
+            UiNavItem("mine", tr("Mi horario"), UiNavigate("mine")),
+            UiNavItem("team", tr("Equipo"), UiNavigate("team")),
+            UiNavItem("week", tr("Semana"), UiNavigate("week")).takeIf { scope.canShifts || scope.canManage },
+            UiNavItem("absences", tr("Ausencias"), UiNavigate("absences")),
+            UiNavItem("admin", tr("Administrar"), UiNavigate("admin")).takeIf { scope.canManage },
+            UiNavItem("importar", tr("Importar"), UiNavigate("importar")).takeIf { import },
         ),
         selected = selected,
     )
@@ -109,8 +110,8 @@ object EmpleadosScreens {
 
     /** El horario de un dia como texto corto: "08:00–16:00", "Libre" o el tipo de ausencia. */
     fun dayText(schedule: DaySchedule, siteNames: Map<UUID, String> = emptyMap(), showSites: Boolean = false): String = when (schedule) {
-        is DaySchedule.Absent -> schedule.kind.label
-        is DaySchedule.Off -> "Libre"
+        is DaySchedule.Absent -> tr(schedule.kind.label)
+        is DaySchedule.Off -> tr("Libre")
         is DaySchedule.Working -> schedule.slots.joinToString(", ") { slot ->
             val range = EmpleadosSchedule.formatRange(slot.start, slot.end)
             val site = slot.siteId?.takeIf { showSites }?.let { siteNames[it] }
@@ -123,8 +124,8 @@ object EmpleadosScreens {
      * viene de un turno concreto (no del horario habitual).
      */
     fun weekCell(employee: Employee, schedule: DaySchedule, siteNames: Map<UUID, String>): String = when (schedule) {
-        is DaySchedule.Absent -> schedule.kind.label
-        is DaySchedule.Off -> if (schedule.source == EmpleadosSchedule.SourceShift) "Libre*" else "Libre"
+        is DaySchedule.Absent -> tr(schedule.kind.label)
+        is DaySchedule.Off -> if (schedule.source == EmpleadosSchedule.SourceShift) "Libre*" else tr("Libre")
         is DaySchedule.Working -> {
             val text = schedule.slots.joinToString(", ") { slot ->
                 val range = EmpleadosSchedule.formatRange(slot.start, slot.end)
@@ -138,7 +139,7 @@ object EmpleadosScreens {
     private fun dayRange(start: LocalDate) = "${start} a ${start.plusDays(6)}"
 
     private fun badge(status: AbsenceStatus) = UiBadge(
-        status.label,
+        tr(status.label),
         when (status) {
             AbsenceStatus.Pending -> UiTone.Warning
             AbsenceStatus.Approved -> UiTone.Success
@@ -148,23 +149,23 @@ object EmpleadosScreens {
     )
 
     private fun absenceTitle(absence: Absence) =
-        if (absence.startDate == absence.endDate) "${absence.kind.label} · ${absence.startDate}" else "${absence.kind.label} · ${absence.startDate} a ${absence.endDate}"
+        if (absence.startDate == absence.endDate) "${tr(absence.kind.label)} · ${absence.startDate}" else "${tr(absence.kind.label)} · ${absence.startDate} a ${absence.endDate}"
 
     // ---- Mi horario ----
 
     fun mine(context: Context, data: MineData, notice: UiNotice? = null, submitted: Map<String, String>? = null): UiScreen {
         val employee = data.employee
         if (employee == null) {
-            return screen(context, "Mi horario", "mine", notice, listOf(UiCard(listOf(UiText(EmpleadosService.NoRecord)))))
+            return screen(context, tr("Mi horario"), "mine", notice, listOf(UiCard(listOf(UiText(tr(EmpleadosService.NoRecord))))))
         }
         val weekParams = mapOf("week" to data.week.toString())
         val body = buildList<UiNode> {
             add(
                 UiRow(
                     listOf(
-                        UiButton("Semana anterior", UiNavigate("mine", mapOf("week" to data.week.minusWeeks(1).toString())), style = "secondary"),
-                        UiButton("Hoy", UiNavigate("mine"), style = "secondary"),
-                        UiButton("Semana siguiente", UiNavigate("mine", mapOf("week" to data.week.plusWeeks(1).toString())), style = "secondary"),
+                        UiButton(tr("Semana anterior"), UiNavigate("mine", mapOf("week" to data.week.minusWeeks(1).toString())), style = "secondary"),
+                        UiButton(tr("Hoy"), UiNavigate("mine"), style = "secondary"),
+                        UiButton(tr("Semana siguiente"), UiNavigate("mine", mapOf("week" to data.week.plusWeeks(1).toString())), style = "secondary"),
                     ),
                 ),
             )
@@ -176,19 +177,19 @@ object EmpleadosScreens {
                                 UiListItem(
                                     title = EmpleadosNotify.dayLabel(date),
                                     trailing = dayText(schedule, data.siteNames, showSites = true),
-                                    badges = listOfNotNull(UiBadge("Hoy", UiTone.Info).takeIf { date == context.today }),
+                                    badges = listOfNotNull(UiBadge(tr("Hoy"), UiTone.Info).takeIf { date == context.today }),
                                 )
                             },
                         ),
                     ),
-                    title = "Semana del ${dayRange(data.week)}",
+                    title = tr("Semana del {0}", dayRange(data.week)),
                 ),
             )
             add(
                 UiCard(
                     listOf(
                         if (data.weekly.isEmpty()) {
-                            UiText("Aún no tienes horario habitual.")
+                            UiText(tr("Aún no tienes horario habitual."))
                         } else {
                             UiList(
                                 data.weekly.sortedWith(compareBy({ it.weekday }, { it.start })).map { slot ->
@@ -200,7 +201,7 @@ object EmpleadosScreens {
                             )
                         },
                     ),
-                    title = "Horario habitual",
+                    title = tr("Horario habitual"),
                 ),
             )
             add(absencesCard(data.absences.take(AbsencesShown), "mine", weekParams))
@@ -211,20 +212,20 @@ object EmpleadosScreens {
                             id = "absence-request",
                             employees = null,
                             values = submitted.orEmpty(),
-                            submit = UiButton("Pedir ausencia", request("mine", "absence-request", weekParams, formId = "absence-request")),
+                            submit = UiButton(tr("Pedir ausencia"), request("mine", "absence-request", weekParams, formId = "absence-request")),
                         ),
                     ),
-                    title = "Pedir ausencia",
+                    title = tr("Pedir ausencia"),
                 ),
             )
         }
-        return screen(context, "Mi horario", "mine", notice, body)
+        return screen(context, tr("Mi horario"), "mine", notice, body)
     }
 
     private fun absencesCard(absences: List<Absence>, screen: String, keep: Map<String, String>): UiNode {
         val children = buildList<UiNode> {
             if (absences.isEmpty()) {
-                add(UiText("No tienes solicitudes de ausencia."))
+                add(UiText(tr("No tienes solicitudes de ausencia.")))
             } else {
                 add(
                     UiList(
@@ -240,25 +241,25 @@ object EmpleadosScreens {
                 absences.filter { it.status == AbsenceStatus.Pending }.forEach { absence ->
                     add(
                         UiButton(
-                            "Cancelar solicitud del ${absence.startDate}",
-                            request(screen, "absence-cancel", keep + ("id" to absence.id.toString()), confirm = "¿Cancelar esta solicitud de ausencia?"),
+                            tr("Cancelar solicitud del {0}", absence.startDate),
+                            request(screen, "absence-cancel", keep + ("id" to absence.id.toString()), confirm = tr("¿Cancelar esta solicitud de ausencia?")),
                             style = "danger",
                         ),
                     )
                 }
             }
         }
-        return UiCard(children, title = "Mis ausencias")
+        return UiCard(children, title = tr("Mis ausencias"))
     }
 
     private fun absenceForm(id: String, employees: Map<UUID, String>?, values: Map<String, String>, submit: UiButton): UiForm = UiForm(
         id = id,
         fields = buildList {
-            if (employees != null) add(UiField("employee", "Empleado", type = "dropdown", required = true, options = employees.values.toList()))
-            add(UiField("kind", "Tipo", type = "dropdown", required = true, options = AbsenceKind.entries.map { it.label }))
-            add(UiField("from", "Desde", type = "date", required = true))
-            add(UiField("to", "Hasta", type = "date", required = true, help = "Un solo día: la misma fecha."))
-            add(UiField("reason", "Motivo", type = "textarea"))
+            if (employees != null) add(UiField("employee", tr("Empleado"), type = "dropdown", required = true, options = employees.values.toList()))
+            add(UiField("kind", tr("Tipo"), type = "dropdown", required = true, options = AbsenceKind.entries.map { it.label }))
+            add(UiField("from", tr("Desde"), type = "date", required = true))
+            add(UiField("to", tr("Hasta"), type = "date", required = true, help = tr("Un solo día: la misma fecha.")))
+            add(UiField("reason", tr("Motivo"), type = "textarea"))
         },
         values = mapOf("kind" to AbsenceKind.Vacation.label) + values,
         submit = submit,
@@ -272,10 +273,10 @@ object EmpleadosScreens {
     fun team(context: Context, data: TeamData, params: Map<String, String>, notice: UiNotice? = null): UiScreen {
         val seesStatus = context.scope.canShifts || context.scope.canManage
         val fields = buildList {
-            add(UiField("q", "Buscar", placeholder = if (seesStatus) "Nombre, puesto, correo o teléfono" else "Nombre o puesto"))
-            add(UiField("site", "Sede", type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.sites.map { it.name }))
-            add(UiField("department", "Departamento", type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.departments.map { it.name }))
-            if (seesStatus) add(UiField("status", "Estado", type = "dropdown", options = listOf(EmpleadosActions.ActiveOption, EmpleadosActions.InactiveOption, EmpleadosActions.AllOption)))
+            add(UiField("q", tr("Buscar"), placeholder = if (seesStatus) tr("Nombre, puesto, correo o teléfono") else tr("Nombre o puesto")))
+            add(UiField("site", tr("Sede"), type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.sites.map { it.name }))
+            add(UiField("department", tr("Departamento"), type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.departments.map { it.name }))
+            if (seesStatus) add(UiField("status", tr("Estado"), type = "dropdown", options = listOf(EmpleadosActions.ActiveOption, EmpleadosActions.InactiveOption, EmpleadosActions.AllOption)))
         }
         val values = fields.associate { field ->
             field.key to (params[field.key]?.takeIf { it.isNotBlank() } ?: when (field.key) {
@@ -286,13 +287,13 @@ object EmpleadosScreens {
         }
         val shown = data.employees.take(ListLimit)
         val body = buildList<UiNode> {
-            if (context.scope.canManage) add(UiRow(listOf(UiButton("Nueva ficha", UiNavigate("employee-new")))))
+            if (context.scope.canManage) add(UiRow(listOf(UiButton(tr("Nueva ficha"), UiNavigate("employee-new")))))
             add(
                 UiCard(
-                    listOf(UiForm("filters", fields, values, submit = UiButton("Filtrar", UiNavigate("team", formId = "filters"), style = "secondary"), minFieldWidth = 200)),
+                    listOf(UiForm("filters", fields, values, submit = UiButton(tr("Filtrar"), UiNavigate("team", formId = "filters"), style = "secondary"), minFieldWidth = 200)),
                 ),
             )
-            if (data.employees.size > ListLimit) add(hint("Se muestran los primeros $ListLimit empleados: usa los filtros para acotar.", UiTone.Warning))
+            if (data.employees.size > ListLimit) add(hint(tr("Se muestran los primeros {0} empleados: usa los filtros para acotar.", ListLimit), UiTone.Warning))
             add(
                 UiCard(
                     listOf(
@@ -303,33 +304,33 @@ object EmpleadosScreens {
                                     subtitle = employeeSubtitle(employee),
                                     // Solo hay telefono cuando el nivel de la lista lo incluye: la consulta no lo lee para el directorio basico.
                                     trailing = employee.phone.orEmpty(),
-                                    badges = listOfNotNull(UiBadge("Baja", UiTone.Neutral).takeIf { employee.status == EmployeeStatus.Inactive }),
+                                    badges = listOfNotNull(UiBadge(tr("Baja"), UiTone.Neutral).takeIf { employee.status == EmployeeStatus.Inactive }),
                                     action = UiNavigate("employee", mapOf("id" to employee.id.toString())),
                                 )
                             },
-                            emptyText = "No hay empleados con esos filtros.",
+                            emptyText = tr("No hay empleados con esos filtros."),
                         ),
                     ),
                     title = "Equipo (${shown.size})",
                 ),
             )
         }
-        return screen(context, "Equipo", "team", notice, body)
+        return screen(context, tr("Equipo"), "team", notice, body)
     }
 
     // ---- Ficha ----
 
     private fun employeeFields(sites: List<CatalogItem>, departments: List<CatalogItem>, users: List<UserRef>?): List<UiField> = buildList {
-        add(UiField("full_name", "Nombre", required = true, section = "Datos"))
-        add(UiField("job_title", "Puesto", section = "Datos"))
-        add(UiField("department", "Departamento", type = "dropdown", options = listOf(EmpleadosActions.NoDepartment) + departments.map { it.name }, section = "Datos"))
-        add(UiField("site", "Sede", type = "dropdown", options = listOf(EmpleadosActions.NoSite) + sites.map { it.name }, section = "Datos"))
-        add(UiField("phone", "Teléfono", type = "phone", section = "Contacto"))
-        add(UiField("email", "Correo", type = "email", section = "Contacto"))
-        add(UiField("availability", "Disponibilidad", type = "textarea", help = "Por ejemplo: no puede los domingos. Hasta ${EmployeeInput.MaxAvailability} caracteres.", section = "Contacto"))
-        add(UiField("hire_date", "Fecha de ingreso", type = "date", section = "Trabajo"))
-        if (users != null) add(UiField("user", "Usuario", type = "dropdown", options = listOf(EmpleadosActions.NoUser) + users.map { it.label }, help = "Enlaza la ficha con la cuenta del empleado: así ve su horario y pide ausencias.", section = "Trabajo"))
-        add(UiField("notes", "Notas", type = "textarea", help = "Solo las ve quien administra fichas.", section = "Trabajo"))
+        add(UiField("full_name", tr("Nombre"), required = true, section = tr("Datos")))
+        add(UiField("job_title", tr("Puesto"), section = tr("Datos")))
+        add(UiField("department", tr("Departamento"), type = "dropdown", options = listOf(EmpleadosActions.NoDepartment) + departments.map { it.name }, section = tr("Datos")))
+        add(UiField("site", tr("Sede"), type = "dropdown", options = listOf(EmpleadosActions.NoSite) + sites.map { it.name }, section = tr("Datos")))
+        add(UiField("phone", tr("Teléfono"), type = "phone", section = tr("Contacto")))
+        add(UiField("email", tr("Correo"), type = "email", section = tr("Contacto")))
+        add(UiField("availability", tr("Disponibilidad"), type = "textarea", help = tr("Por ejemplo: no puede los domingos. Hasta {0} caracteres.", EmployeeInput.MaxAvailability), section = tr("Contacto")))
+        add(UiField("hire_date", tr("Fecha de ingreso"), type = "date", section = tr("Trabajo")))
+        if (users != null) add(UiField("user", tr("Usuario"), type = "dropdown", options = listOf(EmpleadosActions.NoUser) + users.map { it.label }, help = tr("Enlaza la ficha con la cuenta del empleado: así ve su horario y pide ausencias."), section = tr("Trabajo")))
+        add(UiField("notes", tr("Notas"), type = "textarea", help = tr("Solo las ve quien administra fichas."), section = tr("Trabajo")))
     }
 
     private fun employeeValues(employee: Employee?, users: List<UserRef>): Map<String, String> = mapOf(
@@ -353,24 +354,24 @@ object EmpleadosScreens {
         val id = mapOf("id" to employee.id.toString())
         val shifts = scope.canShifts || scope.canManage
         val body = buildList<UiNode> {
-            add(UiRow(listOf(UiButton("Volver al equipo", UiNavigate("team"), style = "secondary"))))
+            add(UiRow(listOf(UiButton(tr("Volver al equipo"), UiNavigate("team"), style = "secondary"))))
             if (scope.canManage) {
                 // Quien administra fichas edita todo; el usuario enlazado solo se ofrece a el.
                 val form = UiForm(
                     id = "employee",
                     fields = employeeFields(detail.sites, detail.departments, detail.users),
                     values = employeeValues(employee, detail.users) + submitted.orEmpty(),
-                    submit = UiButton("Guardar", request("employee", "save", id, formId = "employee")),
+                    submit = UiButton(tr("Guardar"), request("employee", "save", id, formId = "employee")),
                     collapsibleSections = false,
                 )
-                add(UiCard(listOf(form), title = "Ficha"))
+                add(UiCard(listOf(form), title = tr("Ficha")))
                 add(
                     UiRow(
                         listOf(
                             if (employee.status == EmployeeStatus.Active) {
-                                UiButton("Dar de baja", request("employee", "status", id + ("active" to "false"), confirm = "¿Dar de baja a ${employee.fullName}? Deja de verse en el directorio."), style = "danger")
+                                UiButton(tr("Dar de baja"), request("employee", "status", id + ("active" to "false"), confirm = tr("¿Dar de baja a {0}? Deja de verse en el directorio.", employee.fullName)), style = "danger")
                             } else {
-                                UiButton("Reactivar", request("employee", "status", id + ("active" to "true")), style = "secondary")
+                                UiButton(tr("Reactivar"), request("employee", "status", id + ("active" to "true")), style = "secondary")
                             },
                         ),
                     ),
@@ -380,17 +381,17 @@ object EmpleadosScreens {
                     UiCard(
                         listOfNotNull(
                             UiText(employee.fullName, UiTextStyle.Subtitle),
-                            UiText("Ficha de baja", UiTextStyle.Caption, UiTone.Neutral).takeIf { employee.status == EmployeeStatus.Inactive },
-                            line("Puesto", employee.jobTitle),
-                            line("Departamento", employee.department),
-                            line("Sede", employee.site),
+                            UiText(tr("Ficha de baja"), UiTextStyle.Caption, UiTone.Neutral).takeIf { employee.status == EmployeeStatus.Inactive },
+                            line(tr("Puesto"), employee.jobTitle),
+                            line(tr("Departamento"), employee.department),
+                            line(tr("Sede"), employee.site),
                             // Los campos de contacto y de ingreso son null cuando el nivel del usuario no los incluye: ni se leyeron.
-                            line("Teléfono", employee.phone),
-                            line("Correo", employee.email),
-                            line("Disponibilidad", employee.availability),
-                            line("Ingreso", employee.hireDate?.toString()),
+                            line(tr("Teléfono"), employee.phone),
+                            line(tr("Correo"), employee.email),
+                            line(tr("Disponibilidad"), employee.availability),
+                            line(tr("Ingreso"), employee.hireDate?.toString()),
                         ),
-                        title = "Ficha",
+                        title = tr("Ficha"),
                     ),
                 )
             }
@@ -405,35 +406,35 @@ object EmpleadosScreens {
     private fun weeklyCard(detail: EmployeeDetail, id: Map<String, String>): UiNode {
         val sorted = detail.weekly.sortedWith(compareBy({ it.weekday }, { it.start }))
         val children = buildList<UiNode> {
-            if (sorted.isEmpty()) add(hint("Sin horario habitual: sin turnos concretos, la persona aparece libre."))
+            if (sorted.isEmpty()) add(hint(tr("Sin horario habitual: sin turnos concretos, la persona aparece libre.")))
             sorted.forEach { slot ->
                 add(
                     UiRow(
                         listOf(
                             UiText("${EmpleadosActions.WeekdayLabels[slot.weekday - 1]} ${EmpleadosSchedule.formatRange(slot.start, slot.end)}${slot.siteId?.let { detail.siteNames[it] }?.let { " · $it" }.orEmpty()}"),
-                            UiButton("Quitar", request("employee", "slot-remove", id + ("slot" to slot.id.toString()), confirm = "¿Quitar esta franja del horario habitual?"), style = "danger"),
+                            UiButton(tr("Quitar"), request("employee", "slot-remove", id + ("slot" to slot.id.toString()), confirm = tr("¿Quitar esta franja del horario habitual?")), style = "danger"),
                         ),
                         spacing = 8,
                     ),
                 )
             }
             add(UiDivider())
-            add(sectionTitle("Añadir franja"))
+            add(sectionTitle(tr("Añadir franja")))
             add(
                 UiForm(
                     id = "slot",
                     fields = listOf(
                         UiField("weekday", "Día", type = "dropdown", required = true, options = EmpleadosActions.WeekdayLabels),
-                        UiField("start", "Desde", required = true, placeholder = "08:00"),
-                        UiField("end", "Hasta", required = true, placeholder = "16:00", help = "Si termina después de medianoche, escribe la hora del día siguiente (22:00 a 06:00)."),
-                        UiField("site", "Sede", type = "dropdown", options = listOf(EmpleadosActions.NoSite) + detail.sites.map { it.name }, help = "Sin sede: la sede de la ficha."),
+                        UiField("start", tr("Desde"), required = true, placeholder = "08:00"),
+                        UiField("end", tr("Hasta"), required = true, placeholder = "16:00", help = tr("Si termina después de medianoche, escribe la hora del día siguiente (22:00 a 06:00).")),
+                        UiField("site", tr("Sede"), type = "dropdown", options = listOf(EmpleadosActions.NoSite) + detail.sites.map { it.name }, help = tr("Sin sede: la sede de la ficha.")),
                     ),
                     values = mapOf("weekday" to EmpleadosActions.WeekdayLabels.first(), "site" to EmpleadosActions.NoSite),
-                    submit = UiButton("Añadir franja", request("employee", "slot-add", id, formId = "slot"), style = "secondary"),
+                    submit = UiButton(tr("Añadir franja"), request("employee", "slot-add", id, formId = "slot"), style = "secondary"),
                 ),
             )
         }
-        return UiCard(children, title = "Horario habitual")
+        return UiCard(children, title = tr("Horario habitual"))
     }
 
     private fun upcomingCard(context: Context, detail: EmployeeDetail): UiNode = UiCard(
@@ -444,13 +445,13 @@ object EmpleadosScreens {
                     UiListItem(
                         title = EmpleadosNotify.dayLabel(date),
                         trailing = dayText(schedule, detail.siteNames, showSites = true),
-                        badges = listOfNotNull(UiBadge("Hoy", UiTone.Info).takeIf { date == context.today }),
+                        badges = listOfNotNull(UiBadge(tr("Hoy"), UiTone.Info).takeIf { date == context.today }),
                         action = shiftId?.let { UiNavigate("shift", mapOf("id" to it.toString())) },
                     )
                 },
             ),
         ),
-        title = "Próximos turnos ($UpcomingDays días)",
+        title = tr("Próximos turnos ({0} días)", UpcomingDays),
     )
 
     fun employeeNew(context: Context, sites: List<CatalogItem>, departments: List<CatalogItem>, users: List<UserRef>, notice: UiNotice? = null, submitted: Map<String, String>? = null): UiScreen {
@@ -458,9 +459,9 @@ object EmpleadosScreens {
             id = "employee",
             fields = employeeFields(sites, departments, users),
             values = employeeValues(null, users) + submitted.orEmpty(),
-            submit = UiButton("Crear ficha", request("employee-new", "create", formId = "employee")),
+            submit = UiButton(tr("Crear ficha"), request("employee-new", "create", formId = "employee")),
         )
-        return screen(context, "Nueva ficha", "team", notice, listOf(UiCard(listOf(form), title = "Ficha")))
+        return screen(context, tr("Nueva ficha"), "team", notice, listOf(UiCard(listOf(form), title = tr("Ficha"))))
     }
 
     // ---- Semana ----
@@ -473,11 +474,11 @@ object EmpleadosScreens {
         fun go(date: LocalDate) = UiNavigate("week", keep + ("start" to date.toString()))
         val days = (0..6).map { start.plusDays(it.toLong()) }
         val filterFields = listOf(
-            UiField("site", "Sede", type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.sites.map { it.name }),
-            UiField("department", "Departamento", type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.departments.map { it.name }),
+            UiField("site", tr("Sede"), type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.sites.map { it.name }),
+            UiField("department", tr("Departamento"), type = "dropdown", options = listOf(EmpleadosActions.AllOption) + data.departments.map { it.name }),
         )
         val filterValues = filterFields.associate { it.key to (params[it.key]?.takeIf { value -> value.isNotBlank() } ?: EmpleadosActions.AllOption) }
-        val columns = listOf(UiTableColumn("name", "Empleado")) + days.mapIndexed { index, date -> UiTableColumn("d$index", "${EmpleadosNotify.dayLabel(date).substringBefore(' ').replaceFirstChar { it.uppercase() }} ${date.dayOfMonth}") }
+        val columns = listOf(UiTableColumn("name", tr("Empleado"))) + days.mapIndexed { index, date -> UiTableColumn("d$index", "${EmpleadosNotify.dayLabel(date).substringBefore(' ').replaceFirstChar { it.uppercase() }} ${date.dayOfMonth}") }
         val order = data.sites.map { it.id }
         fun position(siteId: UUID?): Int = siteId?.let { order.indexOf(it) }?.takeIf { it >= 0 } ?: Int.MAX_VALUE
         val groups = data.employees.groupBy { it.siteId }.entries
@@ -487,16 +488,16 @@ object EmpleadosScreens {
             add(
                 UiRow(
                     listOf(
-                        UiButton("Semana anterior", go(start.minusWeeks(1)), style = "secondary"),
-                        UiButton("Hoy", go(EmpleadosSchedule.weekStart(context.today)), style = "secondary"),
-                        UiButton("Semana siguiente", go(start.plusWeeks(1)), style = "secondary"),
+                        UiButton(tr("Semana anterior"), go(start.minusWeeks(1)), style = "secondary"),
+                        UiButton(tr("Hoy"), go(EmpleadosSchedule.weekStart(context.today)), style = "secondary"),
+                        UiButton(tr("Semana siguiente"), go(start.plusWeeks(1)), style = "secondary"),
                     ),
                 ),
             )
-            add(hint("Semana del ${dayRange(start)}. Un * marca un turno concreto que reemplaza al horario habitual."))
-            add(UiCard(listOf(UiForm("filters", filterFields, filterValues, submit = UiButton("Filtrar", UiNavigate("week", mapOf("start" to start.toString()), formId = "filters"), style = "secondary"), minFieldWidth = 200))))
-            if (data.cut) add(hint("Se muestran los primeros ${EmpleadosRepository.MaxWeekEmployees} empleados: filtra por sede o departamento para ver el resto.", UiTone.Warning))
-            if (groups.isEmpty()) add(UiCard(listOf(UiText("No hay empleados con esos filtros."))))
+            add(hint(tr("Semana del {0}. Un * marca un turno concreto que reemplaza al horario habitual.", dayRange(start))))
+            add(UiCard(listOf(UiForm("filters", filterFields, filterValues, submit = UiButton(tr("Filtrar"), UiNavigate("week", mapOf("start" to start.toString()), formId = "filters"), style = "secondary"), minFieldWidth = 200))))
+            if (data.cut) add(hint(tr("Se muestran los primeros {0} empleados: filtra por sede o departamento para ver el resto.", EmpleadosRepository.MaxWeekEmployees), UiTone.Warning))
+            if (groups.isEmpty()) add(UiCard(listOf(UiText(tr("No hay empleados con esos filtros.")))))
             groups.forEach { (_, employees) ->
                 val rows = employees.map { employee ->
                     buildMap<String, String> {
@@ -504,7 +505,7 @@ object EmpleadosScreens {
                         days.forEachIndexed { index, date -> put("d$index", weekCell(employee, data.schedules.resolve(employee.id, date, employee.siteId), data.siteNames)) }
                     }
                 }
-                add(UiCard(listOf(UiTable(columns, rows)), title = employees.first().site ?: "Sin sede"))
+                add(UiCard(listOf(UiTable(columns, rows)), title = employees.first().site ?: tr("Sin sede")))
             }
             add(
                 UiCard(
@@ -512,19 +513,19 @@ object EmpleadosScreens {
                         UiForm(
                             id = "shift-new",
                             fields = listOf(
-                                UiField("employee", "Empleado", type = "dropdown", required = true, options = labels.values.toList()),
-                                UiField("date", "Fecha", type = "date", required = true),
-                                UiField("kind", "Tipo", type = "dropdown", options = ShiftKind.entries.map { it.label }, help = "Libre: ese día no trabaja y se borran sus otros turnos."),
-                                UiField("start", "Desde", placeholder = "08:00", help = "Solo para turnos."),
-                                UiField("end", "Hasta", placeholder = "16:00"),
-                                UiField("site", "Sede", type = "dropdown", options = listOf(EmpleadosActions.NoSite) + data.sites.map { it.name }),
-                                UiField("note", "Nota"),
+                                UiField("employee", tr("Empleado"), type = "dropdown", required = true, options = labels.values.toList()),
+                                UiField("date", tr("Fecha"), type = "date", required = true),
+                                UiField("kind", tr("Tipo"), type = "dropdown", options = ShiftKind.entries.map { it.label }, help = tr("Libre: ese día no trabaja y se borran sus otros turnos.")),
+                                UiField("start", tr("Desde"), placeholder = "08:00", help = tr("Solo para turnos.")),
+                                UiField("end", tr("Hasta"), placeholder = "16:00"),
+                                UiField("site", tr("Sede"), type = "dropdown", options = listOf(EmpleadosActions.NoSite) + data.sites.map { it.name }),
+                                UiField("note", tr("Nota")),
                             ),
                             values = mapOf("kind" to ShiftKind.Work.label, "site" to EmpleadosActions.NoSite, "date" to start.toString()) + submitted.orEmpty(),
-                            submit = UiButton("Crear turno", request("week", "shift-create", weekParams(start, params), formId = "shift-new")),
+                            submit = UiButton(tr("Crear turno"), request("week", "shift-create", weekParams(start, params), formId = "shift-new")),
                         ),
                     ),
-                    title = "Nuevo turno",
+                    title = tr("Nuevo turno"),
                 ),
             )
             val names = data.allEmployees.associate { it.id to it.fullName }
@@ -536,18 +537,18 @@ object EmpleadosScreens {
                                 UiListItem(
                                     title = "${names[shift.employeeId] ?: "Empleado"} · ${EmpleadosNotify.dayLabel(shift.date)}",
                                     subtitle = listOf(shift.siteId?.let { data.siteNames[it] }.orEmpty(), shift.note).filter { it.isNotBlank() }.joinToString(" · "),
-                                    trailing = if (shift.kind == ShiftKind.Off) "Libre" else EmpleadosSchedule.formatRange(shift.start ?: java.time.LocalTime.MIDNIGHT, shift.end ?: java.time.LocalTime.MIDNIGHT),
+                                    trailing = if (shift.kind == ShiftKind.Off) tr("Libre") else EmpleadosSchedule.formatRange(shift.start ?: java.time.LocalTime.MIDNIGHT, shift.end ?: java.time.LocalTime.MIDNIGHT),
                                     action = UiNavigate("shift", mapOf("id" to shift.id.toString())),
                                 )
                             },
-                            emptyText = "No hay turnos concretos esta semana: rige el horario habitual.",
+                            emptyText = tr("No hay turnos concretos esta semana: rige el horario habitual."),
                         ),
                     ),
-                    title = "Turnos de la semana",
+                    title = tr("Turnos de la semana"),
                 ),
             )
         }
-        return screen(context, "Semana", "week", notice, body)
+        return screen(context, tr("Semana"), "week", notice, body)
     }
 
     // ---- Turno ----
@@ -556,13 +557,13 @@ object EmpleadosScreens {
         val id = mapOf("id" to shift.id.toString())
         val work = shift.kind == ShiftKind.Work
         val fields = buildList {
-            add(UiField("date", "Fecha", type = "date", required = true))
+            add(UiField("date", tr("Fecha"), type = "date", required = true))
             if (work) {
-                add(UiField("start", "Desde", required = true, placeholder = "08:00"))
-                add(UiField("end", "Hasta", required = true, placeholder = "16:00"))
-                add(UiField("site", "Sede", type = "dropdown", options = listOf(EmpleadosActions.NoSite) + (sites.map { it.name } + listOfNotNull(shift.siteId?.let { siteNames[it] })).distinct()))
+                add(UiField("start", tr("Desde"), required = true, placeholder = "08:00"))
+                add(UiField("end", tr("Hasta"), required = true, placeholder = "16:00"))
+                add(UiField("site", tr("Sede"), type = "dropdown", options = listOf(EmpleadosActions.NoSite) + (sites.map { it.name } + listOfNotNull(shift.siteId?.let { siteNames[it] })).distinct()))
             }
-            add(UiField("note", "Nota"))
+            add(UiField("note", tr("Nota")))
         }
         val values = buildMap {
             put("date", shift.date.toString())
@@ -574,17 +575,17 @@ object EmpleadosScreens {
             put("note", shift.note)
         }
         val body = listOf<UiNode>(
-            UiRow(listOf(UiButton("Volver a la semana", UiNavigate("week", mapOf("start" to EmpleadosSchedule.weekStart(shift.date).toString())), style = "secondary"))),
+            UiRow(listOf(UiButton(tr("Volver a la semana"), UiNavigate("week", mapOf("start" to EmpleadosSchedule.weekStart(shift.date).toString())), style = "secondary"))),
             UiCard(
                 listOf(
                     hint("${if (work) "Turno" else "Día libre"} de $employeeName"),
-                    UiForm("shift", fields, values + submitted.orEmpty(), submit = UiButton("Guardar", request("shift", "move", id, formId = "shift"))),
-                    UiButton("Borrar", request("shift", "delete", id, confirm = "¿Borrar este turno? Ese día vuelve a regir el horario habitual."), style = "danger"),
+                    UiForm("shift", fields, values + submitted.orEmpty(), submit = UiButton(tr("Guardar"), request("shift", "move", id, formId = "shift"))),
+                    UiButton(tr("Borrar"), request("shift", "delete", id, confirm = tr("¿Borrar este turno? Ese día vuelve a regir el horario habitual.")), style = "danger"),
                 ),
                 title = "${EmpleadosNotify.dayLabel(shift.date)} · $employeeName",
             ),
         )
-        return screen(context, "Turno", "week", notice, body)
+        return screen(context, tr("Turno"), "week", notice, body)
     }
 
     // ---- Ausencias ----
@@ -597,25 +598,25 @@ object EmpleadosScreens {
                 add(absencesCard(data.mine.take(AbsencesShown), "absences", emptyMap()))
                 add(
                     UiCard(
-                        listOf(absenceForm("absence-request", null, submitted.orEmpty().takeIf { submittedForm == "absence-request" }.orEmpty(), UiButton("Pedir ausencia", request("absences", "absence-request", formId = "absence-request")))),
-                        title = "Pedir ausencia",
+                        listOf(absenceForm("absence-request", null, submitted.orEmpty().takeIf { submittedForm == "absence-request" }.orEmpty(), UiButton(tr("Pedir ausencia"), request("absences", "absence-request", formId = "absence-request")))),
+                        title = tr("Pedir ausencia"),
                     ),
                 )
             } else {
-                add(UiCard(listOf(UiText(EmpleadosService.NoRecord))))
+                add(UiCard(listOf(UiText(tr(EmpleadosService.NoRecord)))))
             }
             if (shifts) {
                 add(
                     UiCard(
-                        if (data.pending.isEmpty()) listOf(UiText("No hay solicitudes pendientes.")) else data.pending.flatMapIndexed { index, row ->
+                        if (data.pending.isEmpty()) listOf(UiText(tr("No hay solicitudes pendientes."))) else data.pending.flatMapIndexed { index, row ->
                             val form = "decide-${row.absence.id}"
                             val id = mapOf("id" to row.absence.id.toString())
                             buildList<UiNode> {
                                 if (index > 0) add(UiDivider())
                                 add(UiText("${row.employeeName} · ${absenceTitle(row.absence)}", UiTextStyle.Body))
                                 if (row.absence.reason.isNotBlank()) add(hint(row.absence.reason))
-                                add(UiForm(form, listOf(UiField("note", "Nota para el empleado")), submit = UiButton("Aprobar", request("absences", "decide-approve", id, formId = form))))
-                                add(UiButton("Rechazar", request("absences", "decide-reject", id, confirm = "¿Rechazar esta solicitud?", formId = form), style = "danger"))
+                                add(UiForm(form, listOf(UiField("note", tr("Nota para el empleado"))), submit = UiButton(tr("Aprobar"), request("absences", "decide-approve", id, formId = form))))
+                                add(UiButton(tr("Rechazar"), request("absences", "decide-reject", id, confirm = tr("¿Rechazar esta solicitud?"), formId = form), style = "danger"))
                             }
                         },
                         title = "Pendientes (${data.pending.size})",
@@ -628,10 +629,10 @@ object EmpleadosScreens {
                                 data.upcoming.map { row ->
                                     UiListItem(title = row.employeeName, subtitle = row.absence.reason, trailing = absenceTitle(row.absence), badges = listOf(badge(row.absence.status)))
                                 },
-                                emptyText = "No hay ausencias aprobadas en los próximos $ApprovedDays días.",
+                                emptyText = tr("No hay ausencias aprobadas en los próximos {0} días.", ApprovedDays),
                             ),
                         ),
-                        title = "Próximas aprobadas ($ApprovedDays días)",
+                        title = tr("Próximas aprobadas ({0} días)", ApprovedDays),
                     ),
                 )
                 val labels = EmpleadosActions.employeeLabels(data.employees)
@@ -640,25 +641,25 @@ object EmpleadosScreens {
                         listOf(
                             absenceForm(
                                 "absence-register", labels, submitted.orEmpty().takeIf { submittedForm == "absence-register" }.orEmpty(),
-                                UiButton("Registrar ausencia", request("absences", "register", formId = "absence-register")),
+                                UiButton(tr("Registrar ausencia"), request("absences", "register", formId = "absence-register")),
                             ),
                         ),
-                        title = "Registrar ausencia (queda aprobada)",
+                        title = tr("Registrar ausencia (queda aprobada)"),
                     ),
                 )
             }
         }
-        return screen(context, "Ausencias", "absences", notice, body)
+        return screen(context, tr("Ausencias"), "absences", notice, body)
     }
 
     // ---- Administrar ----
 
     fun admin(context: Context, sites: List<CatalogItem>, departments: List<CatalogItem>, notice: UiNotice? = null): UiScreen {
         val body = listOf(
-            catalogCard("Sedes", "site", "sede", sites),
-            catalogCard("Departamentos", "dept", "departamento", departments),
+            catalogCard(tr("Sedes"), "site", "sede", sites),
+            catalogCard(tr("Departamentos"), "dept", "departamento", departments),
         )
-        return screen(context, "Administrar", "admin", notice, body)
+        return screen(context, tr("Administrar"), "admin", notice, body)
     }
 
     private fun catalogCard(title: String, prefix: String, singular: String, items: List<CatalogItem>): UiNode {
@@ -669,15 +670,15 @@ object EmpleadosScreens {
                 listOf(
                     UiForm(
                         id = form,
-                        fields = listOf(UiField("name", "Nombre", required = true)),
+                        fields = listOf(UiField("name", tr("Nombre"), required = true)),
                         values = mapOf("name" to item.name),
-                        submit = UiButton("Renombrar", request("admin", "$prefix-rename", params, formId = form), style = "secondary"),
+                        submit = UiButton(tr("Renombrar"), request("admin", "$prefix-rename", params, formId = form), style = "secondary"),
                     ),
                     UiRow(
                         listOf(
-                            UiButton("Subir", request("admin", "$prefix-up", params), style = "secondary"),
-                            UiButton("Bajar", request("admin", "$prefix-down", params), style = "secondary"),
-                            UiButton("Archivar", request("admin", "$prefix-archive", params, confirm = "¿Archivar la $singular ${item.name}? Las fichas que la tienen la conservan."), style = "danger"),
+                            UiButton(tr("Subir"), request("admin", "$prefix-up", params), style = "secondary"),
+                            UiButton(tr("Bajar"), request("admin", "$prefix-down", params), style = "secondary"),
+                            UiButton(tr("Archivar"), request("admin", "$prefix-archive", params, confirm = tr("¿Archivar la {0} {1}? Las fichas que la tienen la conservan.", singular, item.name)), style = "danger"),
                         ),
                         spacing = 8,
                     ),
@@ -686,18 +687,18 @@ object EmpleadosScreens {
             )
         }
         val children = buildList<UiNode> {
-            if (rows.isEmpty()) add(hint("Aún no hay ${singular}s."))
+            if (rows.isEmpty()) add(hint(tr("Aún no hay {0}s.", tr(singular))))
             rows.forEachIndexed { index, row ->
                 if (index > 0) add(UiDivider())
                 add(row)
             }
             add(UiDivider())
-            add(sectionTitle("Nueva $singular"))
+            add(sectionTitle(tr("Nueva {0}", tr(singular))))
             add(
                 UiForm(
                     id = "$prefix-new",
-                    fields = listOf(UiField("name", "Nombre", required = true)),
-                    submit = UiButton("Añadir", request("admin", "$prefix-add", formId = "$prefix-new"), style = "secondary"),
+                    fields = listOf(UiField("name", tr("Nombre"), required = true)),
+                    submit = UiButton(tr("Añadir"), request("admin", "$prefix-add", formId = "$prefix-new"), style = "secondary"),
                 ),
             )
         }

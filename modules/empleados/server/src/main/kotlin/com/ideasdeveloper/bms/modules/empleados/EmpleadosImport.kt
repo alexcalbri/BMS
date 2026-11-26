@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.empleados
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -187,16 +188,16 @@ object EmpleadosImportApply {
         rows.forEach { row ->
             val label = row.fullName.trim().ifEmpty { row.key }
             when {
-                row.fullName.isBlank() -> problems += "Fila sin nombre (${row.key.ifBlank { "sin clave" }}): se omite."
-                row.key.isBlank() || row.key.length > MaxKey -> problems += "$label: la clave de origen no es válida, se omite."
-                !seen.add(row.key.trim()) -> problems += "$label: clave repetida (${row.key}), se omite la repetición."
+                row.fullName.isBlank() -> problems += tr("Fila sin nombre ({0}): se omite.", row.key.ifBlank { tr("sin clave") })
+                row.key.isBlank() || row.key.length > MaxKey -> problems += tr("{0}: la clave de origen no es válida, se omite.", label)
+                !seen.add(row.key.trim()) -> problems += tr("{0}: clave repetida ({1}), se omite la repetición.", label, row.key)
                 else -> valid += row
             }
         }
         valid.forEach { row ->
-            if (row.weekly.size != cleanSlots(row.weekly).size) problems += "${row.fullName.trim()}: hay franjas de horario no válidas o repetidas; se ignoran."
-            if (row.email.isNotBlank() && !validEmail(row.email.trim())) problems += "${row.fullName.trim()}: el correo no es válido, se omite."
-            if (row.phone.isNotBlank() && !EmployeeInput.PhonePattern.matches(row.phone.trim())) problems += "${row.fullName.trim()}: el teléfono no es válido, pasa a las notas."
+            if (row.weekly.size != cleanSlots(row.weekly).size) problems += tr("{0}: hay franjas de horario no válidas o repetidas; se ignoran.", row.fullName.trim())
+            if (row.email.isNotBlank() && !validEmail(row.email.trim())) problems += tr("{0}: el correo no es válido, se omite.", row.fullName.trim())
+            if (row.phone.isNotBlank() && !EmployeeInput.PhonePattern.matches(row.phone.trim())) problems += tr("{0}: el teléfono no es válido, pasa a las notas.", row.fullName.trim())
         }
         fun distinctNames(values: List<String?>): List<String> {
             val names = LinkedHashMap<String, String>()
@@ -238,9 +239,9 @@ object EmpleadosImportApply {
      */
     fun apply(tenant: Connection, row: ImportedEmployee, users: Map<String, UUID>, actorId: UUID?): EmpleadosImportOutcome {
         val name = row.fullName.trim()
-        if (name.isEmpty()) return EmpleadosImportOutcome.Skipped("La fila no tiene nombre.")
+        if (name.isEmpty()) return EmpleadosImportOutcome.Skipped(tr("La fila no tiene nombre."))
         val key = row.key.trim()
-        if (key.isEmpty() || key.length > MaxKey) return EmpleadosImportOutcome.Skipped("La clave de origen no es válida.")
+        if (key.isEmpty() || key.length > MaxKey) return EmpleadosImportOutcome.Skipped(tr("La clave de origen no es válida."))
         val email = row.email.trim().let { if (validEmail(it)) it else "" }
         // Un telefono que no cumple el patron del modulo no se guarda en su campo: queda en las notas para no perderlo.
         val phoneText = row.phone.trim()
@@ -266,7 +267,7 @@ object EmpleadosImportApply {
                         EmpleadosRepository.findOrCreateCatalog(tenant, catalog, text, importKey(text))
                     } catch (failure: EmpleadosValidationException) {
                         // Sin sitio para una sede o departamento nuevo: la ficha se guarda sin ella y se avisa.
-                        warnings += "No se asignó ${catalog.singular} \"$text\": ${failure.message.orEmpty()}"
+                        warnings += tr("No se asignó {0} \"{1}\": {2}", tr(catalog.singular), text, failure.message.orEmpty())
                         null
                     }
                 }
@@ -296,7 +297,7 @@ object EmpleadosImportApply {
             val state = generateSequence<Throwable>(failure) { it.cause }.filterIsInstance<java.sql.SQLException>().firstOrNull()?.sqlState
             log.warn("No se pudo importar una ficha (sqlState={}).", state)
             // Una clave repetida (otra peticion se adelanto) se omite; cualquier otro error se relanza: el runner lo cuenta como fallo y reintenta.
-            if (state == "23505") EmpleadosImportOutcome.Skipped("La ficha ya existe (otra importación se adelantó).") else throw failure
+            if (state == "23505") EmpleadosImportOutcome.Skipped(tr("La ficha ya existe (otra importación se adelantó).")) else throw failure
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.PreparedStatement
@@ -333,15 +334,15 @@ object EmpleadosRepository {
 
     private fun cleanName(catalog: Catalog, name: String): String {
         val clean = name.trim()
-        if (clean.isEmpty()) throw EmpleadosValidationException("El nombre de la ${catalog.singular} es obligatorio.")
-        if (clean.length > 120) throw EmpleadosValidationException("El nombre de la ${catalog.singular} admite hasta 120 caracteres.")
+        if (clean.isEmpty()) throw EmpleadosValidationException(tr("El nombre de la {0} es obligatorio.", tr(catalog.singular)))
+        if (clean.length > 120) throw EmpleadosValidationException(tr("El nombre de la {0} admite hasta 120 caracteres.", tr(catalog.singular)))
         return clean
     }
 
     /** Falla si ya hay [MaxCatalogItems] activas: crear o desarchivar una mas pasaria el tope. */
     private fun requireRoom(tenant: Connection, catalog: Catalog) {
         val active = tenant.query("SELECT count(*) AS total FROM ${catalog.table} WHERE archived = FALSE", emptyList()) { it.getInt("total") }.first()
-        if (active >= MaxCatalogItems) throw EmpleadosValidationException("Se alcanzó el máximo de $MaxCatalogItems ${catalog.singular}s activas.")
+        if (active >= MaxCatalogItems) throw EmpleadosValidationException(tr("Se alcanzó el máximo de {0} {1}s activas.", MaxCatalogItems, tr(catalog.singular)))
     }
 
     /**
@@ -365,7 +366,7 @@ object EmpleadosRepository {
                 lockCatalog(tenant, catalog)
                 val existing = tenant.query("SELECT id, archived FROM ${catalog.table} WHERE lower(name) = lower(?)", listOf(clean)) { it.uuid("id") to it.getBoolean("archived") }.firstOrNull()
                 if (existing != null) {
-                    if (!existing.second) throw EmpleadosValidationException("Ya existe una ${catalog.singular} llamada \"$clean\".")
+                    if (!existing.second) throw EmpleadosValidationException(tr("Ya existe una {0} llamada \"{1}\".", tr(catalog.singular), clean))
                     requireRoom(tenant, catalog)
                     val position = nextPosition(tenant, catalog)
                     tenant.update("UPDATE ${catalog.table} SET archived = FALSE, name = ?, position = ?, updated_at = now() WHERE id = ?", listOf(clean, position, existing.first))
@@ -375,7 +376,7 @@ object EmpleadosRepository {
                 tenant.query("INSERT INTO ${catalog.table} (name, position) VALUES (?, ?) RETURNING id", listOf(clean, nextPosition(tenant, catalog))) { it.uuid("id") ?: NilId }.first()
             }
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw EmpleadosValidationException("Ya existe una ${catalog.singular} llamada \"$clean\".") else throw failure
+            if (isUniqueViolation(failure)) throw EmpleadosValidationException(tr("Ya existe una {0} llamada \"{1}\".", tr(catalog.singular), clean)) else throw failure
         }
     }
 
@@ -387,7 +388,7 @@ object EmpleadosRepository {
         return try {
             tenant.update("UPDATE ${catalog.table} SET name = ?, updated_at = now() WHERE id = ?", listOf(clean, id)) > 0
         } catch (failure: SQLException) {
-            if (isUniqueViolation(failure)) throw EmpleadosValidationException("Ya existe una ${catalog.singular} llamada \"$clean\".") else throw failure
+            if (isUniqueViolation(failure)) throw EmpleadosValidationException(tr("Ya existe una {0} llamada \"{1}\".", tr(catalog.singular), clean)) else throw failure
         }
     }
 

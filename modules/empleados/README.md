@@ -1,6 +1,6 @@
 # Empleados
 
-Versión 0.1.1 (en desarrollo). Fichas de empleados, sedes y departamentos, horario habitual con turnos concretos, vista
+Versión 0.2.0 (en desarrollo). Fichas de empleados, sedes y departamentos, horario habitual con turnos concretos, vista
 semanal por sede, solicitudes de ausencia con aprobación y avisos cuando cambia el turno de alguien. Es el primer paso
 hacia otros módulos (por ejemplo mantenimiento) que necesitan saber quién está de turno.
 
@@ -195,3 +195,14 @@ Reglas:
 
 Rendimiento de la importación: `replaceWeekly` compara el horario habitual guardado con el que llega y no borra ni reinserta si
 es igual; cuando cambia, inserta las franjas en un solo lote (`addBatch`/`executeBatch`).
+
+## Languages (0.2.0, needs Core 0.10.0)
+
+Every text the module shows (screens, errors, confirmations, notifications, permissions and the module definition) is
+available in Spanish (source) and English: the code writes `tr("Texto en espanol")` and the English catalog is
+`server/src/main/resources/modules/empleados/i18n/en.json`. The employee, absence and shift statuses are stored and
+parsed in Spanish and translated only where they are shown. Notifications are written in each recipient's language
+(weekday and month abbreviations included). Names typed by users (employees, sites, departments, job titles, notes and
+reasons), the rows already stored (the import notes, the history), the schedule text parser used by the Monday
+extension and the MCP tools (names, descriptions and results) are not translated. Values the app sends back (`op`,
+ids, filters and the option values such as "Todos" or "Activos") never change with the language.

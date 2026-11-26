@@ -1,7 +1,10 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.server.modules.NotificationTarget
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.time.LocalDate
@@ -14,23 +17,26 @@ import java.util.UUID
 object EmpleadosNotify {
     private val log = LoggerFactory.getLogger(EmpleadosNotify::class.java)
 
-    const val ShiftChangedTitle = "Tu turno cambió"
-    const val WeeklyChangedTitle = "Tu horario habitual cambió"
-    const val AbsenceRequestedTitle = "Solicitud de ausencia"
-    const val AbsenceApprovedTitle = "Ausencia aprobada"
-    const val AbsenceRejectedTitle = "Ausencia rechazada"
     private const val MaxText = 1000
 
+    // Abreviaturas en espanol (texto fuente). En ingles se usan las de abajo; "mar" es martes y marzo a la vez,
+    // por eso no pasan por el catalogo.
     private val WeekdayNames = listOf("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
+    private val WeekdayNamesEn = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     private val MonthNames = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+    private val MonthNamesEn = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
-    /** "lun 24 nov". */
-    fun dayLabel(date: LocalDate): String = "${WeekdayNames[date.dayOfWeek.value - 1]} ${date.dayOfMonth} ${MonthNames[date.monthValue - 1]}"
+    private fun weekdayName(index: Int) = if (I18n.language() == I18n.Source) WeekdayNames[index] else WeekdayNamesEn[index]
+
+    private fun monthName(index: Int) = if (I18n.language() == I18n.Source) MonthNames[index] else MonthNamesEn[index]
+
+    /** "lun 24 nov" (en ingles, "Mon 24 Nov"). */
+    fun dayLabel(date: LocalDate): String = "${weekdayName(date.dayOfWeek.value - 1)} ${date.dayOfMonth} ${monthName(date.monthValue - 1)}"
 
     /** El horario de un dia como lo ve el empleado: "08:00–16:00 · Vista Mar", "libre" o "Vacaciones". */
     fun scheduleText(schedule: DaySchedule, siteNames: Map<UUID, String>): String = when (schedule) {
-        is DaySchedule.Absent -> schedule.kind.label
-        is DaySchedule.Off -> "libre"
+        is DaySchedule.Absent -> tr(schedule.kind.label)
+        is DaySchedule.Off -> tr("libre")
         is DaySchedule.Working -> schedule.slots.joinToString(", ") { slot ->
             listOfNotNull(EmpleadosSchedule.formatRange(slot.start, slot.end), slot.siteId?.let { siteNames[it] }).joinToString(" · ")
         }
@@ -41,9 +47,9 @@ object EmpleadosNotify {
 
     /** Resumen del horario habitual: "lun 08:00–16:00, mar 08:00–16:00". */
     fun weeklyText(slots: List<WeeklySlot>, siteNames: Map<UUID, String>): String {
-        if (slots.isEmpty()) return "sin horario habitual"
+        if (slots.isEmpty()) return tr("sin horario habitual")
         return slots.sortedWith(compareBy({ it.weekday }, { it.start })).joinToString(", ") { slot ->
-            listOfNotNull("${WeekdayNames[slot.weekday - 1]} ${EmpleadosSchedule.formatRange(slot.start, slot.end)}", slot.siteId?.let { siteNames[it] }).joinToString(" · ")
+            listOfNotNull("${weekdayName(slot.weekday - 1)} ${EmpleadosSchedule.formatRange(slot.start, slot.end)}", slot.siteId?.let { siteNames[it] }).joinToString(" · ")
         }
     }
 
@@ -66,7 +72,9 @@ object EmpleadosNotify {
             val names = EmpleadosRepository.catalogNames(tenant, Catalog.Sites)
             dates.distinct().filter { shouldNotify(it, today) }.sorted().forEach { date ->
                 val (schedule, _) = EmpleadosRepository.daySchedule(tenant, employeeId, date)
-                send(notifier, tenant, userId, ShiftChangedTitle, shiftText(date, schedule, names), mineTarget(date))
+                send(notifier, tenant, userId, mineTarget(date)) {
+                    NotificationText(tr("Tu turno cambió"), shiftText(date, schedule, names))
+                }
             }
         }.onFailure { log.warn("No se pudo preparar el aviso de cambio de turno ({}).", it.javaClass.simpleName) }
     }
@@ -79,7 +87,7 @@ object EmpleadosNotify {
             if (recipients(listOf(userId), byUserId).isEmpty()) return
             val names = EmpleadosRepository.catalogNames(tenant, Catalog.Sites)
             val slots = EmpleadosRepository.weekly(tenant, listOf(employeeId))
-            send(notifier, tenant, userId, WeeklyChangedTitle, weeklyText(slots, names), mineTarget(today))
+            send(notifier, tenant, userId, mineTarget(today)) { NotificationText(tr("Tu horario habitual cambió"), weeklyText(slots, names)) }
         }.onFailure { log.warn("No se pudo preparar el aviso de cambio del horario habitual ({}).", it.javaClass.simpleName) }
     }
 
@@ -87,8 +95,11 @@ object EmpleadosNotify {
     fun absenceRequested(tenant: Connection, notifier: ModuleNotifier?, employeeName: String, absence: AbsenceInput, byUserId: UUID?) {
         if (notifier == null) return
         runCatching {
-            val text = "$employeeName pidió ${absence.kind.label.lowercase()} del ${absence.startDate} al ${absence.endDate}"
-            recipients(EmpleadosRepository.approvers(tenant), byUserId).forEach { send(notifier, tenant, it, AbsenceRequestedTitle, text, AbsencesTarget) }
+            recipients(EmpleadosRepository.approvers(tenant), byUserId).forEach { approver ->
+                send(notifier, tenant, approver, AbsencesTarget) {
+                    NotificationText(tr("Solicitud de ausencia"), tr("{0} pidió {1} del {2} al {3}", employeeName, tr(absence.kind.label).lowercase(), absence.startDate, absence.endDate))
+                }
+            }
         }.onFailure { log.warn("No se pudo preparar el aviso de ausencia pedida ({}).", it.javaClass.simpleName) }
     }
 
@@ -98,14 +109,17 @@ object EmpleadosNotify {
         runCatching {
             val userId = EmpleadosRepository.userIdOf(tenant, absence.employeeId) ?: return
             if (recipients(listOf(userId), byUserId).isEmpty()) return
-            val base = "${absence.kind.label} del ${absence.startDate} al ${absence.endDate}"
-            val text = if (note.isBlank()) base else "$base. ${note.trim()}"
-            send(notifier, tenant, userId, if (approved) AbsenceApprovedTitle else AbsenceRejectedTitle, text, AbsencesTarget)
+            send(notifier, tenant, userId, AbsencesTarget) {
+                val base = tr("{0} del {1} al {2}", tr(absence.kind.label), absence.startDate, absence.endDate)
+                val text = if (note.isBlank()) base else "$base. ${note.trim()}"
+                NotificationText(if (approved) tr("Ausencia aprobada") else tr("Ausencia rechazada"), text)
+            }
         }.onFailure { log.warn("No se pudo preparar el aviso de ausencia decidida ({}).", it.javaClass.simpleName) }
     }
 
-    private fun send(notifier: ModuleNotifier, tenant: Connection, userId: UUID, title: String, text: String, target: NotificationTarget) {
-        runCatching { notifier.notify(tenant, userId, title, text.take(MaxText), target) }
-            .onFailure { log.warn("No se pudo crear el aviso \"{}\" de empleados ({}).", title, it.javaClass.simpleName) }
+    /** Escrito por [build] en el idioma de cada destinatario (ModuleNotifier.notify con builder). */
+    private fun send(notifier: ModuleNotifier, tenant: Connection, userId: UUID, target: NotificationTarget, build: () -> NotificationText) {
+        runCatching { notifier.notify(tenant, userId, target) { build().let { NotificationText(it.title, it.text.take(MaxText)) } } }
+            .onFailure { log.warn("No se pudo crear un aviso de empleados ({}).", it.javaClass.simpleName) }
     }
 }
