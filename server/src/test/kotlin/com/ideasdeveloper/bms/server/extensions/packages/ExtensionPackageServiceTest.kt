@@ -4,6 +4,9 @@ import com.ideasdeveloper.bms.server.extensions.ExtensionManifest
 import com.ideasdeveloper.bms.server.extensions.ExtensionSource
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.modules.GitHubLocation
+import com.ideasdeveloper.bms.server.modules.MemoryPackageInstallJournal
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
+import com.ideasdeveloper.bms.server.modules.PendingPackageInstall
 import java.nio.file.Files
 import java.util.concurrent.Executor
 import kotlin.test.Test
@@ -53,14 +56,20 @@ class ExtensionPackageServiceTest {
 
     private class FakeBuilder(
         var failure: String? = null,
+        /** Ids cuya compilacion falla aunque las demas funcionen. */
+        var failing: Set<String> = emptySet(),
         var signed: Boolean = false,
         var version: String = "0.1.0",
         var jar: java.nio.file.Path = java.nio.file.Path.of("x.jar"),
         var inspectedSha: String = "c".repeat(64),
         var signatureProblem: String? = null,
     ) : ExtensionPackageBuilding {
+        val built = mutableListOf<String>()
+
         override fun build(extensionId: String, source: GitHubLocation, progress: (String) -> Unit): BuiltExtension {
             failure?.let { throw ExtensionPackageException(it) }
+            if (extensionId in failing) throw ExtensionPackageException("No compila: $extensionId")
+            built += extensionId
             progress("Compilando")
             return BuiltExtension(
                 jar = jar,
@@ -115,8 +124,12 @@ class ExtensionPackageServiceTest {
         bundled: Set<String> = emptySet(),
         val root: java.nio.file.Path = Files.createTempDirectory("ext-packages"),
         catalogProblem: String? = null,
+        /** Lo que sobrevive a un reinicio: la cola guardada y server_extensions. */
+        val journal: MemoryPackageInstallJournal = MemoryPackageInstallJournal(),
+        val store: FakeStore = FakeStore(),
+        /** Por defecto compila en el mismo hilo; las pruebas de cola guardan las tareas y las corren despues. */
+        executor: Executor = Executor { it.run() },
     ) {
-        val store = FakeStore()
         val authorizations = FakeAuthorizations()
         val audit = mutableListOf<List<String?>>()
         var restarts = 0
@@ -128,9 +141,8 @@ class ExtensionPackageServiceTest {
             catalogProblem = { catalogProblem },
             builder = builder,
             authorizations = authorizations,
-            requestRestart = { restarts++ },
+            installs = PackageInstallQueue(journal, requestRestart = { restarts++ }, executor = executor),
             audit = { role, action, company, module, details -> audit += listOf(role, action, company, module, details) },
-            executor = Executor { it.run() },
         )
     }
 
@@ -491,5 +503,190 @@ class ExtensionPackageServiceTest {
         h.service.installFromZip("monday_import", Files.createTempFile(h.root, "p", ".zip"), "r")
         assertEquals("removed", h.service.remove("monday_import", "r").status)
         assertTrue(h.store.loadable().isEmpty())
+    }
+    // ---- Varios paquetes seguidos, reinicio en medio y paquetes que fallan ----
+
+    private val ids = listOf("alfa", "beta", "gamma")
+
+    /** Guarda las compilaciones encoladas para correrlas a mano, como el hilo unico del servidor. */
+    private class ManualExecutor : Executor {
+        val tasks = ArrayDeque<Runnable>()
+        override fun execute(command: Runnable) { tasks += command }
+        fun runNext() = tasks.removeFirst().run()
+        fun runAll() { while (tasks.isNotEmpty()) runNext() }
+    }
+
+    private fun queueHarness(
+        builder: FakeBuilder = FakeBuilder(),
+        executor: Executor = ManualExecutor(),
+        journal: MemoryPackageInstallJournal = MemoryPackageInstallJournal(),
+        store: FakeStore = FakeStore(),
+    ) = Harness(builder, ids.map { remote(it) }, journal = journal, store = store, executor = executor)
+
+    @Test
+    fun `several packages asked in a row are all built and the server restarts once at the end`() {
+        val executor = ManualExecutor()
+        val h = queueHarness(executor = executor)
+        ids.forEach { assertEquals("installing", h.service.install(it, "owner_role").status) }
+        assertEquals(ids, h.journal.state.pending.map { it.id })
+
+        executor.runNext()
+        // El primero ya esta guardado, pero quedan dos en cola: todavia no se reinicia.
+        assertEquals("pending_restart", h.service.status("alfa").status)
+        assertEquals("installing", h.service.status("beta").status)
+        assertEquals(0, h.restarts)
+
+        executor.runAll()
+        assertEquals(1, h.restarts)
+        ids.forEach { assertEquals("pending_restart", h.store.find(it)?.status) }
+        assertTrue(h.journal.state.pending.isEmpty())
+    }
+
+    @Test
+    fun `a package that fails does not block the next ones and keeps its error`() {
+        val executor = ManualExecutor()
+        val h = queueHarness(FakeBuilder(failing = setOf("beta")), executor)
+        ids.forEach { h.service.install(it, "owner_role") }
+        executor.runAll()
+
+        assertEquals("pending_restart", h.service.status("alfa").status)
+        assertEquals("pending_restart", h.service.status("gamma").status)
+        val failed = h.service.status("beta")
+        assertEquals("error", failed.status)
+        assertEquals("No compila: beta", failed.message)
+        assertEquals(1, h.restarts)
+
+        // Tras el reinicio que cargan los otros dos, el error sigue a la vista y se puede reintentar.
+        val restarted = queueHarness(journal = h.journal, store = h.store, executor = Executor { it.run() })
+        assertEquals("No compila: beta", restarted.service.status("beta").message)
+        assertEquals("pending_restart", restarted.service.install("beta", "owner_role").status)
+        assertTrue(restarted.journal.state.failures.isEmpty())
+    }
+
+    @Test
+    fun `when every package fails the server does not restart`() {
+        val h = queueHarness(FakeBuilder(failing = ids.toSet()), Executor { it.run() })
+        ids.forEach { assertEquals("error", h.service.install(it, "owner_role").status) }
+        assertEquals(0, h.restarts)
+        assertEquals(ids, h.journal.state.failures.map { it.id })
+    }
+
+    @Test
+    fun `a restart in the middle resumes the packages still queued`() {
+        val executor = ManualExecutor()
+        val before = queueHarness(executor = executor)
+        ids.forEach { before.service.install(it, "owner_role") }
+        executor.runNext()
+        // El servidor se cae aqui: alfa quedo guardada, beta y gamma seguian en cola.
+        assertEquals(listOf("beta", "gamma"), before.journal.state.pending.map { it.id })
+
+        val builder = FakeBuilder()
+        val after = queueHarness(builder, Executor { it.run() }, before.journal, before.store)
+        // Nada en memoria sobrevive al reinicio; el estado sale de lo guardado.
+        assertEquals("not_installed", after.service.status("beta").status)
+        after.service.resumePendingInstalls()
+
+        assertEquals(listOf("beta", "gamma"), builder.built)
+        ids.forEach { assertEquals("pending_restart", after.store.find(it)?.status) }
+        assertTrue(after.journal.state.pending.isEmpty())
+        assertEquals(1, after.restarts)
+        assertEquals(listOf("owner_role", "owner_role"), after.audit.map { it[0] })
+    }
+
+    @Test
+    fun `a package stored right before the restart is not built again`() {
+        val journal = MemoryPackageInstallJournal()
+        val first = queueHarness(executor = Executor { it.run() }, journal = journal)
+        first.service.install("alfa", "owner_role")
+        // El proceso murio despues de guardar el paquete y antes de sacarlo de la cola.
+        journal.state = journal.state.copy(pending = listOf(PendingPackageInstall(PackageInstallQueue.Extension, "alfa", "owner_role", attempts = 1)))
+
+        val builder = FakeBuilder()
+        val after = queueHarness(builder, Executor { it.run() }, journal, first.store)
+        after.service.resumePendingInstalls()
+        assertTrue(builder.built.isEmpty())
+        assertTrue(journal.state.pending.isEmpty())
+        assertEquals(0, after.restarts)
+    }
+
+    @Test
+    fun `a build that keeps taking the server down is not retried forever`() {
+        val journal = MemoryPackageInstallJournal()
+        val executor = ManualExecutor()
+        val first = queueHarness(executor = executor, journal = journal)
+        first.service.install("alfa", "owner_role")
+        // Cada arranque empieza a compilar y el proceso muere antes de terminar (p. ej. sin memoria).
+        repeat(PackageInstallQueue.MaxAttempts) {
+            val run = queueHarness(FakeBuilder(failure = "muere"), executor = Executor { }, journal = journal)
+            run.service.resumePendingInstalls()
+            journal.state = journal.state.copy(pending = journal.state.pending.map { it.copy(attempts = it.attempts + 1) })
+        }
+        val builder = FakeBuilder()
+        val last = queueHarness(builder, Executor { it.run() }, journal)
+        last.service.resumePendingInstalls()
+        assertTrue(builder.built.isEmpty())
+        assertTrue(journal.state.pending.isEmpty())
+        assertTrue(journal.state.failures.single().message.contains("se interrumpio"))
+        // El error se ve al abrir la lista tras el siguiente arranque.
+        assertEquals("error", queueHarness(journal = journal).service.status("alfa").status)
+    }
+
+    @Test
+    fun `a staged zip waiting in the queue is resumed after a restart with its source`() {
+        val executor = ManualExecutor()
+        val root = Files.createTempDirectory("ext-packages")
+        val journal = MemoryPackageInstallJournal()
+        val store = FakeStore()
+        val before = Harness(FakeBuilder(signed = true), emptyList(), root = root, journal = journal, store = store, executor = executor)
+        val inspection = before.service.inspectZip("monday_import", "p.zip", byteArrayOf(1, 2, 3))
+        assertEquals("installing", before.service.installStaged(inspection.stagingToken, "owner_role").status)
+        // Otra revision mientras espera no borra el ZIP en cola, aunque ya haya caducado su plazo.
+        val zip = java.nio.file.Path.of(journal.state.pending.single().location!!)
+        Files.setLastModifiedTime(zip, java.nio.file.attribute.FileTime.fromMillis(0))
+        before.service.inspectZip("other_ext", "q.zip", byteArrayOf(4))
+        assertTrue(Files.isRegularFile(zip))
+
+        val builder = FakeBuilder(signed = true)
+        val after = Harness(builder, emptyList(), root = root, journal = journal, store = store)
+        after.service.resumePendingInstalls()
+        assertEquals(listOf(listOf("zip", "zip:p.zip")), builder.builtFrom)
+        assertEquals("pending_restart", store.find("monday_import")?.status)
+        assertFalse(Files.exists(zip))
+        assertEquals(1, after.restarts)
+
+        // Si el ZIP ya no esta, el pedido termina con un error visible en vez de quedarse colgado.
+        journal.state = journal.state.copy(pending = listOf(PendingPackageInstall(PackageInstallQueue.Extension, "lost_ext", "r", PendingPackageInstall.OriginZip, location = zip.toString())))
+        val gone = Harness(FakeBuilder(signed = true), emptyList(), root = root, journal = journal, store = store)
+        gone.service.resumePendingInstalls()
+        assertEquals("error", gone.service.status("lost_ext").status)
+        assertTrue(journal.state.pending.isEmpty())
+    }
+
+    @Test
+    fun `a package asked after the restart was requested waits for the next start`() {
+        val h = queueHarness(executor = Executor { it.run() })
+        h.service.install("alfa", "owner_role")
+        assertEquals(1, h.restarts)
+        // El proceso esta por salir: beta no empieza a compilar, queda anotada.
+        assertEquals("installing", h.service.install("beta", "owner_role").status)
+        assertEquals(listOf("beta"), h.journal.state.pending.map { it.id })
+        assertEquals(1, h.restarts)
+
+        val builder = FakeBuilder()
+        val after = queueHarness(builder, Executor { it.run() }, h.journal, h.store)
+        after.service.resumePendingInstalls()
+        assertEquals(listOf("beta"), builder.built)
+    }
+
+    @Test
+    fun `a package left pending restart whose jar never loaded shows an error instead of asking for another restart`() {
+        val h = harness()
+        h.store.rows["monday_import"] = StoredExtensionPackage("monday_import", "crm", "0.1.0", "github", "pending_restart", "/no/existe.jar", sha, true, "e".repeat(64))
+        h.service.loadInstalled(moduleClassLoader = { javaClass.classLoader }, load = { _, _, _ -> emptyList() })
+        val status = h.service.status("monday_import")
+        assertEquals("error", status.status)
+        assertFalse(status.restartRequired)
+        // Reinstalar lo arregla.
+        assertEquals("pending_restart", h.service.install("monday_import", "r").status)
     }
 }

@@ -16,6 +16,8 @@ import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import java.nio.file.Files
+import com.ideasdeveloper.bms.server.modules.MemoryPackageInstallJournal
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import java.util.concurrent.Executor
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,9 +46,8 @@ class ExtensionUploadGateRouteTest {
         catalogSource = { emptyList() },
         builder = null,
         authorizations = authorizations,
-        requestRestart = {},
+        installs = PackageInstallQueue(MemoryPackageInstallJournal(), requestRestart = {}, executor = Executor { it.run() }),
         audit = { _, _, _, _, _ -> },
-        executor = Executor { it.run() },
     )
 
     private fun ApplicationTestBuilder.mount(enabled: Boolean, owner: Boolean = true) {

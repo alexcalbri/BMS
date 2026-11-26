@@ -28,8 +28,10 @@ import com.ideasdeveloper.bms.server.modules.ModuleDefinition
 import com.ideasdeveloper.bms.server.modules.CustomerReferenceSource
 import com.ideasdeveloper.bms.server.modules.ModuleJobScheduler
 import com.ideasdeveloper.bms.server.modules.JdbcModuleUnsignedAuthorizationStore
+import com.ideasdeveloper.bms.server.modules.JdbcPackageInstallJournal
 import com.ideasdeveloper.bms.server.modules.ModulePackageBuilder
 import com.ideasdeveloper.bms.server.modules.ModulePackageLoader
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.server.modules.ModuleRequirements
 import com.ideasdeveloper.bms.server.modules.ModuleRegistry
 import com.ideasdeveloper.bms.server.modules.RemoteModuleCatalog
@@ -171,6 +173,12 @@ fun Application.module() {
         if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
     }
     val provisioningConfig = companyProvisioningConfig()
+    // One build queue for modules and extension packages: the server restarts once, when it is empty,
+    // and what a restart cut short is resumed below from server_settings.
+    val packageInstalls = PackageInstallQueue(
+        journal = JdbcPackageInstallJournal { DatabaseFactory.getDataSource().connection },
+        requestRestart = ::restartToLoadModules,
+    )
     val companyProvisioning = CompanyProvisioningService(
         central = DatabaseFactory.getDataSource(),
         config = provisioningConfig,
@@ -186,7 +194,7 @@ fun Application.module() {
             // Compuerta de firma de modulos: permisiva por defecto (develop/pruebas); produccion la pone en true.
             signatureEnforced = System.getenv("MODULE_SIGNATURE_ENFORCED")?.trim()?.equals("true", ignoreCase = true) ?: false,
         ),
-        requestRestart = ::restartToLoadModules,
+        installs = packageInstalls,
         companyFiles = companyFiles,
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without
@@ -267,12 +275,24 @@ fun Application.module() {
             githubToken = githubToken,
         ),
         authorizations = unsignedAuthorizations,
-        requestRestart = ::restartToLoadModules,
+        installs = packageInstalls,
         audit = { role, action, company, module, details -> companyProvisioning.recordAudit(role, action, company, module, details) },
     )
     val packageExtensions = extensionPackages.loadInstalled(
         moduleClassLoader = { id -> moduleRegistry.module(id)?.javaClass?.classLoader },
     )
+    // Installations the previous run left queued or building (it restarted or stopped in between) are
+    // asked for again. Reading the catalogs goes to GitHub, so it does not delay startup.
+    Thread({
+        // Each kind on its own: the queue waits for both before it restarts the server.
+        listOf(companyProvisioning::resumePendingInstalls, extensionPackages::resumePendingInstalls).forEach { resume ->
+            try {
+                resume()
+            } catch (failure: Exception) {
+                log.error("Pending package installations were not resumed", failure)
+            }
+        }
+    }, "package-install-resume").apply { isDaemon = true }.start()
     val extensionRegistry = ExtensionRegistry.of(serverModules, packageExtensions)
     extensionRegistryForReferences = extensionRegistry
     serverModules.forEach { module -> module.linkExtensions(extensionRegistry.forModule(module.definition.id)) }
@@ -632,7 +652,7 @@ private fun installedModuleJar(central: DataSource, moduleId: String): Path? = t
 private fun restartToLoadModules() {
     Thread({
         Thread.sleep(2_000)
-        LoggerFactory.getLogger("ModulePackages").info("Restarting to load the installed module package.")
+        LoggerFactory.getLogger("ModulePackages").info("Restarting to load the installed packages.")
         exitProcess(RestartExitCode)
     }, "module-restart").start()
 }

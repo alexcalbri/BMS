@@ -540,6 +540,46 @@ Installing a module should eventually:
 
 Exact CLI/API/UI installation steps must be added here when implemented.
 
+### Package builds and the restart (Core 0.9.2)
+
+Optional modules and external extension packages are compiled on the server
+and loaded at startup, so installing one ends with the server restarting
+itself: the process exits with code 3 and systemd (`Restart=on-failure`)
+starts it again within seconds.
+
+-   Builds run one at a time in a single queue shared by modules and
+    extension packages (a build uses about 1 GB of memory).
+-   The server restarts **once, when the queue is empty**. Asking for several
+    packages in a row installs all of them and restarts a single time; before
+    0.9.2 the restart came after the first build and the rest were lost. A
+    built module shows `restarting` and a built extension
+    `pending_restart` until that restart.
+-   The queue is saved in the control database (`server_settings`, key
+    `packages.install.queue`; no new table). If the server stops in between
+    (crash, `systemctl restart bms`, a Core update), the next start asks again
+    for what was still queued or building, with the same checks as a new
+    request (catalog, minimum versions, signature or authorized hash). A
+    staged ZIP is resumed from its file in `server-extensions/_staging`.
+-   A package that fails to build does not stop the following ones. Its error
+    stays in the module or extension list, also after the restart, until it
+    is installed again or removed.
+-   A build that was interrupted twice by the server going down (typically
+    out of memory) is not retried a third time: it ends with an error instead
+    of restarting in a loop.
+-   Without a supervisor that restarts on exit code 3 (for example
+    `:server:run`), the server stops after the queue is done; start it again
+    to load the packages.
+-   An extension package left in `pending_restart` whose jar does not load at
+    startup is shown as an error (another restart does not fix it); install
+    it again. The reason is in the server log.
+
+To inspect or clear the queue by hand:
+
+``` sql
+SELECT setting_value FROM server_settings WHERE setting_key = 'packages.install.queue';
+DELETE FROM server_settings WHERE setting_key = 'packages.install.queue';
+```
+
 Disabling a module should preserve data by default.
 
 Uninstalling may be destructive and must require explicit administrative

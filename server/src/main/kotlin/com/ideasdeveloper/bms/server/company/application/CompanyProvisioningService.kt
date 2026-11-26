@@ -30,10 +30,11 @@ import com.ideasdeveloper.bms.server.modules.ModuleBuildException
 import com.ideasdeveloper.bms.server.modules.ModulePackageBuilder
 import com.ideasdeveloper.bms.server.modules.ModulePackageInspection
 import com.ideasdeveloper.bms.server.modules.ModuleUnsignedAuthorizationResponse
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
+import com.ideasdeveloper.bms.server.modules.PendingPackageInstall
 import com.ideasdeveloper.bms.server.modules.ServerModule
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
 import org.postgresql.ds.PGSimpleDataSource
 import java.net.URI
 import java.nio.file.Files
@@ -58,16 +59,18 @@ class CompanyProvisioningService(
     private val modulePackagesRoot: Path,
     // Null outside an installed distribution (e.g. :server:run), where modules cannot be built.
     private val modulePackageBuilder: ModulePackageBuilder?,
-    private val requestRestart: () -> Unit,
+    // Build queue shared with the extension packages; it restarts the server once, when it is empty.
+    private val installs: PackageInstallQueue,
     // Files the modules stored for the company; removed with the company.
     private val companyFiles: CompanyFiles? = null,
 ) {
     private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
     // Progress of optional modules being built for installation, shown in the module list.
-    private val installStates = ConcurrentHashMap<String, ModuleInstallState>()
+    private val installStates = ConcurrentHashMap<String, ModuleInstallState>().apply {
+        // Failures from before the last restart stay visible.
+        installs.failures(PackageInstallQueue.Module).forEach { (id, message) -> put(id, ModuleInstallState(InstallStatus.Failed, message)) }
+    }
     private val MinModuleConfirmationLength = 10
-    // One build at a time: compiling uses about 1 GB of memory.
-    private val buildExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "module-build").apply { isDaemon = true } }
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
@@ -1165,8 +1168,9 @@ class CompanyProvisioningService(
 
     /**
      * Installs a module. Modules whose code is already loaded are activated at once. Optional
-     * modules are downloaded from the configured catalog branch and built in the background; when
-     * the package is ready the server restarts to load it. The response reports the progress.
+     * modules are downloaded from the configured catalog branch and built in the background, one at
+     * a time; the server restarts to load them once the build queue is empty. The response reports
+     * the progress.
      */
     fun installServerModule(moduleId: String, appVersion: String? = null): ServerModuleResponse {
         val normalizedModuleId = moduleId.trim()
@@ -1201,8 +1205,21 @@ class CompanyProvisioningService(
         val source = remotePackage?.source
             ?: throw CompanyProvisioningException("${definition.displayName} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.")
         installStates[definition.id] = ModuleInstallState(InstallStatus.Installing, "En cola para compilar")
-        buildExecutor.execute { buildAndInstall(definition, builder, source) }
+        installs.enqueue(PendingPackageInstall(PackageInstallQueue.Module, definition.id)) { buildAndInstall(definition, builder, source) }
         return moduleResponse(definition, remotePackage).copy(warning = warning)
+    }
+
+    /**
+     * At startup: asks again for the module installations the previous run left queued or building.
+     * They go through the same checks as a new request (catalog, minimum versions, signature).
+     */
+    fun resumePendingInstalls() = installs.resume(PackageInstallQueue.Module) { pending ->
+        try {
+            installServerModule(pending.id)
+        } catch (failure: Exception) {
+            installStates[pending.id] = ModuleInstallState(InstallStatus.Failed, failure.message.orEmpty())
+            throw failure
+        }
     }
 
     /** Descarga el modulo del catalogo y devuelve commit, URL y hash calculado, para revisarlo antes de autorizar. */
@@ -1488,9 +1505,10 @@ class CompanyProvisioningService(
         ).use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null } }
     }
 
-    private fun buildAndInstall(definition: ModuleDefinition, builder: ModulePackageBuilder, source: GitHubLocation) {
+    // Returns null when the package was stored (a restart loads it) or the failure message.
+    private fun buildAndInstall(definition: ModuleDefinition, builder: ModulePackageBuilder, source: GitHubLocation): String? {
         val moduleId = definition.id
-        try {
+        return try {
             val built = builder.build(moduleId, source) { step ->
                 installStates[moduleId] = ModuleInstallState(InstallStatus.Installing, step)
             }
@@ -1503,15 +1521,18 @@ class CompanyProvisioningService(
                     installedPackagePath = built.jar.toString(),
                 )
             }
-            log.info("Module {} {} built from {}@{}; restarting to load it.", moduleId, built.version, source.repo, source.ref)
-            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting, "Reiniciando el servidor para cargar ${definition.displayName}")
-            requestRestart()
+            log.info("Module {} {} built from {}@{}; the server restarts to load it once the install queue is empty.", moduleId, built.version, source.repo, source.ref)
+            installStates[moduleId] = ModuleInstallState(
+                InstallStatus.Restarting,
+                "Compilado. El servidor se reinicia para cargar ${definition.displayName} cuando termine la cola de instalacion",
+            )
+            null
         } catch (failure: ModuleBuildException) {
             log.warn("Module {} could not be built: {}", moduleId, failure.message)
-            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, failure.message.orEmpty())
+            failure.message.orEmpty().also { installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, it) }
         } catch (failure: Exception) {
             log.error("Module {} installation failed", moduleId, failure)
-            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, "Error inesperado: ${failure.message}")
+            "Error inesperado: ${failure.message}".also { installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, it) }
         }
     }
 
@@ -1546,6 +1567,7 @@ class CompanyProvisioningService(
             }
         }
         installStates.remove(definition.id)
+        installs.clearFailure(PackageInstallQueue.Module, definition.id)
         // The loaded classes stay in memory until the next restart, but the routes reject the module.
         if (moduleRegistry.isPackaged(definition.id)) {
             modulePackagesRoot.resolve(definition.id).toFile().deleteRecursively()

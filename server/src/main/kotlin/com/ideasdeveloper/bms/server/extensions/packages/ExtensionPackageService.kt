@@ -3,6 +3,8 @@ package com.ideasdeveloper.bms.server.extensions.packages
 import com.ideasdeveloper.bms.ModuleVersion
 import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
+import com.ideasdeveloper.bms.server.modules.PendingPackageInstall
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -11,8 +13,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
 
 class ExtensionPackageServiceException(message: String, val code: String = "EXTENSION_PACKAGE_ERROR") : Exception(message)
 
@@ -98,9 +98,10 @@ object ExtensionPackageAudit {
 }
 
 /**
- * Instala, autoriza y quita paquetes externos de extensiones (solo el dueno del servidor). El estado
- * de una instalacion en curso o fallida vive en memoria, como el de los modulos; lo instalado, en
- * server_extensions. Instalar un paquete nuevo pide reinicio ([requestRestart]) para cargarlo.
+ * Instala, autoriza y quita paquetes externos de extensiones (solo el dueno del servidor). Lo instalado
+ * vive en server_extensions. Las compilaciones pasan por [installs], la cola compartida con los modulos:
+ * el servidor se reinicia una sola vez, cuando la cola queda vacia, y lo que un reinicio dejo a medias
+ * se retoma al arrancar ([resumePendingInstalls]). El progreso vive en memoria; los errores, en la cola.
  */
 class ExtensionPackageService(
     private val store: ExtensionPackageStore,
@@ -113,16 +114,24 @@ class ExtensionPackageService(
     private val catalogProblem: () -> String? = { null },
     private val builder: ExtensionPackageBuilding?,
     private val authorizations: UnsignedAuthorizationStore,
-    private val requestRestart: () -> Unit,
+    /** Cola de compilacion compartida con los modulos; decide cuando reiniciar. */
+    private val installs: PackageInstallQueue,
     /** (actorRole, action, companyCode, moduleId, detailsJson) -> Unit */
     private val audit: (String, String, String?, String?, String) -> Unit,
-    private val executor: Executor = Executors.newSingleThreadExecutor { task -> Thread(task, "extension-package-build").apply { isDaemon = true } },
 ) {
     private val log = LoggerFactory.getLogger(ExtensionPackageService::class.java)
 
     private class InstallState(val status: String, val message: String)
 
     private val states = ConcurrentHashMap<String, InstallState>()
+
+    // ZIP que una instalacion en cola todavia necesita: la limpieza de preparacion no los borra.
+    private val queuedZips = ConcurrentHashMap.newKeySet<Path>()
+
+    init {
+        // Los errores de instalaciones anteriores al ultimo reinicio siguen visibles.
+        installs.failures(PackageInstallQueue.Extension).forEach { (id, message) -> states[id] = InstallState("error", message) }
+    }
 
     fun catalog(): List<ExtensionPackageEntry> {
         val stored = store.all().associateBy { it.id }
@@ -183,10 +192,70 @@ class ExtensionPackageService(
                 "Este servidor no puede compilar extensiones: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh.",
                 "BUILDER_UNAVAILABLE",
             )
+        return enqueue(PendingPackageInstall(PackageInstallQueue.Extension, id, actorRole), activeBuilder) { active, progress ->
+            active.build(id, remote.source, progress)
+        }
+    }
+
+    /** Marca [install] como en cola y lo manda a compilar; si ya habia una instalacion de ese id en curso, no hace nada. */
+    private fun enqueue(
+        install: PendingPackageInstall,
+        activeBuilder: ExtensionPackageBuilding,
+        onStored: () -> Unit = {},
+        produce: (ExtensionPackageBuilding, (String) -> Unit) -> BuiltExtension,
+    ): ExtensionPackageStatus {
+        val id = install.id
         val queued = InstallState("installing", "En cola para compilar")
         if (states.compute(id) { _, current -> if (current?.status == "installing") current else queued } !== queued) return status(id)
-        executor.execute { buildAndStore(id, activeBuilder, actorRole) { active, progress -> active.build(id, remote.source, progress) } }
+        val zip = install.location?.takeIf { install.origin == PendingPackageInstall.OriginZip }?.let { Path.of(it) }
+        zip?.let(queuedZips::add)
+        installs.enqueue(install) {
+            try {
+                buildAndStore(id, activeBuilder, install.actor, onStored, produce)
+            } finally {
+                zip?.let(queuedZips::remove)
+            }
+        }
         return status(id)
+    }
+
+    /**
+     * Al arrancar: vuelve a pedir las instalaciones que el proceso anterior dejo en cola o compilando.
+     * Pasan por las mismas comprobaciones que un pedido nuevo (catalogo, firma o hash autorizado).
+     */
+    fun resumePendingInstalls() = installs.resume(PackageInstallQueue.Extension) { pending ->
+        try {
+            resume(pending)
+        } catch (failure: Exception) {
+            states[pending.id] = InstallState("error", failure.message ?: "No se pudo retomar la instalacion.")
+            throw failure
+        }
+    }
+
+    private fun resume(pending: PendingPackageInstall) {
+        when (pending.origin) {
+            PendingPackageInstall.OriginZip -> {
+                val zip = pending.location?.let { Path.of(it) }?.takeIf { Files.isRegularFile(it) }
+                    ?: throw ExtensionPackageServiceException("El ZIP del paquete ya no esta en el servidor. Subelo otra vez.", "NOT_FOUND")
+                val sourceUrl = pending.sourceUrl
+                val sourceType = pending.sourceType
+                enqueueExternal(pending, onStored = { if (zip.startsWith(stagingDir)) runCatching { Files.deleteIfExists(zip) } }) { active, progress ->
+                    if (sourceUrl != null && sourceType != null) active.buildFromZip(pending.id, zip, progress, sourceUrl, sourceType)
+                    else active.buildFromZip(pending.id, zip, progress)
+                }
+            }
+            PendingPackageInstall.OriginUrl -> installFromUrl(
+                pending.id,
+                pending.location ?: throw ExtensionPackageServiceException("La instalacion pendiente no tiene URL.", "NOT_FOUND"),
+                pending.actor,
+            )
+            else -> {
+                // Si el paquete ya quedo guardado en esa version antes del reinicio, no hay nada que repetir.
+                val remote = catalogSource().firstOrNull { it.manifest.id == pending.id } ?: throw notInCatalog(pending.id)
+                val stored = store.find(pending.id)
+                if (stored == null || stored.status == "removed" || stored.version != remote.manifest.version) install(pending.id, pending.actor)
+            }
+        }
     }
 
     // ---- Paquetes desde un ZIP subido o una URL ----
@@ -217,12 +286,12 @@ class ExtensionPackageService(
     private fun purgeStaging() {
         val limit = System.currentTimeMillis() - StagingMinutes * 60_000L
         staged.entries.removeIf { (_, item) ->
-            (item.createdAt < limit).also { expired -> if (expired) runCatching { Files.deleteIfExists(item.file) } }
+            (item.createdAt < limit && item.file !in queuedZips).also { expired -> if (expired) runCatching { Files.deleteIfExists(item.file) } }
         }
         runCatching {
             if (Files.isDirectory(stagingDir)) {
                 Files.list(stagingDir).use { files ->
-                    files.filter { Files.getLastModifiedTime(it).toMillis() < limit }.toList()
+                    files.filter { Files.getLastModifiedTime(it).toMillis() < limit && it !in queuedZips }.toList()
                 }.forEach { runCatching { Files.deleteIfExists(it) } }
             }
         }
@@ -283,7 +352,8 @@ class ExtensionPackageService(
 
     private fun stagedFor(token: String): Staged {
         val item = staged[token.trim()]
-        if (item == null || !Files.isRegularFile(item.file) || item.createdAt < System.currentTimeMillis() - StagingMinutes * 60_000L) {
+        val expired = item != null && item.createdAt < System.currentTimeMillis() - StagingMinutes * 60_000L && item.file !in queuedZips
+        if (item == null || !Files.isRegularFile(item.file) || expired) {
             throw ExtensionPackageServiceException("El paquete en preparacion no existe o caduco. Subelo otra vez.", "NOT_FOUND")
         }
         return item
@@ -343,14 +413,20 @@ class ExtensionPackageService(
     /** Instala el paquete en preparacion. Sin firma ni hash autorizado, la compilacion falla en verify (igual que con GitHub). */
     fun installStaged(token: String, actorRole: String): ExtensionPackageStatus {
         val item = stagedFor(token)
-        return enqueueExternal(item.id, actorRole, onStored = { staged.remove(token.trim()); runCatching { Files.deleteIfExists(item.file) } }) { active, progress ->
+        val install = PendingPackageInstall(
+            PackageInstallQueue.Extension, item.id, actorRole, PendingPackageInstall.OriginZip,
+            location = item.file.toString(), sourceUrl = item.sourceUrl, sourceType = item.kind,
+        )
+        return enqueueExternal(install, onStored = { staged.remove(token.trim()); runCatching { Files.deleteIfExists(item.file) } }) { active, progress ->
             active.buildFromZip(item.id, item.file, progress, item.sourceUrl, item.kind)
         }
     }
 
     /** Instala un ZIP que ya esta en disco (sin pasar por preparacion). Exige firma o hash autorizado, como [install]. */
     fun installFromZip(id: String, zip: Path, actorRole: String): ExtensionPackageStatus =
-        enqueueExternal(id, actorRole) { active, progress -> active.buildFromZip(id, zip, progress) }
+        enqueueExternal(PendingPackageInstall(PackageInstallQueue.Extension, id, actorRole, PendingPackageInstall.OriginZip, location = zip.toString())) { active, progress ->
+            active.buildFromZip(id, zip, progress)
+        }
 
     /** Descarga el ZIP de [url] y lo instala. Exige firma o hash autorizado, como [install]. */
     fun installFromUrl(id: String, url: String, actorRole: String): ExtensionPackageStatus {
@@ -359,21 +435,17 @@ class ExtensionPackageService(
         } catch (failure: ExtensionPackageException) {
             throw ExtensionPackageServiceException(failure.message ?: "La URL no es valida.", "URL_REJECTED")
         }
-        return enqueueExternal(id, actorRole) { active, progress -> active.buildFromUrl(id, url.trim(), progress) }
+        val install = PendingPackageInstall(PackageInstallQueue.Extension, id, actorRole, PendingPackageInstall.OriginUrl, location = url.trim())
+        return enqueueExternal(install) { active, progress -> active.buildFromUrl(id, url.trim(), progress) }
     }
 
     private fun enqueueExternal(
-        id: String,
-        actorRole: String,
+        install: PendingPackageInstall,
         onStored: () -> Unit = {},
         produce: (ExtensionPackageBuilding, (String) -> Unit) -> BuiltExtension,
     ): ExtensionPackageStatus {
-        checkExternalId(id)
-        val activeBuilder = requireBuilder()
-        val queued = InstallState("installing", "En cola para compilar")
-        if (states.compute(id) { _, current -> if (current?.status == "installing") current else queued } !== queued) return status(id)
-        executor.execute { buildAndStore(id, activeBuilder, actorRole, onStored, produce) }
-        return status(id)
+        checkExternalId(install.id)
+        return enqueue(install, requireBuilder(), onStored, produce)
     }
 
     private fun checkNoDowngrade(id: String, version: String, stored: StoredExtensionPackage?) {
@@ -390,14 +462,15 @@ class ExtensionPackageService(
         runCatching { Files.deleteIfExists(old) }.onFailure { log.warn("No se pudo borrar el jar anterior {}: {}", old, it.message) }
     }
 
+    /** Compila y guarda el paquete. Devuelve null si quedo guardado (falta reiniciar) o el mensaje del error. */
     private fun buildAndStore(
         id: String,
         builder: ExtensionPackageBuilding,
         actorRole: String,
         onStored: () -> Unit = {},
         produce: (ExtensionPackageBuilding, (String) -> Unit) -> BuiltExtension,
-    ) {
-        try {
+    ): String? {
+        return try {
             val built = produce(builder) { step -> states[id] = InstallState("installing", step) }
             val previous = store.find(id)
             check(built.manifest.id == id) { "El paquete compilado declara otro id." }
@@ -418,11 +491,11 @@ class ExtensionPackageService(
                     put("jarSha256", built.jarSha256)
                 }.toString(),
             )
-            log.info("Extension package {} {} built; restarting to load it.", id, built.manifest.version)
-            requestRestart()
+            log.info("Extension package {} {} built; the server restarts to load it once the install queue is empty.", id, built.manifest.version)
+            null
         } catch (failure: Exception) {
             log.warn("Extension package {} could not be installed: {}", id, failure.message)
-            states[id] = InstallState("error", failure.message ?: "No se pudo instalar la extension.")
+            (failure.message ?: "No se pudo instalar la extension.").also { states[id] = InstallState("error", it) }
         }
     }
 
@@ -505,6 +578,7 @@ class ExtensionPackageService(
         }
         store.markRemoved(id)
         states.remove(id)
+        installs.clearFailure(PackageInstallQueue.Extension, id)
         audit(
             actorRole, ExtensionPackageAudit.Remove, null, stored.moduleId,
             buildJsonObject {
@@ -518,7 +592,8 @@ class ExtensionPackageService(
     /**
      * Al arrancar: carga los paquetes instalados con el class loader de su modulo, solo si el jar esta
      * bajo packagesRoot y su SHA-256 coincide con el guardado (ver [ExtensionPackageLoader]), y deja en
-     * 'installed' los que estaban en 'pending_restart' y cargaron.
+     * 'installed' los que estaban en 'pending_restart' y cargaron. Los que siguen en 'pending_restart'
+     * porque su jar no cargo se muestran con error: otro reinicio no los arregla, hay que reinstalarlos.
      */
     fun loadInstalled(
         moduleClassLoader: (moduleId: String) -> ClassLoader?,
@@ -531,7 +606,12 @@ class ExtensionPackageService(
         if (candidates.isEmpty()) return emptyList()
         val extensions = load(candidates, packagesRoot, moduleClassLoader)
         val loaded = extensions.map { it.manifest.id }.toSet()
-        store.markInstalled(store.loadable().filter { it.status == "pending_restart" && it.id in loaded }.map { it.id })
+        val pending = store.loadable().filter { it.status == "pending_restart" }
+        store.markInstalled(pending.filter { it.id in loaded }.map { it.id })
+        pending.filterNot { it.id in loaded }.forEach { row ->
+            log.error("Extension package {} is pending restart but its jar did not load; it must be installed again.", row.id)
+            states.putIfAbsent(row.id, InstallState("error", "El paquete se compilo pero no cargo al arrancar (el log del servidor dice por que). Instalalo otra vez."))
+        }
         return extensions
     }
 

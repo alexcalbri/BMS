@@ -138,7 +138,12 @@ When the server owner installs an optional module, the server:
 5. stores the package in `MODULE_PACKAGES_ROOT/<id>/<id>-<version>.jar` (code,
    migrations, resources and `module.json`) and records it in `server_modules`;
 6. restarts itself (systemd brings it back in a few seconds) and loads the
-   package in its own class loader.
+   package in its own class loader. Builds run one at a time in a queue shared
+   with the extension packages, and the restart happens once, when the queue is
+   empty: asking for several modules in a row installs all of them (Core 0.9.2).
+   What a restart cuts short is resumed at the next start, and a failed build
+   keeps its error in the list without stopping the others. See
+   `SELF_HOSTING.md`, section 9.
 
 The module list shows the progress (`installing`, `restarting`, `failed`). When
 the catalog offers a newer version of an installed module, *Actualizar* rebuilds
