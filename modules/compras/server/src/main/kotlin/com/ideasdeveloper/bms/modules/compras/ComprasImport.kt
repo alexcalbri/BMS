@@ -268,7 +268,7 @@ object ComprasImportEngine {
 
     /**
      * Importa una solicitud. Idempotente por import_key: si ya existe no se cambia, solo se anaden cotizaciones y archivos
-     * cuya clave sea nueva. Una transaccion por solicitud; los archivos se guardan antes y se borran si la fila falla.
+     * cuya clave sea nueva; la unica excepcion es el estado de una solicitud que sigue en borrador, que toma el del origen. Una transaccion por solicitud; los archivos se guardan antes y se borran si la fila falla.
      * Resultado [ImportOutcome.Partial] si faltaron archivos o cotizaciones. Sin compras.manage (ni dueno) las decisiones
      * importadas pasan a pendientes, el solicitante es quien importa y no se crean departamentos. No avisa por solicitud.
      * Bloqueante (JDBC y disco): usar en withContext(Dispatchers.IO).
@@ -435,6 +435,27 @@ object ComprasImportEngine {
             }
             if (inserted == 0) return null
             createdNow = true
+        } else if (plan.status != RequestStatus.Draft) {
+            // Volver a importar no pisa lo que alguien ya avanzo aqui: solo saca del borrador una solicitud que
+            // sigue en el (por ejemplo, importada cuando su estado de origen aun no se reconocia).
+            val moved = tenant.prepareStatement(
+                """
+                UPDATE compras_requests
+                SET status = ?, decided_by_name = ?, decided_at = ?, decision_reason = ?, approved_amount = ?, approved_currency = ?,
+                    submitted_at = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = ?
+                """.trimIndent()
+            ).use { update ->
+                ComprasSql.bind(
+                    update,
+                    listOf(
+                        plan.status.id, plan.decidedByName, ts(plan.decidedAt), plan.decisionReason, plan.approvedAmount, plan.approvedCurrency,
+                        ts(plan.submittedAt), ts(plan.completedAt), requestId, RequestStatus.Draft.id,
+                    ),
+                )
+                update.executeUpdate()
+            }
+            if (moved == 1) run.problems += "Estado actualizado a \"${plan.status.label}\": la solicitud seguia en borrador."
         }
         val quoteIds = mutableMapOf<String, UUID>()
         var addedQuotes = 0
