@@ -5,6 +5,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmExtensions
 import com.ideasdeveloper.bms.modules.crm.CrmOutboundSource
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.outbound.OutboundRecordType
 import com.ideasdeveloper.bms.server.outbound.monday.MondayApiException
 import com.ideasdeveloper.bms.server.outbound.monday.MondayBoardInfo
@@ -50,7 +51,7 @@ object MondayOutboundScreens {
     } catch (failure: Exception) {
         // Nada de lo que falle aqui rompe la pantalla: se muestra un aviso y el detalle va al log.
         log.warn("Fallo la pantalla de envio a monday.", failure)
-        listOf(warning("No se pudo mostrar la pantalla de envio a monday (${failure.javaClass.simpleName})."))
+        listOf(warning(tr("No se pudo mostrar la pantalla de envio a monday ({0}).", failure.javaClass.simpleName)))
     }
 
     private fun build(context: CrmScreens.Context, submitted: Map<String, String>?): List<UiNode> {
@@ -59,7 +60,7 @@ object MondayOutboundScreens {
         val token = MondayOutbound.token(tenant)
         val nodes = mutableListOf<UiNode>()
         if (token == null) {
-            nodes += warning("Falta el token de monday: guardalo en Importar (puedes compartirlo con las demas extensiones de monday) y vuelve aqui.")
+            nodes += warning(tr("Falta el token de monday: guardalo en Importar (puedes compartirlo con las demas extensiones de monday) y vuelve aqui."))
         }
         var boards: List<MondayBoardInfo> = emptyList()
         var boardsFailed = false
@@ -68,7 +69,7 @@ object MondayOutboundScreens {
                 boards = MondayBoards.listBoards(MondayOutbound.api, token)
             } catch (failure: MondayApiException) {
                 boardsFailed = true
-                nodes += warning("No se pudieron leer los tableros de monday: ${failure.message.orEmpty()}")
+                nodes += warning(tr("No se pudieron leer los tableros de monday: {0}", failure.message.orEmpty()))
             }
         }
         types(tenant).forEach { type ->
@@ -78,9 +79,9 @@ object MondayOutboundScreens {
             if (token != null && !boardsFailed && boardId != null) {
                 try {
                     schema = MondayBoards.boardSchema(MondayOutbound.api, token, boardId)
-                    if (schema == null) nodes += warning("monday no devolvio el tablero $boardId: revisa que exista y que el token tenga acceso.")
+                    if (schema == null) nodes += warning(tr("monday no devolvio el tablero {0}: revisa que exista y que el token tenga acceso.", boardId))
                 } catch (failure: MondayApiException) {
-                    nodes += warning("No se pudieron leer las columnas del tablero: ${failure.message.orEmpty()}")
+                    nodes += warning(tr("No se pudieron leer las columnas del tablero: {0}", failure.message.orEmpty()))
                 }
             }
             nodes += MondayOutboundUi.configCard(type, config, boards, schema, ::request, submitted.orEmpty())
@@ -97,12 +98,12 @@ object MondayOutboundScreens {
 
     // ---- Acciones ----
 
-    private fun verb(op: String) = when (op) {
-        "save" -> "guardar la configuracion"
-        "suggest" -> "sugerir columnas"
-        "retry", "retryAll" -> "reintentar el envio"
-        "discard" -> "descartar el envio"
-        else -> "completar la accion"
+    private fun failureText(op: String, kind: String) = when (op) {
+        "save" -> tr("No se pudo guardar la configuracion ({0}).", kind)
+        "suggest" -> tr("No se pudo sugerir columnas ({0}).", kind)
+        "retry", "retryAll" -> tr("No se pudo reintentar el envio ({0}).", kind)
+        "discard" -> tr("No se pudo descartar el envio ({0}).", kind)
+        else -> tr("No se pudo completar la accion ({0}).", kind)
     }
 
     fun action(context: CrmScreens.Context, op: String, params: Map<String, String>, values: Map<String, String>): CrmExtensionActionResult {
@@ -111,45 +112,45 @@ object MondayOutboundScreens {
         fun done(tone: String, text: String, submitted: Map<String, String>? = null) =
             CrmExtensionActionResult(Section, UiNotice(text, tone), keep, submitted)
 
-        if (!context.permissions.has(CrmScreens.Settings)) return done(UiTone.Warning, "No tienes permiso para configurar el envio a monday.")
+        if (!context.permissions.has(CrmScreens.Settings)) return done(UiTone.Warning, tr("No tienes permiso para configurar el envio a monday."))
         CrmExtensions.inactive(tenant, ExtensionId)?.let { return done(UiTone.Warning, it) }
         val id = params["id"]?.toLongOrNull()
         return try {
             when (op) {
                 "save", "suggest" -> {
-                    val type = types(tenant).firstOrNull { it.id == params["recordType"] } ?: return done(UiTone.Warning, "Ese tipo de registro no existe.")
+                    val type = types(tenant).firstOrNull { it.id == params["recordType"] } ?: return done(UiTone.Warning, tr("Ese tipo de registro no existe."))
                     val boardId = MondayOutboundUi.optionId(values["board"])
                     var schema: MondayBoardSchema? = null
                     if (boardId != null) {
-                        val token = MondayOutbound.token(tenant) ?: return done(UiTone.Warning, "Falta el token de monday: guardalo en Importar.")
+                        val token = MondayOutbound.token(tenant) ?: return done(UiTone.Warning, tr("Falta el token de monday: guardalo en Importar."))
                         schema = MondayBoards.boardSchema(MondayOutbound.api, token, boardId)
-                            ?: return done(UiTone.Warning, "monday no devolvio el tablero $boardId: revisa que exista y que el token tenga acceso.")
+                            ?: return done(UiTone.Warning, tr("monday no devolvio el tablero {0}: revisa que exista y que el token tenga acceso.", boardId))
                     }
                     if (op == "suggest") {
-                        if (schema == null) return done(UiTone.Warning, "Elige un tablero antes de pedir sugerencias.")
+                        if (schema == null) return done(UiTone.Warning, tr("Elige un tablero antes de pedir sugerencias."))
                         val suggested = MondayOutboundUi.suggest(type, schema, CrmOutboundSource.importMapping(tenant, type.id, "monday"))
-                        if (suggested.isEmpty()) return done(UiTone.Info, "No hay una importacion de monday con la que sugerir columnas.", values)
+                        if (suggested.isEmpty()) return done(UiTone.Info, tr("No hay una importacion de monday con la que sugerir columnas."), values)
                         // Solo se vuelve a dibujar con lo sugerido: no se guarda hasta que el usuario pulse Guardar.
-                        done(UiTone.Info, "Se sugirieron ${suggested.size} columna(s). Revisalas y pulsa Guardar.", values + suggested)
+                        done(UiTone.Info, tr("Se sugirieron {0} columna(s). Revisalas y pulsa Guardar.", suggested.size), values + suggested)
                     } else {
                         val result = MondayOutboundUi.applyConfigForm(values, type, schema)
                         MondayOutbound.config.save(tenant, result.config)
-                        if (result.warnings.isEmpty()) done(UiTone.Success, "Configuracion guardada.")
-                        else done(UiTone.Warning, "Configuracion guardada. " + result.warnings.joinToString(" "))
+                        if (result.warnings.isEmpty()) done(UiTone.Success, tr("Configuracion guardada."))
+                        else done(UiTone.Warning, tr("Configuracion guardada.") + " " + result.warnings.joinToString(" "))
                     }
                 }
-                "retry" -> if (id != null && queue.retry(tenant, id)) done(UiTone.Success, "El envio se reintentara en el proximo ciclo.") else done(UiTone.Warning, "Ese envio ya no esta fallido.")
-                "retryAll" -> done(UiTone.Success, "Se reintentaran ${queue.retryFailed(tenant)} envio(s) fallido(s).")
-                "discard" -> if (id != null && queue.discard(tenant, id)) done(UiTone.Success, "Envio descartado.") else done(UiTone.Warning, "Ese envio ya no esta fallido.")
-                else -> done(UiTone.Warning, "Esa accion no existe.")
+                "retry" -> if (id != null && queue.retry(tenant, id)) done(UiTone.Success, tr("El envio se reintentara en el proximo ciclo.")) else done(UiTone.Warning, tr("Ese envio ya no esta fallido."))
+                "retryAll" -> done(UiTone.Success, tr("Se reintentaran {0} envio(s) fallido(s).", queue.retryFailed(tenant)))
+                "discard" -> if (id != null && queue.discard(tenant, id)) done(UiTone.Success, tr("Envio descartado.")) else done(UiTone.Warning, tr("Ese envio ya no esta fallido."))
+                else -> done(UiTone.Warning, tr("Esa accion no existe."))
             }
         } catch (failure: MondayConfigException) {
             done(UiTone.Warning, failure.message.orEmpty())
         } catch (failure: MondayApiException) {
-            done(UiTone.Warning, "monday respondio con un error: ${failure.message.orEmpty()}")
+            done(UiTone.Warning, tr("monday respondio con un error: {0}", failure.message.orEmpty()))
         } catch (failure: Exception) {
             log.warn("Fallo la accion {} del envio a monday.", op, failure)
-            done(UiTone.Danger, "No se pudo ${verb(op)} (${failure.javaClass.simpleName}).")
+            done(UiTone.Danger, failureText(op, failure.javaClass.simpleName))
         }
     }
 }
