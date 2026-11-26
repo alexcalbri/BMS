@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissionLookup
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -53,7 +54,7 @@ object TareasRoutes {
             }
             val customers = if (screen == "task" || screen == "new-task") canSeeCustomers(access, call) else false
             call.respondTareas(access, UiScreen.serializer()) { tenant ->
-                open(tenant, permissions, customers, screen, params, null, null)
+                open(tenant, access, permissions, customers, screen, params, null, null)
             }
         }
 
@@ -66,7 +67,7 @@ object TareasRoutes {
             if (!permissions.has(TareasActions.requiredPermission(screen, params["op"]))) return@post call.forbidden()
             val length = call.request.headers["Content-Length"]?.toLongOrNull()
             val values = try {
-                if (length != null && length > 1_000_000L) throw TareasValidationException(TareasActions.InvalidForm)
+                if (length != null && length > 1_000_000L) throw TareasValidationException(tr(TareasActions.InvalidForm))
                 TareasActions.formValues(call.receiveText())
             } catch (failure: TareasValidationException) {
                 return@post call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("invalid_request", failure.message.orEmpty()))
@@ -82,7 +83,7 @@ object TareasRoutes {
     }
 
     private suspend fun ApplicationCall.forbidden() =
-        respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+        respond(HttpStatusCode.Forbidden, TareasErrorResponse("missing_permission", tr("No tienes permiso para esta accion.")))
 
     /** Customers appear in the task form only for who may see them (clientes.view). */
     private suspend fun canSeeCustomers(access: ModuleAccessService, call: ApplicationCall): Boolean {
@@ -124,13 +125,13 @@ object TareasRoutes {
         val scope = TareasService.scope(tenant, permissions)
         val sources = TareasImportSources.enabled(tenant, permissions.companyCode)
         fun screen(body: List<UiNode>) = UiScreen(
-            title = "Importar",
+            title = tr("Importar"),
             navigation = TareasScreens.navigation(scope, ImportScreen, import = sources.isNotEmpty()),
             notice = notice,
             body = body,
         )
         if (sources.isEmpty()) {
-            return screen(listOf(UiText("No hay fuentes de importación activas. Instala y activa una extensión de importación de Tareas (por ejemplo Monday) y vuelve aquí.")))
+            return screen(listOf(UiText(tr("No hay fuentes de importación activas. Instala y activa una extensión de importación de Tareas (por ejemplo Monday) y vuelve aquí."))))
         }
         val chosen = sources.firstOrNull { it.sourceId == params["source"] } ?: sources.singleOrNull()
         val picker = if (sources.size > 1) {
@@ -138,7 +139,7 @@ object TareasRoutes {
         } else {
             emptyList()
         }
-        if (chosen == null) return screen(picker + UiText("Elige desde dónde quieres importar.", UiTextStyle.Caption))
+        if (chosen == null) return screen(picker + UiText(tr("Elige desde dónde quieres importar."), UiTextStyle.Caption))
         val body = try {
             chosen.screen(importContext(tenant, access, permissions), params)
         } catch (failure: TareasValidationException) {
@@ -147,14 +148,14 @@ object TareasRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("No se pudo mostrar la fuente de importación {} ({}).", chosen.sourceId, failure.javaClass.simpleName)
-            errorBody("No se pudo mostrar esta fuente de importación.")
+            errorBody(tr("No se pudo mostrar esta fuente de importación."))
         }
         return screen(picker + body)
     }
 
     private fun importAct(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): UiScreen {
         val source = TareasImportSources.enabled(tenant, permissions.companyCode).firstOrNull { it.sourceId == params["source"] }
-            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice("Esa fuente de importación no está disponible.", UiTone.Danger))
+            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice(tr("Esa fuente de importación no está disponible."), UiTone.Danger))
         val reply = try {
             source.action(importContext(tenant, access, permissions), params["op"].orEmpty(), values)
         } catch (failure: TareasValidationException) {
@@ -163,7 +164,7 @@ object TareasRoutes {
             throw failure
         } catch (failure: Exception) {
             log.warn("Falló una operación de importación de {} ({}).", source.sourceId, failure.javaClass.simpleName)
-            TareasImportReply("No se pudo completar la operación.", error = true)
+            TareasImportReply(tr("No se pudo completar la operación."), error = true)
         }
         return importScreen(tenant, access, permissions, reply.params + ("source" to source.sourceId), UiNotice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
     }
@@ -175,6 +176,7 @@ object TareasRoutes {
     /** Builds [screen]. A rule that fails (a task that no longer exists, a screen the user cannot open) shows "Mis tareas" with the message. */
     private fun open(
         tenant: Connection,
+        access: ModuleAccessService,
         permissions: ModulePermissions,
         customers: Boolean,
         screen: String,
@@ -185,14 +187,33 @@ object TareasRoutes {
     ): UiScreen {
         val context = loaded ?: context(tenant, permissions, customers)
         return try {
-            build(tenant, context, screen, params, notice, submitted)
+            build(tenant, access, permissions, context, screen, params, notice, submitted)
         } catch (failure: TareasValidationException) {
-            build(tenant, context, "mine", emptyMap(), UiNotice(failure.message.orEmpty(), UiTone.Danger), null)
+            build(tenant, access, permissions, context, "mine", emptyMap(), UiNotice(failure.message.orEmpty(), UiTone.Danger), null)
         }
+    }
+
+    /**
+     * Board and group names are configuration written by the company: shown translated through the dynamic translation
+     * (one batched lookup per screen); the values the app posts back stay the originals.
+     */
+    private fun withNames(
+        context: TareasScreens.Context,
+        access: ModuleAccessService,
+        tenant: Connection,
+        permissions: ModulePermissions,
+        names: Collection<String?>,
+    ): TareasScreens.Context {
+        val texts = names.filterNotNull().filter { it.isNotBlank() }.distinct()
+        if (texts.isEmpty()) return context
+        val translated = runCatching { access.textTranslation.translate(permissions.companyCode, tenant, texts) }.getOrNull() ?: return context
+        return context.copy(nameLabels = texts.zip(translated).filter { (original, shown) -> original != shown }.toMap())
     }
 
     private fun build(
         tenant: Connection,
+        access: ModuleAccessService,
+        permissions: ModulePermissions,
         context: TareasScreens.Context,
         screen: String,
         params: Map<String, String>,
@@ -201,9 +222,11 @@ object TareasRoutes {
     ): UiScreen {
         val scope = context.scope
         fun visibleBoard(key: String): Board =
-            uuid(params, key)?.let { TareasRepository.getBoard(tenant, it) }?.takeIf { scope.seesBoard(it) } ?: throw missing("Tablero no encontrado.")
+            uuid(params, key)?.let { TareasRepository.getBoard(tenant, it) }?.takeIf { scope.seesBoard(it) } ?: throw missing(tr("Tablero no encontrado."))
         return when (screen) {
-            "boards" -> TareasScreens.boards(context, TareasRepository.listBoards(tenant, scope), notice)
+            "boards" -> TareasRepository.listBoards(tenant, scope).let { boards ->
+                TareasScreens.boards(withNames(context, access, tenant, permissions, boards.map { it.name }), boards, notice)
+            }
             "board" -> {
                 val board = visibleBoard("id")
                 val view = TareasScreens.viewOf(params)
@@ -219,41 +242,55 @@ object TareasRoutes {
                     TareasScreens.ViewWorkload -> TareasScreens.BoardData(board, groups, workload = TareasRepository.workload(tenant, scope, board.id))
                     else -> TareasScreens.BoardData(board, groups, tasks = TareasRepository.list(tenant, scope, filter))
                 }
-                TareasScreens.board(context, data, params, notice)
+                val shownTasks = data.tasks + data.columns.values.flatten()
+                val named = withNames(
+                    context, access, tenant, permissions,
+                    listOf(board.name) + groups.map { it.name } + shownTasks.map { it.groupName } + shownTasks.map { it.boardName },
+                )
+                TareasScreens.board(named, data, params, notice)
             }
             "task" -> {
-                val task = TareasService.visibleTask(tenant, scope, uuid(params, "id") ?: throw missing("Tarea no encontrada."))
+                val task = TareasService.visibleTask(tenant, scope, uuid(params, "id") ?: throw missing(tr("Tarea no encontrada.")))
                 val customerName = task.customerId?.takeIf { context.canSeeCustomers }?.let { TareasRepository.customerName(tenant, it) }
+                val groups = TareasRepository.listGroups(tenant, task.boardId)
+                val comments = TareasRepository.listComments(tenant, task.id)
                 TareasScreens.task(
-                    context,
+                    withNames(context, access, tenant, permissions, listOf(task.boardName, task.groupName) + groups.map { it.name }),
                     TareasScreens.TaskDetail(
                         task = task,
-                        groups = TareasRepository.listGroups(tenant, task.boardId),
+                        groups = groups,
                         checklist = TareasRepository.listChecklist(tenant, task.id),
-                        comments = TareasRepository.listComments(tenant, task.id),
+                        comments = comments,
                         activity = TareasRepository.listActivity(tenant, task.id),
                         attachments = TareasRepository.listAttachments(tenant, task.id),
                         customerName = customerName,
+                        // Comments are written by staff: the translation shows under the original (never the task title or detail).
+                        commentTranslations = runCatching { access.textTranslation.noteTranslations(permissions.companyCode, tenant, comments.map { it.body }) }
+                            .getOrDefault(emptyList()),
                     ),
                     notice, submitted,
                 )
             }
             "new-task" -> {
-                if (!scope.canManage) throw missing("No tienes permiso para crear tareas.")
+                if (!scope.canManage) throw missing(tr("No tienes permiso para crear tareas."))
                 val board = visibleBoard("board")
                 val groups = TareasRepository.listGroups(tenant, board.id)
-                TareasScreens.newTask(context, board, groups, uuid(params, "group"), notice, submitted)
+                TareasScreens.newTask(withNames(context, access, tenant, permissions, listOf(board.name) + groups.map { it.name }), board, groups, uuid(params, "group"), notice, submitted)
             }
             "admin" -> {
-                if (!scope.admin) throw missing("Solo quien administra tableros puede abrir esa pantalla.")
-                TareasScreens.admin(context, TareasRepository.listBoards(tenant, scope, includeArchived = true), notice)
+                if (!scope.admin) throw missing(tr("Solo quien administra tableros puede abrir esa pantalla."))
+                TareasRepository.listBoards(tenant, scope, includeArchived = true).let { boards ->
+                    TareasScreens.admin(withNames(context, access, tenant, permissions, boards.map { it.name }), boards, notice)
+                }
             }
             "board-edit" -> {
-                if (!scope.admin) throw missing("Solo quien administra tableros puede abrir esa pantalla.")
-                val board = uuid(params, "id")?.let { TareasRepository.getBoard(tenant, it) ?: throw missing("Tablero no encontrado.") }
-                TareasScreens.boardEdit(context, board, board?.let { TareasRepository.listGroups(tenant, it.id) }.orEmpty(), notice, submitted)
+                if (!scope.admin) throw missing(tr("Solo quien administra tableros puede abrir esa pantalla."))
+                val board = uuid(params, "id")?.let { TareasRepository.getBoard(tenant, it) ?: throw missing(tr("Tablero no encontrado.")) }
+                TareasScreens.boardEdit(withNames(context, access, tenant, permissions, listOf(board?.name)), board, board?.let { TareasRepository.listGroups(tenant, it.id) }.orEmpty(), notice, submitted)
             }
-            else -> TareasScreens.mine(context, mineTasks(tenant, context), notice)
+            else -> mineTasks(tenant, context).let { tasks ->
+                TareasScreens.mine(withNames(context, access, tenant, permissions, tasks.map { it.boardName } + tasks.map { it.groupName }), tasks, notice)
+            }
         }
     }
 
@@ -291,9 +328,9 @@ object TareasRoutes {
             perform(tenant, access, permissions, context, screen, params, values)
         } catch (failure: TareasValidationException) {
             // The same screen again with the message and what the user typed.
-            return open(tenant, permissions, customers, screen, keep(screen, params), UiNotice(failure.message.orEmpty(), UiTone.Danger), values, context)
+            return open(tenant, access, permissions, customers, screen, keep(screen, params), UiNotice(failure.message.orEmpty(), UiTone.Danger), values, context)
         }
-        return open(tenant, permissions, customers, outcome.screen, outcome.params, outcome.notice, null, context)
+        return open(tenant, access, permissions, customers, outcome.screen, outcome.params, outcome.notice, null, context)
     }
 
     private fun perform(
@@ -308,26 +345,26 @@ object TareasRoutes {
         val customers = context.canSeeCustomers
         val op = params["op"].orEmpty()
         val users = context.users
-        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing("Falta el elemento sobre el que actuar.")
+        fun requireId(key: String): UUID = uuid(params, key) ?: throw missing(tr("Falta el elemento sobre el que actuar."))
         val same = keep(screen, params)
         fun taskOutcome(id: UUID, text: String, tone: String = UiTone.Success) = success("task", mapOf("id" to id.toString()), text, tone)
         fun statusOutcome(result: StatusResult, id: UUID): Outcome =
             if (result.redirectedToReview) {
-                taskOutcome(id, "La tarea necesita revisión: pasó a En revisión.", UiTone.Info)
+                taskOutcome(id, tr("La tarea necesita revisión: pasó a En revisión."), UiTone.Info)
             } else {
-                taskOutcome(id, "Estado: ${result.applied.label}.")
+                taskOutcome(id, tr("Estado: {0}.", tr(result.applied.label)))
             }
 
         return when (screen) {
             "board" -> when (op) {
                 "move" -> {
                     val id = requireId("card")
-                    val target = TaskStatus.fromCode(params["column"]) ?: throw missing("Estado no válido.")
+                    val target = TaskStatus.fromCode(params["column"]) ?: throw missing(tr("Estado no válido."))
                     val result = TareasService.changeStatus(tenant, access, permissions, id, target)
-                    val text = if (result.redirectedToReview) "La tarea necesita revisión: pasó a En revisión." else "Tarea movida a ${result.applied.label}."
+                    val text = if (result.redirectedToReview) tr("La tarea necesita revisión: pasó a En revisión.") else tr("Tarea movida a {0}.", tr(result.applied.label))
                     success("board", same, text, if (result.redirectedToReview) UiTone.Info else UiTone.Success)
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "task" -> {
@@ -342,35 +379,35 @@ object TareasRoutes {
                             TareasService.updateTask(tenant, access, permissions, id, input, canSeeCustomers = customers)
                             applyFiles(tenant, permissions, id, values)
                         }
-                        taskOutcome(id, "Cambios guardados.")
+                        taskOutcome(id, tr("Cambios guardados."))
                     }
                     "files" -> {
                         applyFiles(tenant, permissions, id, values)
-                        taskOutcome(id, "Adjuntos actualizados.")
+                        taskOutcome(id, tr("Adjuntos actualizados."))
                     }
                     "status" -> statusOutcome(TareasService.changeStatus(tenant, access, permissions, id, TareasActions.status(params["status"])), id)
                     "archive" -> {
                         val boardId = TareasService.visibleTask(tenant, TareasService.scope(tenant, permissions), id).boardId
                         TareasService.archive(tenant, access, permissions, id)
-                        success("board", mapOf("id" to boardId.toString(), "view" to TareasScreens.ViewList), "Tarea archivada.")
+                        success("board", mapOf("id" to boardId.toString(), "view" to TareasScreens.ViewList), tr("Tarea archivada."))
                     }
                     "comment" -> {
                         TareasService.comment(tenant, access, permissions, id, values["body"].orEmpty())
-                        taskOutcome(id, "Comentario añadido.")
+                        taskOutcome(id, tr("Comentario añadido."))
                     }
                     "check-add" -> {
                         TareasService.addChecklistItem(tenant, permissions, id, values["text"].orEmpty())
-                        taskOutcome(id, "Elemento añadido.")
+                        taskOutcome(id, tr("Elemento añadido."))
                     }
                     "check-toggle" -> {
                         TareasService.toggleChecklistItem(tenant, permissions, requireId("item"), params["done"].toBoolean())
-                        taskOutcome(id, "Lista actualizada.")
+                        taskOutcome(id, tr("Lista actualizada."))
                     }
                     "check-remove" -> {
                         TareasService.removeChecklistItem(tenant, permissions, requireId("item"))
-                        taskOutcome(id, "Elemento quitado.")
+                        taskOutcome(id, tr("Elemento quitado."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
@@ -378,14 +415,14 @@ object TareasRoutes {
                 "create" -> {
                     val boardId = requireId("board")
                     val scope = TareasService.scope(tenant, permissions)
-                    val board = TareasRepository.getBoard(tenant, boardId)?.takeIf { scope.seesBoard(it) } ?: throw missing("Tablero no encontrado.")
+                    val board = TareasRepository.getBoard(tenant, boardId)?.takeIf { scope.seesBoard(it) } ?: throw missing(tr("Tablero no encontrado."))
                     val input = TareasActions.taskInput(board.id, values, users, TareasRepository.listGroups(tenant, board.id), customers)
                     val created = TareasRepository.transaction(tenant) {
                         TareasService.createTask(tenant, access, permissions, input, canSeeCustomers = customers).also { applyFiles(tenant, permissions, it.id, values) }
                     }
-                    taskOutcome(created.id, "Tarea creada.")
+                    taskOutcome(created.id, tr("Tarea creada."))
                 }
-                else -> throw missing("Acción no disponible.")
+                else -> throw missing(tr("Acción no disponible."))
             }
 
             "board-edit" -> {
@@ -395,41 +432,41 @@ object TareasRoutes {
                         val form = TareasActions.boardForm(values, users)
                         val id = uuid(params, "id")
                         if (id == null) {
-                            edited(TareasService.createBoard(tenant, permissions, form.name, form.description, form.visibility, form.members), "Tablero creado.")
+                            edited(TareasService.createBoard(tenant, permissions, form.name, form.description, form.visibility, form.members), tr("Tablero creado."))
                         } else {
                             TareasService.updateBoard(tenant, permissions, id, form.name, form.description, form.visibility, form.members)
-                            edited(id, "Tablero guardado.")
+                            edited(id, tr("Tablero guardado."))
                         }
                     }
                     "board-archive" -> {
                         TareasService.archiveBoard(tenant, permissions, requireId("id"))
-                        success("admin", emptyMap(), "Tablero archivado.")
+                        success("admin", emptyMap(), tr("Tablero archivado."))
                     }
                     "group-add" -> {
                         val id = requireId("id")
                         TareasService.addGroup(tenant, permissions, id, values["name"].orEmpty())
-                        edited(id, "Grupo añadido.")
+                        edited(id, tr("Grupo añadido."))
                     }
                     "group-rename" -> {
                         val id = requireId("id")
                         TareasService.renameGroup(tenant, permissions, id, requireId("group"), values["name"].orEmpty())
-                        edited(id, "Grupo renombrado.")
+                        edited(id, tr("Grupo renombrado."))
                     }
                     "group-up", "group-down" -> {
                         val id = requireId("id")
                         TareasService.moveGroup(tenant, permissions, id, requireId("group"), up = op == "group-up")
-                        edited(id, "Grupo movido.")
+                        edited(id, tr("Grupo movido."))
                     }
                     "group-archive" -> {
                         val id = requireId("id")
                         TareasService.archiveGroup(tenant, permissions, id, requireId("group"))
-                        edited(id, "Grupo archivado.")
+                        edited(id, tr("Grupo archivado."))
                     }
-                    else -> throw missing("Acción no disponible.")
+                    else -> throw missing(tr("Acción no disponible."))
                 }
             }
 
-            else -> throw missing("Acción no disponible.")
+            else -> throw missing(tr("Acción no disponible."))
         }
     }
 

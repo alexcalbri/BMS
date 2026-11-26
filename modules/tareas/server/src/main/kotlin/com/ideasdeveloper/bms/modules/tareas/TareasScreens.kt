@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiAction
 import com.ideasdeveloper.bms.ui.UiBadge
 import com.ideasdeveloper.bms.ui.UiBarChart
@@ -65,14 +68,14 @@ object TareasScreens {
     const val ViewWorkload = "workload"
     const val AgendaWeeks = 8
     const val CustomerSuggestRoute = "$Route/suggest/customers"
-    private const val RetiredUser = "Usuario retirado"
-    private val Views = listOf(ViewList to "Lista", ViewKanban to "Kanban", ViewAgenda to "Agenda", ViewWorkload to "Carga")
+    private val RetiredUser = msg("Usuario retirado")
+    private val Views = listOf(ViewList to msg("Lista"), ViewKanban to msg("Kanban"), ViewAgenda to msg("Agenda"), ViewWorkload to msg("Carga"))
     private val StampFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
     /** Labels of the assignable users by id. */
     class UserNames(users: List<TareasUser>) {
         private val byId = users.associate { it.id to it.label }
-        fun label(id: UUID): String = byId[id] ?: RetiredUser
+        fun label(id: UUID): String = byId[id] ?: tr(RetiredUser)
         fun labels(ids: Collection<UUID>): List<String> = ids.map(::label)
     }
 
@@ -85,8 +88,15 @@ object TareasScreens {
         // The user holds tareas.import and some import source is active: the "Importar" item shows.
         val importEnabled: Boolean = false,
         val zone: ZoneId = ZoneId.systemDefault(),
+        // Board and group names are company configuration: original name -> translation for the viewer (see TareasRoutes.withNames).
+        val nameLabels: Map<String, String> = emptyMap(),
     ) {
         val names: UserNames = UserNames(users)
+
+        /** The name as shown to this viewer; the value that is posted back stays the original. */
+        fun shown(name: String): String = nameLabels[name] ?: name
+
+        fun shownOrNull(name: String?): String? = name?.let { shown(it) }
     }
 
     /**
@@ -109,6 +119,8 @@ object TareasScreens {
         val activity: List<TaskActivity>,
         val attachments: List<TaskAttachment>,
         val customerName: String? = null,
+        // Translation of each comment body (same order as [comments]); null or missing: nothing to show under it.
+        val commentTranslations: List<String?> = emptyList(),
     )
 
     // ---- tones and badges ----
@@ -126,20 +138,20 @@ object TareasScreens {
     }
 
     fun taskBadges(task: Task, today: LocalDate, withStatus: Boolean = true): List<UiBadge> = buildList {
-        if (task.isOverdue(today)) add(UiBadge("Vencida", UiTone.Danger))
-        if (task.priority != TaskPriority.Medium) add(UiBadge(task.priority.label, priorityTone(task.priority)))
-        if (withStatus) add(UiBadge(task.status.label, statusTone(task.status)))
+        if (task.isOverdue(today)) add(UiBadge(tr("Vencida"), UiTone.Danger))
+        if (task.priority != TaskPriority.Medium) add(UiBadge(task.priority.text(), priorityTone(task.priority)))
+        if (withStatus) add(UiBadge(tr(task.status.label), statusTone(task.status)))
     }
 
     // ---- navigation ----
 
     fun navigation(scope: TareasScope, selected: String, import: Boolean = false): UiNavigation = UiNavigation(
-        title = TareasModule.displayName,
+        title = tr(TareasModule.displayName),
         items = listOfNotNull(
-            UiNavItem("mine", "Mis tareas", UiNavigate("mine")),
-            UiNavItem("boards", "Tableros", UiNavigate("boards")),
-            UiNavItem("admin", "Administrar", UiNavigate("admin")).takeIf { scope.admin },
-            UiNavItem("importar", "Importar", UiNavigate("importar")).takeIf { import },
+            UiNavItem("mine", tr("Mis tareas"), UiNavigate("mine")),
+            UiNavItem("boards", tr("Tableros"), UiNavigate("boards")),
+            UiNavItem("admin", tr("Administrar"), UiNavigate("admin")).takeIf { scope.admin },
+            UiNavItem("importar", tr("Importar"), UiNavigate("importar")).takeIf { import },
         ),
         selected = selected,
     )
@@ -152,8 +164,8 @@ object TareasScreens {
     private fun taskItem(context: Context, task: Task, withBoard: Boolean = true): UiListItem = UiListItem(
         title = task.title,
         subtitle = listOfNotNull(
-            task.boardName.takeIf { withBoard },
-            task.groupName?.takeIf { it.isNotBlank() },
+            context.shown(task.boardName).takeIf { withBoard },
+            context.shownOrNull(task.groupName)?.takeIf { it.isNotBlank() },
             task.assignees.takeIf { it.isNotEmpty() }?.let { context.names.labels(it).joinToString(", ") },
         ).joinToString(" · "),
         trailing = task.dueDate?.toString().orEmpty(),
@@ -170,11 +182,11 @@ object TareasScreens {
         val open = tasks.filter { it.status.isOpen }
         val week = today.plusDays(7)
         return listOf(
-            "Vencidas" to open.filter { it.isOverdue(today) },
-            "Hoy" to open.filter { it.dueDate == today },
-            "Próximos 7 días" to open.filter { val due = it.dueDate; due != null && due.isAfter(today) && !due.isAfter(week) },
-            "Más adelante" to open.filter { it.dueDate?.isAfter(week) == true },
-            "Sin fecha" to open.filter { it.dueDate == null },
+            tr("Vencidas") to open.filter { it.isOverdue(today) },
+            tr("Hoy") to open.filter { it.dueDate == today },
+            tr("Próximos 7 días") to open.filter { val due = it.dueDate; due != null && due.isAfter(today) && !due.isAfter(week) },
+            tr("Más adelante") to open.filter { it.dueDate?.isAfter(week) == true },
+            tr("Sin fecha") to open.filter { it.dueDate == null },
         ).filter { it.second.isNotEmpty() }
     }
 
@@ -189,37 +201,37 @@ object TareasScreens {
             add(
                 UiGrid(
                     listOf(
-                        UiCard(listOf(UiMetric("Abiertas", shown.size.toString()))),
+                        UiCard(listOf(UiMetric(tr("Abiertas"), shown.size.toString()))),
                         UiCard(
                             listOf(
                                 UiMetric(
-                                    "Vencidas", overdue.toString(),
-                                    caption = if (overdue > 0) "Atiéndelas primero" else "Al día",
+                                    tr("Vencidas"), overdue.toString(),
+                                    caption = if (overdue > 0) tr("Atiéndelas primero") else tr("Al día"),
                                     captionTone = if (overdue > 0) UiTone.Danger else UiTone.Success,
                                 ),
                             ),
                         ),
-                        UiCard(listOf(UiMetric("Por revisar", toReview.toString(), captionTone = if (toReview > 0) UiTone.Info else UiTone.Neutral))),
+                        UiCard(listOf(UiMetric(tr("Por revisar"), toReview.toString(), captionTone = if (toReview > 0) UiTone.Info else UiTone.Neutral))),
                     ),
                     minItemWidth = 180,
                 ),
             )
-            if (ordered.size > ListLimit) add(hint("Se muestran las primeras $ListLimit tareas, las más próximas a vencer.", UiTone.Warning))
+            if (ordered.size > ListLimit) add(hint(tr("Se muestran las primeras {0} tareas, las más próximas a vencer.", ListLimit), UiTone.Warning))
             val buckets = mineBuckets(shown, context.today)
             if (buckets.isEmpty()) {
                 add(
                     UiCard(
                         listOf(
-                            UiText(if (me == null) "Esta cuenta no recibe tareas: abre un tablero para verlas." else "No tienes tareas abiertas."),
-                            UiButton("Ver tableros", UiNavigate("boards"), style = "secondary"),
+                            UiText(if (me == null) tr("Esta cuenta no recibe tareas: abre un tablero para verlas.") else tr("No tienes tareas abiertas.")),
+                            UiButton(tr("Ver tableros"), UiNavigate("boards"), style = "secondary"),
                         ),
                     ),
                 )
             } else {
-                buckets.forEach { (title, group) -> add(UiCard(listOf(UiList(group.map { taskItem(context, it) })), title = "$title (${group.size})")) }
+                buckets.forEach { (title, group) -> add(UiCard(listOf(UiList(group.map { taskItem(context, it) })), title = tr("{0} ({1})", title, group.size))) }
             }
         }
-        return screen(context, "Mis tareas", "mine", notice, body)
+        return screen(context, tr("Mis tareas"), "mine", notice, body)
     }
 
     // ---- Tableros ----
@@ -228,9 +240,9 @@ object TareasScreens {
 
     fun boards(context: Context, boards: List<Board>, notice: UiNotice? = null): UiScreen {
         val body = buildList<UiNode> {
-            if (context.scope.admin) add(UiRow(listOf(UiButton("Nuevo tablero", UiNavigate("board-edit")))))
+            if (context.scope.admin) add(UiRow(listOf(UiButton(tr("Nuevo tablero"), UiNavigate("board-edit")))))
             if (boards.isEmpty()) {
-                add(UiCard(listOf(UiText(if (context.scope.admin) "Aún no hay tableros: crea el primero." else "No hay tableros disponibles para ti."))))
+                add(UiCard(listOf(UiText(if (context.scope.admin) tr("Aún no hay tableros: crea el primero.") else tr("No hay tableros disponibles para ti.")))))
             } else {
                 add(
                     UiGrid(
@@ -238,12 +250,12 @@ object TareasScreens {
                             UiCard(
                                 children = listOfNotNull(
                                     board.description.takeIf { it.isNotBlank() }?.let { hint(it) },
-                                    UiText("${board.openTasks} abiertas"),
-                                    UiText("${board.overdueTasks} vencidas", tone = UiTone.Danger).takeIf { board.overdueTasks > 0 },
-                                    hint("Privado: solo sus miembros").takeIf { board.visibility == BoardVisibility.Private },
+                                    UiText(tr("{0} abiertas", board.openTasks)),
+                                    UiText(tr("{0} vencidas", board.overdueTasks), tone = UiTone.Danger).takeIf { board.overdueTasks > 0 },
+                                    hint(tr("Privado: solo sus miembros")).takeIf { board.visibility == BoardVisibility.Private },
                                 ),
-                                title = board.name,
-                                actions = listOf(UiButton("Abrir", boardOpen(board), style = "secondary")),
+                                title = context.shown(board.name),
+                                actions = listOf(UiButton(tr("Abrir"), boardOpen(board), style = "secondary")),
                             )
                         },
                         minItemWidth = 240,
@@ -251,7 +263,7 @@ object TareasScreens {
                 )
             }
         }
-        return screen(context, "Tableros", "boards", notice, body)
+        return screen(context, tr("Tableros"), "boards", notice, body)
     }
 
     // ---- Board ----
@@ -262,10 +274,10 @@ object TareasScreens {
     private fun filterForm(context: Context, board: Board, view: String, params: Map<String, String>): UiNode {
         val people = listOf(TareasActions.AllOption) + context.users.map { it.label }
         val fields = buildList {
-            add(UiField("q", "Buscar", placeholder = "Título o detalle"))
-            add(UiField("assignee", "Responsable", type = "dropdown", options = people))
-            if (view != ViewKanban) add(UiField("status", "Estado", type = "dropdown", options = listOf(TareasActions.AllOption) + TaskStatus.entries.map { it.label }))
-            add(UiField("due", "Vencimiento", type = "dropdown", options = listOf(TareasActions.AllOption) + DueFilter.entries.map { it.label }))
+            add(UiField("q", tr("Buscar"), placeholder = tr("Título o detalle")))
+            add(UiField("assignee", tr("Responsable"), type = "dropdown", options = people))
+            if (view != ViewKanban) add(UiField("status", tr("Estado"), type = "dropdown", options = listOf(TareasActions.AllOption) + TaskStatus.entries.map { it.label }))
+            add(UiField("due", tr("Vencimiento"), type = "dropdown", options = listOf(TareasActions.AllOption) + DueFilter.entries.map { it.label }))
         }
         val values = fields.associate { field ->
             field.key to (params[field.key]?.takeIf { it.isNotBlank() } ?: if (field.type == "dropdown") TareasActions.AllOption else "")
@@ -274,7 +286,7 @@ object TareasScreens {
             listOf(
                 UiForm(
                     "filters", fields, values,
-                    submit = UiButton("Filtrar", UiNavigate("board", mapOf("id" to board.id.toString(), "view" to view), formId = "filters"), style = "secondary"),
+                    submit = UiButton(tr("Filtrar"), UiNavigate("board", mapOf("id" to board.id.toString(), "view" to view), formId = "filters"), style = "secondary"),
                     minFieldWidth = 200,
                 ),
             ),
@@ -288,13 +300,13 @@ object TareasScreens {
         val selector = UiRow(
             Views.map { (id, label) ->
                 UiButton(
-                    label,
+                    tr(label),
                     UiNavigate("board", mapOf("id" to board.id.toString(), "view" to id), formId = if (withFilters) "filters" else null),
                     style = if (id == view) "primary" else "secondary",
                 )
             } + listOfNotNull(
-                UiButton("Nueva tarea", UiNavigate("new-task", mapOf("board" to board.id.toString()))).takeIf { context.scope.canManage && !board.archived },
-                UiButton("Editar tablero", UiNavigate("board-edit", mapOf("id" to board.id.toString())), style = "secondary").takeIf { context.scope.admin },
+                UiButton(tr("Nueva tarea"), UiNavigate("new-task", mapOf("board" to board.id.toString()))).takeIf { context.scope.canManage && !board.archived },
+                UiButton(tr("Editar tablero"), UiNavigate("board-edit", mapOf("id" to board.id.toString())), style = "secondary").takeIf { context.scope.admin },
             ),
         )
         val body = buildList<UiNode> {
@@ -310,18 +322,18 @@ object TareasScreens {
                 },
             )
         }
-        return screen(context, board.name, "boards", notice, body)
+        return screen(context, context.shown(board.name), "boards", notice, body)
     }
 
     private fun cutNotice(tasks: List<Task>): UiNode? =
-        if (tasks.size > ListLimit) hint("Se muestran las primeras $ListLimit tareas: usa los filtros para acotar.", UiTone.Warning) else null
+        if (tasks.size > ListLimit) hint(tr("Se muestran las primeras {0} tareas: usa los filtros para acotar.", ListLimit), UiTone.Warning) else null
 
     private fun listView(context: Context, data: BoardData): List<UiNode> {
         val shown = data.tasks.take(ListLimit)
         val groups = data.groups.filter { !it.archived }
         val canAdd = context.scope.canManage && !data.board.archived
         fun add(groupId: UUID?) = UiButton(
-            "Nueva tarea",
+            tr("Nueva tarea"),
             UiNavigate("new-task", buildMap { put("board", data.board.id.toString()); groupId?.let { put("group", it.toString()) } }),
             style = "secondary",
         ).takeIf { canAdd }
@@ -330,14 +342,14 @@ object TareasScreens {
         val cards = groups.map { group ->
             val tasks = shown.filter { it.groupId == group.id }
             UiCard(
-                listOf(UiList(tasks.map { taskItem(context, it, withBoard = false) }, emptyText = "Sin tareas en este grupo.")),
-                title = "${group.name} (${tasks.size})",
+                listOf(UiList(tasks.map { taskItem(context, it, withBoard = false) }, emptyText = tr("Sin tareas en este grupo."))),
+                title = tr("{0} ({1})", context.shown(group.name), tasks.size),
                 actions = listOfNotNull(add(group.id)),
             )
         } + listOfNotNull(
             UiCard(
-                listOf(UiList(loose.map { taskItem(context, it, withBoard = false) }, emptyText = "No hay tareas con estos filtros.")),
-                title = "${TareasActions.NoGroup} (${loose.size})",
+                listOf(UiList(loose.map { taskItem(context, it, withBoard = false) }, emptyText = tr("No hay tareas con estos filtros."))),
+                title = tr("{0} ({1})", tr(TareasActions.NoGroup), loose.size),
                 actions = listOfNotNull(add(null)),
             ).takeIf { loose.isNotEmpty() || groups.isEmpty() },
         )
@@ -354,18 +366,18 @@ object TareasScreens {
             val tasks = data.columns[status].orEmpty()
             UiBoardColumn(
                 id = status.code,
-                title = status.label,
+                title = tr(status.label),
                 tone = statusTone(status),
-                caption = if (tasks.size > KanbanLimit) "Mostrando $KanbanLimit: usa los filtros para ver el resto" else "",
+                caption = if (tasks.size > KanbanLimit) tr("Mostrando {0}: usa los filtros para ver el resto", KanbanLimit) else "",
                 cards = tasks.take(KanbanLimit).map { task ->
                     UiBoardCard(
                         id = task.id.toString(),
                         title = task.title,
-                        subtitle = task.groupName.orEmpty(),
+                        subtitle = context.shownOrNull(task.groupName).orEmpty(),
                         details = listOfNotNull(
-                            task.assignees.takeIf { it.isNotEmpty() }?.let { "Responsables: ${context.names.labels(it).joinToString(", ")}" },
-                            task.dueDate?.let { "Vence: $it" },
-                            task.checklistTotal.takeIf { it > 0 }?.let { "Lista: ${task.checklistDone}/$it" },
+                            task.assignees.takeIf { it.isNotEmpty() }?.let { tr("Responsables: {0}", context.names.labels(it).joinToString(", ")) },
+                            task.dueDate?.let { tr("Vence: {0}", it) },
+                            task.checklistTotal.takeIf { it > 0 }?.let { tr("Lista: {0}/{1}", task.checklistDone, it) },
                         ),
                         badges = taskBadges(task, context.today, withStatus = false),
                         action = openTask(task),
@@ -373,7 +385,7 @@ object TareasScreens {
                 },
             )
         }
-        return listOf(UiBoard(columns, move = move, emptyText = "Sin tareas."))
+        return listOf(UiBoard(columns, move = move, emptyText = tr("Sin tareas.")))
     }
 
     /** Start (Monday) of the ISO week of [date]. */
@@ -386,13 +398,13 @@ object TareasScreens {
     fun agendaBuckets(tasks: List<Task>, today: LocalDate): List<Pair<String, List<Task>>> {
         val thisWeek = weekStart(today)
         fun key(task: Task): Pair<Int, String> {
-            val due = task.dueDate ?: return 200 to "Sin fecha"
-            if (task.isOverdue(today)) return 0 to "Vencidas"
-            if (due.isBefore(thisWeek)) return 1 to "Anteriores"
+            val due = task.dueDate ?: return 200 to tr("Sin fecha")
+            if (task.isOverdue(today)) return 0 to tr("Vencidas")
+            if (due.isBefore(thisWeek)) return 1 to tr("Anteriores")
             val weeks = ChronoUnit.WEEKS.between(thisWeek, weekStart(due)).toInt()
-            if (weeks > AgendaWeeks) return 100 to "Más adelante"
+            if (weeks > AgendaWeeks) return 100 to tr("Más adelante")
             val start = thisWeek.plusWeeks(weeks.toLong())
-            return 10 + weeks to "Semana ${start.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR)}: $start a ${start.plusDays(6)}"
+            return 10 + weeks to tr("Semana {0}: {1} a {2}", start.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR), start, start.plusDays(6))
         }
         return tasks.groupBy { key(it) }.entries.sortedBy { it.key.first }.map { it.key.second to it.value }
     }
@@ -401,62 +413,90 @@ object TareasScreens {
         val shown = data.tasks.take(ListLimit)
         val buckets = agendaBuckets(shown, context.today)
         val cards = if (buckets.isEmpty()) {
-            listOf(UiCard(listOf(UiText("No hay tareas con estos filtros."))))
+            listOf(UiCard(listOf(UiText(tr("No hay tareas con estos filtros.")))))
         } else {
-            buckets.map { (title, tasks) -> UiCard(listOf(UiList(tasks.map { taskItem(context, it, withBoard = false) })), title = "$title (${tasks.size})") }
+            buckets.map { (title, tasks) -> UiCard(listOf(UiList(tasks.map { taskItem(context, it, withBoard = false) })), title = tr("{0} ({1})", title, tasks.size)) }
         }
         return listOfNotNull(cutNotice(data.tasks)) + cards
     }
 
     private fun workloadView(context: Context, data: BoardData): List<UiNode> {
-        if (data.workload.isEmpty()) return listOf(UiCard(listOf(UiText("Nadie tiene tareas abiertas en este tablero."))))
+        if (data.workload.isEmpty()) return listOf(UiCard(listOf(UiText(tr("Nadie tiene tareas abiertas en este tablero.")))))
         val rows = data.workload.sortedByDescending { it.open }
         return listOf(
             UiCard(
                 listOf(UiBarChart(rows.map { UiChartPoint(context.names.label(it.userId), it.open.toDouble()) })),
-                title = "Tareas abiertas por responsable",
+                title = tr("Tareas abiertas por responsable"),
             ),
             UiCard(
                 listOf(
                     UiTable(
-                        columns = listOf(UiTableColumn("person", "Persona"), UiTableColumn("open", "Abiertas"), UiTableColumn("overdue", "Vencidas"), UiTableColumn("review", "En revisión")),
+                        columns = listOf(UiTableColumn("person", tr("Persona")), UiTableColumn("open", tr("Abiertas")), UiTableColumn("overdue", tr("Vencidas")), UiTableColumn("review", tr("En revisión"))),
                         rows = rows.map {
                             mapOf("person" to context.names.label(it.userId), "open" to it.open.toString(), "overdue" to it.overdue.toString(), "review" to it.review.toString())
                         },
-                        emptyText = "Sin datos.",
+                        emptyText = tr("Sin datos."),
                     ),
                 ),
-                title = "Carga por persona",
+                title = tr("Carga por persona"),
             ),
         )
     }
 
     // ---- Task form (shared by "task" and "new-task") ----
 
+    /** Labels of the priority dropdown (null in Spanish: the options already are the labels). */
+    private fun priorityLabels(): List<String>? =
+        if (I18n.language() == I18n.Source) null else TaskPriority.entries.map { it.text() }
+
     private fun groupOptions(groups: List<BoardGroup>): List<String> = listOf(TareasActions.NoGroup) + groups.filter { !it.archived }.map { it.name }
+
+    /** What the dropdown shows for each group option (names are company configuration, translated); null when nothing differs. */
+    private fun groupLabels(context: Context, groups: List<BoardGroup>): List<String>? {
+        val options = groupOptions(groups)
+        val labels = listOf(tr(TareasActions.NoGroup)) + groups.filter { !it.archived }.map { context.shown(it.name) }
+        return labels.takeIf { it != options }
+    }
+
+    private val StatusChange = Regex("^(.+) → (.+?)( \\(enviada a revisión\\))?$")
+
+    /** The activity rows are stored in Spanish: the generic ones are translated when shown, the rest stay as written. */
+    fun activityText(detail: String): String {
+        val change = StatusChange.matchEntire(detail)
+        if (change != null) {
+            val from = TaskStatus.fromLabel(change.groupValues[1])
+            val to = TaskStatus.fromLabel(change.groupValues[2])
+            if (from != null && to != null) {
+                val text = tr("{0} → {1}", tr(from.label), tr(to.label))
+                return if (change.groupValues[3].isNotEmpty()) text + " " + tr("(enviada a revisión)") else text
+            }
+        }
+        if (detail.startsWith("Importada desde ")) return tr("Importada desde {0}", detail.removePrefix("Importada desde "))
+        return tr(detail)
+    }
 
     private fun fileRefs(attachments: List<TaskAttachment>): List<UiFileRef> = attachments.map { UiFileRef(it.id.toString(), it.name, it.path, it.size) }
 
     private fun filesField(readOnly: Boolean) = UiField(
-        "files", "Adjuntos", type = "files", readOnly = readOnly,
+        "files", tr("Adjuntos"), type = "files", readOnly = readOnly,
         files = UiFiles(upload = "$Route/files", download = "$Route/files"),
     )
 
     /** Fields of the task form; the customer needs [withCustomer] (clientes.view) and the files [withFiles]. */
     fun taskFields(context: Context, groups: List<BoardGroup>, readOnly: Boolean, withFiles: Boolean = true): List<UiField> = buildList {
         val people = context.users.map { it.label }
-        add(UiField("title", "Título", required = true, readOnly = readOnly))
-        add(UiField("detail", "Detalle", type = "textarea", readOnly = readOnly))
-        add(UiField("priority", "Prioridad", type = "dropdown", options = TaskPriority.entries.map { it.label }, readOnly = readOnly))
-        add(UiField("due", "Fecha límite", type = "date", readOnly = readOnly))
-        add(UiField("group", "Grupo", type = "dropdown", options = groupOptions(groups), readOnly = readOnly))
-        add(UiField("assignees", "Responsables", type = "dropdown", multiple = true, options = people, readOnly = readOnly))
-        add(UiField("reviewer", "Revisor", type = "dropdown", options = listOf(TareasActions.NoReviewer) + people, readOnly = readOnly))
+        add(UiField("title", tr("Título"), required = true, readOnly = readOnly))
+        add(UiField("detail", tr("Detalle"), type = "textarea", readOnly = readOnly))
+        add(UiField("priority", tr("Prioridad"), type = "dropdown", options = TaskPriority.entries.map { it.label }, optionLabels = priorityLabels(), readOnly = readOnly))
+        add(UiField("due", tr("Fecha límite"), type = "date", readOnly = readOnly))
+        add(UiField("group", tr("Grupo"), type = "dropdown", options = groupOptions(groups), optionLabels = groupLabels(context, groups), readOnly = readOnly))
+        add(UiField("assignees", tr("Responsables"), type = "dropdown", multiple = true, options = people, readOnly = readOnly))
+        add(UiField("reviewer", tr("Revisor"), type = "dropdown", options = listOf(TareasActions.NoReviewer) + people, readOnly = readOnly))
         if (context.canSeeCustomers) {
             add(
                 UiField(
-                    "customer", "Cliente", readOnly = readOnly, placeholder = "Escribe para buscar",
-                    help = "Elige un cliente de la lista de sugerencias.",
+                    "customer", tr("Cliente"), readOnly = readOnly, placeholder = tr("Escribe para buscar"),
+                    help = tr("Elige un cliente de la lista de sugerencias."),
                     suggest = UiSuggest(CustomerSuggestRoute),
                 ),
             )
@@ -473,7 +513,7 @@ object TareasScreens {
         put("assignees", UiFieldValues.options(task?.assignees.orEmpty().filter { id -> context.users.any { it.id == id } }.map { context.names.label(it) }))
         put("reviewer", task?.reviewerId?.takeIf { id -> context.users.any { it.id == id } }?.let { context.names.label(it) } ?: TareasActions.NoReviewer)
         if (context.canSeeCustomers && task?.customerId != null) {
-            put("customer", detail?.customerName ?: "Cliente no disponible")
+            put("customer", detail?.customerName ?: tr("Cliente no disponible"))
             put("customer_id", task.customerId.toString())
         }
         if (detail != null) put("files", UiFieldValues.files(fileRefs(detail.attachments)))
@@ -487,21 +527,21 @@ object TareasScreens {
     fun statusActions(scope: TareasScope, task: Task): List<StatusAction> {
         if (task.archivedAt != null || !scope.canWorkOnTask(task)) return emptyList()
         val finish = if (task.reviewerId != null && !scope.canReview(task)) {
-            StatusAction("Enviar a revisión", TaskStatus.Review)
+            StatusAction(tr("Enviar a revisión"), TaskStatus.Review)
         } else {
-            StatusAction("Marcar hecha", TaskStatus.Done)
+            StatusAction(tr("Marcar hecha"), TaskStatus.Done)
         }
         val main = when (task.status) {
-            TaskStatus.Pending -> listOf(StatusAction("Empezar", TaskStatus.InProgress, style = "secondary"), finish)
+            TaskStatus.Pending -> listOf(StatusAction(tr("Empezar"), TaskStatus.InProgress, style = "secondary"), finish)
             TaskStatus.InProgress -> listOf(finish)
             TaskStatus.Review -> if (scope.canReview(task)) {
-                listOf(StatusAction("Aprobar", TaskStatus.Done), StatusAction("Devolver", TaskStatus.InProgress, style = "secondary"))
+                listOf(StatusAction(tr("Aprobar"), TaskStatus.Done), StatusAction(tr("Devolver"), TaskStatus.InProgress, style = "secondary"))
             } else {
                 emptyList()
             }
-            TaskStatus.Done, TaskStatus.Cancelled -> listOf(StatusAction("Reabrir", TaskStatus.InProgress, style = "secondary"))
+            TaskStatus.Done, TaskStatus.Cancelled -> listOf(StatusAction(tr("Reabrir"), TaskStatus.InProgress, style = "secondary"))
         }
-        val cancel = StatusAction("Cancelar tarea", TaskStatus.Cancelled, style = "danger", confirm = "¿Cancelar esta tarea?")
+        val cancel = StatusAction(tr("Cancelar tarea"), TaskStatus.Cancelled, style = "danger", confirm = tr("¿Cancelar esta tarea?"))
         return main + listOfNotNull(cancel.takeIf { task.status.isOpen && scope.canEditTask(task) })
     }
 
@@ -517,24 +557,24 @@ object TareasScreens {
         val archived = task.archivedAt != null
         val canEdit = scope.canEditTask(task) && !archived
         val canWork = scope.canWorkOnTask(task) && !archived
-        val boardLink = UiButton("Volver al tablero", UiNavigate("board", mapOf("id" to task.boardId.toString(), "view" to ViewList)), style = "secondary")
+        val boardLink = UiButton(tr("Volver al tablero"), UiNavigate("board", mapOf("id" to task.boardId.toString(), "view" to ViewList)), style = "secondary")
         val statusButtons = statusActions(scope, task).map { action ->
             UiButton(action.label, taskRequest("status", task, mapOf("status" to action.status.code), confirm = action.confirm), style = action.style)
         }
         val actions = UiRow(
             statusButtons + listOfNotNull(
-                UiButton("Archivar", taskRequest("archive", task, confirm = "¿Archivar esta tarea?"), style = "danger").takeIf { canEdit },
-                UiButton("Abrir cliente", UiOpenModule("clientes", "customer", mapOf("id" to task.customerId.toString())), style = "secondary")
+                UiButton(tr("Archivar"), taskRequest("archive", task, confirm = tr("¿Archivar esta tarea?")), style = "danger").takeIf { canEdit },
+                UiButton(tr("Abrir cliente"), UiOpenModule("clientes", "customer", mapOf("id" to task.customerId.toString())), style = "secondary")
                     .takeIf { context.canSeeCustomers && task.customerId != null },
                 boardLink,
             ),
         )
         val header = UiRow(
             listOfNotNull(
-                UiStatus(task.status.label, statusTone(task.status)),
-                UiStatus(task.priority.label, priorityTone(task.priority)),
-                UiStatus("Vencida", UiTone.Danger).takeIf { task.isOverdue(context.today) },
-                hint(listOfNotNull(task.boardName, task.groupName?.takeIf { it.isNotBlank() }, task.dueDate?.let { "Vence $it" }).joinToString(" · ")),
+                UiStatus(tr(task.status.label), statusTone(task.status)),
+                UiStatus(task.priority.text(), priorityTone(task.priority)),
+                UiStatus(tr("Vencida"), UiTone.Danger).takeIf { task.isOverdue(context.today) },
+                hint(listOfNotNull(context.shown(task.boardName), context.shownOrNull(task.groupName)?.takeIf { it.isNotBlank() }, task.dueDate?.let { tr("Vence {0}", it) }).joinToString(" · ")),
             ),
             spacing = 8,
         )
@@ -545,13 +585,13 @@ object TareasScreens {
             id = "task",
             fields = taskFields(context, detail.groups, readOnly = !canEdit, withFiles = !workerOnly),
             values = values,
-            submit = UiButton("Guardar", taskRequest("save", task, formId = "task")).takeIf { canEdit },
+            submit = UiButton(tr("Guardar"), taskRequest("save", task, formId = "task")).takeIf { canEdit },
         )
         val body = buildList<UiNode> {
-            if (archived) add(hint("Tarea archivada: solo lectura.", UiTone.Warning))
+            if (archived) add(hint(tr("Tarea archivada: solo lectura."), UiTone.Warning))
             add(header)
             add(actions)
-            add(UiCard(listOf(form), title = "Detalles"))
+            add(UiCard(listOf(form), title = tr("Detalles")))
             if (workerOnly) {
                 add(
                     UiCard(
@@ -560,24 +600,24 @@ object TareasScreens {
                                 id = "attachments",
                                 fields = listOf(filesField(readOnly = false)),
                                 values = mapOf("files" to UiFieldValues.files(fileRefs(detail.attachments))),
-                                submit = UiButton("Guardar adjuntos", taskRequest("files", task, formId = "attachments"), style = "secondary"),
+                                submit = UiButton(tr("Guardar adjuntos"), taskRequest("files", task, formId = "attachments"), style = "secondary"),
                             ),
                         ),
-                        title = "Adjuntos",
+                        title = tr("Adjuntos"),
                     ),
                 )
             }
             add(checklistCard(task, detail.checklist, canWork, canEdit))
-            add(commentsCard(context, task, detail.comments, canWork))
+            add(commentsCard(context, task, detail.comments, detail.commentTranslations, canWork))
             add(
                 UiCard(
                     listOf(
                         UiTimeline(
-                            detail.activity.map { UiTimelineEntry(it.detail.ifBlank { it.kind }, caption = listOf(it.authorName, stamp(it.createdAt, context.zone)).filter { part -> part.isNotBlank() }.joinToString(" - ")) },
-                            emptyText = "Sin actividad.",
+                            detail.activity.map { UiTimelineEntry(activityText(it.detail.ifBlank { it.kind }), caption = listOf(it.authorName, stamp(it.createdAt, context.zone)).filter { part -> part.isNotBlank() }.joinToString(" - ")) },
+                            emptyText = tr("Sin actividad."),
                         ),
                     ),
-                    title = "Actividad",
+                    title = tr("Actividad"),
                     collapsible = true,
                     expanded = false,
                 ),
@@ -596,47 +636,47 @@ object TareasScreens {
                         style = "secondary",
                         enabled = canWork,
                     ),
-                    UiButton("Quitar", taskRequest("check-remove", task, mapOf("item" to item.id.toString())), style = "danger").takeIf { canEdit },
+                    UiButton(tr("Quitar"), taskRequest("check-remove", task, mapOf("item" to item.id.toString())), style = "danger").takeIf { canEdit },
                 ),
                 spacing = 8,
             )
         }
         val children = buildList<UiNode> {
-            if (rows.isEmpty()) add(hint("Sin elementos."))
+            if (rows.isEmpty()) add(hint(tr("Sin elementos.")))
             addAll(rows)
             if (canWork) {
                 add(
                     UiForm(
                         id = "check",
-                        fields = listOf(UiField("text", "Nuevo elemento", required = true)),
-                        submit = UiButton("Añadir", taskRequest("check-add", task, formId = "check"), style = "secondary"),
+                        fields = listOf(UiField("text", tr("Nuevo elemento"), required = true)),
+                        submit = UiButton(tr("Añadir"), taskRequest("check-add", task, formId = "check"), style = "secondary"),
                     ),
                 )
             }
         }
-        val title = if (task.checklistTotal > 0) "Lista de comprobación (${task.checklistDone}/${task.checklistTotal})" else "Lista de comprobación"
+        val title = if (task.checklistTotal > 0) tr("Lista de comprobación ({0}/{1})", task.checklistDone, task.checklistTotal) else tr("Lista de comprobación")
         return UiCard(children, title = title)
     }
 
-    private fun commentsCard(context: Context, task: Task, comments: List<TaskComment>, canWork: Boolean): UiNode {
+    private fun commentsCard(context: Context, task: Task, comments: List<TaskComment>, translations: List<String?>, canWork: Boolean): UiNode {
         val children = buildList<UiNode> {
             add(
                 UiTimeline(
-                    comments.map { UiTimelineEntry(it.authorName, it.body, stamp(it.createdAt, context.zone)) },
-                    emptyText = "Aún no hay comentarios.",
+                    comments.mapIndexed { index, it -> UiTimelineEntry(it.authorName, it.body, stamp(it.createdAt, context.zone), translation = translations.getOrNull(index)) },
+                    emptyText = tr("Aún no hay comentarios."),
                 ),
             )
             if (canWork) {
                 add(
                     UiForm(
                         id = "comment",
-                        fields = listOf(UiField("body", "Comentario", type = "textarea", required = true)),
-                        submit = UiButton("Comentar", taskRequest("comment", task, formId = "comment"), style = "secondary"),
+                        fields = listOf(UiField("body", tr("Comentario"), type = "textarea", required = true)),
+                        submit = UiButton(tr("Comentar"), taskRequest("comment", task, formId = "comment"), style = "secondary"),
                     ),
                 )
             }
         }
-        return UiCard(children, title = "Comentarios (${comments.size})")
+        return UiCard(children, title = tr("Comentarios ({0})", comments.size))
     }
 
     // ---- New task ----
@@ -649,14 +689,14 @@ object TareasScreens {
             id = "task",
             fields = taskFields(context, groups, readOnly = false),
             values = base + submitted.orEmpty(),
-            submit = UiButton("Crear tarea", UiRequest("$Route/new-task", params = mapOf("op" to "create", "board" to board.id.toString()), formId = "task")),
+            submit = UiButton(tr("Crear tarea"), UiRequest("$Route/new-task", params = mapOf("op" to "create", "board" to board.id.toString()), formId = "task")),
         )
         val body = listOf(
-            hint("Tablero: ${board.name}"),
-            UiCard(listOf(form), title = "Nueva tarea"),
-            UiRow(listOf(UiButton("Cancelar", UiNavigate("board", mapOf("id" to board.id.toString(), "view" to ViewList)), style = "secondary"))),
+            hint(tr("Tablero: {0}", context.shown(board.name))),
+            UiCard(listOf(form), title = tr("Nueva tarea")),
+            UiRow(listOf(UiButton(tr("Cancelar"), UiNavigate("board", mapOf("id" to board.id.toString(), "view" to ViewList)), style = "secondary"))),
         )
-        return screen(context, "Nueva tarea", "boards", notice, body)
+        return screen(context, tr("Nueva tarea"), "boards", notice, body)
     }
 
     // ---- Administrar ----
@@ -664,21 +704,21 @@ object TareasScreens {
     fun admin(context: Context, boards: List<Board>, notice: UiNotice? = null): UiScreen {
         val items = boards.map { board ->
             UiListItem(
-                title = board.name,
-                subtitle = "${board.openTasks} abiertas · ${board.overdueTasks} vencidas" +
-                    if (board.visibility == BoardVisibility.Private) " · ${board.members.size} miembros" else "",
+                title = context.shown(board.name),
+                subtitle = tr("{0} abiertas · {1} vencidas", board.openTasks, board.overdueTasks) +
+                    if (board.visibility == BoardVisibility.Private) " · " + tr("{0} miembros", board.members.size) else "",
                 badges = listOfNotNull(
-                    UiBadge(board.visibility.label, if (board.visibility == BoardVisibility.Private) UiTone.Warning else UiTone.Neutral),
-                    UiBadge("Archivado", UiTone.Neutral).takeIf { board.archived },
+                    UiBadge(tr(board.visibility.label), if (board.visibility == BoardVisibility.Private) UiTone.Warning else UiTone.Neutral),
+                    UiBadge(tr("Archivado"), UiTone.Neutral).takeIf { board.archived },
                 ),
                 action = UiNavigate("board-edit", mapOf("id" to board.id.toString())),
             )
         }
         val body = listOf(
-            UiRow(listOf(UiButton("Nuevo tablero", UiNavigate("board-edit")))),
-            UiCard(listOf(UiList(items, emptyText = "Aún no hay tableros.")), title = "Tableros"),
+            UiRow(listOf(UiButton(tr("Nuevo tablero"), UiNavigate("board-edit")))),
+            UiCard(listOf(UiList(items, emptyText = tr("Aún no hay tableros."))), title = tr("Tableros")),
         )
-        return screen(context, "Administrar", "admin", notice, body)
+        return screen(context, tr("Administrar"), "admin", notice, body)
     }
 
     // ---- Board edit ----
@@ -698,32 +738,33 @@ object TareasScreens {
         val form = UiForm(
             id = "board",
             fields = listOf(
-                UiField("name", "Nombre", required = true),
-                UiField("description", "Descripción", type = "textarea"),
-                UiField("visibility", "Visibilidad", type = "dropdown", options = BoardVisibility.entries.map { it.label }, help = "Un tablero privado solo lo ven sus miembros y quien administra tableros."),
-                UiField("members", "Miembros", type = "dropdown", multiple = true, options = context.users.map { it.label }, help = "Solo cuenta en tableros privados."),
+                UiField("name", tr("Nombre"), required = true),
+                UiField("description", tr("Descripción"), type = "textarea"),
+                UiField("visibility", tr("Visibilidad"), type = "dropdown", options = BoardVisibility.entries.map { it.label }, help = tr("Un tablero privado solo lo ven sus miembros y quien administra tableros.")),
+                UiField("members", tr("Miembros"), type = "dropdown", multiple = true, options = context.users.map { it.label }, help = tr("Solo cuenta en tableros privados.")),
             ),
             values = values,
-            submit = UiButton(if (board == null) "Crear tablero" else "Guardar", request("board-save", formId = "board")),
+            submit = UiButton(if (board == null) tr("Crear tablero") else tr("Guardar"), request("board-save", formId = "board")),
         )
         val body = buildList<UiNode> {
-            add(UiCard(listOf(form), title = "Tablero"))
+            add(UiCard(listOf(form), title = tr("Tablero")))
             if (board != null) {
-                add(groupsCard(groups, board, ::request))
+                add(groupsCard(context, groups, board, ::request))
                 add(
                     UiRow(
                         listOfNotNull(
-                            UiButton("Abrir tablero", UiNavigate("board", mapOf("id" to board.id.toString(), "view" to ViewList)), style = "secondary"),
-                            UiButton("Archivar tablero", request("board-archive", confirm = "¿Archivar este tablero? Sus tareas dejan de verse."), style = "danger").takeIf { !board.archived },
+                            UiButton(tr("Abrir tablero"), UiNavigate("board", mapOf("id" to board.id.toString(), "view" to ViewList)), style = "secondary"),
+                            UiButton(tr("Archivar tablero"), request("board-archive", confirm = tr("¿Archivar este tablero? Sus tareas dejan de verse.")), style = "danger").takeIf { !board.archived },
                         ),
                     ),
                 )
             }
         }
-        return screen(context, board?.name ?: "Nuevo tablero", "admin", notice, body)
+        return screen(context, context.shownOrNull(board?.name) ?: tr("Nuevo tablero"), "admin", notice, body)
     }
 
     private fun groupsCard(
+        context: Context,
         groups: List<BoardGroup>,
         board: Board,
         request: (String, Map<String, String>, String?, String?) -> UiRequest,
@@ -735,15 +776,15 @@ object TareasScreens {
                 listOf(
                     UiForm(
                         id = "group-${group.id}",
-                        fields = listOf(UiField("name", "Nombre del grupo", required = true)),
+                        fields = listOf(UiField("name", tr("Nombre del grupo"), required = true)),
                         values = mapOf("name" to group.name),
-                        submit = UiButton("Renombrar", request("group-rename", params, null, "group-${group.id}"), style = "secondary"),
+                        submit = UiButton(tr("Renombrar"), request("group-rename", params, null, "group-${group.id}"), style = "secondary"),
                     ),
                     UiRow(
                         listOf(
-                            UiButton("Subir", request("group-up", params, null, null), style = "secondary"),
-                            UiButton("Bajar", request("group-down", params, null, null), style = "secondary"),
-                            UiButton("Archivar", request("group-archive", params, "¿Archivar el grupo ${group.name}? Sus tareas quedan sin grupo.", null), style = "danger"),
+                            UiButton(tr("Subir"), request("group-up", params, null, null), style = "secondary"),
+                            UiButton(tr("Bajar"), request("group-down", params, null, null), style = "secondary"),
+                            UiButton(tr("Archivar"), request("group-archive", params, tr("¿Archivar el grupo {0}? Sus tareas quedan sin grupo.", context.shown(group.name)), null), style = "danger"),
                         ),
                         spacing = 8,
                     ),
@@ -752,21 +793,21 @@ object TareasScreens {
             )
         }
         val children = buildList<UiNode> {
-            if (rows.isEmpty()) add(hint("Este tablero aún no tiene grupos (por ejemplo \"Esta semana\" o \"Próxima semana\")."))
+            if (rows.isEmpty()) add(hint(tr("Este tablero aún no tiene grupos (por ejemplo \"Esta semana\" o \"Próxima semana\").")))
             rows.forEachIndexed { index, row ->
                 if (index > 0) add(UiDivider())
                 add(row)
             }
             add(UiDivider())
-            add(sectionTitle("Nuevo grupo"))
+            add(sectionTitle(tr("Nuevo grupo")))
             add(
                 UiForm(
                     id = "group-new",
-                    fields = listOf(UiField("name", "Nombre", required = true)),
-                    submit = UiButton("Añadir grupo", request("group-add", emptyMap(), null, "group-new"), style = "secondary"),
+                    fields = listOf(UiField("name", tr("Nombre"), required = true)),
+                    submit = UiButton(tr("Añadir grupo"), request("group-add", emptyMap(), null, "group-new"), style = "secondary"),
                 ),
             )
         }
-        return UiCard(children, title = "Grupos de ${board.name}")
+        return UiCard(children, title = tr("Grupos de {0}", context.shown(board.name)))
     }
 }

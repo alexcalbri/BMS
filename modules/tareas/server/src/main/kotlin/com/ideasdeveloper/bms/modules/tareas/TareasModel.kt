@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import java.time.Instant
 import java.time.LocalDate
@@ -7,11 +10,11 @@ import java.util.UUID
 
 /** Fixed task states: filters, kanban columns and the AI agent rely on them. */
 enum class TaskStatus(val code: String, val label: String) {
-    Pending("pending", "Pendiente"),
-    InProgress("in_progress", "En curso"),
-    Review("review", "En revisión"),
-    Done("done", "Hecha"),
-    Cancelled("cancelled", "Cancelada");
+    Pending("pending", msg("Pendiente")),
+    InProgress("in_progress", msg("En curso")),
+    Review("review", msg("En revisión")),
+    Done("done", msg("Hecha")),
+    Cancelled("cancelled", msg("Cancelada"));
 
     /** A task that still needs work: neither done nor cancelled. */
     val isOpen: Boolean get() = this != Done && this != Cancelled
@@ -28,10 +31,16 @@ enum class TaskStatus(val code: String, val label: String) {
 }
 
 enum class TaskPriority(val code: String, val label: String) {
-    Urgent("urgent", "Urgente"),
+    Urgent("urgent", msg("Urgente")),
     High("high", "Alta"),
-    Medium("medium", "Media"),
-    Low("low", "Baja");
+    Medium("medium", msg("Media")),
+    Low("low", msg("Baja"));
+
+    /**
+     * The label as shown to the viewer. "Alta" already means "New item" in Core's catalog (lookup is global), so High
+     * has its own key; the value that is posted back stays "Alta".
+     */
+    fun text(): String = if (this == High && I18n.language() != I18n.Source) tr("Prioridad alta") else tr(label)
 
     companion object {
         fun fromCode(code: String?): TaskPriority? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }
@@ -44,8 +53,8 @@ enum class TaskPriority(val code: String, val label: String) {
 }
 
 enum class BoardVisibility(val code: String, val label: String) {
-    Company("company", "Toda la empresa"),
-    Private("private", "Privado");
+    Company("company", msg("Toda la empresa")),
+    Private("private", msg("Privado"));
 
     companion object {
         fun fromCode(code: String?): BoardVisibility? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }
@@ -58,10 +67,10 @@ enum class BoardVisibility(val code: String, val label: String) {
 }
 
 enum class DueFilter(val code: String, val label: String) {
-    Overdue("overdue", "Vencidas"),
-    Today("today", "Hoy"),
-    Week("week", "Próximos 7 días"),
-    None("none", "Sin fecha");
+    Overdue("overdue", msg("Vencidas")),
+    Today("today", msg("Hoy")),
+    Week("week", msg("Próximos 7 días")),
+    None("none", msg("Sin fecha"));
 
     companion object {
         fun fromCode(code: String?): DueFilter? = entries.firstOrNull { it.code == code?.trim()?.lowercase() }
@@ -185,11 +194,11 @@ data class TaskInput(
 ) {
     /** Messages for the user; empty when the input is valid. */
     fun validate(): List<String> = buildList {
-        if (title.isBlank()) add("El título es obligatorio.")
-        else if (title.trim().length > MaxTitle) add("El título admite hasta $MaxTitle caracteres.")
-        if (detail.length > MaxDetail) add("El detalle admite hasta $MaxDetail caracteres.")
-        if (dueDate != null && (dueDate.isBefore(MinDate) || dueDate.isAfter(MaxDate))) add("La fecha debe estar entre $MinDate y $MaxDate.")
-        if (assignees.distinct().size > MaxAssignees) add("Una tarea admite hasta $MaxAssignees responsables.")
+        if (title.isBlank()) add(tr("El título es obligatorio."))
+        else if (title.trim().length > MaxTitle) add(tr("El título admite hasta {0} caracteres.", MaxTitle))
+        if (detail.length > MaxDetail) add(tr("El detalle admite hasta {0} caracteres.", MaxDetail))
+        if (dueDate != null && (dueDate.isBefore(MinDate) || dueDate.isAfter(MaxDate))) add(tr("La fecha debe estar entre {0} y {1}.", MinDate, MaxDate))
+        if (assignees.distinct().size > MaxAssignees) add(tr("Una tarea admite hasta {0} responsables.", MaxAssignees))
     }
 
     companion object {
@@ -248,11 +257,11 @@ sealed class TransitionResult {
 
 object TaskTransitions {
     fun resolve(task: Task, requested: TaskStatus, scope: TareasScope): TransitionResult {
-        if (!scope.canWorkOnTask(task)) return TransitionResult.Reject("No tienes permiso para cambiar el estado de esta tarea.")
+        if (!scope.canWorkOnTask(task)) return TransitionResult.Reject(tr("No tienes permiso para cambiar el estado de esta tarea."))
         if (requested == task.status) return TransitionResult.Unchanged
         val reviewer = scope.canReview(task)
         if (task.status == TaskStatus.Review && !reviewer) {
-            return TransitionResult.Reject("Solo el revisor puede aprobar o devolver una tarea en revisión.")
+            return TransitionResult.Reject(tr("Solo el revisor puede aprobar o devolver una tarea en revisión."))
         }
         if (requested == TaskStatus.Done && task.reviewerId != null && !reviewer) {
             return TransitionResult.Apply(TaskStatus.Review, redirectedToReview = true)
