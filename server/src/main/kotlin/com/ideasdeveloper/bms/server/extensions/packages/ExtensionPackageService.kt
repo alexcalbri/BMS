@@ -167,12 +167,28 @@ class ExtensionPackageService(
 
     fun status(id: String): ExtensionPackageStatus = status(id, store.find(id))
 
+    private fun releaseWaiting(id: String) {
+        val actor = installQueue?.pending()?.firstOrNull { it.kind == PackageInstallQueue.Extension && it.id == id }?.actor
+        states.remove(id)
+        if (actor == null) return
+        try {
+            install(id, actor)
+        } catch (failure: Exception) {
+            installQueue?.done(PackageInstallQueue.Extension, id)
+            states[id] = InstallState("error", failure.message ?: tr("No se pudo reanudar la instalacion."))
+        }
+    }
+
     private fun status(id: String, stored: StoredExtensionPackage?): ExtensionPackageStatus {
         // Una extension en espera de un modulo que al final no se instalo deja de esperar.
         states[id]?.waitingFor?.let { module ->
             if (!moduleLoaded(module) && !modulePending(module)) {
                 installQueue?.done(PackageInstallQueue.Extension, id)
                 states[id] = InstallState("error", tr("El modulo '{0}' no se instalo; instalalo y vuelve a pedir la extension.", module))
+            } else if (moduleLoaded(module) && !modulePending(module)) {
+                // El modulo termino sin reiniciar el servidor (o su actualizacion fallo): la extension deja de esperar
+                // y se instala ya; si la version del modulo no alcanza, lo dice el validador.
+                releaseWaiting(id)
             }
         }
         states[id]?.let { state ->
@@ -206,10 +222,13 @@ class ExtensionPackageService(
                 "BUILDER_UNAVAILABLE",
             )
         // Una extension no se instala hasta que su modulo esta instalado del todo (cargado tras el reinicio).
+        // Tambien espera cuando el modulo ya esta cargado pero se esta actualizando: la version que exige la
+        // extension puede ser la nueva, que no cuenta hasta el reinicio.
         val module = remote.manifest.module
-        if (!moduleLoaded(module)) {
-            val queue = installQueue
-            if (queue == null || !modulePending(module)) {
+        val queue = installQueue
+        val pending = modulePending(module)
+        if (!moduleLoaded(module) || (pending && queue != null)) {
+            if (queue == null || !pending) {
                 throw ExtensionPackageServiceException(
                     tr("La extension '{0}' necesita el modulo '{1}': instalalo primero en Modulos del servidor.", id, module), "MODULE_NOT_INSTALLED",
                 )

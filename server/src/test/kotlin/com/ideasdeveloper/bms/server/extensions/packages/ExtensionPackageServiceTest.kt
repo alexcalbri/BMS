@@ -181,6 +181,41 @@ class ExtensionPackageServiceTest {
     }
 
     @Test
+    fun `an extension asked while its loaded module is being updated waits and is built after the restart`() {
+        val h = QueueHarness(listOf(remote("monday_import")))
+        h.loaded = setOf("crm")
+        h.installing = setOf("crm")
+        val queue = h.newQueue()
+        val waiting = h.service(queue).install("monday_import", "owner_role")
+        assertEquals("installing", waiting.status)
+        assertTrue("En espera" in waiting.message.orEmpty(), waiting.message)
+        assertTrue(h.tasks.isEmpty())
+        assertEquals(listOf("monday_import"), queue.pending().map { it.id })
+
+        h.installing = emptySet()
+        val afterRestart = h.newQueue()
+        h.service(afterRestart).resumePendingInstalls()
+        h.runAll()
+        assertEquals("pending_restart", h.store.find("monday_import")?.status)
+        assertEquals(emptyList(), afterRestart.pending())
+    }
+
+    @Test
+    fun `an extension waiting for a module that finished without a restart is built when its status is read`() {
+        val h = QueueHarness(listOf(remote("monday_import")))
+        h.loaded = setOf("crm")
+        h.installing = setOf("crm")
+        val queue = h.newQueue()
+        val service = h.service(queue)
+        service.install("monday_import", "owner_role")
+        h.installing = emptySet()
+        service.status("monday_import")
+        h.runAll()
+        assertEquals("pending_restart", h.store.find("monday_import")?.status)
+        assertEquals(emptyList(), queue.pending())
+    }
+
+    @Test
     fun `an extension waits until its module is fully installed and is built after the restart`() {
         val h = QueueHarness(listOf(remote("monday_import")))
         h.loaded = emptySet()
