@@ -100,6 +100,7 @@ private suspend inline fun <reified T : Any> ApplicationCall.answer(crossinline 
             "INVALID_SESSION" -> HttpStatusCode.Unauthorized
             "MAIL_NOT_CONFIGURED" -> HttpStatusCode.ServiceUnavailable
             "TOO_MANY_ATTEMPTS" -> HttpStatusCode.TooManyRequests
+            "PASSWORD_CHANGE_REQUIRED" -> HttpStatusCode.Forbidden
             else -> HttpStatusCode.BadRequest
         }
         return respond(status, AuthErrorResponse(failure.code, failure.message.orEmpty()))

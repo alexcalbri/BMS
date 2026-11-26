@@ -28,6 +28,11 @@ import com.ideasdeveloper.bms.server.modules.CompanyMailForm
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
 import com.ideasdeveloper.bms.server.modules.MailException
 import com.ideasdeveloper.bms.server.modules.ModuleRegistry
+import com.ideasdeveloper.bms.server.admins.AuditActor
+import com.ideasdeveloper.bms.server.admins.ServerActorKind
+import com.ideasdeveloper.bms.server.admins.ServerActorLookup
+import com.ideasdeveloper.bms.server.admins.ServerActorResolver
+import com.ideasdeveloper.bms.server.admins.ServerPermission
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -81,6 +86,10 @@ class CompanySelfService(
     private val passwordAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(),
     // Sella la contrasena del SMTP de la empresa; sin llave maestra no se puede guardar una contrasena.
     private val secrets: SecretBox? = null,
+    // Server administrators with server.workspace also manage the server workspace (SERVER_ADMINS.md §3).
+    private val serverActors: ServerActorResolver? = null,
+    // Audit of changes made in the server workspace by the owner or an administrator.
+    private val auditor: ((actor: AuditActor, action: String, companyCode: String, details: String) -> Unit)? = null,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
     private val tokenGenerator = SessionTokenGenerator()
@@ -140,6 +149,7 @@ class CompanySelfService(
             }
             if (language != null) setCompanyLanguage(connection, context.companyCode, language)
         }
+        context.audit("server_workspace.profile_updated", """{"name":"${name.escapeJson()}"}""")
 
         return profile(companyCode, accessToken)
     }
@@ -246,6 +256,7 @@ class CompanySelfService(
         try {
             tenantConnection(context.tenant).use { connection ->
                 CompanyMail.save(connection, box ?: MasterKeySecretBox(null), input)
+                context.audit("server_workspace.mail_updated", "{}")
                 return CompanyMail.load(connection)
             }
         } catch (failure: SecretsUnavailableException) {
@@ -323,6 +334,7 @@ class CompanySelfService(
             } finally {
                 connection.autoCommit = true
             }
+            context.audit("server_workspace.user_created", """{"username":"${username.escapeJson()}","userId":"$userId"}""")
             return loadUser(connection, userId) ?: throw CompanySelfException(tr("No se pudo cargar el usuario creado."))
         }
     }
@@ -358,6 +370,7 @@ class CompanySelfService(
             } finally {
                 connection.autoCommit = true
             }
+            context.audit("server_workspace.user_permissions_updated", """{"userId":"$targetUserId"}""")
             return loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
     }
@@ -386,6 +399,11 @@ class CompanySelfService(
             throw CompanySelfException(tr("La contrasena del usuario debe tener al menos 12 caracteres."))
         }
         if (targetUserId == context.businessOwnerUserId) {
+            // The owner's user, email and password are shared by every company of that owner: a server
+            // administrator who entered this company from the switcher cannot change them from here.
+            if (loginDatabases.openedByServerAdmin(context.companyCode, accessToken)) {
+                throw CompanySelfException(tr("Un administrador del servidor no puede editar al business owner desde la empresa."))
+            }
             val editor = ownerEditor ?: throw CompanySelfException(tr("El business owner no se puede editar en este servidor."))
             // El business owner cambia SU PROPIO correo: exige la contrasena actual (misma regla que /auth/profile).
             val storedEmail = tenantConnection(context.tenant).use { connection ->
@@ -482,6 +500,7 @@ class CompanySelfService(
             } finally {
                 connection.autoCommit = true
             }
+            context.audit("server_workspace.user_updated", """{"userId":"$targetUserId","passwordChanged":${password.isNotEmpty()}}""")
             return loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
     }
@@ -492,7 +511,17 @@ class CompanySelfService(
      */
     private fun authorizeUserAdministrator(companyCode: String, accessToken: String): BusinessOwnerContext {
         val code = companyCode.trim()
-        if (code == ServerWorkspace.Code && isServerOwnerSession(accessToken)) {
+        val workspaceActor = if (code != ServerWorkspace.Code) null else when {
+            isServerOwnerSession(accessToken) -> serverActors?.resolve(accessToken).let { it as? ServerActorLookup.Found }?.actor?.audit
+                ?: AuditActor(ServerActorKind.Owner.value, null, AuditActor.ServerOwnerKind)
+            else -> when (val lookup = serverActors?.resolve(accessToken)) {
+                is ServerActorLookup.Found -> if (lookup.actor.has(ServerPermission.Workspace)) lookup.actor.audit
+                    else throw CompanySelfException(tr("Necesitas el permiso {0}.", ServerPermission.Workspace.id))
+                is ServerActorLookup.PasswordChangeRequired -> throw CompanySelfException(tr("Cambia tu contrasena antes de continuar."))
+                else -> null
+            }
+        }
+        if (workspaceActor != null) {
             val workspace = central.connection.use { connection ->
                 connection.prepareStatement(
                     """
@@ -526,6 +555,7 @@ class CompanySelfService(
                 profile = workspace.second,
                 businessOwnerUserId = null,
                 businessOwnerRole = null,
+                serverActor = workspaceActor,
             )
         }
         return authorizeBusinessOwner(code, accessToken)
@@ -602,6 +632,10 @@ class CompanySelfService(
                     rows.getObject("id", UUID::class.java) to rows.getString("postgres_role")
                 }
             }
+        }
+        // A session opened from the switcher keeps working only while its opener may still enter.
+        if (!loginDatabases.companySessionAllowed(company.code, accessToken)) {
+            throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
         }
         return BusinessOwnerContext(
             companyCode = company.code,
@@ -797,7 +831,18 @@ class CompanySelfService(
         // Null in the server workspace, which has no business owner.
         val businessOwnerUserId: UUID?,
         val businessOwnerRole: String?,
+        // Who acts in the server workspace (owner or administrator); null in a company.
+        val serverActor: AuditActor? = null,
     )
+
+    // Audits a change made in the server workspace; company changes by their own owner are not audited here.
+    private fun BusinessOwnerContext.audit(action: String, details: String) {
+        val actor = serverActor ?: return
+        runCatching { auditor?.invoke(actor, action, companyCode, details) }
+            .onFailure { LoggerFactory.getLogger(CompanySelfService::class.java).error("Audit entry {} could not be written", action, it) }
+    }
+
+    private fun String.escapeJson(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 
 }
 

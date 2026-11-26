@@ -219,6 +219,16 @@ class ModuleAccessService(
     fun verifyCredentials(companyCode: String?, username: String, password: String): VerifiedUser? {
         val session = login(LoginCredentials(username, password, companyCode)) ?: return null
         val serverOwner = session.scope == "server"
+        // Server administrators never sign in here: no agent or module acts with server rights for them.
+        if (serverOwner && session.role != com.ideasdeveloper.bms.ServerRoles.Owner) {
+            central.connection.use { connection ->
+                connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?").use {
+                    it.setString(1, tokenGenerator.hash(session.accessToken))
+                    it.executeUpdate()
+                }
+            }
+            return null
+        }
         val tokenHash = tokenGenerator.hash(session.accessToken)
         val revoke = "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?"
         if (serverOwner) {
@@ -605,7 +615,8 @@ class ModuleAccessService(
                 query.setString(1, tokenGenerator.hash(token))
                 query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
             }?.also { applySessionLanguage(companyCode, it, token, connection) }
-        } ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", tr("La sesion no es valida.")))
+        }?.takeIf { loginDatabases.companySessionAllowed(companyCode, token) }
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", tr("La sesion no es valida.")))
         return UserSessionLookup.Granted(companyCode, userId)
     }
 
@@ -694,6 +705,10 @@ class ModuleAccessService(
                     }
                 }
             } ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", tr("La sesion no es valida.")))
+            // A business owner session opened from the switcher is re-checked on every use.
+            if (user.businessOwner && !loginDatabases.companySessionAllowed(companyCode, token)) {
+                return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", tr("La sesion no es valida.")))
+            }
             applySessionLanguage(companyCode, user.id, token, connection)
 
             if (!moduleEnabled(connection, moduleId)) {
