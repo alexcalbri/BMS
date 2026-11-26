@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.platform
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,9 +64,9 @@ object DesktopBrowser {
                 setInstallDir(File(System.getProperty("user.home"), ".bms/jcef"))
                 setProgressHandler { progress, percent ->
                     val step = when (progress) {
-                        EnumProgress.DOWNLOADING -> "Descargando navegador integrado (solo la primera vez)"
-                        EnumProgress.EXTRACTING, EnumProgress.INSTALL -> "Instalando navegador integrado"
-                        else -> "Iniciando navegador integrado"
+                        EnumProgress.DOWNLOADING -> tr("Descargando navegador integrado (solo la primera vez)")
+                        EnumProgress.EXTRACTING, EnumProgress.INSTALL -> tr("Instalando navegador integrado")
+                        else -> tr("Iniciando navegador integrado")
                     }
                     _status.value = Status.Preparing(step, percent.takeIf { it >= 0f })
                 }
@@ -98,13 +99,13 @@ actual fun EmbeddedWebView(url: String, modifier: Modifier) {
 
     when (val current = status) {
         DesktopBrowser.Status.Ready -> ChromiumView(url, modifier)
-        is DesktopBrowser.Status.Failed -> BrowserMessage(modifier, "No se pudo iniciar el navegador integrado: ${current.message}", url)
+        is DesktopBrowser.Status.Failed -> BrowserMessage(modifier, tr("No se pudo iniciar el navegador integrado: {0}", current.message), url)
         is DesktopBrowser.Status.Preparing -> BrowserMessage(
             modifier,
             current.step + (current.percent?.let { " (${it.toInt()}%)" } ?: "") + "...",
             url = null,
         )
-        DesktopBrowser.Status.Idle -> BrowserMessage(modifier, "Iniciando navegador integrado...", url = null)
+        DesktopBrowser.Status.Idle -> BrowserMessage(modifier, tr("Iniciando navegador integrado..."), url = null)
     }
 }
 
@@ -124,7 +125,7 @@ private fun ChromiumView(url: String, modifier: Modifier) {
         }
     }
     if (browser == null) {
-        BrowserMessage(modifier, "No se pudo iniciar el navegador integrado.", url)
+        BrowserMessage(modifier, tr("No se pudo iniciar el navegador integrado."), url)
         return
     }
     SwingPanel(factory = { browser.second.uiComponent }, modifier = modifier)
@@ -138,7 +139,7 @@ private fun BrowserMessage(modifier: Modifier, text: String, url: String?) {
             if (url == null) CircularProgressIndicator(color = Color.White)
             Text(text, color = Color.White)
             // Si el navegador integrado falla, el modulo sigue disponible en el navegador del sistema.
-            if (url != null) Button(onClick = { uriHandler.openUri(url) }) { Text("Abrir en el navegador") }
+            if (url != null) Button(onClick = { uriHandler.openUri(url) }) { Text(tr("Abrir en el navegador")) }
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.extensions.data
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
@@ -67,7 +68,7 @@ class ExtensionApi(serverUrl: String) {
     } catch (exception: CompanyException) {
         throw exception
     } catch (_: Exception) {
-        throw CompanyException("No se pudo comunicar con el servidor.", network = true)
+        throw CompanyException(tr("No se pudo comunicar con el servidor."), network = true)
     }
 
     // Lanza el mensaje {code, message} del servidor cuando la respuesta no es correcta.
@@ -78,7 +79,7 @@ class ExtensionApi(serverUrl: String) {
         } catch (_: Exception) {
             ""
         }
-        throw CompanyException(text.ifBlank { "El servidor respondio ${status.value}." }, status = status.value)
+        throw CompanyException(text.ifBlank { tr("El servidor respondio {0}.", status.value) }, status = status.value)
     }
 
     private fun HttpRequestBuilder.scoped(token: String, target: ExtensionTarget) {

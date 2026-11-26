@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.platform
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
@@ -17,18 +18,18 @@ import platform.Foundation.writeToURL
 @OptIn(ExperimentalForeignApi::class)
 @Suppress("CAST_NEVER_SUCCEEDS")
 actual fun saveTextFile(fileName: String, content: String, mimeType: String): String {
-    val target = documentsTarget(fileName) ?: return "No se pudo crear el archivo."
+    val target = documentsTarget(fileName) ?: return tr("No se pudo crear el archivo.")
     // El BOM permite que Excel abra el CSV como UTF-8.
     val saved = (("﻿" + content) as NSString).writeToURL(target, atomically = true, encoding = NSUTF8StringEncoding, error = null)
-    return if (saved) "Archivo guardado en Archivos > En mi iPhone > BMS: ${target.lastPathComponent}" else "No se pudo guardar el archivo."
+    return if (saved) tr("Archivo guardado en Archivos > En mi iPhone > BMS: {0}", target.lastPathComponent) else tr("No se pudo guardar el archivo.")
 }
 
 @OptIn(ExperimentalForeignApi::class)
 actual fun saveBinaryFile(fileName: String, bytes: ByteArray, mimeType: String): String {
-    val target = documentsTarget(fileName) ?: return "No se pudo crear el archivo."
+    val target = documentsTarget(fileName) ?: return tr("No se pudo crear el archivo.")
     val data = if (bytes.isEmpty()) NSData() else bytes.usePinned { pinned -> NSData.create(bytes = pinned.addressOf(0), length = bytes.size.toULong()) }
     val saved = data.writeToURL(target, atomically = true)
-    return if (saved) "Archivo guardado en Archivos > En mi iPhone > BMS: ${target.lastPathComponent}" else "No se pudo guardar el archivo."
+    return if (saved) tr("Archivo guardado en Archivos > En mi iPhone > BMS: {0}", target.lastPathComponent) else tr("No se pudo guardar el archivo.")
 }
 
 private fun documentsTarget(fileName: String): NSURL? {

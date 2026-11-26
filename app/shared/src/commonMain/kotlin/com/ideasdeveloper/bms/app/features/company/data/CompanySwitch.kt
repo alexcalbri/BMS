@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.data
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.company.CompanyIdentity
 import com.ideasdeveloper.bms.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.bms.app.core.company.serverIdentity
@@ -30,7 +31,7 @@ object CompanySwitch {
         }
         null
     } catch (exception: CompanyException) {
-        exception.message ?: "No se pudo cambiar de empresa."
+        exception.message ?: tr("No se pudo cambiar de empresa.")
     }
 }
 

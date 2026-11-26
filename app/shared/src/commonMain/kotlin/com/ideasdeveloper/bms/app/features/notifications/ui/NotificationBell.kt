@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.notifications.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -94,7 +95,7 @@ fun NotificationBell(circleColor: Color, modifier: Modifier = Modifier) {
     }
     if (token == null || companyCode == null || serverUrl == null || notifications == null) return
 
-    val label = if (state.unread > 0) "Notificaciones, ${state.unread} sin leer" else "Notificaciones"
+    val label = if (state.unread > 0) tr("Notificaciones, {0} sin leer", state.unread) else tr("Notificaciones")
     Box(modifier = modifier) {
         IconButton(
             onClick = { open = !open },
@@ -136,18 +137,18 @@ fun NotificationBell(circleColor: Color, modifier: Modifier = Modifier) {
                     modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Notificaciones", color = colors.text, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Text(tr("Notificaciones"), color = colors.text, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
                     TextButton(
                         onClick = { scope.launch { NotificationCenter.markAllRead(notifications) } },
                         enabled = state.unread > 0,
                     ) {
-                        Text("Marcar todo como leído", fontSize = 13.sp, color = if (state.unread > 0) colors.accentText else colors.muted)
+                        Text(tr("Marcar todo como leído"), fontSize = 13.sp, color = if (state.unread > 0) colors.accentText else colors.muted)
                     }
                 }
                 HorizontalDivider(color = colors.border)
                 when {
-                    !state.loaded -> PanelMessage(state.error ?: "Cargando...")
-                    state.items.isEmpty() -> PanelMessage("No tienes notificaciones.")
+                    !state.loaded -> PanelMessage(state.error ?: tr("Cargando..."))
+                    state.items.isEmpty() -> PanelMessage(tr("No tienes notificaciones."))
                     else -> state.items.forEach { item ->
                         NotificationRow(item) {
                             open = false
@@ -163,10 +164,10 @@ fun NotificationBell(circleColor: Color, modifier: Modifier = Modifier) {
                         enabled = !state.loadingMore,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(if (state.loadingMore) "Cargando..." else "Ver más", fontSize = 13.sp, color = colors.accentText)
+                        Text(if (state.loadingMore) tr("Cargando...") else tr("Ver más"), fontSize = 13.sp, color = colors.accentText)
                     }
                 }
-                state.error?.takeIf { state.loaded }?.let { PanelMessage("No se pudo actualizar: $it") }
+                state.error?.takeIf { state.loaded }?.let { PanelMessage(tr("No se pudo actualizar: {0}", it)) }
             }
         }
     }

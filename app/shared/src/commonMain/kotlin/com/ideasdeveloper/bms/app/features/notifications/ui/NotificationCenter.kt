@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.notifications.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.features.notifications.data.NotificationApi
 import com.ideasdeveloper.bms.app.features.notifications.data.NotificationException
 import com.ideasdeveloper.bms.app.features.notifications.data.NotificationItem
@@ -188,10 +189,11 @@ fun relativeAge(seconds: Long): String {
     val hours = minutes / 60
     val days = hours / 24
     return when {
-        seconds < 60 -> "ahora"
-        minutes < 60 -> "hace $minutes min"
-        hours < 24 -> "hace $hours h"
-        days < 30 -> "hace $days d"
-        else -> "hace ${days / 30} " + if (days / 30 == 1L) "mes" else "meses"
+        seconds < 60 -> tr("ahora")
+        minutes < 60 -> tr("hace {0} min", minutes)
+        hours < 24 -> tr("hace {0} h", hours)
+        days < 30 -> tr("hace {0} d", days)
+        days / 30 == 1L -> tr("hace 1 mes")
+        else -> tr("hace {0} meses", days / 30)
     }
 }

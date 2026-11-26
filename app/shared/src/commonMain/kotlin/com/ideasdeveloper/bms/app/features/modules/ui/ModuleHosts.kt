@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.modules.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.layout.StickyScrollbarHost
 import com.ideasdeveloper.bms.app.core.layout.showsHorizontalScrollbar
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
@@ -204,7 +205,7 @@ fun NativeModuleHost(
                 try {
                     saveBinaryFile(file.name, api.downloadFile(context.accessToken, context.companyCode, route, file.id), "application/octet-stream")
                 } catch (exception: ModuleException) {
-                    exception.message ?: "No se pudo descargar ${file.name}."
+                    exception.message ?: tr("No se pudo descargar {0}.", file.name)
                 } finally {
                     api.close()
                 }
@@ -229,9 +230,9 @@ fun NativeModuleHost(
                 TextButton(onClick = {
                     pendingConfirm = null
                     execute(request, confirmed = true)
-                }) { Text("Continuar") }
+                }) { Text(tr("Continuar")) }
             },
-            dismissButton = { TextButton(onClick = { pendingConfirm = null }) { Text("Cancelar") } },
+            dismissButton = { TextButton(onClick = { pendingConfirm = null }) { Text(tr("Cancelar")) } },
         )
     }
 }
@@ -272,7 +273,7 @@ fun ModuleScreenLayout(
                 error?.let { failure ->
                     ModuleNoticeBanner(UiNotice(failure, UiTone.Danger), colors)
                     if (screen == null) {
-                        Button(onClick = onRetry, colors = accentButtonColors()) { Text("Reintentar") }
+                        Button(onClick = onRetry, colors = accentButtonColors()) { Text(tr("Reintentar")) }
                     }
                 }
                 when (screen) {
@@ -391,7 +392,7 @@ fun WebModuleHost(moduleId: String, context: ModuleCallContext, companyAccent: C
             } catch (exception: ModuleException) {
                 error = exception.message
             } catch (exception: Exception) {
-                error = "No se pudo abrir el modulo: ${exception.message}"
+                error = tr("No se pudo abrir el modulo: {0}", exception.message)
             }
         }
     }
@@ -407,7 +408,7 @@ fun WebModuleHost(moduleId: String, context: ModuleCallContext, companyAccent: C
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
             when {
                 error != null -> Text(error.orEmpty(), color = AppTheme.colors.danger)
-                openedOutside -> Text("El modulo se abrio en tu navegador.", color = AppTheme.colors.onScreen)
+                openedOutside -> Text(tr("El modulo se abrio en tu navegador."), color = AppTheme.colors.onScreen)
                 else -> {
                     CircularProgressIndicator(color = AppTheme.colors.onScreen)
                     progress?.let { Text(it, color = AppTheme.colors.onScreen) }
@@ -415,7 +416,7 @@ fun WebModuleHost(moduleId: String, context: ModuleCallContext, companyAccent: C
             }
             if (error != null || openedOutside) {
                 Button(onClick = { open() }, colors = ButtonDefaults.buttonColors(containerColor = companyAccent)) {
-                    Text(if (openedOutside) "Abrir de nuevo" else "Reintentar")
+                    Text(if (openedOutside) tr("Abrir de nuevo") else tr("Reintentar"))
                 }
             }
         }

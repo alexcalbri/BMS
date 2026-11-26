@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
@@ -93,8 +94,8 @@ fun ServerStaffScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Empresa del servidor",
-                subtitle = "Perfil y personal",
+                title = tr("Empresa del servidor"),
+                subtitle = tr("Perfil y personal"),
                 primaryColor = primaryColor,
                 onReturnToDashboard = onReturnToDashboard,
                 onSettings = onSettings,
@@ -119,11 +120,9 @@ fun ServerStaffScreen(
                     error?.let { Text(it, color = AppTheme.colors.danger) }
                     message?.let { Text(it, color = AppTheme.colors.success) }
                     if (workspaceCode == null) {
-                        Text("La empresa del servidor aun no existe", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                        Text(tr("La empresa del servidor aun no existe"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                         Text(
-                            "Si este servidor atiende a una sola empresa, creala aqui: tu seras su business owner, " +
-                                "podras configurarla, crear su personal y activar sus modulos sin crear una empresa aparte. " +
-                                "Mas adelante puedes seguir creando otras empresas.",
+                            tr("Si este servidor atiende a una sola empresa, creala aqui: tu seras su business owner, podras configurarla, crear su personal y activar sus modulos sin crear una empresa aparte. Mas adelante puedes seguir creando otras empresas."),
                             color = AppTheme.colors.muted,
                         )
                         Button(
@@ -137,7 +136,7 @@ fun ServerStaffScreen(
                                     try {
                                         val created = CompanyApi(activeServerUrl).use { api -> api.createServerWorkspace(activeSession.accessToken) }
                                         SessionStore.update { current -> current.withWorkspace(created.code) }
-                                        message = "Empresa del servidor creada."
+                                        message = tr("Empresa del servidor creada.")
                                     } catch (exception: CompanyException) {
                                         error = exception.message
                                     } finally {
@@ -146,14 +145,14 @@ fun ServerStaffScreen(
                                 }
                             },
                             colors = accentButtonColors(),
-                        ) { Text("Crear empresa del servidor") }
+                        ) { Text(tr("Crear empresa del servidor")) }
                     } else {
                         // El formulario de la empresa conserva un ancho legible aunque el panel sea amplio.
                         Column(
                             modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                        Text("Datos de la empresa", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
+                        Text(tr("Datos de la empresa"), style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
                         CompanyProfileFields(
                             name = name,
                             logoUrl = logoUrl,
@@ -192,7 +191,7 @@ fun ServerStaffScreen(
                                                 )
                                             }
                                             applyProfile(profile)
-                                            message = "Empresa actualizada."
+                                            message = tr("Empresa actualizada.")
                                         } catch (exception: CompanyException) {
                                             error = exception.message
                                         } finally {
@@ -201,11 +200,10 @@ fun ServerStaffScreen(
                                     }
                                 },
                                 colors = accentButtonColors(),
-                            ) { Text("Guardar") }
+                            ) { Text(tr("Guardar")) }
                         }
                         Text(
-                            "El personal inicia sesion con su usuario, su contrasena y el codigo de empresa \"$workspaceCode\". " +
-                                "Solo ve los modulos para los que tiene permiso. Activa modulos con \"Usar en el servidor\" en Modulos del servidor.",
+                            tr("El personal inicia sesion con su usuario, su contrasena y el codigo de empresa \"{0}\". Solo ve los modulos para los que tiene permiso. Activa modulos con \"Usar en el servidor\" en Modulos del servidor.", workspaceCode),
                             color = AppTheme.colors.muted,
                         )
                         }
@@ -214,7 +212,7 @@ fun ServerStaffScreen(
                             accessToken = session.accessToken,
                             companyCode = workspaceCode,
                             primaryColor = primaryColor,
-                            description = "Usuarios de la empresa del servidor. Los permisos disponibles vienen de los modulos activos en el servidor.",
+                            description = tr("Usuarios de la empresa del servidor. Los permisos disponibles vienen de los modulos activos en el servidor."),
                         )
                     }
                 }

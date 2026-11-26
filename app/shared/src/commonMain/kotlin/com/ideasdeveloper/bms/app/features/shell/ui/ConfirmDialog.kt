@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.shell.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -13,7 +14,7 @@ fun ConfirmDialog(
     confirmLabel: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
-    dismissLabel: String = "Cancelar",
+    dismissLabel: String = tr("Cancelar"),
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,

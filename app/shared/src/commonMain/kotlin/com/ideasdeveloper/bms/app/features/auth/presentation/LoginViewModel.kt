@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.auth.presentation
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.bms.app.core.company.serverIdentity
@@ -62,7 +63,7 @@ class LoginViewModel : ViewModel() {
         // Valida campos basicos antes de abrir una conexion HTTP.
         if (username.isBlank() || password.isEmpty()) {
             _state.value = LoginUiState(
-                error = "Introduce usuario y contraseña."
+                error = tr("Introduce usuario y contraseña.")
             )
             return
         }
@@ -71,7 +72,7 @@ class LoginViewModel : ViewModel() {
         // Asegura que el codigo tenant use el mismo formato esperado por el servidor.
         if (code != null && !code.matches(Regex("[a-z][a-z0-9_]{0,62}"))) {
             _state.value = LoginUiState(
-                error = "Introduce un código de empresa válido."
+                error = tr("Introduce un código de empresa válido.")
             )
             return
         }
@@ -109,11 +110,11 @@ class LoginViewModel : ViewModel() {
                 _state.value = LoginUiState(error = exception.message)
             } catch (_: IllegalArgumentException) {
                 _state.value = LoginUiState(
-                    error = "Revisa la URL del servidor. Debe iniciar con http:// o https:// y no llevar rutas."
+                    error = tr("Revisa la URL del servidor. Debe iniciar con http:// o https:// y no llevar rutas.")
                 )
             } catch (_: Exception) {
                 _state.value = LoginUiState(
-                    error = "No se pudo completar el inicio de sesión."
+                    error = tr("No se pudo completar el inicio de sesión.")
                 )
             } finally {
                 api?.close()

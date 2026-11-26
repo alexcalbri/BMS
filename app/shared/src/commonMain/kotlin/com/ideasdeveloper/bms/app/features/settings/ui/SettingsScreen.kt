@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.settings.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
@@ -36,11 +37,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.bms.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import com.ideasdeveloper.bms.app.core.config.ClientConfiguration
 import com.ideasdeveloper.bms.app.core.version.ClientVersion
 import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.core.session.SessionStore
+import com.ideasdeveloper.bms.app.features.auth.data.AccountApi
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.use
+import com.ideasdeveloper.bms.app.features.auth.ui.LanguageSelector
 import com.ideasdeveloper.bms.app.features.auth.ui.ProfileDialog
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
@@ -55,6 +60,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.semantics.Role
 import com.ideasdeveloper.bms.app.core.theme.BuiltInThemes
 import com.ideasdeveloper.bms.app.core.theme.ThemeStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
@@ -82,10 +88,9 @@ fun SettingsScreen(
 
     if (confirmingClear) {
         ConfirmDialog(
-            title = "Limpiar configuracion local",
-            message = "Se borraran de este dispositivo la URL del servidor, la empresa guardada y tu sesion. " +
-                "Tendras que configurar el servidor e iniciar sesion de nuevo. Los datos del servidor no se modifican.",
-            confirmLabel = "Limpiar y cerrar sesion",
+            title = tr("Limpiar configuracion local"),
+            message = tr("Se borraran de este dispositivo la URL del servidor, la empresa guardada y tu sesion. Tendras que configurar el servidor e iniciar sesion de nuevo. Los datos del servidor no se modifican."),
+            confirmLabel = tr("Limpiar y cerrar sesion"),
             onConfirm = {
                 confirmingClear = false
                 onClearLocalConfiguration()
@@ -112,8 +117,8 @@ fun SettingsScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Ajustes",
-                subtitle = "Cliente",
+                title = tr("Ajustes"),
+                subtitle = tr("Cliente"),
                 primaryColor = primaryColor,
                 onReturnToDashboard = onReturnToDashboard,
                 onSettings = {},
@@ -136,48 +141,78 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(AdaptiveLayout.gap),
             ) {
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Apariencia", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Text(tr("Apariencia"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "El tema se guarda en este dispositivo. Los modulos instalados en el servidor pueden agregar temas.",
+                        tr("El tema se guarda en este dispositivo. Los modulos instalados en el servidor pueden agregar temas."),
                         color = AppTheme.colors.muted,
                     )
                     Spacer(Modifier.height(6.dp))
-                    ThemeOption("Automatico (segun el sistema)", BuiltInThemes.System, selectedTheme)
+                    ThemeOption(tr("Automatico (segun el sistema)"), BuiltInThemes.System, selectedTheme)
                     ThemeOption(BuiltInThemes.light.name, BuiltInThemes.Light, selectedTheme)
                     ThemeOption(BuiltInThemes.dark.name, BuiltInThemes.Dark, selectedTheme)
                     moduleThemes.forEach { theme ->
-                        ThemeOption("${theme.name} (modulo ${theme.id.substringBefore('.')})", theme.id, selectedTheme)
+                        ThemeOption(tr("{0} (modulo {1})", theme.name, theme.id.substringBefore('.')), theme.id, selectedTheme)
                     }
                 }
 
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Conexion", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
-                    Spacer(Modifier.height(10.dp))
-                    SettingRow("Servidor", configuration?.serverUrl ?: "Sin configurar")
-                    SettingRow("Empresa", configuration?.companyCode ?: "Administracion del servidor")
-                }
-
-                SettingsCard(primaryColor = primaryColor) {
-                    Text("Sesion", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
-                    Spacer(Modifier.height(10.dp))
-                    SettingRow("Usuario", session?.username ?: "Sin sesion")
-                    SettingRow("Nombre", session?.displayName ?: "Sin nombre")
-                    SettingRow("Correo", session?.email ?: "Sin correo")
-                    SettingRow("Rol", session?.role ?: "Sin rol")
-                    SettingRow("Empresa activa", session?.companyCode ?: "Servidor")
-                    if (session != null) {
-                        Spacer(Modifier.height(10.dp))
-                        OutlinedButton(onClick = { editingProfile = true }) {
-                            Text("Editar nombre y correo")
+                    Text(tr("Idioma"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        tr("El idioma se guarda en este dispositivo y en tu perfil."),
+                        color = AppTheme.colors.muted,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    LanguageSelector(selected = AppLanguage.choice, enabled = true) { choice ->
+                        // Local e inmediato; ademas se guarda en el perfil si hay sesion con nombre y correo.
+                        AppLanguage.select(choice)
+                        val url = configuration?.serverUrl
+                        val name = session?.displayName
+                        val mail = session?.email
+                        if (session != null && !url.isNullOrBlank() && !name.isNullOrBlank() && !mail.isNullOrBlank()) {
+                            val token = session.accessToken
+                            val companyCode = session.companyCode
+                            scope.launch {
+                                try {
+                                    AccountApi(url).use { it.updateProfile(token, companyCode, name, mail, choice) }
+                                } catch (exception: CancellationException) {
+                                    throw exception
+                                } catch (_: Exception) {
+                                    // Sin conexion o el servidor lo rechazo: el idioma queda guardado en este dispositivo.
+                                }
+                            }
                         }
                     }
                 }
 
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Version", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Text(tr("Conexion"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(10.dp))
-                    SettingRow("Cliente", ClientVersion)
+                    SettingRow(tr("Servidor"), configuration?.serverUrl ?: tr("Sin configurar"))
+                    SettingRow(tr("Empresa"), configuration?.companyCode ?: tr("Administracion del servidor"))
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text(tr("Sesion"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow(tr("Usuario"), session?.username ?: tr("Sin sesion"))
+                    SettingRow(tr("Nombre"), session?.displayName ?: tr("Sin nombre"))
+                    SettingRow(tr("Correo"), session?.email ?: tr("Sin correo"))
+                    SettingRow(tr("Rol"), session?.role ?: tr("Sin rol"))
+                    SettingRow(tr("Empresa activa"), session?.companyCode ?: tr("Servidor"))
+                    if (session != null) {
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(onClick = { editingProfile = true }) {
+                            Text(tr("Editar nombre y correo"))
+                        }
+                    }
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text(tr("Version"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow(tr("Cliente"), ClientVersion)
                     versionStatus?.let {
                         Spacer(Modifier.height(8.dp))
                         Text(it, color = AppTheme.colors.muted)
@@ -187,17 +222,17 @@ fun SettingsScreen(
                         onClick = {
                             val serverUrl = configuration?.serverUrl.orEmpty()
                             if (serverUrl.isBlank()) {
-                                versionStatus = "No hay servidor configurado para revisar actualizaciones."
+                                versionStatus = tr("No hay servidor configurado para revisar actualizaciones.")
                                 return@Button
                             }
                             checkingVersion = true
                             scope.launch {
                                 val version = VersionApi(serverUrl).use { it.version() }
                                 versionStatus = when {
-                                    version == null -> "No se pudo consultar la version del servidor."
+                                    version == null -> tr("No se pudo consultar la version del servidor.")
                                     !version.latestAppVersion.isNullOrBlank() && version.latestAppVersion != ClientVersion ->
-                                        "Nueva version del cliente disponible: ${version.latestAppVersion}."
-                                    else -> "El cliente esta actualizado."
+                                        tr("Nueva version del cliente disponible: {0}.", version.latestAppVersion)
+                                    else -> tr("El cliente esta actualizado.")
                                 }
                                 checkingVersion = false
                             }
@@ -205,20 +240,20 @@ fun SettingsScreen(
                         enabled = !checkingVersion,
                         colors = accentButtonColors(),
                     ) {
-                        Text(if (checkingVersion) "Revisando..." else "Revisar actualizaciones")
+                        Text(if (checkingVersion) tr("Revisando...") else tr("Revisar actualizaciones"))
                     }
                 }
 
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Datos locales", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                    Text(tr("Datos locales"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        text = "Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor.",
+                        text = tr("Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor."),
                         color = AppTheme.colors.muted,
                     )
                     Spacer(Modifier.height(12.dp))
                     OutlinedButton(onClick = { confirmingClear = true }) {
-                        Text("Limpiar configuracion local")
+                        Text(tr("Limpiar configuracion local"))
                     }
                 }
             }

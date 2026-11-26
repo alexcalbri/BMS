@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.shell.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.wcagLuminance
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -90,10 +91,10 @@ fun AuthenticatedTopBar(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = if (titleMenu.isEmpty()) Modifier else Modifier
                         .clickable(
-                            onClickLabel = "Cambiar de empresa",
+                            onClickLabel = tr("Cambiar de empresa"),
                             role = Role.Button,
                         ) { titleMenuExpanded = true }
-                        .semantics(mergeDescendants = true) { contentDescription = "$title, abrir lista de empresas" },
+                        .semantics(mergeDescendants = true) { contentDescription = tr("{0}, abrir lista de empresas", title) },
                 ) {
                     Text(
                         text = title,
@@ -155,7 +156,7 @@ fun AuthenticatedTopBar(
                     .size(48.dp)
                     .background(circleColor, CircleShape)
                     .graphicsLayer { rotationZ = menuRotation.value }
-                    .semantics { contentDescription = "Menú" },
+                    .semantics { contentDescription = tr("Menú") },
             ) {
                 // Siempre "|||" girado (gira al abrirse) para no confundirse con la X de cerrar.
                 // Es decorativo: la descripcion accesible la da el boton.
@@ -173,7 +174,7 @@ fun AuthenticatedTopBar(
             ) {
                 onReturnToDashboard?.let { returnToDashboard ->
                     DropdownMenuItem(
-                        text = { Text("Volver al panel") },
+                        text = { Text(tr("Volver al panel")) },
                         onClick = {
                             menuExpanded = false
                             returnToDashboard()
@@ -181,14 +182,14 @@ fun AuthenticatedTopBar(
                     )
                 }
                 DropdownMenuItem(
-                    text = { Text("Ajustes") },
+                    text = { Text(tr("Ajustes")) },
                     onClick = {
                         menuExpanded = false
                         onSettings()
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text("Cerrar sesion") },
+                    text = { Text(tr("Cerrar sesion")) },
                     onClick = {
                         menuExpanded = false
                         onLogout()

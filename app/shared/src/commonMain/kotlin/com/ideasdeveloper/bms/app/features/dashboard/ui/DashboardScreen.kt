@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.dashboard.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveGrid
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
@@ -97,7 +98,7 @@ fun DashboardScreen(
         val url = serverUrl ?: return
         val active = session ?: return
         switching = true
-        companyMessage = "Entrando a ${target?.name ?: targets?.serverName ?: "el servidor"}..."
+        companyMessage = tr("Entrando a {0}...", target?.name ?: targets?.serverName ?: tr("el servidor"))
         scope.launch {
             val failure = CompanySwitch.switchTo(url, active, target)
             switching = false
@@ -109,12 +110,12 @@ fun DashboardScreen(
     val titleMenu = targets?.takeIf { !switching }?.let { options ->
         val items = buildList {
             options.serverName?.let { name ->
-                add(TopBarMenuItem(name, caption = "Servidor", current = companyCode == null) { switchTo(null) })
+                add(TopBarMenuItem(name, caption = tr("Servidor"), current = companyCode == null) { switchTo(null) })
             }
             options.companies.forEach { company ->
                 add(TopBarMenuItem(company.name, caption = company.code, current = company.code == companyCode) { switchTo(company) })
             }
-            if (isServerOwner && companyCode == null) add(TopBarMenuItem("Cambiar nombre del servidor...") { renamingServer = true })
+            if (isServerOwner && companyCode == null) add(TopBarMenuItem(tr("Cambiar nombre del servidor...")) { renamingServer = true })
         }
         // Una sola empresa sin servidor no tiene a donde cambiar.
         items.takeIf { it.count { item -> !item.current } > 0 }
@@ -156,10 +157,10 @@ fun DashboardScreen(
                 version?.moduleUpdates
                     ?.takeIf { it.isNotEmpty() }
                     ?.joinToString { update -> "${update.displayName} ${update.latestVersion}" }
-                    ?.let { add("Modulos: $it") }
+                    ?.let { add(tr("Modulos: {0}", it)) }
             }
             coreUpdateAvailable = version?.latestCoreVersion?.let { isNewerVersion(it, version.coreVersion) } == true
-            versionNotice = notices.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Actualizaciones disponibles: ")
+            versionNotice = notices.takeIf { it.isNotEmpty() }?.joinToString(prefix = tr("Actualizaciones disponibles: "))
         }
     }
 
@@ -170,7 +171,7 @@ fun DashboardScreen(
             // Renderiza la barra superior autenticada con acceso a ajustes y cierre de sesion.
             AuthenticatedTopBar(
                 title = companyIdentity.name,
-                subtitle = "Dashboard principal",
+                subtitle = tr("Dashboard principal"),
                 primaryColor = primaryColor,
                 onSettings = { onNavigateTo(NavRoute.Settings) },
                 onLogout = onLogout,
@@ -188,7 +189,7 @@ fun DashboardScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = "Panel de control",
+                text = tr("Panel de control"),
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
                 color = AppTheme.colors.onScreen,
@@ -203,7 +204,7 @@ fun DashboardScreen(
 
             if (session?.serverOwnerAccess == true) {
                 Text(
-                    text = "Entraste como dueno del servidor: lo que hagas aqui queda a nombre del business owner de la empresa.",
+                    text = tr("Entraste como dueno del servidor: lo que hagas aqui queda a nombre del business owner de la empresa."),
                     color = AppTheme.colors.onScreen,
                     modifier = Modifier.padding(bottom = 16.dp),
                 )
@@ -233,7 +234,7 @@ fun DashboardScreen(
                         Button(
                             onClick = { onNavigateTo(NavRoute.Module("server-update")) },
                             colors = accentButtonColors(),
-                        ) { Text("Actualizar") }
+                        ) { Text(tr("Actualizar")) }
                     }
                 }
             }
@@ -241,13 +242,13 @@ fun DashboardScreen(
             // Reune las tarjetas de acceso y las reparte en una o dos columnas segun el ancho de la ventana.
             val cards = buildList {
                 if (canSeeEmpresa) {
-                    add(DashboardCardData("Empresa", "Administra la configuracion base de la empresa", "E", "empresa"))
+                    add(DashboardCardData(tr("Empresa"), tr("Administra la configuracion base de la empresa"), "E", "empresa"))
                 }
                 if (canManageServerModules) {
-                    add(DashboardCardData("Modulos del servidor", "Administra los modulos instalados en este servidor", "M", "server-modules"))
-                    add(DashboardCardData("Empresa del servidor", "Configura la empresa del servidor y su personal sin crear una empresa", "S", "server-staff"))
-                    add(DashboardCardData("Errores del servidor", "Consulta los errores recientes del servidor para diagnosticar fallos", "!", "server-logs"))
-                    add(DashboardCardData("Actualizar servidor", "Actualiza el Core y la webapp del servidor desde la app", "U", "server-update"))
+                    add(DashboardCardData(tr("Modulos del servidor"), tr("Administra los modulos instalados en este servidor"), "M", "server-modules"))
+                    add(DashboardCardData(tr("Empresa del servidor"), tr("Configura la empresa del servidor y su personal sin crear una empresa"), "S", "server-staff"))
+                    add(DashboardCardData(tr("Errores del servidor"), tr("Consulta los errores recientes del servidor para diagnosticar fallos"), "!", "server-logs"))
+                    add(DashboardCardData(tr("Actualizar servidor"), tr("Actualiza el Core y la webapp del servidor desde la app"), "U", "server-update"))
                 }
                 // Modulos activos recibidos desde el servidor.
                 enabledModules
@@ -303,7 +304,7 @@ private fun String.toDashboardModule(): DashboardModule {
     val title = toDisplayName()
     return DashboardModule(
         title = title,
-        description = "Abrir modulo $title",
+        description = tr("Abrir modulo {0}", title),
         iconText = title.take(1).uppercase(),
     )
 }
@@ -312,7 +313,7 @@ private fun String.toDashboardModule(): DashboardModule {
 private fun String.toDisplayName(): String = split('-', '_')
     .filter { it.isNotBlank() }
     .joinToString(" ") { word -> word.replaceFirstChar { char -> char.uppercase() } }
-    .ifBlank { "Modulo" }
+    .ifBlank { tr("Modulo") }
 
 // Tarjeta de acceso del dashboard con la ruta del modulo que abre.
 private data class DashboardCardData(
@@ -393,17 +394,17 @@ private fun ServerNameDialog(current: String, onSave: (String) -> Unit, onDismis
     var name by remember { mutableStateOf(current) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Nombre del servidor") },
+        title = { Text(tr("Nombre del servidor")) },
         text = {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it.take(80) },
-                label = { Text("Nombre") },
+                label = { Text(tr("Nombre")) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
         },
-        confirmButton = { TextButton(onClick = { onSave(name) }, enabled = name.isNotBlank()) { Text("Guardar") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+        confirmButton = { TextButton(onClick = { onSave(name) }, enabled = name.isNotBlank()) { Text(tr("Guardar")) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Cancelar")) } },
     )
 }

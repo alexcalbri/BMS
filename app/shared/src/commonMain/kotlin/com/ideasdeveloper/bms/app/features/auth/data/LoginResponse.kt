@@ -23,4 +23,7 @@ data class LoginResponse(
     val serverName: String? = null,
     // El dueno del servidor abrio esta sesion de empresa como su business owner (selector de empresas).
     val serverOwnerAccess: Boolean = false,
+    // Idioma efectivo del usuario ("es" o "en") y el de su empresa; null en servidores antiguos.
+    val language: String? = null,
+    val companyLanguage: String? = null,
 )

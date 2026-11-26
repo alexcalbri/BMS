@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.extensions.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -157,7 +158,7 @@ fun ExtensionsScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Extensiones",
+                title = tr("Extensiones"),
                 subtitle = listOfNotNull(moduleId?.moduleTitle(), companyName?.takeIf { it.isNotBlank() } ?: target.companyCode).joinToString(" · "),
                 primaryColor = colors.accent,
                 onReturnToDashboard = onClose,
@@ -185,14 +186,14 @@ fun ExtensionsScreen(
                 ) {
                     item(key = "header") {
                         Column(modifier = Modifier.widthIn(max = ContentWidth.Content).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Extensiones de la empresa", style = MaterialTheme.typography.titleLarge, color = colors.accentText)
+                            Text(tr("Extensiones de la empresa"), style = MaterialTheme.typography.titleLarge, color = colors.accentText)
                             Text(
-                                "Instala, configura y activa integraciones de los modulos de esta empresa. Desinstalar nunca borra clientes ni contactos.",
+                                tr("Instala, configura y activa integraciones de los modulos de esta empresa. Desinstalar nunca borra clientes ni contactos."),
                                 color = colors.muted,
                             )
                             error?.let { Text(it, color = colors.danger) }
                             message?.let { Text(it, color = colors.success) }
-                            if (loading) Text("Cargando extensiones...", color = colors.muted)
+                            if (loading) Text(tr("Cargando extensiones..."), color = colors.muted)
                         }
                     }
                     if (group != null && group?.members.orEmpty().size > 1) {
@@ -210,7 +211,7 @@ fun ExtensionsScreen(
                                         scope.launch {
                                             try {
                                                 group = context.run { token, _ -> reviewGroup(token, target.companyCode) }
-                                                message = "Grupo revisado."
+                                                message = tr("Grupo revisado.")
                                             } catch (exception: CompanyException) {
                                                 error = exception.message
                                             } finally {
@@ -224,7 +225,7 @@ fun ExtensionsScreen(
                     }
                     if (!loading && grouped.isEmpty() && error == null) {
                         item(key = "empty") {
-                            Text("Los modulos activos de esta empresa no tienen extensiones disponibles.", color = colors.muted)
+                            Text(tr("Los modulos activos de esta empresa no tienen extensiones disponibles."), color = colors.muted)
                         }
                     }
                     items(grouped, key = { it.first }) { (module, list) ->
@@ -238,10 +239,10 @@ fun ExtensionsScreen(
                                             extension = extension,
                                             busy = busyId == extension.id || loading,
                                             canApplyToGroup = otherMembers.any { !it.suspended } && !thisSuspended,
-                                            onInstall = { runAction(extension.id, "${extension.displayName} instalada.") { token, target -> install(token, target, extension.id) } },
+                                            onInstall = { runAction(extension.id, tr("{0} instalada.", extension.displayName)) { token, target -> install(token, target, extension.id) } },
                                             onConfigure = { dialog = ExtensionDialog.Configure(extension) },
                                             onToggle = { enable ->
-                                                runAction(extension.id, if (enable) "${extension.displayName} activada." else "${extension.displayName} desactivada.") { token, target ->
+                                                runAction(extension.id, if (enable) tr("{0} activada.", extension.displayName) else tr("{0} desactivada.", extension.displayName)) { token, target ->
                                                     setEnabled(token, target, extension.id, enable)
                                                 }
                                             },
@@ -281,11 +282,11 @@ private fun String.moduleTitle(): String =
 private data class StatusChip(val label: String, val tone: Color)
 
 private fun statusChip(extension: ExtensionSummary, colors: AppColors): StatusChip = when {
-    !extension.compatible || extension.status == "incompatible" -> StatusChip("Incompatible", colors.danger)
-    extension.status == "enabled" -> StatusChip("Activa", colors.success)
-    extension.status == "disabled" -> StatusChip("Desactivada", colors.warning)
-    extension.status == "installed" -> StatusChip("Instalada", colors.accentText)
-    else -> StatusChip("No instalada", colors.muted)
+    !extension.compatible || extension.status == "incompatible" -> StatusChip(tr("Incompatible"), colors.danger)
+    extension.status == "enabled" -> StatusChip(tr("Activa"), colors.success)
+    extension.status == "disabled" -> StatusChip(tr("Desactivada"), colors.warning)
+    extension.status == "installed" -> StatusChip(tr("Instalada"), colors.accentText)
+    else -> StatusChip(tr("No instalada"), colors.muted)
 }
 
 @Composable
@@ -337,26 +338,26 @@ private fun ExtensionCard(
         Text(extension.description, color = colors.muted)
         Text(
             buildString {
-                append("Version ${extension.version}")
-                append(if (extension.sourceType == "bundled") " · Incluida en el modulo" else " · Paquete externo")
-                extension.minModuleVersion?.let { append(" · Requiere modulo $it o superior") }
+                append(tr("Version {0}", extension.version))
+                append(if (extension.sourceType == "bundled") tr(" · Incluida en el modulo") else tr(" · Paquete externo"))
+                extension.minModuleVersion?.let { append(tr(" · Requiere modulo {0} o superior", it)) }
             },
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted,
         )
         when {
             incompatible -> Text(
-                "Esta extension no es compatible con la version del modulo instalada. Puedes desinstalarla.",
+                tr("Esta extension no es compatible con la version del modulo instalada. Puedes desinstalarla."),
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.danger,
             )
             !extension.moduleInstalled || !extension.moduleEnabled -> Text(
-                "Activa el modulo ${extension.module.moduleTitle()} en esta empresa para usar esta extension.",
+                tr("Activa el modulo {0} en esta empresa para usar esta extension.", extension.module.moduleTitle()),
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.warning,
             )
             installed && extension.missingRequired.isNotEmpty() -> Text(
-                "Faltan ajustes obligatorios: ${extension.missingRequired.joinToString()}.",
+                tr("Faltan ajustes obligatorios: {0}.", extension.missingRequired.joinToString()),
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.warning,
             )
@@ -367,10 +368,10 @@ private fun ExtensionCard(
                     enabled = !busy && !incompatible && extension.moduleInstalled && extension.moduleEnabled,
                     onClick = onInstall,
                     colors = accentButtonColors(),
-                ) { Text("Instalar") }
+                ) { Text(tr("Instalar")) }
             } else {
                 if (!incompatible && extension.settings.isNotEmpty()) {
-                    Button(enabled = !busy, onClick = onConfigure, colors = secondary) { Text("Configurar") }
+                    Button(enabled = !busy, onClick = onConfigure, colors = secondary) { Text(tr("Configurar")) }
                 }
                 if (!incompatible) {
                     val enabled = extension.status == "enabled"
@@ -378,16 +379,16 @@ private fun ExtensionCard(
                         enabled = !busy && (enabled || extension.moduleEnabled),
                         onClick = { onToggle(!enabled) },
                         colors = if (enabled) secondary else accentButtonColors(),
-                    ) { Text(if (enabled) "Desactivar" else "Activar") }
+                    ) { Text(if (enabled) tr("Desactivar") else tr("Activar")) }
                     if (canApplyToGroup) {
-                        Button(enabled = !busy, onClick = onApplyToGroup, colors = secondary) { Text("Aplicar a empresas del grupo") }
+                        Button(enabled = !busy, onClick = onApplyToGroup, colors = secondary) { Text(tr("Aplicar a empresas del grupo")) }
                     }
                 }
                 Button(
                     enabled = !busy,
                     onClick = onUninstall,
                     colors = ButtonDefaults.buttonColors(containerColor = colors.surfaceAlt, contentColor = colors.danger),
-                ) { Text("Desinstalar") }
+                ) { Text(tr("Desinstalar")) }
             }
         }
     }
@@ -412,12 +413,12 @@ private fun GroupPanel(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text("Grupo de empresas", style = MaterialTheme.typography.titleSmall, color = colors.accentText)
+        Text(tr("Grupo de empresas"), style = MaterialTheme.typography.titleSmall, color = colors.accentText)
         group?.members.orEmpty().forEach { member ->
             val flags = buildList {
-                if (member.code == companyCode) add("esta empresa")
-                if (member.suspended) add("suspendida")
-                if (!member.ownerEmailMatches) add("el correo del business owner ya no coincide")
+                if (member.code == companyCode) add(tr("esta empresa"))
+                if (member.suspended) add(tr("suspendida"))
+                if (!member.ownerEmailMatches) add(tr("el correo del business owner ya no coincide"))
             }
             Text(
                 "${member.name.ifBlank { member.code }} (${member.code})" + if (flags.isEmpty()) "" else " · ${flags.joinToString(", ")}",
@@ -427,12 +428,12 @@ private fun GroupPanel(
         }
         if (suspended) {
             Text(
-                "El grupo esta suspendido: no se puede aplicar ni desinstalar en varias empresas hasta que el dueno del servidor lo revise.",
+                tr("El grupo esta suspendido: no se puede aplicar ni desinstalar en varias empresas hasta que el dueno del servidor lo revise."),
                 color = colors.warning,
             )
             if (canReview) {
                 Button(enabled = !reviewing, onClick = onReview, colors = accentButtonColors()) {
-                    Text(if (reviewing) "Revisando..." else "Revisar y reactivar")
+                    Text(if (reviewing) tr("Revisando...") else tr("Revisar y reactivar"))
                 }
             }
         }

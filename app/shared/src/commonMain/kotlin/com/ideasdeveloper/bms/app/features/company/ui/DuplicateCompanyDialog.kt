@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -57,49 +58,47 @@ fun DuplicateCompanyDialog(
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Duplicar $sourceName") },
+        title = { Text(tr("Duplicar {0}", sourceName)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "Se crea una empresa nueva con los mismos modulos y su configuracion (etapas, campos, plantillas, redes WiFi...). " +
-                        "No se copian clientes, leads ni usuarios del personal, y las integraciones (correo, WhatsApp, UniFi, WordPress...) " +
-                        "se conectan de nuevo.",
+                    tr("Se crea una empresa nueva con los mismos modulos y su configuracion (etapas, campos, plantillas, redes WiFi...). No se copian clientes, leads ni usuarios del personal, y las integraciones (correo, WhatsApp, UniFi, WordPress...) se conectan de nuevo."),
                     color = AppTheme.colors.muted,
                 )
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = identifier(it) },
-                    label = { Text("Codigo de la nueva empresa") },
+                    label = { Text(tr("Codigo de la nueva empresa")) },
                     placeholder = { Text("mi_empresa_2") },
                     singleLine = true,
                     enabled = !busy,
                     isError = code.isNotEmpty() && !CodePattern.matches(code),
-                    supportingText = { Text("Empieza con una letra; solo minusculas, numeros y guion bajo.") },
+                    supportingText = { Text(tr("Empieza con una letra; solo minusculas, numeros y guion bajo.")) },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text("Business owner", color = AppTheme.colors.text)
-                OwnerOption("Mantener el de $sourceName", "Entra con el mismo usuario y contrasena y cambia entre ambas empresas desde el panel.", keepOwner, !busy) { keepOwner = true }
-                OwnerOption("Crear uno nuevo", "La empresa queda con su propio dueno, sin vincular a $sourceName.", !keepOwner, !busy) { keepOwner = false }
+                Text(tr("Business owner"), color = AppTheme.colors.text)
+                OwnerOption(tr("Mantener el de {0}", sourceName), tr("Entra con el mismo usuario y contrasena y cambia entre ambas empresas desde el panel."), keepOwner, !busy) { keepOwner = true }
+                OwnerOption(tr("Crear uno nuevo"), tr("La empresa queda con su propio dueno, sin vincular a {0}.", sourceName), !keepOwner, !busy) { keepOwner = false }
                 if (!keepOwner) {
                     OutlinedTextField(
-                        value = username, onValueChange = { username = identifier(it) }, label = { Text("Usuario") },
+                        value = username, onValueChange = { username = identifier(it) }, label = { Text(tr("Usuario")) },
                         singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
-                        value = password, onValueChange = { password = it }, label = { Text("Contrasena (12 caracteres o mas)") },
+                        value = password, onValueChange = { password = it }, label = { Text(tr("Contrasena (12 caracteres o mas)")) },
                         singleLine = true, enabled = !busy, visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
-                        value = name, onValueChange = { name = it }, label = { Text("Nombre") },
+                        value = name, onValueChange = { name = it }, label = { Text(tr("Nombre")) },
                         singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
-                        value = email, onValueChange = { email = it }, label = { Text("Correo") },
+                        value = email, onValueChange = { email = it }, label = { Text(tr("Correo")) },
                         singleLine = true, enabled = !busy, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                if (busy) Text("Duplicando... puede tardar un minuto.", color = AppTheme.colors.muted)
+                if (busy) Text(tr("Duplicando... puede tardar un minuto."), color = AppTheme.colors.muted)
                 error?.let { Text(it, color = AppTheme.colors.danger) }
             }
         },
@@ -107,10 +106,10 @@ fun DuplicateCompanyDialog(
             TextButton(
                 onClick = { onConfirm(code, if (keepOwner) null else DuplicateOwnerRequest(username, password, name.trim(), email.trim())) },
                 enabled = valid && !busy,
-            ) { Text("Duplicar") }
+            ) { Text(tr("Duplicar")) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") }
+            TextButton(onClick = onDismiss, enabled = !busy) { Text(tr("Cancelar")) }
         },
     )
 }

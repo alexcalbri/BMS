@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.notifications.data
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import io.ktor.client.HttpClient
@@ -86,13 +87,13 @@ class NotificationApi(serverUrl: String) {
         try {
             val response = request()
             if (response.status == HttpStatusCode.OK) return response.body()
-            throw NotificationException("El servidor no pudo leer las notificaciones.")
+            throw NotificationException(tr("El servidor no pudo leer las notificaciones."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: NotificationException) {
             throw exception
         } catch (_: Exception) {
-            throw NotificationException("No se pudo comunicar con el servidor.")
+            throw NotificationException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
