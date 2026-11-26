@@ -433,6 +433,8 @@ apply_control_migrations() {
         die 'No se encontro database/core/migrations/V006__add_application_user_language.sql.'
     [[ -f database/control/migrations/V014__add_company_default_language.sql ]] ||
         die 'No se encontro database/control/migrations/V014__add_company_default_language.sql.'
+    [[ -f database/control/migrations/V015__create_server_admins.sql ]] ||
+        die 'No se encontro database/control/migrations/V015__create_server_admins.sql.'
     [[ -f database/tenant/migrations/V006__create_extensions.sql ]] ||
         die 'No se encontro database/tenant/migrations/V006__create_extensions.sql.'
     [[ -f database/tenant/migrations/V007__create_company_mail_settings.sql ]] ||
@@ -459,6 +461,7 @@ apply_migration "$db_name" control database/control/migrations/V011__create_exte
 apply_migration "$db_name" control database/control/migrations/V012__extension_zip_url_sources.sql
 apply_migration "$db_name" control database/control/migrations/V013__create_company_links.sql
 apply_migration "$db_name" control database/control/migrations/V014__add_company_default_language.sql
+apply_migration "$db_name" control database/control/migrations/V015__create_server_admins.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
     apply_migration "$db_name" core database/core/migrations/V006__add_application_user_language.sql
@@ -473,6 +476,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON company_links TO :"db_user";
+-- Server administrators (control V015): created by the owner from the app; no PostgreSQL role.
+GRANT INSERT (id, postgres_role, is_active, display_name, email) ON application_users TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON server_admins, server_admin_permissions, server_admin_companies TO :"db_user";
 REVOKE INSERT ON core_update_requests FROM :"db_user";
 GRANT SELECT ON core_update_requests TO :"db_user";
 GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";
