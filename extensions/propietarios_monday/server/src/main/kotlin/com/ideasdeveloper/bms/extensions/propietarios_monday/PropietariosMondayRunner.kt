@@ -4,6 +4,8 @@ import com.ideasdeveloper.bms.modules.propietarios.LotImportOutcome
 import com.ideasdeveloper.bms.modules.propietarios.PropietariosImportApply
 import com.ideasdeveloper.bms.modules.propietarios.PropietariosImportJobContext
 import com.ideasdeveloper.bms.modules.propietarios.PropietariosValidationException
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
@@ -85,14 +87,14 @@ object PropietariosMondayRunner {
         } catch (failure: SQLException) {
             if (isTransientSql(failure)) {
                 log.warn("Importacion de monday {}: error temporal de base de datos: {}", job.id, failure.sqlState)
-                retry(tenant, job.id, "Error temporal de la base de datos.")
+                retry(tenant, job.id, msg("Error temporal de la base de datos."))
             } else {
                 log.error("Importacion de monday {} fallo", job.id, failure)
-                fail(tenant, job.id, "No se pudo completar la importacion; revisa el registro del servidor.")
+                fail(tenant, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
             }
         } catch (failure: Exception) {
             log.error("Importacion de monday {} fallo", job.id, failure)
-            fail(tenant, job.id, "No se pudo completar la importacion; revisa el registro del servidor.")
+            fail(tenant, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
         }
         return 0
     }
@@ -123,7 +125,7 @@ object PropietariosMondayRunner {
     private fun readPages(context: PropietariosImportJobContext, job: MondayJob, deadline: Long): Int {
         val tenant = context.tenant
         val token = PropietariosMondaySettings.loadToken(context.access.secrets, tenant)
-            ?: throw PropietariosMondayException("Falta el token de monday o no se puede leer; guardalo de nuevo.")
+            ?: throw PropietariosMondayException(tr("Falta el token de monday o no se puede leer; guardalo de nuevo."))
         var cursor = job.cursor
         var pages = job.pages
         var read = 0
@@ -132,13 +134,13 @@ object PropietariosMondayRunner {
         if (cursor != "") {
             do {
                 if (PropietariosMondayJobs.statusOf(tenant, job.id) != MondayJobStatus.Reading) return read
-                if (pages >= MaxPages) throw PropietariosMondayException("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo.")
+                if (pages >= MaxPages) throw PropietariosMondayException(tr("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo."))
                 val page = fetchPage(tenant, token, job, cursor, state, deadline)
                     ?: return read // Cursor vencido: se borro lo leido y la proxima corrida relee desde el inicio.
-                if (page.cursor.length > MaxCursorLength) throw PropietariosMondayException("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero.")
-                if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw PropietariosMondayException("monday devolvio una pagina vacia sin terminar la lectura del tablero.")
+                if (page.cursor.length > MaxCursorLength) throw PropietariosMondayException(tr("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero."))
+                if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw PropietariosMondayException(tr("monday devolvio una pagina vacia sin terminar la lectura del tablero."))
                 if (job.total + read + page.items.size > PropietariosMondayClient.MaxItems) {
-                    throw PropietariosMondayException("El tablero tiene mas de ${PropietariosMondayClient.MaxItems} elementos; divide el tablero antes de importarlo.")
+                    throw PropietariosMondayException(tr("El tablero tiene mas de {0} elementos; divide el tablero antes de importarlo.", PropietariosMondayClient.MaxItems))
                 }
                 val rows = page.items.map { item ->
                     val converted = PropietariosMondayMapping.toLot(item, job.mapping)
@@ -181,7 +183,7 @@ object PropietariosMondayRunner {
                             log.warn("Importacion de monday {}: pagina de {} a {} elementos", job.id, state.pageSize, step.pageSize)
                             state.pageSize = step.pageSize
                             PropietariosMondayJobs.savePageSize(tenant, job.id, step.pageSize)
-                            if (!PropietariosMondayClient.hasTime(deadline)) throw PropietariosMondayException("monday pidio una pagina mas chica; se sigue en la proxima corrida.", transient = true)
+                            if (!PropietariosMondayClient.hasTime(deadline)) throw PropietariosMondayException(tr("monday pidio una pagina mas chica; se sigue en la proxima corrida."), transient = true)
                         }
                         is MondayReading.Step.Fail -> throw PropietariosMondayException(step.message)
                         is MondayReading.Step.Restart -> throw failure
@@ -194,7 +196,7 @@ object PropietariosMondayRunner {
     /** Calcula el resumen de la vista previa una sola vez (con todas las filas, para ver los duplicados) y pasa el trabajo a revision. */
     private fun finishReading(tenant: Connection, job: MondayJob) {
         val lots = PropietariosMondayJobs.allLots(tenant, job.id)
-        if (lots.isEmpty()) throw PropietariosMondayException("El tablero no tiene elementos.")
+        if (lots.isEmpty()) throw PropietariosMondayException(tr("El tablero no tiene elementos."))
         val summary = MondaySummaryDto.of(PropietariosImportApply.summary(lots), PropietariosMondayJobs.fileCount(tenant, job.id))
         PropietariosMondayJobs.moveToPreview(tenant, job.id, summary)
     }
@@ -206,7 +208,7 @@ object PropietariosMondayRunner {
         val tenant = context.tenant
         // Los permisos se leen en vivo: si quien inicio la importacion ya no puede importar, se cancela antes de escribir nada.
         if (!creatorMayImport(context, job)) {
-            PropietariosMondayJobs.cancelWithMessage(tenant, job.id, "Quien inició la importación ya no tiene permiso.")
+            PropietariosMondayJobs.cancelWithMessage(tenant, job.id, msg("Quien inició la importación ya no tiene permiso."))
             return 0
         }
         // Idempotente: el desarrollo se busca por su clave (o es el elegido), asi cada corrida llega al mismo.

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.propietarios_monday
 
+import com.ideasdeveloper.bms.server.i18n.msg
 import java.time.Duration
 import java.time.Instant
 
@@ -15,7 +16,7 @@ object MondayReading {
     const val MinPageSize = 10
     const val MaxAttempts = 5
     const val MaxMessage = 200
-    const val TooHeavyMessage = "Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas."
+    val TooHeavyMessage = msg("Los elementos son demasiado pesados incluso con 10 por pagina; divide el tablero o quita columnas.")
 
     /** Minutos de espera antes de reintentar un trabajo tras [retries] fallos pasajeros seguidos: 2, 4, 8, 16 y 30 como tope. */
     fun retryDelayMinutes(retries: Int): Long = minOf(1L shl retries.coerceIn(0, 5), 30L)
@@ -55,7 +56,7 @@ object MondayReading {
         return when (kind) {
             MondayErrorKind.Permanent -> Step.Fail(shown)
             MondayErrorKind.CursorExpired ->
-                if (restarts >= 1) Step.Fail("monday vencio el cursor de lectura dos veces seguidas; divide el tablero en otros mas chicos o vuelve a intentarlo mas tarde.")
+                if (restarts >= 1) Step.Fail(msg("monday vencio el cursor de lectura dos veces seguidas; divide el tablero en otros mas chicos o vuelve a intentarlo mas tarde."))
                 else Step.Restart
             // Bajar la pagina no cuenta como intento: termina sola al llegar al minimo.
             MondayErrorKind.Complexity, MondayErrorKind.TooLarge ->
