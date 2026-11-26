@@ -1,0 +1,15 @@
+{
+  "Autoriza a los visitantes en una consola UniFi a traves de UniFi Site Manager (api.ui.com).": "Authorizes guests on a UniFi console through UniFi Site Manager (api.ui.com).",
+  "Configura la consola y el sitio de UniFi primero.": "Set up the UniFi console and site first.",
+  "Controlador de red UniFi: autoriza y desconecta a los visitantes del portal en una consola UniFi a traves de UniFi Site Manager (api.ui.com) y lista sus redes WiFi.": "UniFi network controller: authorizes and disconnects portal guests on a UniFi console through UniFi Site Manager (api.ui.com) and lists its WiFi networks.",
+  "El sitio de UniFi configurado no aparece en la consola.": "The configured UniFi site does not appear in the console.",
+  "No se pudo contactar UniFi: {0}": "Could not reach UniFi: {0}",
+  "Referencia: {0}": "Reference: {0}",
+  "UniFi": "UniFi",
+  "UniFi devolvio una respuesta que no se pudo leer.": "UniFi returned a response that could not be read.",
+  "UniFi no devolvio los dispositivos conectados.": "UniFi did not return the connected devices.",
+  "UniFi no encontro la consola o la funcion pedida (HTTP 404). Las redes WiFi requieren UniFi Network 10 o superior.": "UniFi could not find the console or the requested function (HTTP 404). WiFi networks require UniFi Network 10 or later.",
+  "UniFi no esta configurado.": "UniFi is not configured.",
+  "UniFi rechazo la API key (HTTP {0}). Revisa que sea valida y tenga acceso a la consola.": "UniFi rejected the API key (HTTP {0}). Check that it is valid and has access to the console.",
+  "UniFi respondio HTTP {0}: {1}": "UniFi responded with HTTP {0}: {1}"
+}
