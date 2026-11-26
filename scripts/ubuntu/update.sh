@@ -377,6 +377,10 @@ configure_nginx_server_route() {
     ensure_nginx_proxy_location /server
     # OAuth discovery for AI agents (module Agentes IA, claude.ai custom connectors).
     ensure_nginx_proxy_location /.well-known/oauth-
+    # Rutas que la app usa y que las instalaciones anteriores no enviaban al backend: sin ellas
+    # el aviso de actualizaciones y el centro de notificaciones recibian la pagina web.
+    ensure_nginx_proxy_location '= /version'
+    ensure_nginx_proxy_location /notifications
 }
 
 apply_control_migrations() {
