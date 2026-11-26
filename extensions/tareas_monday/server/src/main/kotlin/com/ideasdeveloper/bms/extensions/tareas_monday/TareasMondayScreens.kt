@@ -6,6 +6,8 @@ import com.ideasdeveloper.bms.modules.tareas.TareasImportReply
 import com.ideasdeveloper.bms.modules.tareas.TareasModule
 import com.ideasdeveloper.bms.modules.tareas.TareasRepository
 import com.ideasdeveloper.bms.modules.tareas.TareasService
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.security.SecretBox
@@ -43,8 +45,8 @@ object MondayOp {
 
 /** Lo que comparten la pantalla y las herramientas MCP: leer un tablero con el token guardado y revisar el mapeo y el destino. */
 object TareasMondayFlow {
-    const val NoColumn = "No usar"
-    const val NewBoard = "Nuevo tablero"
+    val NoColumn = msg("No usar")
+    val NewBoard = msg("Nuevo tablero")
     private const val OptionSeparator = " · "
 
     /** Texto de la opcion de una columna o tablero en los selectores; el id va al final para recuperarlo aunque haya nombres repetidos. */
@@ -66,8 +68,8 @@ object TareasMondayFlow {
     /** Quien queda como autor de lo importado: el usuario; un dueno del servidor no es usuario de la empresa. */
     fun actorOf(permissions: ModulePermissions): UUID? = permissions.userId?.takeUnless { permissions.serverOwner }
 
-    const val NewBoardDenied = "Crear un tablero nuevo requiere administrar los tableros de Tareas; elige un tablero existente."
-    const val TargetDenied = "No tienes permiso para agregar tareas a ese tablero (o no existe)."
+    val NewBoardDenied = msg("Crear un tablero nuevo requiere administrar los tableros de Tareas; elige un tablero existente.")
+    val TargetDenied = msg("No tienes permiso para agregar tareas a ese tablero (o no existe).")
 
     /**
      * Opciones de destino de quien importa: tablero nuevo solo si administra tableros; uno existente solo si puede
@@ -83,9 +85,9 @@ object TareasMondayFlow {
     fun requireDestination(tenant: Connection, permissions: ModulePermissions, targetBoardId: UUID?) {
         val (canCreate, boards) = destinations(tenant, permissions)
         if (targetBoardId == null) {
-            if (!canCreate) throw TareasMondayException(NewBoardDenied)
+            if (!canCreate) throw TareasMondayException(tr(NewBoardDenied))
         } else if (boards.none { it.id == targetBoardId }) {
-            throw TareasMondayException(TargetDenied)
+            throw TareasMondayException(tr(TargetDenied))
         }
     }
 
@@ -94,13 +96,13 @@ object TareasMondayFlow {
         val actor = actorOf(permissions)
         if (actor != null && job.createdBy == actor) return
         if (TareasService.scope(tenant, permissions).admin) return
-        throw TareasMondayException("Solo quien inicio la importacion o un administrador de tableros puede aplicarla o cancelarla.")
+        throw TareasMondayException(tr("Solo quien inicio la importacion o un administrador de tableros puede aplicarla o cancelarla."))
     }
 
     /** Problema del mapeo que impide importar, o null: solo se revisa que las columnas elegidas sigan existiendo. */
     fun mappingProblem(mapping: MondayMapping, columns: List<MondayColumn>): String? {
         val ids = columns.map { it.id }.toSet()
-        return if (mapping.columns.filterKeys { it != MondayTarget.Comments }.values.any { it !in ids }) "El mapeo usa una columna que ya no existe en el tablero." else null
+        return if (mapping.columns.filterKeys { it != MondayTarget.Comments }.values.any { it !in ids }) tr("El mapeo usa una columna que ya no existe en el tablero.") else null
     }
 
     /** Lee el tablero en segundo plano con el token guardado; el destino, el mapeo y los permisos se comprueban antes de encolar. */
@@ -114,19 +116,19 @@ object TareasMondayFlow {
     ): UUID {
         requireDestination(tenant, permissions, targetBoardId)
         val token = TareasMondaySettings.loadToken(access.secrets, tenant)
-            ?: throw TareasMondayException("Guarda primero el token de la API de monday (pantalla Importar).")
+            ?: throw TareasMondayException(tr("Guarda primero el token de la API de monday (pantalla Importar)."))
         val board = TareasMondayClient.boardInfo(token, boardId)
         mappingProblem(mapping, board.columns)?.let { throw TareasMondayException(it) }
         return TareasMondayJobs.queueRead(tenant, boardId, board.name, targetBoardId, mapping, actorOf(permissions))
     }
 
     fun statusLabel(status: String): String = when (status) {
-        MondayJobStatus.Reading -> "Leyendo"
-        MondayJobStatus.Preview -> "Por revisar"
-        MondayJobStatus.Applying -> "Aplicando"
-        MondayJobStatus.Done -> "Terminada"
-        MondayJobStatus.Failed -> "Con error"
-        MondayJobStatus.Cancelled -> "Cancelada"
+        MondayJobStatus.Reading -> tr("Leyendo")
+        MondayJobStatus.Preview -> tr("Por revisar")
+        MondayJobStatus.Applying -> tr("Aplicando")
+        MondayJobStatus.Done -> tr("Terminada")
+        MondayJobStatus.Failed -> tr("Con error")
+        MondayJobStatus.Cancelled -> tr("Cancelada")
         else -> status
     }
 
@@ -143,7 +145,7 @@ object TareasMondayFlow {
 object TareasMondayScreens {
     private const val Route = "${TareasModule.UiRoute}/importar"
     private const val MaxListed = 20
-    const val ReimportWarning = "Reimportar el mismo tablero actualiza las tareas ya importadas y sobrescribe los cambios hechos en Tareas a esos campos."
+    val ReimportWarning = msg("Reimportar el mismo tablero actualiza las tareas ya importadas y sobrescribe los cambios hechos en Tareas a esos campos.")
 
     private fun navigate(params: Map<String, String> = emptyMap()) = UiNavigate("importar", mapOf("source" to TareasMondayId) + params)
 
@@ -152,7 +154,7 @@ object TareasMondayScreens {
 
     fun screen(context: TareasImportContext, params: Map<String, String>): List<UiNode> {
         if (!context.permissions.has(TareasImportPermission)) {
-            return listOf(UiText("No tienes permiso para importar datos.", tone = UiTone.Warning))
+            return listOf(UiText(tr("No tienes permiso para importar datos."), tone = UiTone.Warning))
         }
         return when (params["step"]) {
             "boards" -> boardsStep(context)
@@ -169,23 +171,23 @@ object TareasMondayScreens {
         val configured = TareasMondaySettings.configured(tenant)
         val tokenCard = UiCard(
             listOfNotNull(
-                UiText(if (configured) "El token de monday esta configurado." else "Aun no hay un token de monday guardado.", tone = if (configured) UiTone.Success else UiTone.Warning),
+                UiText(if (configured) tr("El token de monday esta configurado.") else tr("Aun no hay un token de monday guardado."), tone = if (configured) UiTone.Success else UiTone.Warning),
                 // El campo nunca se rellena: el token guardado no se vuelve a mostrar.
                 UiForm(
                     "mondayToken",
                     listOf(
                         UiField(
-                            "token", "Token de la API de monday", type = "password", required = !configured,
-                            help = "monday > tu avatar > Developers > Mi token. Se guarda sellado para la empresa y no se vuelve a mostrar.",
+                            "token", tr("Token de la API de monday"), type = "password", required = !configured,
+                            help = tr("monday > tu avatar > Developers > Mi token. Se guarda sellado para la empresa y no se vuelve a mostrar."),
                         ),
                     ),
-                    submit = UiButton(if (configured) "Cambiar token" else "Guardar token", post(MondayOp.Token, formId = "mondayToken")),
+                    submit = UiButton(if (configured) tr("Cambiar token") else tr("Guardar token"), post(MondayOp.Token, formId = "mondayToken")),
                 ),
                 if (configured) {
                     UiRow(
                         listOf(
-                            UiButton("Cargar tableros", post(MondayOp.Boards)),
-                            UiButton("Quitar token", post(MondayOp.Forget, confirm = "Se borra el token de monday guardado. Continuar?"), style = "secondary"),
+                            UiButton(tr("Cargar tableros"), post(MondayOp.Boards)),
+                            UiButton(tr("Quitar token"), post(MondayOp.Forget, confirm = tr("Se borra el token de monday guardado. Continuar?")), style = "secondary"),
                         ),
                     )
                 } else {
@@ -199,17 +201,17 @@ object TareasMondayScreens {
                 UiList(
                     TareasMondayJobs.recent(tenant, 8).map { job ->
                         UiListItem(
-                            title = job.boardName.ifBlank { "Tablero ${job.boardId}" },
-                            subtitle = job.message.ifBlank { "${job.total} elementos" },
+                            title = job.boardName.ifBlank { tr("Tablero {0}", job.boardId) },
+                            subtitle = job.message.ifBlank { tr("{0} elementos", job.total) },
                             trailing = job.createdAt.toString().take(10),
                             badges = listOf(UiBadge(TareasMondayFlow.statusLabel(job.status), TareasMondayFlow.statusTone(job.status))),
                             action = navigate(mapOf("step" to "job", "job" to job.id.toString())),
                         )
                     },
-                    emptyText = "Todavia no hay importaciones.",
+                    emptyText = tr("Todavia no hay importaciones."),
                 ),
             ),
-            title = "Importaciones",
+            title = tr("Importaciones"),
         )
         return listOf(tokenCard, history)
     }
@@ -217,32 +219,32 @@ object TareasMondayScreens {
     // ---- Tableros ----
 
     private fun boardsStep(context: TareasImportContext): List<UiNode> {
-        val back = UiButton("Volver", navigate(), style = "secondary")
+        val back = UiButton(tr("Volver"), navigate(), style = "secondary")
         val token = TareasMondaySettings.loadToken(context.access.secrets, context.tenant)
-            ?: return listOf(UiText("Guarda primero el token de la API de monday.", tone = UiTone.Danger), back)
+            ?: return listOf(UiText(tr("Guarda primero el token de la API de monday."), tone = UiTone.Danger), back)
         val boards = try {
             TareasMondayClient.boards(token)
         } catch (failure: TareasMondayException) {
             return listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger), back)
         }
-        if (boards.isEmpty()) return listOf(UiText("El token no tiene acceso a ningun tablero activo.", tone = UiTone.Warning), back)
+        if (boards.isEmpty()) return listOf(UiText(tr("El token no tiene acceso a ningun tablero activo."), tone = UiTone.Warning), back)
         return listOf(
             UiCard(
                 listOf(
-                    UiText("Elige el tablero de monday que quieres importar. Cada tablero de monday pasa a ser un tablero de Tareas."),
+                    UiText(tr("Elige el tablero de monday que quieres importar. Cada tablero de monday pasa a ser un tablero de Tareas.")),
                     UiList(
                         boards.map { board ->
                             UiListItem(
                                 title = board.name,
-                                subtitle = board.workspace,
-                                trailing = board.items?.let { "$it elementos" }.orEmpty(),
+                                subtitle = workspaceLabel(board.workspace),
+                                trailing = board.items?.let { tr("{0} elementos", it) }.orEmpty(),
                                 action = post(MondayOp.Map, mapOf("board" to board.id)),
                             )
                         },
                     ),
                     back,
                 ),
-                title = "Tableros de monday",
+                title = tr("Tableros de monday"),
             ),
         )
     }
@@ -250,9 +252,9 @@ object TareasMondayScreens {
     // ---- Destino y mapeo ----
 
     private fun mapStep(context: TareasImportContext, boardId: String): List<UiNode> {
-        val back = UiButton("Elegir otro tablero", post(MondayOp.Boards), style = "secondary")
+        val back = UiButton(tr("Elegir otro tablero"), post(MondayOp.Boards), style = "secondary")
         val token = TareasMondaySettings.loadToken(context.access.secrets, context.tenant)
-            ?: return listOf(UiText("Guarda primero el token de la API de monday.", tone = UiTone.Danger))
+            ?: return listOf(UiText(tr("Guarda primero el token de la API de monday."), tone = UiTone.Danger))
         val board = try {
             TareasMondayClient.boardInfo(token, boardId)
         } catch (failure: TareasMondayException) {
@@ -264,13 +266,13 @@ object TareasMondayScreens {
         val (canCreate, existing) = TareasMondayFlow.destinations(context.tenant, context.permissions)
         val destinations = (if (canCreate) listOf(TareasMondayFlow.NewBoard) else emptyList()) + existing.map(TareasMondayFlow::boardOption)
         if (destinations.isEmpty()) {
-            return listOf(UiText("No tienes permiso para crear tableros ni para agregar tareas a uno existente.", tone = UiTone.Warning), back)
+            return listOf(UiText(tr("No tienes permiso para crear tableros ni para agregar tareas a uno existente."), tone = UiTone.Warning), back)
         }
         val fields = listOf(
-            UiField("board", "Id del tablero de monday", readOnly = true),
-            UiField("target", "Destino en Tareas", type = "dropdown", options = destinations, help = "Un tablero nuevo, o uno existente al que se agregan las tareas."),
+            UiField("board", tr("Id del tablero de monday"), readOnly = true),
+            UiField("target", tr("Destino en Tareas"), type = "dropdown", options = destinations, help = tr("Un tablero nuevo, o uno existente al que se agregan las tareas.")),
         ) + MondayTarget.all.map { definition ->
-            UiField("map:${definition.target}", definition.label, type = "dropdown", options = columnOptions)
+            UiField("map:${definition.target}", tr(definition.label), type = "dropdown", options = columnOptions)
         }
         val values = mapOf("board" to board.id, "target" to destinations.first()) + MondayTarget.all.associate { definition ->
             "map:${definition.target}" to (suggested.columns[definition.target]?.let(byId::get)?.let(TareasMondayFlow::columnOption) ?: TareasMondayFlow.NoColumn)
@@ -278,19 +280,18 @@ object TareasMondayScreens {
         return listOf(
             UiCard(
                 listOf(
-                    UiText("Tablero: ${board.name}. Revisa a que columna va cada dato; ya van elegidas las que parecen corresponder.", UiTextStyle.Body),
+                    UiText(tr("Tablero: {0}. Revisa a que columna va cada dato; ya van elegidas las que parecen corresponder.", board.name), UiTextStyle.Body),
                     UiText(
-                        "Los grupos de monday son los grupos del tablero. Los subelementos pasan a la lista de pasos, las actualizaciones a comentarios y los archivos a adjuntos. " +
-                            "Las columnas sin destino se agregan al detalle de la tarea.",
+                        tr("Los grupos de monday son los grupos del tablero. Los subelementos pasan a la lista de pasos, las actualizaciones a comentarios y los archivos a adjuntos. Las columnas sin destino se agregan al detalle de la tarea."),
                         UiTextStyle.Caption,
                     ),
                     UiForm(
                         "mondayMapping", fields, values,
-                        submit = UiButton("Leer tablero", post(MondayOp.Read, mapOf("board" to board.id), formId = "mondayMapping")),
+                        submit = UiButton(tr("Leer tablero"), post(MondayOp.Read, mapOf("board" to board.id), formId = "mondayMapping")),
                     ),
                     back,
                 ),
-                title = "Destino y mapeo de columnas",
+                title = tr("Destino y mapeo de columnas"),
             ),
         )
     }
@@ -298,87 +299,87 @@ object TareasMondayScreens {
     // ---- Trabajo ----
 
     private fun jobStep(tenant: Connection, id: UUID): List<UiNode> {
-        val back = UiButton("Volver", navigate(), style = "secondary")
-        val job = TareasMondayJobs.find(tenant, id) ?: return listOf(UiText("No se encontro la importacion.", tone = UiTone.Danger), back)
-        val refresh = UiButton("Actualizar", navigate(mapOf("step" to "job", "job" to id.toString())), style = "secondary")
-        val cancel = UiButton("Cancelar importacion", post(MondayOp.Cancel, mapOf("job" to id.toString()), confirm = "Se cancela la importacion. Lo ya importado se conserva. Continuar?"), style = "danger")
-        val header = UiText("Tablero: ${job.boardName.ifBlank { job.boardId }} · ${TareasMondayFlow.statusLabel(job.status)}", UiTextStyle.Subtitle)
+        val back = UiButton(tr("Volver"), navigate(), style = "secondary")
+        val job = TareasMondayJobs.find(tenant, id) ?: return listOf(UiText(tr("No se encontro la importacion."), tone = UiTone.Danger), back)
+        val refresh = UiButton(tr("Actualizar"), navigate(mapOf("step" to "job", "job" to id.toString())), style = "secondary")
+        val cancel = UiButton(tr("Cancelar importacion"), post(MondayOp.Cancel, mapOf("job" to id.toString()), confirm = tr("Se cancela la importacion. Lo ya importado se conserva. Continuar?")), style = "danger")
+        val header = UiText(tr("Tablero: {0} · {1}", job.boardName.ifBlank { job.boardId }, TareasMondayFlow.statusLabel(job.status)), UiTextStyle.Subtitle)
         return when (job.status) {
             MondayJobStatus.Reading -> listOf(
                 header,
-                UiText("Se esta leyendo el tablero con sus subelementos, actualizaciones y archivos. Un tablero grande tarda unos minutos; actualiza esta pantalla para seguir."),
-                UiText("Elementos leidos: ${job.total}", UiTextStyle.Caption),
+                UiText(tr("Se esta leyendo el tablero con sus subelementos, actualizaciones y archivos. Un tablero grande tarda unos minutos; actualiza esta pantalla para seguir.")),
+                UiText(tr("Elementos leidos: {0}", job.total), UiTextStyle.Caption),
                 UiRow(listOf(refresh, cancel)),
             )
             MondayJobStatus.Preview -> previewNodes(job, header, cancel)
             MondayJobStatus.Applying -> listOf(
                 header,
                 progress(job),
-                UiText("Se importan unas 100 tareas por minuto. Puedes salir de esta pantalla; la importacion sigue sola.", UiTextStyle.Caption),
+                UiText(tr("Se importan unas 100 tareas por minuto. Puedes salir de esta pantalla; la importacion sigue sola."), UiTextStyle.Caption),
                 UiRow(listOf(refresh, cancel)),
             )
             MondayJobStatus.Done -> listOf(header, UiText(job.message, tone = UiTone.Success), progress(job)) + problemNodes(tenant, job) + back
-            MondayJobStatus.Failed -> listOf(header, UiText(job.message.ifBlank { "No se pudo completar la importacion." }, tone = UiTone.Danger), progress(job), back)
-            else -> listOf(header, UiText(job.message.ifBlank { "Importacion cancelada." }, tone = UiTone.Warning), progress(job), back)
+            MondayJobStatus.Failed -> listOf(header, UiText(job.message.ifBlank { tr("No se pudo completar la importacion.") }, tone = UiTone.Danger), progress(job), back)
+            else -> listOf(header, UiText(job.message.ifBlank { tr("Importacion cancelada.") }, tone = UiTone.Warning), progress(job), back)
         }
     }
 
     private fun progress(job: MondayJob): UiNode = UiGrid(
         listOf(
-            UiMetric("Procesadas", "${job.applied} de ${job.total}"),
-            UiMetric("Creadas", job.created.toString()),
-            UiMetric("Actualizadas", job.updated.toString()),
-            UiMetric("Omitidas", job.skipped.toString()),
-            UiMetric("Con error", job.failed.toString()),
-            UiMetric("Archivos", job.filesDone.toString(), caption = if (job.filesFailed > 0) "${job.filesFailed} con error" else "", captionTone = if (job.filesFailed > 0) UiTone.Warning else UiTone.Neutral),
+            UiMetric(tr("Procesadas"), tr("{0} de {1}", job.applied, job.total)),
+            UiMetric(tr("Creadas"), job.created.toString()),
+            UiMetric(tr("Actualizadas"), job.updated.toString()),
+            UiMetric(tr("Omitidas"), job.skipped.toString()),
+            UiMetric(tr("Con error"), job.failed.toString()),
+            UiMetric(tr("Archivos"), job.filesDone.toString(), caption = if (job.filesFailed > 0) tr("{0} con error", job.filesFailed) else "", captionTone = if (job.filesFailed > 0) UiTone.Warning else UiTone.Neutral),
         ),
         minItemWidth = 140,
     )
 
     private fun previewNodes(job: MondayJob, header: UiNode, cancel: UiNode): List<UiNode> {
         // El resumen se calculo y guardo una vez al terminar de leer: la pantalla solo lo muestra.
-        val saved = job.summary ?: return listOf(header, UiText("La vista previa de esta importacion no esta disponible; cancelala y vuelve a leer el tablero.", tone = UiTone.Danger), cancel)
+        val saved = job.summary ?: return listOf(header, UiText(tr("La vista previa de esta importacion no esta disponible; cancelala y vuelve a leer el tablero."), tone = UiTone.Danger), cancel)
         val summary = saved.toSummary()
         val nodes = mutableListOf<UiNode>(
             header,
             UiGrid(
                 listOf(
-                    UiMetric("Tareas", summary.tasks.toString()),
-                    UiMetric("Grupos", summary.groups.size.toString()),
-                    UiMetric("Pasos de lista", summary.checklistItems.toString()),
-                    UiMetric("Comentarios", summary.comments.toString()),
-                    UiMetric("Archivos", summary.files.toString()),
-                    UiMetric("Problemas", saved.problemCount.toString(), captionTone = if (saved.problemCount == 0) UiTone.Success else UiTone.Warning),
+                    UiMetric(tr("Tareas"), summary.tasks.toString()),
+                    UiMetric(tr("Grupos"), summary.groups.size.toString()),
+                    UiMetric(tr("Pasos de lista"), summary.checklistItems.toString()),
+                    UiMetric(tr("Comentarios"), summary.comments.toString()),
+                    UiMetric(tr("Archivos"), summary.files.toString()),
+                    UiMetric(tr("Problemas"), saved.problemCount.toString(), captionTone = if (saved.problemCount == 0) UiTone.Success else UiTone.Warning),
                 ),
                 minItemWidth = 140,
             ),
-            UiText(ReimportWarning, UiTextStyle.Caption, tone = UiTone.Warning),
+            UiText(tr(ReimportWarning), UiTextStyle.Caption, tone = UiTone.Warning),
         )
         if (summary.groups.isNotEmpty()) {
-            nodes += UiText("Grupos: ${summary.groups.take(MaxListed).joinToString()}${if (summary.groups.size > MaxListed) " y ${summary.groups.size - MaxListed} mas" else ""}.", UiTextStyle.Caption)
+            nodes += UiText(tr("Grupos: {0}{1}.", summary.groups.take(MaxListed).joinToString(), if (summary.groups.size > MaxListed) tr(" y {0} mas", summary.groups.size - MaxListed) else ""), UiTextStyle.Caption)
         }
         nodes += UiCard(
             listOf(
-                UiText(if (summary.matchedPeople.isEmpty()) "Ninguna persona se empareja con un usuario de Tareas." else "Se emparejan con usuarios: ${summary.matchedPeople.take(MaxListed).joinToString()}."),
+                UiText(if (summary.matchedPeople.isEmpty()) tr("Ninguna persona se empareja con un usuario de Tareas.") else tr("Se emparejan con usuarios: {0}.", summary.matchedPeople.take(MaxListed).joinToString())),
                 UiText(
-                    if (summary.unmatchedPeople.isEmpty()) "Todas las personas tienen usuario."
-                    else "Sin usuario (quedan anotadas en el detalle de la tarea): ${summary.unmatchedPeople.take(MaxListed).joinToString()}.",
+                    if (summary.unmatchedPeople.isEmpty()) tr("Todas las personas tienen usuario.")
+                    else tr("Sin usuario (quedan anotadas en el detalle de la tarea): {0}.", summary.unmatchedPeople.take(MaxListed).joinToString()),
                     tone = if (summary.unmatchedPeople.isEmpty()) UiTone.Success else UiTone.Warning,
                 ),
             ),
-            title = "Personas",
+            title = tr("Personas"),
         )
         if (summary.problems.isNotEmpty()) {
             nodes += UiCard(
                 summary.problems.take(MaxListed).map { UiText(it) } +
-                    listOfNotNull(saved.problemCount.takeIf { it > MaxListed }?.let { UiText("Y ${it - MaxListed} problemas mas.", UiTextStyle.Caption) }) +
-                    UiText("Las filas con problemas se omiten al aplicar.", UiTextStyle.Caption),
-                title = "Problemas encontrados",
+                    listOfNotNull(saved.problemCount.takeIf { it > MaxListed }?.let { UiText(tr("Y {0} problemas mas.", it - MaxListed), UiTextStyle.Caption) }) +
+                    UiText(tr("Las filas con problemas se omiten al aplicar."), UiTextStyle.Caption),
+                title = tr("Problemas encontrados"),
             )
         }
         nodes += UiRow(
             listOf(
-                UiButton("Aplicar importacion", post(MondayOp.Apply, mapOf("job" to job.id.toString()), confirm = "Se crean o actualizan ${summary.tasks} tareas con sus pasos, comentarios y archivos. $ReimportWarning Continuar?")),
+                UiButton(tr("Aplicar importacion"), post(MondayOp.Apply, mapOf("job" to job.id.toString()), confirm = tr("Se crean o actualizan {0} tareas con sus pasos, comentarios y archivos. {1} Continuar?", summary.tasks, tr(ReimportWarning)))),
                 cancel,
             ),
         )
@@ -392,19 +393,22 @@ object TareasMondayScreens {
             UiCard(
                 listOf(
                     UiTable(
-                        listOf(UiTableColumn("row", "Fila"), UiTableColumn("title", "Tarea"), UiTableColumn("result", "Resultado"), UiTableColumn("message", "Motivo")),
+                        listOf(UiTableColumn("row", tr("Fila")), UiTableColumn("title", tr("Tarea")), UiTableColumn("result", tr("Resultado")), UiTableColumn("message", tr("Motivo"))),
                         rows.map { mapOf("row" to it.rowNo.toString(), "title" to it.title, "result" to resultLabel(it.outcome), "message" to it.message) },
                     ),
                 ),
-                title = "Filas con problemas",
+                title = tr("Filas con problemas"),
             ),
         )
     }
 
+    /** El espacio de trabajo "Espacio principal" (el que pone la API si no trae nombre) se muestra traducido; los demas son de monday. */
+    private fun workspaceLabel(name: String) = if (name == TareasMondayClient.MainWorkspace) tr(name) else name
+
     private fun resultLabel(outcome: String) = when (outcome) {
-        "failed" -> "Error"
-        "skipped" -> "Omitida"
-        else -> "Con avisos"
+        "failed" -> tr("Error")
+        "skipped" -> tr("Omitida")
+        else -> tr("Con avisos")
     }
 
     // ---- Acciones (POST importar?source=tareas_monday&op=...) ----
@@ -412,38 +416,38 @@ object TareasMondayScreens {
     private fun failure(message: String, params: Map<String, String> = emptyMap()) = TareasImportReply(message, error = true, params = params)
 
     fun action(context: TareasImportContext, op: String, values: Map<String, String>): TareasImportReply {
-        if (!context.permissions.has(TareasImportPermission)) return failure("No tienes permiso para importar datos.")
+        if (!context.permissions.has(TareasImportPermission)) return failure(tr("No tienes permiso para importar datos."))
         val tenant = context.tenant
         return try {
             when (op) {
                 MondayOp.Token -> saveToken(context, values)
                 MondayOp.Forget -> {
                     TareasMondaySettings.saveToken(context.access.secrets, tenant, null)
-                    TareasImportReply("Token de monday borrado.")
+                    TareasImportReply(tr("Token de monday borrado."))
                 }
-                MondayOp.Boards -> TareasImportReply("Elige un tablero.", params = mapOf("step" to "boards"))
+                MondayOp.Boards -> TareasImportReply(tr("Elige un tablero."), params = mapOf("step" to "boards"))
                 MondayOp.Map -> {
                     val board = values["board"].orEmpty().trim()
-                    if (!TareasMondayClient.isBoardId(board)) failure("Elige un tablero.", mapOf("step" to "boards"))
-                    else TareasImportReply("Revisa el destino y el mapeo de columnas.", params = mapOf("step" to "map", "board" to board))
+                    if (!TareasMondayClient.isBoardId(board)) failure(tr("Elige un tablero."), mapOf("step" to "boards"))
+                    else TareasImportReply(tr("Revisa el destino y el mapeo de columnas."), params = mapOf("step" to "map", "board" to board))
                 }
                 MondayOp.Read -> read(context, values)
                 MondayOp.Apply -> {
                     val id = jobId(values)
                     controlled(context, id)
                     if (TareasMondayJobs.requestApply(tenant, id)) {
-                        TareasImportReply("Se esta importando.", params = mapOf("step" to "job", "job" to id.toString()))
+                        TareasImportReply(tr("Se esta importando."), params = mapOf("step" to "job", "job" to id.toString()))
                     } else {
-                        failure("Esta importacion ya no esta en revision.", mapOf("step" to "job", "job" to id.toString()))
+                        failure(tr("Esta importacion ya no esta en revision."), mapOf("step" to "job", "job" to id.toString()))
                     }
                 }
                 MondayOp.Cancel -> {
                     val id = jobId(values)
                     controlled(context, id)
                     val done = TareasMondayJobs.cancel(tenant, id)
-                    TareasImportReply(if (done) "Importacion cancelada." else "Esta importacion ya habia terminado.", error = !done, params = mapOf("step" to "job", "job" to id.toString()))
+                    TareasImportReply(if (done) tr("Importacion cancelada.") else tr("Esta importacion ya habia terminado."), error = !done, params = mapOf("step" to "job", "job" to id.toString()))
                 }
-                else -> failure("Operacion desconocida.")
+                else -> failure(tr("Operacion desconocida."))
             }
         } catch (problem: TareasMondayException) {
             failure(problem.message.orEmpty())
@@ -452,24 +456,24 @@ object TareasMondayScreens {
 
     // Solo quien inicio la importacion o un administrador de tableros la aplica o cancela.
     private fun controlled(context: TareasImportContext, id: UUID) {
-        val job = TareasMondayJobs.find(context.tenant, id) ?: throw TareasMondayException("No se encontro la importacion.")
+        val job = TareasMondayJobs.find(context.tenant, id) ?: throw TareasMondayException(tr("No se encontro la importacion."))
         TareasMondayFlow.requireJobControl(context.tenant, context.permissions, job)
     }
 
     private fun jobId(values: Map<String, String>): UUID =
-        runCatching { UUID.fromString(values["job"].orEmpty().trim()) }.getOrNull() ?: throw TareasMondayException("No se encontro la importacion.")
+        runCatching { UUID.fromString(values["job"].orEmpty().trim()) }.getOrNull() ?: throw TareasMondayException(tr("No se encontro la importacion."))
 
     private fun saveToken(context: TareasImportContext, values: Map<String, String>): TareasImportReply {
         val tenant = context.tenant
         val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != SecretBox.Mask }
-        if (typed == null && !TareasMondaySettings.configured(tenant)) return failure("Escribe el token de la API de monday.")
+        if (typed == null && !TareasMondaySettings.configured(tenant)) return failure(tr("Escribe el token de la API de monday."))
         typed?.let { TareasMondaySettings.saveToken(context.access.secrets, tenant, it) }
-        return TareasImportReply("Token de monday guardado.", params = mapOf("step" to "boards"))
+        return TareasImportReply(tr("Token de monday guardado."), params = mapOf("step" to "boards"))
     }
 
     private fun read(context: TareasImportContext, values: Map<String, String>): TareasImportReply {
         val board = values["board"].orEmpty().trim()
-        if (!TareasMondayClient.isBoardId(board)) return failure("Elige un tablero.", mapOf("step" to "boards"))
+        if (!TareasMondayClient.isBoardId(board)) return failure(tr("Elige un tablero."), mapOf("step" to "boards"))
         val chosen = MondayTarget.all.mapNotNull { definition ->
             values["map:${definition.target}"]?.let(TareasMondayFlow::columnIdOf)?.let { definition.target to it }
         }.toMap()
@@ -479,6 +483,6 @@ object TareasMondayScreens {
         } catch (problem: TareasMondayException) {
             return failure(problem.message.orEmpty(), mapOf("step" to "map", "board" to board))
         }
-        return TareasImportReply("Se esta leyendo el tablero de monday.", params = mapOf("step" to "job", "job" to id.toString()))
+        return TareasImportReply(tr("Se esta leyendo el tablero de monday."), params = mapOf("step" to "job", "job" to id.toString()))
     }
 }

@@ -3,12 +3,7 @@ package com.ideasdeveloper.bms.extensions.eventos_monday
 import com.ideasdeveloper.bms.modules.eventos.EventStatus
 import com.ideasdeveloper.bms.modules.eventos.ImportSummary
 import com.ideasdeveloper.bms.modules.eventos.ImportedEvent
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
+import com.ideasdeveloper.bms.server.i18n.msg
 import java.math.BigDecimal
 import java.text.Normalizer
 import java.time.LocalDate
@@ -16,6 +11,12 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZoneOffset
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /** Columna de un tablero de monday (su id estable, su titulo y su tipo: status, people, date...). */
 data class MondayColumn(val id: String, val title: String, val type: String)
@@ -60,18 +61,18 @@ object MondayTarget {
 
     // En el orden en que se muestran en el formulario de mapeo.
     val all = listOf(
-        Definition(Contact, "Contacto (cliente)"),
-        Definition(Email, "Correo del cliente"),
-        Definition(Phone, "Telefono del cliente"),
-        Definition(Responsible, "Responsable"),
-        Definition(Date, "Fecha del evento (o linea de tiempo)"),
-        Definition(Status, "Estado"),
-        Definition(Amount, "Monto acordado"),
-        Definition(Guests, "Invitados"),
-        Definition(Message, "Mensaje (descripcion)"),
-        Definition(Notes, "Notas"),
-        Definition(FollowUp, "Seguimiento (va a las notas)"),
-        Definition(Booking, "Fecha de reserva (va a las notas)"),
+        Definition(Contact, msg("Contacto (cliente)")),
+        Definition(Email, msg("Correo del cliente")),
+        Definition(Phone, msg("Telefono del cliente")),
+        Definition(Responsible, msg("Responsable")),
+        Definition(Date, msg("Fecha del evento (o linea de tiempo)")),
+        Definition(Status, msg("Estado")),
+        Definition(Amount, msg("Monto acordado")),
+        Definition(Guests, msg("Invitados")),
+        Definition(Message, msg("Mensaje (descripcion)")),
+        Definition(Notes, msg("Notas")),
+        Definition(FollowUp, msg("Seguimiento (va a las notas)")),
+        Definition(Booking, msg("Fecha de reserva (va a las notas)")),
     )
 }
 

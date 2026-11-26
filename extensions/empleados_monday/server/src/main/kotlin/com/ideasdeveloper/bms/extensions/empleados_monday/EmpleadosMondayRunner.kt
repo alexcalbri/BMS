@@ -3,12 +3,13 @@ package com.ideasdeveloper.bms.extensions.empleados_monday
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportApply
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportJobContext
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportOutcome
-import org.slf4j.LoggerFactory
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /**
  * Avanza las importaciones: lee un tablero pagina por pagina (cursor guardado en el trabajo, hasta 2 000 elementos) y
@@ -109,7 +110,7 @@ object EmpleadosMondayRunner {
     private fun readPages(context: EmpleadosImportJobContext, job: MondayJob, deadline: Long): Int {
         val tenant = context.tenant
         val token = EmpleadosMondaySettings.loadToken(context.access.secrets, tenant)
-            ?: throw EmpleadosMondayException("Falta el token de monday o no se puede leer; guardalo de nuevo.")
+            ?: throw EmpleadosMondayException(tr("Falta el token de monday o no se puede leer; guardalo de nuevo."))
         var cursor = job.cursor
         var pages = job.pages
         var read = 0
@@ -118,13 +119,13 @@ object EmpleadosMondayRunner {
         if (cursor != "") {
             do {
                 if (EmpleadosMondayJobs.statusOf(tenant, job.id) != MondayJobStatus.Reading) return read
-                if (pages >= MaxPages) throw EmpleadosMondayException("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo.")
+                if (pages >= MaxPages) throw EmpleadosMondayException(tr("La lectura del tablero no termina (demasiadas paginas); divide el tablero antes de importarlo."))
                 val page = fetchPage(tenant, token, job, cursor, state, deadline)
                     ?: return read // Cursor vencido: se borro lo leido y la proxima corrida relee desde el inicio.
-                if (page.cursor.length > MaxCursorLength) throw EmpleadosMondayException("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero.")
-                if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw EmpleadosMondayException("monday devolvio una pagina vacia sin terminar la lectura del tablero.")
+                if (page.cursor.length > MaxCursorLength) throw EmpleadosMondayException(tr("monday devolvio un cursor invalido; no se puede seguir leyendo el tablero."))
+                if (page.items.isEmpty() && page.cursor.isNotEmpty()) throw EmpleadosMondayException(tr("monday devolvio una pagina vacia sin terminar la lectura del tablero."))
                 if (job.total + read + page.items.size > EmpleadosMondayClient.MaxItems) {
-                    throw EmpleadosMondayException("El tablero tiene mas de ${EmpleadosMondayClient.MaxItems} elementos; divide el tablero antes de importarlo.")
+                    throw EmpleadosMondayException(tr("El tablero tiene mas de {0} elementos; divide el tablero antes de importarlo.", EmpleadosMondayClient.MaxItems))
                 }
                 val rows = page.items.map { item -> item.id to MondayRowDto.encode(EmpleadosMondayMapping.toEmployee(item, job.mapping)) }
                 if (!EmpleadosMondayJobs.savePage(tenant, job.id, rows, page.cursor)) return read
@@ -164,7 +165,7 @@ object EmpleadosMondayRunner {
                             log.warn("Importacion de monday {}: pagina de {} a {} elementos", job.id, state.pageSize, step.pageSize)
                             state.pageSize = step.pageSize
                             EmpleadosMondayJobs.savePageSize(tenant, job.id, step.pageSize)
-                            if (!EmpleadosMondayClient.hasTime(deadline)) throw EmpleadosMondayException("monday pidio una pagina mas chica; se sigue en la proxima corrida.", transient = true)
+                            if (!EmpleadosMondayClient.hasTime(deadline)) throw EmpleadosMondayException(tr("monday pidio una pagina mas chica; se sigue en la proxima corrida."), transient = true)
                         }
                         is MondayReading.Step.Fail -> throw EmpleadosMondayException(step.message)
                         is MondayReading.Step.Restart -> throw failure
@@ -186,7 +187,7 @@ object EmpleadosMondayRunner {
             parts += MondaySummaryDto.of(EmpleadosImportApply.summary(rows.map { it.toEmployee() }, emails), rows.map { it.problem }.filter { it.isNotEmpty() })
             after = last
         }
-        if (parts.isEmpty()) throw EmpleadosMondayException("El tablero no tiene elementos.")
+        if (parts.isEmpty()) throw EmpleadosMondayException(tr("El tablero no tiene elementos."))
         EmpleadosMondayJobs.moveToPreview(tenant, job.id, MondaySummaryDto.merge(parts))
     }
 

@@ -348,7 +348,7 @@ class ComprasMondayTest {
         val manifest = extension.manifest
         assertEquals("compras_monday", manifest.id)
         assertEquals("compras", manifest.module)
-        assertEquals("1.0.3", manifest.version)
+        assertEquals("1.1.0", manifest.version)
         assertEquals("0.2.0", manifest.minModuleVersion)
         assertEquals(listOf("network.outbound:api.monday.com", "secrets.write", "compras.requests.import"), manifest.permissions)
         assertEquals(listOf("import_history" to UninstallDefault.Delete), manifest.uninstall.options.map { it.id to it.default })

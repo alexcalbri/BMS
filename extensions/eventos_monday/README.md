@@ -96,3 +96,7 @@ stay. Imported events, clients and payments are never deleted.
 - Every run deletes (up to 5) done, failed or cancelled imports older than 30 days, with their rows and people.
 - Migration `V002__rendimiento.sql`: `page_size` and `restarts` columns and a partial index of pending rows.
 - Retries of transient failures wait longer each time (2, 4, 8... min, cap 30); shrinking the page for complexity or a response over 5 MB is not an attempt and, at 10 per page, gives a clear error.
+
+## Idiomas
+
+Bilingüe español/inglés (1.1.0, necesita Core 0.10.0): los textos del código usan `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/eventos_monday/i18n/en.json`. Lo que viene de monday (nombres de tableros, grupos, columnas, elementos, clientes, responsables) no se traduce. Lo que se guarda al importar (notas del evento, motivos y errores de las filas) queda en español.

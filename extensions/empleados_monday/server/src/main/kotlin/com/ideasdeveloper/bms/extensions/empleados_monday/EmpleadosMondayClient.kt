@@ -1,6 +1,9 @@
 package com.ideasdeveloper.bms.extensions.empleados_monday
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.net.PinnedHost
+import java.net.URI
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -8,7 +11,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import org.slf4j.LoggerFactory
-import java.net.URI
 
 data class MondayBoard(val id: String, val name: String, val workspace: String, val items: Int?)
 
@@ -24,7 +26,7 @@ data class MondayPage(val items: List<MondayItem>, val cursor: String)
  * de tiempo. El token solo viaja en la cabecera Authorization; ningun mensaje de error ni registro lo incluye.
  */
 object EmpleadosMondayClient {
-    const val MainWorkspace = "Espacio principal"
+    val MainWorkspace = msg("Espacio principal")
     const val MaxItems = 2_000
     const val PageSize = 25
     /** Tope de una respuesta de monday: se lee con ese limite y nunca se carga mas en memoria. */
@@ -136,14 +138,14 @@ object EmpleadosMondayClient {
     // ---- Red ----
 
     private fun requireToken(token: String) {
-        if (token.isBlank()) throw EmpleadosMondayException("Escribe el token de la API de monday.")
+        if (token.isBlank()) throw EmpleadosMondayException(tr("Escribe el token de la API de monday."))
     }
 
     private fun requireBoard(boardId: String) {
-        if (!isBoardId(boardId)) throw EmpleadosMondayException("El id del tablero debe ser un numero.")
+        if (!isBoardId(boardId)) throw EmpleadosMondayException(tr("El id del tablero debe ser un numero."))
     }
 
-    private fun notFound(boardId: String) = EmpleadosMondayException("monday no devolvio el tablero $boardId (revisa el id y los permisos del token).")
+    private fun notFound(boardId: String) = EmpleadosMondayException(tr("monday no devolvio el tablero {0} (revisa el id y los permisos del token).", boardId))
 
     /** [shrinkable]: la consulta es de una pagina de elementos, asi que un exceso de complejidad o de tamano se resuelve con paginas mas chicas. */
     private fun query(token: String, query: String, deadline: Long? = null, shrinkable: Boolean = false): JsonObject {
@@ -162,13 +164,13 @@ object EmpleadosMondayClient {
         } catch (failure: Exception) {
             // Solo el tipo de fallo: el mensaje de la excepcion podria incluir la solicitud.
             log.warn("No se pudo contactar monday: {}", failure.javaClass.simpleName)
-            throw EmpleadosMondayException("No se pudo contactar monday.", transient = true)
+            throw EmpleadosMondayException(tr("No se pudo contactar monday."), transient = true)
         }
         // Respuesta que pasa el tope: se trata como de complejidad (se pide una pagina mas chica); sin mas bajada posible, falla.
-        if (text.length > MaxBytes) throw EmpleadosMondayException("monday respondio algo demasiado grande; elige un tablero mas chico.", kind = if (shrinkable) MondayErrorKind.TooLarge else MondayErrorKind.Permanent)
+        if (text.length > MaxBytes) throw EmpleadosMondayException(tr("monday respondio algo demasiado grande; elige un tablero mas chico."), kind = if (shrinkable) MondayErrorKind.TooLarge else MondayErrorKind.Permanent)
         val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
-        if (status == 401 || status == 403) throw EmpleadosMondayException("monday rechazo el token.")
-        if (status == 429 || status >= 500) throw EmpleadosMondayException("monday respondio HTTP $status.", transient = true)
+        if (status == 401 || status == 403) throw EmpleadosMondayException(tr("monday rechazo el token."))
+        if (status == 429 || status >= 500) throw EmpleadosMondayException(tr("monday respondio HTTP {0}.", status), transient = true)
         body?.get("errors").arr().firstOrNull()?.let {
             val message = it.obj()?.get("message").str()
             // Limites de complejidad o de uso: pasan solos, se reintenta; un cursor vencido pide releer desde cero.
@@ -178,6 +180,6 @@ object EmpleadosMondayClient {
             val kind = if (raw == MondayErrorKind.Complexity && !shrinkable) MondayErrorKind.Transient else raw
             throw EmpleadosMondayException("monday: ${oneLine(message)}", transient = kind == MondayErrorKind.Transient || kind == MondayErrorKind.Complexity, kind = kind)
         }
-        return body?.get("data").obj() ?: throw EmpleadosMondayException("monday respondio HTTP $status.")
+        return body?.get("data").obj() ?: throw EmpleadosMondayException(tr("monday respondio HTTP {0}.", status))
     }
 }

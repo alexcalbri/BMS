@@ -1,7 +1,11 @@
 package com.ideasdeveloper.bms.extensions.tareas_monday
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.net.PinnedHost
 import com.ideasdeveloper.bms.server.net.PinnedHostException
+import java.io.InputStream
+import java.net.URI
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -9,8 +13,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import org.slf4j.LoggerFactory
-import java.io.InputStream
-import java.net.URI
 
 data class MondayBoard(val id: String, val name: String, val workspace: String, val items: Int?)
 
@@ -29,7 +31,7 @@ data class MondayAssetLink(val url: String, val size: Long?)
  * cabecera Authorization; ningun mensaje de error ni registro lo incluye.
  */
 object TareasMondayClient {
-    const val MainWorkspace = "Espacio principal"
+    val MainWorkspace = msg("Espacio principal")
     const val MaxItems = 20_000
     // Sin limite practico por archivo: el tope real es el disco del servidor. 100 GB evita desbordes al sumar.
     const val MaxFileBytes = 100L * 1024 * 1024 * 1024
@@ -223,8 +225,8 @@ object TareasMondayClient {
     /** Descarga un enlace de monday (https en un servidor publico) y entrega su contenido a [store]. */
     fun download(url: String, deadline: Long? = null, store: (contentType: String, body: InputStream) -> Unit) {
         val uri = runCatching { URI.create(url) }.getOrNull()
-        if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw TareasMondayException("enlace de descarga invalido")
-        if (!isAllowedFileHost(uri.host)) throw TareasMondayException("el archivo no esta en un servidor de monday")
+        if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw TareasMondayException(tr("enlace de descarga invalido"))
+        if (!isAllowedFileHost(uri.host)) throw TareasMondayException(tr("el archivo no esta en un servidor de monday"))
         // Una sola resolucion: se valida y la conexion va a esa misma IP (anti DNS rebinding).
         val validated = try {
             PinnedHost.resolveValidated(uri.host)
@@ -240,7 +242,7 @@ object TareasMondayClient {
             Thread.currentThread().interrupt()
             throw failure
         } catch (failure: Exception) {
-            throw TareasMondayException("no se pudo descargar")
+            throw TareasMondayException(tr("no se pudo descargar"))
         }
         // use cierra la conexion aunque store falle.
         response.use {
@@ -252,14 +254,14 @@ object TareasMondayClient {
     // ---- Red ----
 
     private fun requireToken(token: String) {
-        if (token.isBlank()) throw TareasMondayException("Escribe el token de la API de monday.")
+        if (token.isBlank()) throw TareasMondayException(tr("Escribe el token de la API de monday."))
     }
 
     private fun requireBoard(boardId: String) {
-        if (!isBoardId(boardId)) throw TareasMondayException("El id del tablero debe ser un numero.")
+        if (!isBoardId(boardId)) throw TareasMondayException(tr("El id del tablero debe ser un numero."))
     }
 
-    private fun notFound(boardId: String) = TareasMondayException("monday no devolvio el tablero $boardId (revisa el id y los permisos del token).")
+    private fun notFound(boardId: String) = TareasMondayException(tr("monday no devolvio el tablero {0} (revisa el id y los permisos del token).", boardId))
 
     private fun query(token: String, query: String, deadline: Long? = null): JsonObject {
         val payload = JsonObject(mapOf("query" to JsonPrimitive(query))).toString().toByteArray(Charsets.UTF_8)
@@ -277,11 +279,11 @@ object TareasMondayClient {
         } catch (failure: Exception) {
             // Solo el tipo de fallo: el mensaje de la excepcion podria incluir la solicitud.
             log.warn("No se pudo contactar monday: {}", failure.javaClass.simpleName)
-            throw TareasMondayException("No se pudo contactar monday.", transient = true)
+            throw TareasMondayException(tr("No se pudo contactar monday."), transient = true)
         }
-        if (text.length > MaxBytes) throw TareasMondayException("monday respondio algo demasiado grande (mas de 5 MB).", kind = MondayErrorKind.TooLarge)
+        if (text.length > MaxBytes) throw TareasMondayException(tr("monday respondio algo demasiado grande (mas de 5 MB)."), kind = MondayErrorKind.TooLarge)
         val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
-        if (status == 401 || status == 403) throw TareasMondayException("monday rechazo el token.")
+        if (status == 401 || status == 403) throw TareasMondayException(tr("monday rechazo el token."))
         body?.get("errors").arr().firstOrNull()?.let {
             val code = it.obj()?.get("extensions").obj()?.get("code").str()
             val message = it.obj()?.get("message").str()
@@ -289,8 +291,8 @@ object TareasMondayClient {
             throw TareasMondayException("monday: ${message.take(TareasMondayReading.MaxMessage)}", transient = kind == MondayErrorKind.Transient, kind = kind)
         }
         if (status == 429 || status >= 500) {
-            throw TareasMondayException("monday respondio HTTP $status.", transient = true, kind = TareasMondayReading.classify(status, "", ""))
+            throw TareasMondayException(tr("monday respondio HTTP {0}.", status), transient = true, kind = TareasMondayReading.classify(status, "", ""))
         }
-        return body?.get("data").obj() ?: throw TareasMondayException("monday respondio HTTP $status.")
+        return body?.get("data").obj() ?: throw TareasMondayException(tr("monday respondio HTTP {0}.", status))
     }
 }
