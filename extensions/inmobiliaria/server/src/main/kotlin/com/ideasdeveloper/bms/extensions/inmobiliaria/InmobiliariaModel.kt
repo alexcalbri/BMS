@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.extensions.inmobiliaria
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
@@ -15,6 +17,9 @@ class InmobiliariaException(message: String) : Exception(message)
 interface Coded {
     val id: String
     val label: String
+
+    /** La etiqueta en el idioma de quien la ve; [label] (espanol) es la que se guarda, se compara y se manda de vuelta. */
+    val display: String get() = tr(label)
 }
 
 private fun <E : Coded> Iterable<E>.byIdOrLabel(text: String?): E? {
@@ -24,12 +29,12 @@ private fun <E : Coded> Iterable<E>.byIdOrLabel(text: String?): E? {
 }
 
 enum class PropertyKind(override val id: String, override val label: String) : Coded {
-    Land("land", "Terreno"),
-    House("house", "Casa"),
-    Condo("condo", "Condominio"),
-    DevelopmentLot("development_lot", "Lote en desarrollo"),
-    Commercial("commercial", "Comercial"),
-    Other("other", "Otro");
+    Land("land", msg("Terreno")),
+    House("house", msg("Casa")),
+    Condo("condo", msg("Condominio")),
+    DevelopmentLot("development_lot", msg("Lote en desarrollo")),
+    Commercial("commercial", msg("Comercial")),
+    Other("other", msg("Otro"));
 
     companion object {
         fun fromId(id: String?): PropertyKind? = entries.firstOrNull { it.id == id }
@@ -40,11 +45,11 @@ enum class PropertyKind(override val id: String, override val label: String) : C
 }
 
 enum class PropertyStatus(override val id: String, override val label: String) : Coded {
-    Intake("intake", "Captacion"),
-    ForSale("for_sale", "En venta"),
-    Negotiation("negotiation", "En negociacion"),
-    Sold("sold", "Vendida"),
-    Withdrawn("withdrawn", "Retirada");
+    Intake("intake", msg("Captacion")),
+    ForSale("for_sale", msg("En venta")),
+    Negotiation("negotiation", msg("En negociacion")),
+    Sold("sold", msg("Vendida")),
+    Withdrawn("withdrawn", msg("Retirada"));
 
     companion object {
         fun fromId(id: String?): PropertyStatus? = entries.firstOrNull { it.id == id }
@@ -54,9 +59,9 @@ enum class PropertyStatus(override val id: String, override val label: String) :
 }
 
 enum class DealOutcome(override val id: String, override val label: String) : Coded {
-    Open("open", "Abierta"),
-    Won("won", "Ganada"),
-    Lost("lost", "Perdida");
+    Open("open", msg("Abierta")),
+    Won("won", msg("Ganada")),
+    Lost("lost", msg("Perdida"));
 
     companion object {
         fun fromId(id: String?): DealOutcome? = entries.firstOrNull { it.id == id }
@@ -66,15 +71,15 @@ enum class DealOutcome(override val id: String, override val label: String) : Co
 }
 
 enum class PartyRole(override val id: String, override val label: String) : Coded {
-    Seller("seller", "Vendedor"),
-    Buyer("buyer", "Comprador"),
-    ListingAgent("listing_agent", "Agente del listado"),
-    BuyerAgent("buyer_agent", "Agente del comprador"),
-    Broker("broker", "Corredor"),
-    SellerLawyer("seller_lawyer", "Abogado del vendedor"),
-    BuyerLawyer("buyer_lawyer", "Abogado del comprador"),
-    Referral("referral", "Referido"),
-    Other("other", "Otro");
+    Seller("seller", msg("Vendedor")),
+    Buyer("buyer", msg("Comprador")),
+    ListingAgent("listing_agent", msg("Agente del listado")),
+    BuyerAgent("buyer_agent", msg("Agente del comprador")),
+    Broker("broker", msg("Corredor")),
+    SellerLawyer("seller_lawyer", msg("Abogado del vendedor")),
+    BuyerLawyer("buyer_lawyer", msg("Abogado del comprador")),
+    Referral("referral", msg("Referido")),
+    Other("other", msg("Otro"));
 
     companion object {
         fun fromId(id: String?): PartyRole? = entries.firstOrNull { it.id == id }
@@ -213,7 +218,7 @@ object InmobiliariaMath {
         if (shares.isEmpty()) return null
         val sum = shareSum(shares)
         if (sum.compareTo(Hundred) == 0) return null
-        return "Los porcentajes de las partes suman ${plain(sum)} % y deberian sumar 100 %."
+        return tr("Los porcentajes de las partes suman {0} % y deberian sumar 100 %.", plain(sum))
     }
 
     /** Numero sin ceros sobrantes ni notacion cientifica ("5.000" -> "5", "12.50" -> "12.5"). */
@@ -278,9 +283,9 @@ object InmobiliariaInput {
     }
 
     /** La URL sin espacios en los bordes; lanza [InmobiliariaException] si no es valida. */
-    fun requireUrl(raw: String?, label: String = "El enlace"): String {
+    fun requireUrl(raw: String?, label: String = msg("El enlace")): String {
         val url = raw.orEmpty().trim()
-        if (!isValidUrl(url)) throw InmobiliariaException("$label debe ser una direccion http:// o https:// valida (sin espacios, hasta $MaxUrl caracteres).")
+        if (!isValidUrl(url)) throw InmobiliariaException(tr("{0} debe ser una direccion http:// o https:// valida (sin espacios, hasta {1} caracteres).", tr(label), MaxUrl))
         return url
     }
 
@@ -288,43 +293,43 @@ object InmobiliariaInput {
      * Dinero desde texto de formulario: acepta "1,250,000.50", "$ 95000". Vacio = nulo. Positivo, hasta 2 decimales
      * y menor que un billon (numeric(14,2)).
      */
-    fun parseMoney(raw: String?, label: String = "El monto"): BigDecimal? {
+    fun parseMoney(raw: String?, label: String = msg("El monto")): BigDecimal? {
         val digits = raw.orEmpty().filterNot { it == '$' || it == ',' || it.isWhitespace() }
         if (digits.isEmpty()) return null
-        if (!moneyPattern.matches(digits)) throw InmobiliariaException("$label debe ser un monto positivo con hasta 2 decimales (por ejemplo 125000.50).")
+        if (!moneyPattern.matches(digits)) throw InmobiliariaException(tr("{0} debe ser un monto positivo con hasta 2 decimales (por ejemplo 125000.50).", tr(label)))
         return BigDecimal(digits).setScale(2)
     }
 
     /** Valida un monto ya numerico con las mismas reglas que [parseMoney]. */
-    fun requireMoney(value: BigDecimal, label: String = "El monto"): BigDecimal {
+    fun requireMoney(value: BigDecimal, label: String = msg("El monto")): BigDecimal {
         if (value.signum() < 0 || value.stripTrailingZeros().scale() > 2 || value >= BigDecimal(MaxMoney)) {
-            throw InmobiliariaException("$label debe ser un monto positivo con hasta 2 decimales.")
+            throw InmobiliariaException(tr("{0} debe ser un monto positivo con hasta 2 decimales.", tr(label)))
         }
         return value.setScale(2, RoundingMode.UNNECESSARY)
     }
 
     /** Porcentaje desde texto ("5%", "12,5", "50"): de 0 a 100 con hasta 3 decimales. Vacio = nulo. */
-    fun parsePercent(raw: String?, label: String = "El porcentaje"): BigDecimal? {
+    fun parsePercent(raw: String?, label: String = msg("El porcentaje")): BigDecimal? {
         val text = raw.orEmpty().filterNot { it == '%' || it.isWhitespace() }.replace(',', '.')
         if (text.isEmpty()) return null
-        if (!percentPattern.matches(text)) throw InmobiliariaException("$label debe ser un numero entre 0 y 100 con hasta 3 decimales.")
+        if (!percentPattern.matches(text)) throw InmobiliariaException(tr("{0} debe ser un numero entre 0 y 100 con hasta 3 decimales.", tr(label)))
         val value = BigDecimal(text)
-        if (value > BigDecimal(100)) throw InmobiliariaException("$label debe estar entre 0 y 100.")
+        if (value > BigDecimal(100)) throw InmobiliariaException(tr("{0} debe estar entre 0 y 100.", tr(label)))
         return value.setScale(3)
     }
 
-    fun requirePercent(value: BigDecimal, label: String = "El porcentaje"): BigDecimal {
+    fun requirePercent(value: BigDecimal, label: String = msg("El porcentaje")): BigDecimal {
         if (value.signum() < 0 || value > BigDecimal(100) || value.stripTrailingZeros().scale() > 3) {
-            throw InmobiliariaException("$label debe estar entre 0 y 100 con hasta 3 decimales.")
+            throw InmobiliariaException(tr("{0} debe estar entre 0 y 100 con hasta 3 decimales.", tr(label)))
         }
         return value.setScale(3, RoundingMode.UNNECESSARY)
     }
 
     /** Area en metros cuadrados desde texto ("1,250.5"); positiva o cero, hasta 2 decimales. Vacio = nulo. */
-    fun parseArea(raw: String?, label: String = "El area"): BigDecimal? {
+    fun parseArea(raw: String?, label: String = msg("El area")): BigDecimal? {
         val digits = raw.orEmpty().filterNot { it == ',' || it.isWhitespace() }
         if (digits.isEmpty()) return null
-        if (!areaPattern.matches(digits)) throw InmobiliariaException("$label debe ser un numero positivo con hasta 2 decimales.")
+        if (!areaPattern.matches(digits)) throw InmobiliariaException(tr("{0} debe ser un numero positivo con hasta 2 decimales.", tr(label)))
         return BigDecimal(digits).setScale(2)
     }
 
@@ -332,23 +337,23 @@ object InmobiliariaInput {
     fun parseBathrooms(raw: String?): BigDecimal? {
         val text = raw.orEmpty().trim().replace(',', '.')
         if (text.isEmpty()) return null
-        if (!decimalOnePattern.matches(text) || BigDecimal(text) > BigDecimal(100)) throw InmobiliariaException("Los banos deben ser un numero entre 0 y 100 (por ejemplo 2.5).")
+        if (!decimalOnePattern.matches(text) || BigDecimal(text) > BigDecimal(100)) throw InmobiliariaException(tr("Los banos deben ser un numero entre 0 y 100 (por ejemplo 2.5)."))
         return BigDecimal(text).setScale(1)
     }
 
     fun parseBedrooms(raw: String?): Int? {
         val text = raw.orEmpty().trim()
         if (text.isEmpty()) return null
-        return text.toIntOrNull()?.takeIf { it in 0..100 } ?: throw InmobiliariaException("Las habitaciones deben ser un numero entero entre 0 y 100.")
+        return text.toIntOrNull()?.takeIf { it in 0..100 } ?: throw InmobiliariaException(tr("Las habitaciones deben ser un numero entero entre 0 y 100."))
     }
 
-    fun parseDate(raw: String?, label: String = "La fecha"): LocalDate? {
+    fun parseDate(raw: String?, label: String = msg("La fecha")): LocalDate? {
         val text = raw.orEmpty().trim()
         if (text.isEmpty()) return null
         return try {
             LocalDate.parse(text)
         } catch (failure: DateTimeParseException) {
-            throw InmobiliariaException("$label debe tener el formato AAAA-MM-DD.")
+            throw InmobiliariaException(tr("{0} debe tener el formato AAAA-MM-DD.", tr(label)))
         }
     }
 
@@ -358,21 +363,21 @@ object InmobiliariaInput {
         return try {
             UUID.fromString(text)
         } catch (failure: IllegalArgumentException) {
-            throw InmobiliariaException("$label no es un identificador valido.")
+            throw InmobiliariaException(tr("{0} no es un identificador valido.", tr(label)))
         }
     }
 
     /** Revisa los textos de una propiedad (largos y formato del codigo). */
     fun checkFields(fields: PropertyFields) {
         fields.code?.takeIf { it.isNotEmpty() }?.let {
-            if (!CodePattern.matches(it)) throw InmobiliariaException("El codigo lleva letras, numeros, punto, guion o guion bajo (hasta 40 caracteres, empezando por letra o numero).")
+            if (!CodePattern.matches(it)) throw InmobiliariaException(tr("El codigo lleva letras, numeros, punto, guion o guion bajo (hasta 40 caracteres, empezando por letra o numero)."))
         }
-        if (fields.title.isEmpty() || fields.title.length > 300) throw InmobiliariaException("El titulo debe tener entre 1 y 300 caracteres.")
-        if (fields.zone.length > 120) throw InmobiliariaException("La zona admite hasta 120 caracteres.")
-        if (fields.development.length > 120) throw InmobiliariaException("El desarrollo admite hasta 120 caracteres.")
-        if (fields.description.length > 10_000) throw InmobiliariaException("La descripcion admite hasta 10000 caracteres.")
-        if (fields.notes.length > 10_000) throw InmobiliariaException("Las notas admiten hasta 10000 caracteres.")
-        fields.currency?.let { if (!isCurrency(it)) throw InmobiliariaException("La moneda es un codigo de 3 letras mayusculas (USD).") }
+        if (fields.title.isEmpty() || fields.title.length > 300) throw InmobiliariaException(tr("El titulo debe tener entre 1 y 300 caracteres."))
+        if (fields.zone.length > 120) throw InmobiliariaException(tr("La zona admite hasta 120 caracteres."))
+        if (fields.development.length > 120) throw InmobiliariaException(tr("El desarrollo admite hasta 120 caracteres."))
+        if (fields.description.length > 10_000) throw InmobiliariaException(tr("La descripcion admite hasta 10000 caracteres."))
+        if (fields.notes.length > 10_000) throw InmobiliariaException(tr("Las notas admiten hasta 10000 caracteres."))
+        fields.currency?.let { if (!isCurrency(it)) throw InmobiliariaException(tr("La moneda es un codigo de 3 letras mayusculas (USD).")) }
     }
 }
 
@@ -408,10 +413,10 @@ object InmobiliariaForms {
     fun parseProperty(values: Map<String, String>, agentFor: (String) -> UUID?): PropertyFields {
         fun text(key: String) = values[key].orEmpty().trim()
         val kindText = text("kind")
-        val kind = if (kindText.isEmpty()) PropertyKind.Other else PropertyKind.parse(kindText) ?: throw InmobiliariaException("Tipo de propiedad desconocido.")
+        val kind = if (kindText.isEmpty()) PropertyKind.Other else PropertyKind.parse(kindText) ?: throw InmobiliariaException(tr("Tipo de propiedad desconocido."))
         val agentName = text("agent")
         val wordpress = text("wordpressListing").takeIf { it.isNotEmpty() }?.let {
-            it.toLongOrNull()?.takeIf { id -> id > 0 } ?: throw InmobiliariaException("El id del listado del sitio debe ser un numero entero positivo.")
+            it.toLongOrNull()?.takeIf { id -> id > 0 } ?: throw InmobiliariaException(tr("El id del listado del sitio debe ser un numero entero positivo."))
         }
         val fields = PropertyFields(
             code = text("code").ifEmpty { null },
@@ -420,16 +425,16 @@ object InmobiliariaForms {
             zone = text("zone"),
             development = text("development"),
             listingAgentId = if (agentName.isEmpty()) null else agentFor(agentName),
-            ownerCustomerId = InmobiliariaInput.parseUuid(text("ownerCustomer"), "El vendedor"),
-            lotAreaM2 = InmobiliariaInput.parseArea(text("lotArea"), "El area del lote"),
-            builtAreaM2 = InmobiliariaInput.parseArea(text("builtArea"), "El area construida"),
+            ownerCustomerId = InmobiliariaInput.parseUuid(text("ownerCustomer"), msg("El vendedor")),
+            lotAreaM2 = InmobiliariaInput.parseArea(text("lotArea"), msg("El area del lote")),
+            builtAreaM2 = InmobiliariaInput.parseArea(text("builtArea"), msg("El area construida")),
             bedrooms = InmobiliariaInput.parseBedrooms(text("bedrooms")),
             bathrooms = InmobiliariaInput.parseBathrooms(text("bathrooms")),
             currency = text("currency").uppercase().ifEmpty { null },
             description = text("description"),
             notes = text("notes"),
             wordpressListingId = wordpress,
-            publishedOn = InmobiliariaInput.parseDate(text("publishedOn"), "La fecha de publicacion"),
+            publishedOn = InmobiliariaInput.parseDate(text("publishedOn"), msg("La fecha de publicacion")),
         )
         InmobiliariaInput.checkFields(fields)
         return fields

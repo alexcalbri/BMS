@@ -14,7 +14,8 @@ object EmpresaServerModule : ServerModule {
         id = EmpresaModule.id,
         displayName = EmpresaModule.displayName,
         description = "Administracion de empresas, identidad y configuracion de cada empresa.",
-        version = "0.1.0",
+        version = "0.2.0",
+        minCoreVersion = "0.10.0",
         locked = true,
     )
 }

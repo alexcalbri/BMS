@@ -7,6 +7,8 @@ import com.ideasdeveloper.bms.modules.crm.CrmLeadFilter
 import com.ideasdeveloper.bms.modules.crm.CrmRepository
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
 import com.ideasdeveloper.bms.modules.crm.CrmUser
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiNavigate
 import com.ideasdeveloper.bms.ui.UiNode
@@ -39,12 +41,12 @@ object InmobiliariaScreenIds {
 
 /** Formato de textos para las pantallas (puro, sin base de datos). Sin tildes, como el resto del CRM. */
 object InmobiliariaFormat {
-    private val months = listOf("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")
+    private val months = listOf(msg("Ene"), msg("Feb"), msg("Mar"), msg("Abr"), msg("May"), msg("Jun"), msg("Jul"), msg("Ago"), msg("Sep"), msg("Oct"), msg("Nov"), msg("Dic"))
     private val timeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     const val Empty = "-"
 
     /** "Ene 2027". */
-    fun month(month: YearMonth): String = "${months[month.monthValue - 1]} ${month.year}"
+    fun month(month: YearMonth): String = "${tr(months[month.monthValue - 1])} ${month.year}"
 
     /** Monto con miles separados por coma; sin decimales si son cero ("125,000", "1,250.50"). */
     fun amount(value: BigDecimal): String {
@@ -68,9 +70,9 @@ object InmobiliariaFormat {
 
 /** Lectura de los filtros y la pagina que mandan las pantallas de lista (puro, sin base de datos). */
 object InmobiliariaFilters {
-    const val All = "Todos"
-    const val MineListings = "Mis listados"
-    const val MineDeals = "Mis cierres"
+    val All = msg("Todos")
+    val MineListings = msg("Mis listados")
+    val MineDeals = msg("Mis cierres")
     const val PageSize = 50
 
     private fun choice(raw: String?): String = raw.orEmpty().trim().takeIf { it != All }.orEmpty()
@@ -170,11 +172,11 @@ internal object InmobiliariaLookups {
 
     /** Elige entre los leads encontrados: uno solo, o el que se llama exactamente igual; si no, un error que dice como afinar. */
     fun pickLead(text: String, found: List<CrmLead>): CrmLead {
-        if (found.isEmpty()) throw InmobiliariaException("No hay un lead visible para ti que coincida con '$text'.")
+        if (found.isEmpty()) throw InmobiliariaException(tr("No hay un lead visible para ti que coincida con '{0}'.", text))
         if (found.size == 1) return found.first()
         found.filter { it.name.equals(text, ignoreCase = true) || it.email.equals(text, ignoreCase = true) }.singleOrNull()?.let { return it }
         val options = found.take(5).joinToString("; ") { lead -> listOf(lead.name, lead.email).filter { it.isNotBlank() }.joinToString(" ") }
-        throw InmobiliariaException("Varios leads coinciden con '$text' ($options). Escribe el correo completo o el id del lead.")
+        throw InmobiliariaException(tr("Varios leads coinciden con '{0}' ({1}). Escribe el correo completo o el id del lead.", text, options))
     }
 }
 
@@ -204,9 +206,9 @@ internal object InmobiliariaUi {
         if (pages <= 1) return null
         return UiRow(
             listOfNotNull(
-                UiButton("Anterior", UiNavigate(screen, keep + ("page" to (page - 1).toString())), style = "secondary").takeIf { page > 1 },
-                UiText("Pagina $page de $pages", UiTextStyle.Caption),
-                UiButton("Siguiente", UiNavigate(screen, keep + ("page" to (page + 1).toString())), style = "secondary").takeIf { page < pages },
+                UiButton(tr("Anterior"), UiNavigate(screen, keep + ("page" to (page - 1).toString())), style = "secondary").takeIf { page > 1 },
+                UiText(tr("Pagina {0} de {1}", page, pages), UiTextStyle.Caption),
+                UiButton(tr("Siguiente"), UiNavigate(screen, keep + ("page" to (page + 1).toString())), style = "secondary").takeIf { page < pages },
             ),
         )
     }
