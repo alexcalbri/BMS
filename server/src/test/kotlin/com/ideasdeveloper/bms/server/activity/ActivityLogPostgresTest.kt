@@ -19,6 +19,15 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
 import java.util.UUID
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.statement.bodyAsText
+import io.ktor.server.application.install
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.routing.routing
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -216,5 +225,66 @@ class ActivityLogPostgresTest {
         val csv = activity.export(owner, "acme", ActivityFilter())
         assertTrue(csv.contains("Inicio de sesion"), csv)
         assertEquals("1", scalar(central, "SELECT count(*) FROM provisioning_audit_log WHERE action = 'server_activity.exported'"))
+    }
+
+    @Test
+    fun companyRouteNeedsThePermissionAndExportsCsv() {
+        if (url == null) return
+        reset()
+        val databases = loginDatabases()
+        provisioning(databases).applyPendingModuleMigrations()
+        val access = com.ideasdeveloper.bms.server.modules.ModuleAccessService(source(central), databases)
+        val session = databases.service.login(LoginCredentials("eva_acme", "clave-de-eva-123", "acme").withClientAddress("10.1.1.1"))!!
+        io.ktor.server.testing.testApplication {
+            application {
+                install(io.ktor.server.plugins.contentnegotiation.ContentNegotiation) { json() }
+                routing { companyActivityRoutes(access) { it } }
+            }
+            suspend fun get(path: String) = client.get(path) {
+                header(io.ktor.http.HttpHeaders.Authorization, "Bearer ${session.accessToken}")
+                header("X-Company-Code", "acme")
+            }
+            val refused = get("/companies/me/activity")
+            assertEquals(io.ktor.http.HttpStatusCode.Forbidden, refused.status)
+            assertTrue(refused.bodyAsText().contains("ACTIVITY_PERMISSION_REQUIRED"), refused.bodyAsText())
+            assertEquals(io.ktor.http.HttpStatusCode.Forbidden, get("/companies/me/activity/export").status)
+            connect("bms_al_acme").use { db ->
+                db.run("INSERT INTO application_permissions (permission_id, module_id, title, description) VALUES ('empresa.activity.view', 'empresa', 'Ver el registro de actividad', '')")
+                db.run("INSERT INTO application_user_permissions (user_id, permission_id) SELECT id, 'empresa.activity.view' FROM application_users WHERE postgres_role = 'eva_acme'")
+            }
+            val page = get("/companies/me/activity?action=signed_in&page=0")
+            assertEquals(io.ktor.http.HttpStatusCode.OK, page.status, page.bodyAsText())
+            val body = kotlinx.serialization.json.Json.parseToJsonElement(page.bodyAsText()).jsonObject
+            val item = body["items"]!!.jsonArray.first().jsonObject
+            assertEquals("signed_in", item["action"]!!.jsonPrimitive.content)
+            assertEquals("Inicio de sesion", item["actionLabel"]!!.jsonPrimitive.content)
+            assertEquals("Eva acme", item["actorDisplay"]!!.jsonPrimitive.content)
+            assertEquals(io.ktor.http.HttpStatusCode.BadRequest, get("/companies/me/activity?from=ayer").status)
+            // Reading is not logged; exporting is.
+            assertEquals("0", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE action IN ('viewed', 'exported')"))
+            val csv = get("/companies/me/activity/export?action=signed_in")
+            assertEquals(io.ktor.http.HttpStatusCode.OK, csv.status)
+            assertTrue(csv.bodyAsText().contains("Inicio de sesion"))
+            assertEquals("1", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE action = 'exported' AND actor_name = 'Eva acme'"))
+        }
+        // Actor resolution: a plain session is the user; the same session tracked as opened from the
+        // switcher names the real server person; the owner in the workspace is themself.
+        val evaId = UUID.fromString(session.userId)
+        assertEquals("Eva acme", access.sessionActor("acme", session.accessToken, evaId, businessOwner = false).display)
+        connect(central).use { db ->
+            db.prepareStatement("INSERT INTO server_owner_company_sessions (token_hash, server_owner_user_id, company_code, expires_at) VALUES (?, ?, 'acme', CURRENT_TIMESTAMP + INTERVAL '1 hour')").use {
+                it.setString(1, com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator().hash(session.accessToken))
+                it.setObject(2, ownerId)
+                it.executeUpdate()
+            }
+        }
+        val switcher = access.sessionActor("acme", session.accessToken, evaId, businessOwner = true)
+        assertEquals("Duena (desde el servidor)", switcher.display)
+        assertEquals("server_owner", switcher.realKind)
+        assertEquals(ownerId, switcher.realUserId)
+        assertEquals(evaId, switcher.userId)
+        assertEquals("Agente de Duena (desde el servidor)", switcher.viaAgent("Claude").display)
+        assertEquals("Duena", access.serverPersonActor(ownerId, "servidor").display)
+        assertEquals("Duena (desde el servidor)", access.serverPersonActor(ownerId, "acme").display)
     }
 }
