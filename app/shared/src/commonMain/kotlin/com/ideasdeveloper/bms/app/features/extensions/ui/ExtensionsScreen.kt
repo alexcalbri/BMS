@@ -40,6 +40,7 @@ import com.ideasdeveloper.bms.app.core.theme.AppColors
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
 import com.ideasdeveloper.bms.app.features.extensions.data.ExtensionApi
 import com.ideasdeveloper.bms.app.features.extensions.data.ExtensionSummary
@@ -202,7 +203,8 @@ fun ExtensionsScreen(
                                 group = group,
                                 companyCode = target.companyCode,
                                 suspended = thisSuspended,
-                                canReview = target.asServerOwner,
+                                // Revisar el grupo (vinculos entre empresas) es del dueno del servidor.
+                                canReview = target.asServerOwner && session.isServerOwner,
                                 reviewing = reviewing,
                                 onReview = {
                                     ctx?.let { context ->

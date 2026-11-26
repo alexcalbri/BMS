@@ -28,4 +28,10 @@ data class LoginResponse(
     val companyLanguage: String? = null,
     // Eleccion propia del usuario; null = sigue al idioma de la empresa.
     val userLanguage: String? = null,
+    // Administrador del servidor (role = "server_admin"): permisos concedidos y empresas a las que se limita
+    // (null = todas). Vacios en servidores antiguos y en el dueno del servidor, que no los necesita.
+    val serverPermissions: List<String> = emptyList(),
+    val serverCompanies: List<String>? = null,
+    // El administrador debe cambiar la contrasena inicial antes de usar nada mas.
+    val mustChangePassword: Boolean = false,
 )

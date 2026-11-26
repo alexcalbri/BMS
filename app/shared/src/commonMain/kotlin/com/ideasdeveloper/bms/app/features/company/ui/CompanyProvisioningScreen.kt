@@ -50,6 +50,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.bms.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.ServerPermission
+import com.ideasdeveloper.bms.app.features.auth.data.can
+import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
 import com.ideasdeveloper.bms.app.features.company.data.BusinessOwnerResponse
 import com.ideasdeveloper.bms.app.features.company.data.UpdateBusinessOwnerRequest
@@ -78,6 +81,15 @@ fun CompanyProvisioningScreen(
     val colors = AppTheme.colors
     val primaryColor = colors.accent
     val scope = rememberCoroutineScope()
+    // Cada boton se muestra solo si la sesion tiene el permiso (el dueno tiene todos); lo que no se permite se oculta.
+    val canCreate = session.can(ServerPermission.CompaniesCreate)
+    val canEdit = session.can(ServerPermission.CompaniesEdit)
+    val canChangeStatus = session.can(ServerPermission.CompaniesStatus)
+    val canChangeModules = session.can(ServerPermission.CompaniesModules)
+    val canManageExtensions = session.can(ServerPermission.CompaniesExtensions)
+    val canOwnerPassword = session.can(ServerPermission.CompaniesOwnerPassword)
+    // Borrar y vincular empresas es solo del dueno del servidor.
+    val isOwner = session.isServerOwner
 
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
@@ -128,8 +140,9 @@ fun CompanyProvisioningScreen(
     var confirmReturnToDashboard by remember { mutableStateOf(false) }
     // Empresa cuyas extensiones se estan administrando (pantalla completa).
     var extensionsCompany by remember { mutableStateOf<CompanySummaryResponse?>(null) }
+    val createOpen = canCreate && isCreateCompanyExpanded
     val createCompanyHasChanges =
-        isCreateCompanyExpanded &&
+        createOpen &&
                 (code.isNotBlank() ||
                         name.isNotBlank() ||
                         ownerUsername.isNotBlank() ||
@@ -304,7 +317,7 @@ fun CompanyProvisioningScreen(
                         modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                    Row(
+                    if (canCreate) Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
@@ -316,12 +329,12 @@ fun CompanyProvisioningScreen(
                                 onClick = { isCreateCompanyExpanded = !isCreateCompanyExpanded },
                                 colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                             ) {
-                                Text(if (isCreateCompanyExpanded) tr("Ocultar") else tr("Crear nueva"))
+                                Text(if (createOpen) tr("Ocultar") else tr("Crear nueva"))
                             }
                         }
                     }
 
-                    if (isCreateCompanyExpanded) {
+                    if (createOpen) {
                         // Captura los datos requeridos para crear el tenant y su business owner inicial.
                         OutlinedTextField(
                             value = code,
@@ -395,7 +408,7 @@ fun CompanyProvisioningScreen(
                     error?.let { Text(it, color = AppTheme.colors.danger) }
                     message?.let { Text(it, color = AppTheme.colors.success) }
 
-                    if (isCreateCompanyExpanded) Row(
+                    if (createOpen) Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                         verticalAlignment = Alignment.CenterVertically,
@@ -481,6 +494,13 @@ fun CompanyProvisioningScreen(
                         CompanyModulesRow(
                             company = company,
                             primaryColor = primaryColor,
+                            canEdit = canEdit,
+                            canChangeStatus = canChangeStatus,
+                            canChangeModules = canChangeModules,
+                            canManageExtensions = canManageExtensions,
+                            canOwnerPassword = canOwnerPassword,
+                            canDuplicate = canCreate,
+                            isOwner = isOwner,
                             enabled = !isLoading && !isRefreshing && serverUrl != null && session?.accessToken?.isNotBlank() == true,
                             pendingDeletion = companyPendingDeletion == company.code,
                             onChangeStatus = { active ->
@@ -685,6 +705,13 @@ fun CompanyProvisioningScreen(
 private fun CompanyModulesRow(
     company: CompanySummaryResponse,
     primaryColor: Color,
+    canEdit: Boolean,
+    canChangeStatus: Boolean,
+    canChangeModules: Boolean,
+    canManageExtensions: Boolean,
+    canOwnerPassword: Boolean,
+    canDuplicate: Boolean,
+    isOwner: Boolean,
     enabled: Boolean,
     pendingDeletion: Boolean,
     onChangeStatus: (active: Boolean) -> Unit,
@@ -721,7 +748,7 @@ private fun CompanyModulesRow(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (isEditing) {
+        if (isEditing && canEdit) {
             CompanyProfileFields(
                 name = editingName,
                 logoUrl = editingLogoUrl,
@@ -751,12 +778,12 @@ private fun CompanyModulesRow(
         )
         if (!isEditing) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(enabled = enabled, onClick = onLink) { Text(tr("Vincular"), color = AppTheme.colors.accentText) }
+                if (isOwner) TextButton(enabled = enabled, onClick = onLink) { Text(tr("Vincular"), color = AppTheme.colors.accentText) }
                 // Extensiones de los modulos de esa empresa y revision de su grupo.
-                if (company.isActive) {
+                if (canManageExtensions && company.isActive) {
                     TextButton(enabled = enabled, onClick = onExtensions) { Text(tr("Extensiones"), color = AppTheme.colors.accentText) }
                 }
-                if (linkedNames.isNotEmpty()) {
+                if (isOwner && linkedNames.isNotEmpty()) {
                     TextButton(enabled = enabled, onClick = onUnlink) { Text(tr("Desvincular"), color = AppTheme.colors.danger) }
                 }
             }
@@ -768,7 +795,7 @@ private fun CompanyModulesRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (isEditing) {
-                Button(
+                if (canEdit) Button(
                     enabled = enabled && editingName.isNotBlank(),
                     onClick = onSaveEdit,
                     colors = accentButtonColors(),
@@ -782,7 +809,7 @@ private fun CompanyModulesRow(
                 ) {
                     Text(tr("Cancelar"))
                 }
-            } else {
+            } else if (canEdit || canChangeModules || canOwnerPassword) {
                 Button(
                     enabled = enabled,
                     onClick = onStartEdit,
@@ -791,7 +818,7 @@ private fun CompanyModulesRow(
                     Text(tr("Editar"))
                 }
             }
-            if (company.isActive && !isEditing) {
+            if (canDuplicate && company.isActive && !isEditing) {
                 // Copia modulos y configuracion en una empresa nueva del mismo business owner.
                 Button(
                     enabled = enabled,
@@ -802,7 +829,7 @@ private fun CompanyModulesRow(
                 }
             }
             // Cambia entre activar y desactivar la empresa completa.
-            Button(
+            if (canChangeStatus) Button(
                 enabled = enabled && !isEditing,
                 onClick = { onChangeStatus(!company.isActive) },
                 colors = ButtonDefaults.buttonColors(
@@ -812,7 +839,7 @@ private fun CompanyModulesRow(
             ) {
                 Text(if (company.isActive) tr("Desactivar empresa") else tr("Reactivar empresa"))
             }
-            if (!company.isActive) {
+            if (isOwner && !company.isActive) {
                 // Exige una segunda pulsacion antes de borrar la base tenant.
                 Button(
                     enabled = enabled && !isEditing,
@@ -839,9 +866,11 @@ private fun CompanyModulesRow(
         if (isEditing) {
             // Datos del business owner. Las empresas creadas por un agente IA quedan con una contrasena
             // aleatoria porque las credenciales no pasan por el MCP: aqui se pone la primera.
-            CollapsibleSection(tr("Business owner"), primaryColor, subtitle = tr("Usuario, nombre, correo y contrasena")) {
+            if (canEdit || canOwnerPassword) CollapsibleSection(tr("Business owner"), primaryColor, subtitle = tr("Usuario, nombre, correo y contrasena")) {
                 BusinessOwnerFields(
                     companyCode = company.code,
+                    canEditDetails = canEdit,
+                    canPassword = canOwnerPassword,
                     enabled = enabled,
                     primaryColor = primaryColor,
                     loadOwner = loadOwner,
@@ -849,7 +878,7 @@ private fun CompanyModulesRow(
                 )
             }
 
-            CollapsibleSection(
+            if (canChangeModules) CollapsibleSection(
                 tr("Modulos disponibles"),
                 primaryColor,
                 subtitle = tr("{0} de {1} activos", company.modules.count { it.enabled }, company.modules.size),
@@ -893,6 +922,9 @@ private fun CompanyModulesRow(
 @Composable
 private fun BusinessOwnerFields(
     companyCode: String,
+    // Editar nombre y correo es companies.edit; poner contrasena (y por tanto cambiar el usuario) es companies.owner_password.
+    canEditDetails: Boolean,
+    canPassword: Boolean,
     enabled: Boolean,
     primaryColor: Color,
     loadOwner: suspend () -> BusinessOwnerResponse,
@@ -935,7 +967,7 @@ private fun BusinessOwnerFields(
         onValueChange = { username = it.trim() },
         label = { Text(tr("Usuario")) },
         singleLine = true,
-        enabled = enabled,
+        enabled = enabled && canEditDetails && canPassword,
         modifier = Modifier.fillMaxWidth(),
     )
     OutlinedTextField(
@@ -943,7 +975,7 @@ private fun BusinessOwnerFields(
         onValueChange = { displayName = it },
         label = { Text(tr("Nombre completo")) },
         singleLine = true,
-        enabled = enabled,
+        enabled = enabled && canEditDetails,
         modifier = Modifier.fillMaxWidth(),
     )
     OutlinedTextField(
@@ -951,10 +983,10 @@ private fun BusinessOwnerFields(
         onValueChange = { email = it.trim() },
         label = { Text(tr("Correo")) },
         singleLine = true,
-        enabled = enabled,
+        enabled = enabled && canEditDetails,
         modifier = Modifier.fillMaxWidth(),
     )
-    OutlinedTextField(
+    if (canPassword) OutlinedTextField(
         value = password,
         onValueChange = { password = it },
         label = { Text(tr("Contrasena nueva")) },
@@ -963,7 +995,7 @@ private fun BusinessOwnerFields(
         visualTransformation = PasswordVisualTransformation(),
         modifier = Modifier.fillMaxWidth(),
     )
-    OutlinedTextField(
+    if (canPassword) OutlinedTextField(
         value = confirmation,
         onValueChange = { confirmation = it },
         label = { Text(tr("Confirmar contrasena")) },
