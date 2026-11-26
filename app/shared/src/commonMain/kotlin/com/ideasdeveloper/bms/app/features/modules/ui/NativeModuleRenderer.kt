@@ -1670,6 +1670,7 @@ private fun ModuleList(node: UiList, context: ModuleRenderContext) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
                     Text(item.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     if (item.subtitle.isNotBlank()) Text(item.subtitle, color = colors.muted, fontSize = 12.sp, maxLines = 2)
+                    item.translation?.takeIf { it.isNotBlank() && it != item.subtitle }?.let { Text(it, color = colors.muted, fontSize = 12.sp) }
                     ModuleBadges(item.badges, colors)
                 }
                 if (item.trailing.isNotBlank()) Text(item.trailing, color = colors.muted, fontSize = 12.sp)

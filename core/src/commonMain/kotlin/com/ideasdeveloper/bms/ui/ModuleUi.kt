@@ -459,6 +459,9 @@ data class UiListItem(
     val badges: List<UiBadge> = emptyList(),
     // Runs when the item is tapped.
     val action: UiAction? = null,
+    // [subtitle] translated into the viewer's language when it is a user-written note (I18N.md §8).
+    // Shown under the original; null when there is none. Older clients ignore it.
+    val translation: String? = null,
 )
 
 // Vertical list of tappable rows, for records that open a detail screen.
