@@ -78,3 +78,27 @@ Extensions: `extensions/<id>/extension.json` + version in the extension class, c
 ## 8. Commit
 `git add modules/<id> && GIT_AUTHOR_NAME=alexcalbri GIT_AUTHOR_EMAIL=164930758+alexcalbri@users.noreply.github.com GIT_COMMITTER_NAME=alexcalbri GIT_COMMITTER_EMAIL=164930758+alexcalbri@users.noreply.github.com git commit -m "feat(<id>): X.Y.Z - modulo bilingue es/en"`
 (never commit `build.gradle.kts`/`gradle-daemon-jvm.properties`; no trailers; no push).
+
+## 9. Extensions (from `extensions/monday`, first extension done)
+- Files: sources `extensions/<id>/server/src/main/kotlin/...`, catalog `extensions/<id>/server/src/main/resources/extensions/<id>/i18n/en.json`
+  (namespaced path is mandatory), test `server/src/test/kotlin/.../<Id>I18nTest.kt`. Imports: `com.ideasdeveloper.bms.server.i18n.{tr,msg}`.
+- Extensions do NOT serialize UI: they return `List<UiNode>`, `UiNotice`, `CrmImportSourceResult`, texts... to the host module, which calls
+  `localizedPayload`. Your job is only `tr(...)` at the place each text is created (inside the request, so the language is the viewer's).
+- Manifest: bump `version` (minor) in BOTH `extension.json` and the `ExtensionManifest(version = ...)` in code (a test compares them; if an existing
+  test asserts the old version string, change only that number). Extension manifests have NO `minCoreVersion` (only `minModuleVersion`): do not invent it;
+  say "needs Core 0.10.0" in the README ("Idiomas" section, like the module guide item 7).
+- Catalog must also list the manifest texts (displayName, description, settings label/help, uninstall option labels) with NO `tr` in code:
+  `I18nCatalogCheck.assertExtension` adds them from `manifest`. Texts used in `uninstallPreview` items, section labels, MCP-free screens: `tr(...)`.
+- Test:
+  ```kotlin
+  @BeforeTest fun loadCatalog() = loadExtensionCatalog(MyServerExtension)   // no ExtensionRegistry in unit tests
+  @Test fun catalogIsComplete() = I18nCatalogCheck.assertExtension("<id>", MyServerExtension.manifest)
+  @Test fun english() { I18n.withLanguage("en") { assertEquals("...", assertFailsWith<X> { fnThatThrows() }.message) } }
+  ```
+  The host module's own catalog (e.g. CRM) is not loaded in your test: assert only your texts.
+- Pitfalls: (1) `val x = listOf(Section(..., "Texto"))` / `override val label = "..."` evaluate at class load: turn into `get() =` with `tr`.
+  (2) Data from the external system (monday names, columns, updates, error text from the remote API) is never translated; pass it as `{0}`.
+  (3) Texts written to DB rows / job errors by background jobs stay Spanish; if shown later use `tr(stored)` (mark the literal with `msg`).
+  (4) `UiField.options`/params/ops/ids stay Spanish; labels only. (5) MCP tools stay Spanish. (6) Never add build artifacts or files outside the
+  extension folder: a changed folder makes the package "sin firma" and it must be re-authorized (nothing to do in code).
+- Run: `/home/user/tools/bms-test.sh <worktree> "*<Id>*"`. Commit only `extensions/<id>` (+ nothing else).
