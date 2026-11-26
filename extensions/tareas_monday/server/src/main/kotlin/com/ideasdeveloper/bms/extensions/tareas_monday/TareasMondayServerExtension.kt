@@ -37,7 +37,7 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
         module = "tareas",
         displayName = "Importacion de tareas desde monday",
         description = "Importa tableros de monday como tableros de Tareas: lee el tablero con el token de la empresa, mapea sus columnas y trae grupos, tareas, subelementos, comentarios y archivos.",
-        version = "1.0.1",
+        version = "1.0.2",
         minModuleVersion = "0.2.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,

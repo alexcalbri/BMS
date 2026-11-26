@@ -75,6 +75,12 @@ Siempre se borra el token. La opcion `import_history` (por omision, borrar) elim
 - Archivos de hasta 25 MB, solo de servidores de monday (`*.monday.com` y su S3); los de Drive o Dropbox (enlaces) no se importan.
 - Solo se leen las primeras 100 actualizaciones de cada elemento (cada una con sus respuestas); los topes de pasos (100) y comentarios (2000) por tarea los aplica el modulo.
 
+## 1.0.2 (lectura con respuestas)
+
+- Corrige `monday: Cannot query field "assets" on type "Reply"`: la consulta pedia adjuntos tambien en las respuestas de cada
+  actualizacion y monday la rechazaba entera, asi que no se podia leer ningun tablero. Las respuestas se leen sin adjuntos;
+  los archivos de las actualizaciones se siguen importando. Los archivos adjuntos a una **respuesta** no se importan.
+
 ## 1.0.1 (rendimiento de la lectura)
 
 - Las actualizaciones (comentarios, respuestas y sus archivos) ya no viajan en la consulta de elementos: se piden en una segunda

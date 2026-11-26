@@ -114,14 +114,17 @@ object TareasMondayClient {
     private const val ValueFields = "id type text value column { title }"
     // Sin actualizaciones: van en una segunda consulta por lote de ids ([updatesQuery]) y solo si el mapeo las pide.
     private const val ItemFields = "id name group { title } column_values { $ValueFields } subitems { id name column_values { $ValueFields } }"
-    private const val UpdateFields = "id text_body created_at creator { name email } assets { id name }"
+    // Las respuestas no llevan adjuntos: monday rechaza `assets` en el tipo Reply con esta version de la API
+    // ("Cannot query field assets on type Reply") y la consulta entera fallaba.
+    private const val ReplyFields = "id text_body created_at creator { name email }"
+    private const val UpdateFields = "$ReplyFields assets { id name }"
     const val UpdatesLimit = 100
 
     /** Consulta de actualizaciones (con sus respuestas) de un lote de elementos; solo ids numericos y `limit` igual al tamano del lote. */
     fun updatesQuery(ids: Collection<String>): String {
         val clean = ids.filter { idPattern.matches(it) }.distinct()
         return "query { items(ids: [${clean.joinToString()}], limit: ${clean.size}) { id " +
-            "updates(limit: $UpdatesLimit) { $UpdateFields replies { $UpdateFields } } } }"
+            "updates(limit: $UpdatesLimit) { $UpdateFields replies { $ReplyFields } } } }"
     }
 
     /** Elementos cuyas notas pueden estar incompletas: monday no devolvio el elemento o devolvio tantas actualizaciones como el tope. */
