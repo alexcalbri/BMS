@@ -29,6 +29,13 @@ class LoginSuccessResponse(
     val companyLanguage: String = "es",
     // The user's own language, null when they follow the company default.
     val userLanguage: String? = null,
+    // Server sessions (Core 0.11.0, SERVER_ADMINS.md): role is "server_owner" or "server_admin".
+    // Permission ids the session holds on the server: every one for the owner, the granted ones for an administrator.
+    val serverPermissions: List<String> = emptyList(),
+    // Companies a server administrator may act on; null means every company (and for the owner).
+    val serverCompanies: List<String>? = null,
+    // A server administrator must change the initial password (PUT /auth/password) before anything else works.
+    val mustChangePassword: Boolean = false,
 )
 
 // A company the session can move to.

@@ -65,6 +65,10 @@ object ServerMcpTools {
         fun role(call: McpToolCall): String = call.permissions.userId?.let { provisioning().serverOwnerRole(it) }
             ?: throw McpToolException("Solo un dueno del servidor activo puede usar esta herramienta.")
 
+        // The owner of the call is who the audit names.
+        fun actor(call: McpToolCall): com.ideasdeveloper.bms.server.admins.AuditActor =
+            com.ideasdeveloper.bms.server.admins.AuditActor.owner(role(call), call.permissions.userId)
+
         fun <T> run(block: () -> T): T = try {
             block()
         } catch (failure: CompanyProvisioningException) {
@@ -127,6 +131,7 @@ object ServerMcpTools {
                             accentColor = call.string("accent_color", 7).ifEmpty { "#FFFFFF" },
                         ),
                         role(call),
+                        actor(call),
                     )
                 }
                 buildJsonObject {
@@ -170,6 +175,7 @@ object ServerMcpTools {
                             accentColor = if (call.has("accent_color")) call.string("accent_color", 7) else current.accentColor,
                         ),
                         role(call),
+                        actor(call),
                     )
                 }
                 companyJson(updated)
@@ -184,7 +190,7 @@ object ServerMcpTools {
                     required = listOf("code", "active"),
                 ),
             ) { call ->
-                companyJson(run { provisioning().setCompanyActive(call.requiredString("code", 63), call.boolean("active"), role(call)) })
+                companyJson(run { provisioning().setCompanyActive(call.requiredString("code", 63), call.boolean("active"), role(call), actor(call)) })
             },
             McpTool(
                 name = "delete_company",
@@ -195,7 +201,7 @@ object ServerMcpTools {
                 destructive = true,
             ) { call ->
                 val target = call.requiredString("code", 63)
-                run { provisioning().deleteInactiveCompany(target, role(call)) }
+                run { provisioning().deleteInactiveCompany(target, role(call), actor(call)) }
                 buildJsonObject { put("deleted", target) }
             },
             McpTool(
@@ -210,7 +216,7 @@ object ServerMcpTools {
             ) { call ->
                 companyJson(
                     run {
-                        provisioning().setModuleEnabled(call.requiredString("code", 63), call.requiredString("module_id", 63), call.boolean("enabled"), role(call))
+                        provisioning().setModuleEnabled(call.requiredString("code", 63), call.requiredString("module_id", 63), call.boolean("enabled"), role(call), actor(call))
                     }
                 )
             },
@@ -233,7 +239,7 @@ object ServerMcpTools {
                 destructive = true,
             ) { call ->
                 val target = call.requiredString("module_id", 63)
-                run { provisioning().deleteServerModule(target) }
+                run { provisioning().deleteServerModule(target, actor(call)) }
                 buildJsonObject { put("removed", target) }
             },
             McpTool(
@@ -248,7 +254,7 @@ object ServerMcpTools {
             ) { call ->
                 json.encodeToJsonElement(
                     ServerModuleResponse.serializer(),
-                    run { provisioning().setServerModuleUsage(call.requiredString("module_id", 63), call.boolean("enabled"), role(call)) },
+                    run { provisioning().setServerModuleUsage(call.requiredString("module_id", 63), call.boolean("enabled"), role(call), actor(call)) },
                 )
             },
             McpTool(

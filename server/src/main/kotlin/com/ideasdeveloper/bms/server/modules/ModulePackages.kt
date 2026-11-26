@@ -120,29 +120,34 @@ class ModulePackageBuilder(
         .followRedirects(HttpClient.Redirect.NEVER)
         .build()
 
-    /** Downloads [moduleId] from the catalog [source], builds it and returns the installed package. */
-    fun build(moduleId: String, source: GitHubLocation, progress: (String) -> Unit): BuiltModule {
+    /**
+     * Downloads [moduleId] from the catalog [source], builds it and returns the installed package.
+     * With [requireAuthorization] (an administrator asked for it) an unsigned package needs its
+     * hash authorized whatever MODULE_SIGNATURE_ENFORCED says: administrators always get the
+     * enforced gate.
+     */
+    fun build(moduleId: String, source: GitHubLocation, requireAuthorization: Boolean = false, progress: (String) -> Unit): BuiltModule {
         val work = Files.createDirectories(packagesRoot.resolve(moduleId)).resolve("build-${System.currentTimeMillis()}")
         Files.createDirectories(work)
         try {
             progress("Descargando el codigo de ${source.ref}")
             val archive = download(source.archiveUrl, work.resolve("source.zip"))
             val moduleDir = extractModule(archive, "${source.path}/$moduleId", work.resolve("source"))
-            return buildFromDirectory(moduleId, moduleDir, work, progress)
+            return buildFromDirectory(moduleId, moduleDir, work, requireAuthorization, progress)
         } finally {
             work.toFile().deleteRecursively()
         }
     }
 
     /** Validates, compiles and packages a module folder that follows the modules/<id>/ layout. */
-    fun buildFromDirectory(moduleId: String, moduleDir: Path, work: Path, progress: (String) -> Unit): BuiltModule {
+    fun buildFromDirectory(moduleId: String, moduleDir: Path, work: Path, requireAuthorization: Boolean = false, progress: (String) -> Unit): BuiltModule {
         progress(msg("Validando la estructura del modulo"))
         val manifest = validate(moduleId, moduleDir)
         val version = manifest["version"]!!.jsonPrimitive.content
 
         // Nada se compila ni se carga hasta que el paquete esta firmado o autorizado por hash.
         progress(msg("Verificando la firma del paquete"))
-        verify(moduleId, moduleDir)
+        verify(moduleId, moduleDir, requireAuthorization)
 
         progress(msg("Compilando contra el nucleo instalado"))
         val classes = Files.createDirectories(work.resolve("classes"))
@@ -164,9 +169,10 @@ class ModulePackageBuilder(
     /**
      * Comprueba el hash del arbol del modulo contra extension.sig.json y su firma Ed25519. Sin firma
      * exige una autorizacion del dueno del servidor para ese hash. Devuelve el hash verificado y
-     * lanza [ModuleBuildException] si el paquete no pasa la compuerta.
+     * lanza [ModuleBuildException] si el paquete no pasa la compuerta. Con [requireAuthorization] la
+     * compuerta es estricta aunque MODULE_SIGNATURE_ENFORCED sea false (lo pidio un administrador).
      */
-    fun verify(moduleId: String, moduleDir: Path): String {
+    fun verify(moduleId: String, moduleDir: Path, requireAuthorization: Boolean = false): String {
         val actual = try {
             ExtensionTreeHash.compute(moduleDir)
         } catch (failure: ExtensionPackageException) {
@@ -192,7 +198,7 @@ class ModulePackageBuilder(
             throw ModuleBuildException("El hash del paquete no coincide con ${ExtensionTreeHash.SignatureFileName}.")
         }
         if (!authorizations.isAuthorized(actual)) {
-            if (signatureEnforced) {
+            if (signatureEnforced || requireAuthorization) {
                 throw ModuleBuildException(
                     "El modulo '$moduleId' no esta firmado. El dueno del servidor debe autorizar el hash $actual antes de instalarlo.",
                 )

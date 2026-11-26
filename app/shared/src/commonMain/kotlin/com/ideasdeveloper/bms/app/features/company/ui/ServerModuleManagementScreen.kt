@@ -42,6 +42,9 @@ import com.ideasdeveloper.bms.app.core.session.SessionStore
 import com.ideasdeveloper.bms.app.core.version.ClientVersion
 import com.ideasdeveloper.bms.app.core.version.isAppOlderThan
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.ServerPermission
+import com.ideasdeveloper.bms.app.features.auth.data.can
+import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
 import com.ideasdeveloper.bms.app.features.company.data.ServerModuleResponse
@@ -69,6 +72,14 @@ fun ServerModuleManagementScreen(
     val colors = AppTheme.colors
     val primaryColor = colors.accent
     val scope = rememberCoroutineScope()
+    // Que se muestra y que se puede hacer depende de los permisos de la sesion; lo que no se permite se oculta.
+    val canViewModules = session.can(ServerPermission.ModulesView)
+    val canInstallModules = session.can(ServerPermission.ModulesInstall)
+    val canRemoveModules = session.can(ServerPermission.ModulesRemove)
+    val canUseInServer = session.can(ServerPermission.Workspace)
+    val canSeePackages = session.can(ServerPermission.ExtensionsInstall)
+    // El repositorio (catalogo) de modulos solo lo cambia el dueno del servidor.
+    val isOwner = session.isServerOwner
     var modules by remember { mutableStateOf<List<ServerModuleResponse>>(emptyList()) }
     var catalogUrl by remember { mutableStateOf(DefaultModuleCatalogUrl) }
     var pendingDeletion by remember { mutableStateOf<String?>(null) }
@@ -108,8 +119,9 @@ fun ServerModuleManagementScreen(
         }
     }
 
-    LaunchedEffect(serverUrl, session?.accessToken) {
-        refreshCatalog()
+    LaunchedEffect(serverUrl, session?.accessToken, canViewModules) {
+        if (!canViewModules) return@LaunchedEffect
+        if (isOwner) refreshCatalog()
         refreshModules()
     }
 
@@ -172,20 +184,20 @@ fun ServerModuleManagementScreen(
                         modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                    Text(tr("Modulos instalados"), style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
-                    Text(tr("Repositorio de modulos"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
-                    OutlinedTextField(
+                    if (canViewModules) Text(tr("Modulos instalados"), style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
+                    if (isOwner) Text(tr("Repositorio de modulos"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
+                    if (isOwner) OutlinedTextField(
                         value = catalogUrl,
                         onValueChange = { catalogUrl = it },
                         label = { Text(tr("URL del repositorio de modulos")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Row(
+                    if (canViewModules) Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     ) {
-                        Button(
+                        if (isOwner) Button(
                             enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
                             onClick = {
                                 val activeServerUrl = serverUrl
@@ -216,7 +228,7 @@ fun ServerModuleManagementScreen(
                         Button(
                             enabled = !isLoading,
                             onClick = {
-                                refreshCatalog()
+                                if (isOwner) refreshCatalog()
                                 refreshModules()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
@@ -231,11 +243,14 @@ fun ServerModuleManagementScreen(
                     }
                     }
 
-                    AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 360.dp, gap = 12.dp) {
+                    if (canViewModules) AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 360.dp, gap = 12.dp) {
                     modules.forEach { module ->
                         ServerModuleRow(
                             module = module,
                             primaryColor = primaryColor,
+                            canInstallModule = canInstallModules,
+                            canRemoveModule = canRemoveModules,
+                            canUseInServer = canUseInServer,
                             enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
                             pendingDeletion = pendingDeletion == module.moduleId,
                             onInstall = {
@@ -335,7 +350,7 @@ fun ServerModuleManagementScreen(
                     }
 
                     // Paquetes externos de extensiones del servidor: catalogo, instalar, quitar y autorizar sin firma.
-                    ExtensionPackagesSection(serverUrl = serverUrl, session = session)
+                    if (canSeePackages) ExtensionPackagesSection(serverUrl = serverUrl, session = session)
 
                     Spacer(modifier = Modifier.height(2.dp))
                 }
@@ -356,6 +371,9 @@ private data class ModuleRequirement(
 private fun ServerModuleRow(
     module: ServerModuleResponse,
     primaryColor: Color,
+    canInstallModule: Boolean,
+    canRemoveModule: Boolean,
+    canUseInServer: Boolean,
     enabled: Boolean,
     pendingDeletion: Boolean,
     onInstall: () -> Unit,
@@ -423,7 +441,7 @@ private fun ServerModuleRow(
             style = MaterialTheme.typography.bodySmall,
             color = if (module.activeCompanyCount > 0 || module.locked) AppTheme.colors.warning else AppTheme.colors.success,
         )
-        if (module.installed && !inProgress) {
+        if (canUseInServer && module.installed && !inProgress) {
             // Los modulos base quedan siempre activos una vez creado el espacio del servidor.
             val fixed = module.locked && module.usedByServer
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -461,7 +479,7 @@ private fun ServerModuleRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (!module.installed || updateAvailable) {
+            if (canInstallModule && (!module.installed || updateAvailable)) {
                 Button(
                     enabled = canInstall,
                     onClick = onInstall,
@@ -477,7 +495,7 @@ private fun ServerModuleRow(
                     )
                 }
             }
-            Button(
+            if (canRemoveModule) Button(
                 enabled = canDelete,
                 onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
                 colors = ButtonDefaults.buttonColors(
@@ -487,7 +505,7 @@ private fun ServerModuleRow(
             ) {
                 Text(if (pendingDeletion) tr("Confirmar eliminar") else tr("Eliminar del servidor"))
             }
-            if (pendingDeletion) {
+            if (canRemoveModule && pendingDeletion) {
                 Button(
                     enabled = enabled,
                     onClick = onCancelDelete,

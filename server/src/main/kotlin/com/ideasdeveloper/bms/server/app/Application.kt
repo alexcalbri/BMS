@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.server.app
 
+import com.ideasdeveloper.bms.server.admins.ServerAudit
+import com.ideasdeveloper.bms.server.admins.serverAdminRoutes
 import com.ideasdeveloper.bms.sayHello
 import com.ideasdeveloper.bms.server.auth.api.authRoutes
 import com.ideasdeveloper.bms.server.auth.application.SessionService
@@ -195,6 +197,8 @@ fun Application.module() {
         requestRestart = ::restartToLoadModules,
         companyFiles = companyFiles,
         installQueue = installQueue,
+        // A resumed install runs with the current rights of who asked for it (SERVER_ADMINS.md §8).
+        queuedActors = com.ideasdeveloper.bms.server.admins.QueuedInstallActors(loginDatabases.admins::queuedInstallActor),
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without
     // delaying startup.
@@ -275,10 +279,16 @@ fun Application.module() {
         ),
         authorizations = unsignedAuthorizations,
         requestRestart = ::restartToLoadModules,
-        audit = { role, action, company, module, details -> companyProvisioning.recordAudit(role, action, company, module, details) },
+        // The services pass the login of who acted (owner or administrator); the audit names that user.
+        // A blank login is the system (a queued install dropped while nobody acted).
+        audit = { login, action, company, module, details ->
+            val actor = if (login.isBlank()) com.ideasdeveloper.bms.server.admins.AuditActor.system() else loginDatabases.admins.auditActorFor(login)
+            companyProvisioning.recordAudit(actor, action, company, module, details)
+        },
         installQueue = installQueue,
         moduleLoaded = { id -> moduleRegistry.definition(id) != null },
         modulePending = { id -> companyProvisioning.moduleInstallPending(id) },
+        queuedActors = com.ideasdeveloper.bms.server.admins.QueuedInstallActors(loginDatabases.admins::queuedInstallActor),
     )
     val packageExtensions = extensionPackages.loadInstalled(
         moduleClassLoader = { id -> moduleRegistry.module(id)?.javaClass?.classLoader },
@@ -292,7 +302,7 @@ fun Application.module() {
         registry = extensionRegistry,
         modules = moduleRegistry,
         notifier = ExtensionNotifier.from(moduleAccessService),
-        auditor = { role, action, company, module, details -> companyProvisioning.recordAudit(role, action, company, module, details) },
+        auditor = { actor, action, company, module, details -> companyProvisioning.recordAudit(actor, action, company, module, details) },
         migrationRunner = { company, extension -> companyProvisioning.applyExtensionMigrations(company, extension) },
     )
     // Installs a restart left unfinished start again: modules first, then the extensions that waited for them.
@@ -325,6 +335,18 @@ fun Application.module() {
     // Name and email of each user and password recovery by email code.
     // Un solo contador de fallos de contrasena actual para /auth/profile y la edicion del business owner.
     val passwordAttempts = com.ideasdeveloper.bms.server.auth.application.PasswordAttemptLimiter()
+    // Server administrators (SERVER_ADMINS.md): who is behind a central session, read live on every request.
+    val serverActors = ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions)
+    // Built below (it needs the account services); administrators' workspace staff are closed through it.
+    lateinit var companySelfServiceRef: CompanySelfService
+    val serverAdmins = com.ideasdeveloper.bms.server.admins.ServerAdminService(
+        store = loginDatabases.admins,
+        loginTaken = companyProvisioning::loginNameTaken,
+        revokeCompanySessions = { userId -> loginDatabases.revokeCompanySessionsOpenedBy(userId) },
+        audit = { actor, action, details -> companyProvisioning.recordAudit(actor, action, null, null, details) },
+        passwordAttempts = passwordAttempts,
+        deactivateWorkspaceStaff = { adminUserId, by, reason -> companySelfServiceRef.deactivateWorkspaceStaffOf(adminUserId, by, reason) },
+    )
     val accountService = AccountService(
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,
@@ -346,6 +368,13 @@ fun Application.module() {
                     throw AccountException("PASSWORD_NOT_UPDATED", failure.message.orEmpty())
                 }
             },
+            serverAdmin = { userId, password ->
+                try {
+                    serverAdmins.recoverPassword(userId, password)
+                } catch (failure: com.ideasdeveloper.bms.server.admins.ServerAdminException) {
+                    throw AccountException(failure.code, failure.message.orEmpty())
+                }
+            },
         ),
     )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.
@@ -362,7 +391,8 @@ fun Application.module() {
         verifyOwnerPassword = { companyCode, username, password -> loginDatabases.verifyPassword(companyCode, username, password) },
         passwordAttempts = passwordAttempts,
         secrets = secretBox,
-    )
+        serverActors = serverActors,
+    ).also { companySelfServiceRef = it }
     monitor.subscribe(ApplicationStopped) {
         moduleJobs.stop()
         moduleAccessService.close()
@@ -417,7 +447,7 @@ fun Application.module() {
         rateLimit(RateLimitName("admin")) {
             // Registra rutas de provisioning server_owner y autoservicio business_owner.
             companyRoutes(
-                authorizer = ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions),
+                authorizer = serverActors,
                 provisioning = companyProvisioning,
                 selfService = companySelfService,
                 coreUpdates = CoreUpdateService(
@@ -429,7 +459,9 @@ fun Application.module() {
                         )?.latestCoreVersion
                     },
                 ),
+                addToScope = { userId, code -> loginDatabases.admins.addCompany(userId, code) },
             )
+            serverAdminRoutes(serverActors, serverAdmins, ServerAudit(DatabaseFactory.getDataSource()))
         }
         // Centro de notificaciones del Core: la campana de la app lee y marca las del usuario.
         rateLimit(RateLimitName("public")) {
@@ -439,16 +471,13 @@ fun Application.module() {
         rateLimit(RateLimitName("admin")) {
             extensionRoutes(
                 extensionService,
-                ExtensionActors(moduleAccessService, ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions), extensionConnections),
+                ExtensionActors(moduleAccessService, serverActors, extensionConnections),
             )
         }
         rateLimit(RateLimitName("admin")) {
-            val packageActors = ExtensionActors(moduleAccessService, ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions), extensionConnections)
             // Instalar por ZIP/URL queda apagado salvo que EXTENSION_UPLOAD_ENABLED=true (mismo patron que MODULE_SIGNATURE_ENFORCED).
             val uploadEnabled = System.getenv("EXTENSION_UPLOAD_ENABLED")?.trim()?.equals("true", ignoreCase = true) ?: false
-            extensionPackageRoutes(extensionPackages, uploadEnabled) { call ->
-                (packageActors.serverOwner(call) as? ExtensionActorLookup.Found)?.actor?.role
-            }
+            extensionPackageRoutes(extensionPackages, uploadEnabled, serverActors)
         }
         // Routes of every extension, mounted once behind ExtensionGate (status per company).
         rateLimit(RateLimitName("extensions")) {
@@ -458,7 +487,7 @@ fun Application.module() {
 }
 
 // IP del cliente; detras del proxy local se toma X-Real-IP.
-private fun clientAddress(call: ApplicationCall): String {
+internal fun clientAddress(call: ApplicationCall): String {
     val remoteAddress = call.request.local.remoteAddress
     // Solo se confia en X-Real-IP cuando la peticion llega del proxy local (IPv4 o IPv6).
     val fromLocalProxy = remoteAddress == "127.0.0.1" || remoteAddress == "::1" || remoteAddress == "0:0:0:0:0:0:0:1"

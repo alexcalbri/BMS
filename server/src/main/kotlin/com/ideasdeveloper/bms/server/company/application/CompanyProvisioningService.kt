@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.server.company.application
 
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.admins.AuditActor
+import com.ideasdeveloper.bms.server.auth.application.EmailChangeRule
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.server.modules.CompanyFiles
 import com.ideasdeveloper.bms.server.security.ScramSha256
@@ -67,6 +69,8 @@ class CompanyProvisioningService(
     private val companyFiles: CompanyFiles? = null,
     // Installs that survive restarts and the single restart once every build ended; null keeps the restart per package.
     private val installQueue: PackageInstallQueue? = null,
+    // Re-checks who asked for a queued module install when it resumes (their current rights).
+    private val queuedActors: com.ideasdeveloper.bms.server.admins.QueuedInstallActors = com.ideasdeveloper.bms.server.admins.QueuedInstallActors.Unchecked,
 ) {
     private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
     // Progress of optional modules being built for installation, shown in the module list.
@@ -81,7 +85,7 @@ class CompanyProvisioningService(
     private val modules: List<ModuleDefinition>
         get() = moduleRegistry.definitions
 
-    fun createCompany(request: CreateCompanyRequest, provisioningRole: String): CreateCompanyResponse {
+    fun createCompany(request: CreateCompanyRequest, provisioningRole: String, actor: AuditActor): CreateCompanyResponse {
         val code = request.code.trim()
         val companyName = request.name.trim()
         val ownerUsername = request.businessOwnerUsername.trim()
@@ -117,7 +121,7 @@ class CompanyProvisioningService(
                 if (admin.existsDatabase(databaseName)) {
                     throw CompanyProvisioningException(tr("La base de datos de la empresa ya existe."))
                 }
-                if (admin.existsRole(ownerUsername) || roleUsedInAnyCompany(ownerUsername)) {
+                if (admin.existsRole(ownerUsername) || roleUsedInAnyCompany(ownerUsername) || centralLoginTaken(ownerUsername)) {
                     throw CompanyProvisioningException(tr("El usuario PostgreSQL del business owner ya existe."))
                 }
 
@@ -149,11 +153,11 @@ class CompanyProvisioningService(
                     insertCompany(connection, companyId, request, databaseName)
                     insertAudit(
                         connection = connection,
-                        actorRole = provisioningRole,
+                        actor = actor,
                         action = "company.created",
                         companyCode = code,
                         moduleId = null,
-                        details = """{"databaseName":"$databaseName","businessOwnerUsername":"$ownerUsername"}""",
+                        details = auditDetails("databaseName" to databaseName, "businessOwnerUsername" to ownerUsername),
                     )
                     connection.commit()
                     // Confirmado: desde aqui la empresa existe y no se debe borrar nada, aunque el cierre falle.
@@ -199,7 +203,9 @@ class CompanyProvisioningService(
         )
     }
 
-    fun listCompanies(): List<CompanySummaryResponse> {
+    // [scope] null: every company; otherwise only those (a scoped server administrator), and linked
+    // companies outside it are not named.
+    fun listCompanies(scope: Set<String>? = null): List<CompanySummaryResponse> {
         val companies = central.connection.use { connection ->
             connection.prepareStatement(
                 "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active, owner_group FROM companies WHERE NOT is_server_workspace ORDER BY code"
@@ -225,8 +231,9 @@ class CompanyProvisioningService(
             }
         }
         val groups = companies.groupBy({ it.second }, { it.first.code })
+            .mapValues { (_, codes) -> if (scope == null) codes else codes.filter { it in scope } }
 
-        return companies.map { (company, group) ->
+        return companies.filter { scope == null || it.first.code in scope }.map { (company, group) ->
             CompanySummaryResponse(
                 code = company.code,
                 name = company.name,
@@ -243,13 +250,16 @@ class CompanyProvisioningService(
     }
 
 
-    fun updateCompany(companyCode: String, request: UpdateCompanyRequest, provisioningRole: String): CompanySummaryResponse {
+    fun updateCompany(companyCode: String, request: UpdateCompanyRequest, provisioningRole: String, actor: AuditActor): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         val companyName = request.name.trim()
         val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (companyName.isBlank()) {
             throw CompanyProvisioningException(tr("El nombre de la empresa es obligatorio."))
+        }
+        if (UserProfileRules.hasControlCharacters(companyName)) {
+            throw CompanyProvisioningException(tr("El nombre no puede tener caracteres de control."))
         }
         if (!colorPattern.matches(request.primaryColor) ||
             !colorPattern.matches(request.secondaryColor) ||
@@ -285,11 +295,11 @@ class CompanyProvisioningService(
                 }
                 insertAudit(
                     connection = connection,
-                    actorRole = provisioningRole,
+                    actor = actor,
                     action = "company.updated",
                     companyCode = normalizedCompanyCode,
                     moduleId = null,
-                    details = """{"previousName":"${company.name.escapeJson()}","name":"${companyName.escapeJson()}","databaseName":"${company.databaseName}"}""",
+                    details = auditDetails("previousName" to company.name, "name" to companyName, "databaseName" to company.databaseName),
                 )
                 connection.commit()
             } catch (failure: Exception) {
@@ -314,7 +324,7 @@ class CompanyProvisioningService(
     }
 
 
-    fun setCompanyActive(companyCode: String, active: Boolean, provisioningRole: String): CompanySummaryResponse {
+    fun setCompanyActive(companyCode: String, active: Boolean, provisioningRole: String, actor: AuditActor): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
@@ -332,11 +342,11 @@ class CompanyProvisioningService(
                 }
                 insertAudit(
                     connection = connection,
-                    actorRole = provisioningRole,
+                    actor = actor,
                     action = if (active) "company.activated" else "company.deactivated",
                     companyCode = normalizedCompanyCode,
                     moduleId = null,
-                    details = """{"databaseName":"${company.databaseName}"}""",
+                    details = auditDetails("databaseName" to company.databaseName),
                 )
                 connection.commit()
             } catch (failure: Exception) {
@@ -373,7 +383,7 @@ class CompanyProvisioningService(
      * owner (same user and password) and joins the source's owner group, so the owner switches
      * between both; with a new owner the copy gets its own user and is not linked.
      */
-    fun duplicateCompany(sourceCode: String, newCode: String, provisioningRole: String, newOwner: DuplicateOwnerRequest? = null): CreateCompanyResponse {
+    fun duplicateCompany(sourceCode: String, newCode: String, provisioningRole: String, actor: AuditActor, newOwner: DuplicateOwnerRequest? = null): CreateCompanyResponse {
         val code = newCode.trim()
         val source = sourceCode.trim()
         rejectServerWorkspace(source)
@@ -434,7 +444,7 @@ class CompanyProvisioningService(
                 admin.autoCommit = true
                 if (admin.existsDatabase(databaseName)) throw CompanyProvisioningException(tr("La base de datos de la empresa ya existe."))
                 if (newOwnerInput != null) {
-                    if (admin.existsRole(owner.role) || roleUsedInAnyCompany(owner.role)) {
+                    if (admin.existsRole(owner.role) || roleUsedInAnyCompany(owner.role) || centralLoginTaken(owner.role)) {
                         throw CompanyProvisioningException(tr("El usuario PostgreSQL del business owner ya existe."))
                     }
                 } else if (!admin.existsRole(owner.role)) {
@@ -493,8 +503,8 @@ class CompanyProvisioningService(
                     // Same owner: same group. A new owner starts its own group.
                     insertCompany(connection, companyId, request, databaseName, if (newOwnerInput == null) ownerGroup else companyId)
                     insertAudit(
-                        connection, provisioningRole, "company.duplicated", code, null,
-                        """{"source":"$source","databaseName":"$databaseName","businessOwnerUsername":"${owner.role}","newBusinessOwner":${newOwnerInput != null}}""",
+                        connection, actor, "company.duplicated", code, null,
+                        auditDetails("source" to source, "databaseName" to databaseName, "businessOwnerUsername" to owner.role, "newBusinessOwner" to (newOwnerInput != null)),
                     )
                     connection.commit()
                 } catch (failure: Exception) {
@@ -522,7 +532,7 @@ class CompanyProvisioningService(
 
         // Same optional modules, then the settings of every enabled module (base ones included).
         val copied = modules.filter { it.id in enabledModules || it.locked }
-        copied.filterNot { it.locked }.forEach { definition -> setModuleEnabled(code, definition.id, true, provisioningRole) }
+        copied.filterNot { it.locked }.forEach { definition -> setModuleEnabled(code, definition.id, true, provisioningRole, actor) }
         val failures = mutableListOf<String>()
         tenantRuntimeConnection(sourceTenant).use { from ->
             tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { to ->
@@ -538,7 +548,7 @@ class CompanyProvisioningService(
         }
         if (failures.isNotEmpty()) {
             central.connection.use { connection ->
-                insertAudit(connection, provisioningRole, "company.duplicate_settings_failed", code, null, """{"modules":"${failures.joinToString().escapeJson()}"}""")
+                insertAudit(connection, actor, "company.duplicate_settings_failed", code, null, auditDetails("modules" to failures.joinToString()))
             }
         }
         return CreateCompanyResponse(
@@ -563,7 +573,7 @@ class CompanyProvisioningService(
      * same business owner, who then switches between them), or with [targetCode] null takes it out
      * of its group.
      */
-    fun linkCompany(companyCode: String, targetCode: String?, provisioningRole: String): List<CompanySummaryResponse> {
+    fun linkCompany(companyCode: String, targetCode: String?, provisioningRole: String, actor: AuditActor): List<CompanySummaryResponse> {
         val code = companyCode.trim()
         rejectServerWorkspace(code)
         targetCode?.trim()?.let { rejectServerWorkspace(it) }
@@ -588,8 +598,8 @@ class CompanyProvisioningService(
             }
             if (updated != 1) throw CompanyProvisioningException(tr("No se pudo actualizar la empresa."))
             insertAudit(
-                connection, provisioningRole, if (targetCode == null) "company.unlinked" else "company.linked", code, null,
-                """{"linkedTo":"${targetCode.orEmpty().escapeJson()}"}""",
+                connection, actor, if (targetCode == null) "company.unlinked" else "company.linked", code, null,
+                auditDetails("linkedTo" to targetCode.orEmpty()),
             )
         }
         return listCompanies()
@@ -609,7 +619,7 @@ class CompanyProvisioningService(
             query.executeQuery().use { it.next() }
         }
 
-    fun deleteInactiveCompany(companyCode: String, provisioningRole: String) {
+    fun deleteInactiveCompany(companyCode: String, provisioningRole: String, actor: AuditActor) {
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
@@ -670,11 +680,11 @@ class CompanyProvisioningService(
             try {
                 insertAudit(
                     connection = connection,
-                    actorRole = provisioningRole,
+                    actor = actor,
                     action = "company.deleted",
                     companyCode = normalizedCompanyCode,
                     moduleId = null,
-                    details = """{"databaseName":"${company.databaseName}","ownerRole":"${ownerRole.orEmpty()}","tenantDatabaseDropped":$tenantDatabaseDropped,"ownerRoleDropped":$ownerRoleDropped}""",
+                    details = auditDetails("databaseName" to company.databaseName, "ownerRole" to ownerRole.orEmpty(), "tenantDatabaseDropped" to tenantDatabaseDropped, "ownerRoleDropped" to ownerRoleDropped),
                 )
                 connection.prepareStatement("DELETE FROM companies WHERE code = ? AND is_active = FALSE").use { delete ->
                     delete.setString(1, normalizedCompanyCode)
@@ -697,8 +707,8 @@ class CompanyProvisioningService(
      * server owner does this, from the app: companies created by an AI agent get a random password
      * nobody knows, because credentials never go through the MCP.
      */
-    fun resetBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String) =
-        changeBusinessOwnerPassword(companyCode, password, provisioningRole, "company.owner_password_reset")
+    fun resetBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String, actor: AuditActor) =
+        changeBusinessOwnerPassword(companyCode, password, provisioningRole, "company.owner_password_reset", actor)
 
     /**
      * New password of a business owner who proved, with a code sent to their email, that they own the
@@ -706,7 +716,7 @@ class CompanyProvisioningService(
      */
     fun setBusinessOwnerPasswordByEmailCode(companyCode: String, password: String) {
         val role = firstServerOwnerRole() ?: throw CompanyProvisioningException(tr("El servidor no tiene un dueno activo."))
-        changeBusinessOwnerPassword(companyCode, password, role, "company.owner_password_recovered")
+        changeBusinessOwnerPassword(companyCode, password, role, "company.owner_password_recovered", null)
     }
 
     /** New password of a server owner who proved with an email code that they own the account. */
@@ -730,11 +740,12 @@ class CompanyProvisioningService(
                 revoke.setObject(1, userId)
                 revoke.executeUpdate()
             }
-            insertAudit(connection, role, "server_owner.password_recovered", null, null, "{}")
+            insertAudit(connection, AuditActor.owner(role, userId), "server_owner.password_recovered", null, null, "{}")
         }
     }
 
-    private fun changeBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String, auditAction: String) {
+    // [actor] null: the business owner recovering their own password (email code).
+    private fun changeBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String, auditAction: String, actor: AuditActor?) {
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         if (password.length < 12) {
@@ -759,30 +770,71 @@ class CompanyProvisioningService(
             }
         } ?: throw CompanyProvisioningException(tr("La empresa no tiene business owner."))
 
-        adminConnection(provisioningRole).use { admin ->
-            admin.autoCommit = true
-            admin.createStatement().use { statement ->
-                silenceStatementLog(statement)
-                statement.executeUpdate("ALTER ROLE ${quoteIdentifier(ownerRole)} PASSWORD ${quoteLiteral(ScramSha256.verifier(password))}")
+        // Audit row first, in an open central transaction committed after the change: a failed insert stops it.
+        inCentralTransaction { connection ->
+            insertAudit(connection, actor ?: AuditActor.businessOwner(ownerRole), auditAction, normalizedCompanyCode, null, auditDetails("businessOwnerUsername" to ownerRole))
+            adminConnection(provisioningRole).use { admin ->
+                admin.autoCommit = true
+                admin.createStatement().use { statement ->
+                    silenceStatementLog(statement)
+                    statement.executeUpdate("ALTER ROLE ${quoteIdentifier(ownerRole)} PASSWORD ${quoteLiteral(ScramSha256.verifier(password))}")
+                }
             }
-        }
-        tenantRuntimeConnection(tenantConfig).use { tenant ->
-            // An application password would keep the old one working; owners sign in with their role.
-            tenant.prepareStatement("DELETE FROM application_user_credentials WHERE user_id = ?").use { delete ->
-                delete.setObject(1, ownerId)
-                delete.executeUpdate()
+            tenantRuntimeConnection(tenantConfig).use { tenant ->
+                // An application password would keep the old one working; owners sign in with their role.
+                tenant.prepareStatement("DELETE FROM application_user_credentials WHERE user_id = ?").use { delete ->
+                    delete.setObject(1, ownerId)
+                    delete.executeUpdate()
+                }
+                tenant.prepareStatement(
+                    "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+                ).use { revoke ->
+                    revoke.setObject(1, ownerId)
+                    revoke.executeUpdate()
+                }
             }
-            tenant.prepareStatement(
-                "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
-            ).use { revoke ->
-                revoke.setObject(1, ownerId)
-                revoke.executeUpdate()
-            }
-        }
-        central.connection.use { connection ->
-            insertAudit(connection, provisioningRole, auditAction, normalizedCompanyCode, null, """{"businessOwnerUsername":"$ownerRole"}""")
         }
     }
+
+    /** A central user (server owner or administrator, also a removed one) already uses [username] as login. */
+    private fun centralLoginTaken(username: String): Boolean = central.connection.use { it.exists("application_users", "postgres_role", username) }
+
+    /**
+     * Whether [login] can be the login of a new server administrator: not a PostgreSQL role, not a
+     * central user and not a user of any company. Fails closed when a company cannot be checked.
+     */
+    fun loginNameTaken(login: String): Boolean =
+        central.connection.use { it.existsRole(login) } || centralLoginTaken(login) || roleUsedInAnyCompany(login)
+
+    /**
+     * Codes of every company whose business owner has the same PostgreSQL role as the one of
+     * [companyCode] (duplicated companies share it), [companyCode] included. Changing that owner's
+     * user, email or password changes it in all of them.
+     */
+    fun companiesSharingOwner(companyCode: String): Set<String> {
+        val role = ownerOf(companyCode.trim()).role
+        val codes = central.connection.use { connection ->
+            connection.prepareStatement("SELECT code, database_name FROM companies").use { query ->
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
+            }
+        }
+        // Fails closed: a company whose database cannot be read counts as sharing the owner.
+        return codes.filter { (_, databaseName) ->
+            runCatching {
+                tenantRuntimeConnection(loginDatabases.tenantConfig(databaseName) ?: tenantConfig(databaseName)).use { connection ->
+                    connection.prepareStatement(
+                        "SELECT 1 FROM business_owner owner JOIN application_users users ON users.id = owner.user_id WHERE users.postgres_role = ?"
+                    ).use { query ->
+                        query.setString(1, role)
+                        query.executeQuery().use { it.next() }
+                    }
+                }
+            }.getOrElse { failure -> !(failure is java.sql.SQLException && failure.sqlState == "42P01") }
+        }.map { it.first }.toSet() + companyCode.trim()
+    }
+
+    /** Codes of the companies in the owner group of [companyCode], itself included. */
+    fun ownerGroupOf(companyCode: String): Set<String> = loginDatabases.ownerGroupOf(companyCode.trim()) + companyCode.trim()
 
     /** True si [username] ya es `postgres_role` de algun usuario en cualquier empresa. */
     private fun roleUsedInAnyCompany(username: String): Boolean =
@@ -836,7 +888,7 @@ class CompanyProvisioningService(
      * companies keep it), so the change applies to all of them. Renaming the role clears its password
      * in PostgreSQL, so a new user needs a new password.
      */
-    fun updateBusinessOwner(companyCode: String, request: UpdateBusinessOwnerRequest, provisioningRole: String): BusinessOwnerResponse {
+    fun updateBusinessOwner(companyCode: String, request: UpdateBusinessOwnerRequest, provisioningRole: String, actor: AuditActor?): BusinessOwnerResponse {
         val code = companyCode.trim()
         val owner = ownerOf(code)
         val username = request.username.trim()
@@ -858,68 +910,76 @@ class CompanyProvisioningService(
         val ownerTenants = tenants.filter { tenant -> ownerRoleIn(tenant, owner.role) }
         if (renamed) {
             val taken = adminConnection(provisioningRole).use { it.existsRole(username) } ||
+                centralLoginTaken(username) ||
                 tenants.any { tenant -> roleUsedInTenant(tenant, username) }
             if (taken) throw CompanyProvisioningException(tr("Ya existe un usuario con ese nombre."))
         }
 
-        adminConnection(provisioningRole).use { admin ->
-            admin.autoCommit = true
-            admin.createStatement().use { statement ->
-                silenceStatementLog(statement)
-                if (renamed) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(owner.role)} RENAME TO ${quoteIdentifier(username)}")
-                if (password.isNotEmpty()) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} PASSWORD ${quoteLiteral(ScramSha256.verifier(password))}")
+        // Audit row first, in an open central transaction committed after the change: a failed insert stops it.
+        inCentralTransaction { connection ->
+            insertAudit(
+                connection, actor ?: AuditActor.businessOwner(owner.role), "company.owner_updated", code, null,
+                auditDetails(
+                    "businessOwnerUsername" to username,
+                    "previousUsername" to owner.role,
+                    "usernameChanged" to renamed,
+                    "emailChanged" to EmailChangeRule.isChange(owner.email, email),
+                    "passwordChanged" to password.isNotEmpty(),
+                ),
+            )
+            adminConnection(provisioningRole).use { admin ->
+                admin.autoCommit = true
+                admin.createStatement().use { statement ->
+                    silenceStatementLog(statement)
+                    if (renamed) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(owner.role)} RENAME TO ${quoteIdentifier(username)}")
+                    if (password.isNotEmpty()) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} PASSWORD ${quoteLiteral(ScramSha256.verifier(password))}")
+                }
             }
-        }
-        try {
-            ownerTenants.forEach { tenant ->
-                tenantRuntimeConnection(tenant).use { connection ->
-                    val ownerIds = connection.prepareStatement(
-                        """
-                        UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?
-                        WHERE postgres_role = ? AND id IN (SELECT user_id FROM business_owner)
-                        RETURNING id
-                        """.trimIndent()
-                    ).use { update ->
-                        update.setString(1, username)
-                        update.setString(2, displayName)
-                        update.setString(3, email)
-                        update.setString(4, owner.role)
-                        update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
-                    }
-                    if (password.isNotEmpty()) {
-                        ownerIds.forEach { id ->
-                            // Owners sign in with their role; an application password would keep the old one working.
-                            connection.prepareStatement("DELETE FROM application_user_credentials WHERE user_id = ?").use { delete ->
-                                delete.setObject(1, id)
-                                delete.executeUpdate()
-                            }
-                            connection.prepareStatement(
-                                "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
-                            ).use { revoke ->
-                                revoke.setObject(1, id)
-                                revoke.executeUpdate()
+            try {
+                ownerTenants.forEach { tenant ->
+                    tenantRuntimeConnection(tenant).use { connection ->
+                        val ownerIds = connection.prepareStatement(
+                            """
+                            UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?
+                            WHERE postgres_role = ? AND id IN (SELECT user_id FROM business_owner)
+                            RETURNING id
+                            """.trimIndent()
+                        ).use { update ->
+                            update.setString(1, username)
+                            update.setString(2, displayName)
+                            update.setString(3, email)
+                            update.setString(4, owner.role)
+                            update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+                        }
+                        if (password.isNotEmpty()) {
+                            ownerIds.forEach { id ->
+                                // Owners sign in with their role; an application password would keep the old one working.
+                                connection.prepareStatement("DELETE FROM application_user_credentials WHERE user_id = ?").use { delete ->
+                                    delete.setObject(1, id)
+                                    delete.executeUpdate()
+                                }
+                                connection.prepareStatement(
+                                    "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+                                ).use { revoke ->
+                                    revoke.setObject(1, id)
+                                    revoke.executeUpdate()
+                                }
                             }
                         }
                     }
                 }
-            }
-        } catch (failure: Exception) {
-            // Without its row the owner could not sign in with the new user: give the role its name back.
-            if (renamed) {
-                runCatching {
-                    adminConnection(provisioningRole).use { admin ->
-                        admin.autoCommit = true
-                        admin.createStatement().use { it.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} RENAME TO ${quoteIdentifier(owner.role)}") }
+            } catch (failure: Exception) {
+                // Without its row the owner could not sign in with the new user: give the role its name back.
+                if (renamed) {
+                    runCatching {
+                        adminConnection(provisioningRole).use { admin ->
+                            admin.autoCommit = true
+                            admin.createStatement().use { it.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} RENAME TO ${quoteIdentifier(owner.role)}") }
+                        }
                     }
                 }
+                throw failure
             }
-            throw failure
-        }
-        central.connection.use { connection ->
-            insertAudit(
-                connection, provisioningRole, "company.owner_updated", code, null,
-                """{"businessOwnerUsername":"${username.escapeJson()}","previousUsername":"${owner.role.escapeJson()}","passwordChanged":${password.isNotEmpty()}}""",
-            )
         }
         return BusinessOwnerResponse(username, displayName, email)
     }
@@ -927,7 +987,7 @@ class CompanyProvisioningService(
     /** The business owner edits their own data; runs as the first server owner's role, like password recovery. */
     fun updateBusinessOwnerBySelf(companyCode: String, request: UpdateBusinessOwnerRequest): BusinessOwnerResponse {
         val role = firstServerOwnerRole() ?: throw CompanyProvisioningException(tr("El servidor no tiene un dueno activo."))
-        return updateBusinessOwner(companyCode, request, role)
+        return updateBusinessOwner(companyCode, request, role, null)
     }
 
     private fun ownerOf(companyCode: String): OwnerRef {
@@ -992,7 +1052,7 @@ class CompanyProvisioningService(
         }
     }
 
-    fun setModuleEnabled(companyCode: String, moduleId: String, enabled: Boolean, provisioningRole: String): CompanySummaryResponse {
+    fun setModuleEnabled(companyCode: String, moduleId: String, enabled: Boolean, provisioningRole: String, actor: AuditActor): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
         val normalizedModuleId = moduleId.trim()
         val definition = modules.singleOrNull { it.id == normalizedModuleId }
@@ -1008,48 +1068,50 @@ class CompanyProvisioningService(
         val tenantConfig = loginDatabases.tenantConfig(company.databaseName)
             ?: throw CompanyProvisioningException(tr("La empresa no tiene conexion tenant configurada."))
 
-        tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
-            applyModuleMigrations(tenant, definition)
-            tenant.autoCommit = false
-            try {
-                tenant.prepareStatement(
-                    """
-                    INSERT INTO tenant_modules (module_id, display_name, status, enabled_at)
-                    VALUES (?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END)
-                    ON CONFLICT (module_id)
-                    DO UPDATE SET
-                        display_name = EXCLUDED.display_name,
-                        status = EXCLUDED.status,
-                        enabled_at = CASE
-                            WHEN EXCLUDED.status = 'enabled' THEN COALESCE(tenant_modules.enabled_at, CURRENT_TIMESTAMP)
-                            ELSE NULL
-                        END
-                    """.trimIndent()
-                ).use { upsert ->
-                    upsert.setString(1, definition.id)
-                    upsert.setString(2, definition.displayName)
-                    upsert.setString(3, if (enabled) "enabled" else "disabled")
-                    upsert.setBoolean(4, enabled)
-                    upsert.executeUpdate()
-                }
-                tenant.commit()
-            } catch (failure: Exception) {
-                tenant.rollback()
-                throw failure
-            } finally {
-                tenant.autoCommit = true
-            }
-        }
-
-        central.connection.use { connection ->
+        // The audit row is written first in an open central transaction and committed right after the
+        // tenant change: a failed audit insert stops the change (two databases: only a failure of the
+        // final central commit, after the tenant commit, could leave the change without its row).
+        inCentralTransaction { connection ->
             insertAudit(
                 connection = connection,
-                actorRole = provisioningRole,
+                actor = actor,
                 action = if (enabled) "module.enabled" else "module.disabled",
                 companyCode = normalizedCompanyCode,
                 moduleId = definition.id,
-                details = """{"displayName":"${definition.displayName.escapeJson()}"}""",
+                details = auditDetails("displayName" to definition.displayName),
             )
+            tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+                applyModuleMigrations(tenant, definition)
+                tenant.autoCommit = false
+                try {
+                    tenant.prepareStatement(
+                        """
+                        INSERT INTO tenant_modules (module_id, display_name, status, enabled_at)
+                        VALUES (?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END)
+                        ON CONFLICT (module_id)
+                        DO UPDATE SET
+                            display_name = EXCLUDED.display_name,
+                            status = EXCLUDED.status,
+                            enabled_at = CASE
+                                WHEN EXCLUDED.status = 'enabled' THEN COALESCE(tenant_modules.enabled_at, CURRENT_TIMESTAMP)
+                                ELSE NULL
+                            END
+                        """.trimIndent()
+                    ).use { upsert ->
+                        upsert.setString(1, definition.id)
+                        upsert.setString(2, definition.displayName)
+                        upsert.setString(3, if (enabled) "enabled" else "disabled")
+                        upsert.setBoolean(4, enabled)
+                        upsert.executeUpdate()
+                    }
+                    tenant.commit()
+                } catch (failure: Exception) {
+                    tenant.rollback()
+                    throw failure
+                } finally {
+                    tenant.autoCommit = true
+                }
+            }
         }
 
         return CompanySummaryResponse(
@@ -1124,10 +1186,12 @@ class CompanyProvisioningService(
         ServerModuleCatalogResponse(catalogUrl = moduleCatalogUrl())
 
     // Name of the server shown to server owners instead of a company name.
-    fun updateServerName(name: String, provisioningRole: String): ServerNameResponse {
+    fun updateServerName(name: String, provisioningRole: String, actor: AuditActor): ServerNameResponse {
         val normalized = name.trim()
         if (normalized.isEmpty() || normalized.length > 80) throw CompanyProvisioningException(tr("El nombre del servidor debe tener entre 1 y 80 caracteres."))
-        central.connection.use { connection ->
+        if (UserProfileRules.hasControlCharacters(normalized)) throw CompanyProvisioningException(tr("El nombre no puede tener caracteres de control."))
+        // The rename and its audit row commit together: a failed audit insert leaves the name as it was.
+        inCentralTransaction { connection ->
             connection.prepareStatement(
                 """
                 INSERT INTO server_settings (setting_key, setting_value, updated_at)
@@ -1140,17 +1204,17 @@ class CompanyProvisioningService(
                 upsert.setString(2, normalized)
                 upsert.executeUpdate()
             }
-            insertAudit(connection, provisioningRole, "server.renamed", null, null, """{"name":"${normalized.escapeJson()}"}""")
+            insertAudit(connection, actor, "server.renamed", null, null, auditDetails("name" to normalized))
         }
         return ServerNameResponse(normalized)
     }
 
-    fun updateServerModuleCatalog(catalogUrl: String): ServerModuleCatalogResponse {
+    fun updateServerModuleCatalog(catalogUrl: String, actor: AuditActor): ServerModuleCatalogResponse {
         val normalized = catalogUrl.trim()
         if (normalized.isNotBlank() && !normalized.startsWith("https://") && !normalized.startsWith("http://")) {
             throw CompanyProvisioningException(tr("La URL del catalogo debe iniciar con http:// o https://."))
         }
-        central.connection.use { connection ->
+        inCentralTransaction { connection ->
             connection.prepareStatement(
                 """
                 INSERT INTO server_settings (setting_key, setting_value, updated_at)
@@ -1163,6 +1227,7 @@ class CompanyProvisioningService(
                 upsert.setString(2, normalized)
                 upsert.executeUpdate()
             }
+            insertAudit(connection, actor, "module.catalog_updated", null, null, auditDetails("catalogUrl" to normalized))
         }
         // Saving the URL (even the same one) reads the catalog again on the next listing.
         remoteModuleCatalog.forget(normalized)
@@ -1174,7 +1239,7 @@ class CompanyProvisioningService(
      * modules are downloaded from the configured catalog branch and built in the background; when
      * the package is ready the server restarts to load it. The response reports the progress.
      */
-    fun installServerModule(moduleId: String, appVersion: String? = null): ServerModuleResponse {
+    fun installServerModule(moduleId: String, actor: AuditActor, appVersion: String? = null): ServerModuleResponse {
         val normalizedModuleId = moduleId.trim()
         val remotePackages = syncRemoteAvailableModules()
         val definition = moduleRegistry.availableDefinition(normalizedModuleId)
@@ -1197,6 +1262,10 @@ class CompanyProvisioningService(
                 ?.let { throw CompanyProvisioningException(it.message, it.code) }
         }
         val warning = ModuleRequirementGate.missingAppVersionWarning(target.minAppVersion, appVersion)
+        recordAudit(
+            actor, if (update) "module.update_requested" else "module.install_requested", null, definition.id,
+            auditDetails("version" to target.version, "build" to building),
+        )
         if (!building) {
             activateLoadedModule(definition)
             return moduleResponse(definition, remotePackage).copy(warning = warning)
@@ -1207,9 +1276,13 @@ class CompanyProvisioningService(
         val source = remotePackage?.source
             ?: throw CompanyProvisioningException(tr("{0} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
         installStates[definition.id] = ModuleInstallState(InstallStatus.Installing) { tr("En cola para compilar") }
-        installQueue?.add(PackageInstallQueue.Module, definition.id)
+        // Who asked is kept with the queued install, so a resumed install is re-checked with their current rights.
+        installQueue?.add(PackageInstallQueue.Module, definition.id, if (actor.kind == AuditActor.SystemKind) "" else actor.login)
         installQueue?.queued()
-        buildExecutor.execute { buildAndInstall(definition, builder, source) }
+        // An administrator always gets the enforced signature gate: an unsigned package needs its hash
+        // authorized (server.modules.authorize_unsigned), whatever MODULE_SIGNATURE_ENFORCED says.
+        val requireAuthorization = actor.kind == AuditActor.ServerAdminKind
+        buildExecutor.execute { buildAndInstall(definition, builder, source, requireAuthorization) }
         return moduleResponse(definition, remotePackage).copy(warning = warning)
     }
 
@@ -1236,7 +1309,7 @@ class CompanyProvisioningService(
      */
     fun authorizeUnsignedServerModule(
         moduleId: String,
-        actorRole: String,
+        actor: AuditActor,
         confirmationText: String,
         expectedPackageSha256: String,
         expectedCommit: String,
@@ -1266,9 +1339,9 @@ class CompanyProvisioningService(
         }
         val builder = modulePackageBuilder
             ?: throw CompanyProvisioningException(tr("Este servidor no puede autorizar modulos: falta la carpeta compiler/ de la instalacion."), "BUILDER_UNAVAILABLE")
-        builder.authorizeUnsigned(inspection.packageSha256, id, inspection.commit, actorRole, text)
+        builder.authorizeUnsigned(inspection.packageSha256, id, inspection.commit, actor.login, text)
         recordAudit(
-            actorRole, "module.package.authorize_unsigned", null, id,
+            actor, "module.package.authorize_unsigned", null, id,
             kotlinx.serialization.json.buildJsonObject {
                 put("moduleId", kotlinx.serialization.json.JsonPrimitive(id))
                 put("packageSha256", kotlinx.serialization.json.JsonPrimitive(inspection.packageSha256))
@@ -1302,23 +1375,23 @@ class CompanyProvisioningService(
      * Turns a module on or off in the server workspace. Turning on the first module creates the
      * workspace with its own tenant database. Base modules are always on once it exists.
      */
-    fun setServerModuleUsage(moduleId: String, enabled: Boolean, provisioningRole: String): ServerModuleResponse {
+    fun setServerModuleUsage(moduleId: String, enabled: Boolean, provisioningRole: String, actor: AuditActor): ServerModuleResponse {
         val definition = modules.singleOrNull { it.id == moduleId.trim() }
             ?: throw CompanyProvisioningException(tr("Modulo no reconocido o no instalado en el servidor."))
         if (enabled) {
-            setModuleEnabled(ensureServerWorkspace(provisioningRole), definition.id, true, provisioningRole)
+            setModuleEnabled(ensureServerWorkspace(provisioningRole, actor), definition.id, true, provisioningRole, actor)
         } else {
             if (definition.locked) {
                 throw CompanyProvisioningException(tr("{0} es un modulo base y siempre esta activo en el espacio del servidor.", trIn(I18n.moduleNamespace(definition.id), definition.displayName)))
             }
-            serverWorkspaceRow()?.let { setModuleEnabled(it.code, definition.id, false, provisioningRole) }
+            serverWorkspaceRow()?.let { setModuleEnabled(it.code, definition.id, false, provisioningRole, actor) }
         }
         return moduleResponse(definition, null)
     }
 
     // Code of the server workspace, creating it with its own tenant database on first use.
     @Synchronized
-    fun ensureServerWorkspace(provisioningRole: String): String {
+    fun ensureServerWorkspace(provisioningRole: String, actor: AuditActor): String {
         serverWorkspaceRow()?.let { return it.code }
         val code = ServerWorkspace.Code
         val databaseName = ServerWorkspace.DatabaseName
@@ -1360,7 +1433,7 @@ class CompanyProvisioningService(
                     insert.setString(4, databaseName)
                     insert.executeUpdate()
                 }
-                insertAudit(connection, provisioningRole, "server_workspace.created", code, null, """{"databaseName":"$databaseName"}""")
+                insertAudit(connection, actor, "server_workspace.created", code, null, auditDetails("databaseName" to databaseName))
                 connection.commit()
             } catch (failure: Exception) {
                 connection.rollback()
@@ -1505,10 +1578,10 @@ class CompanyProvisioningService(
         ).use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null } }
     }
 
-    private fun buildAndInstall(definition: ModuleDefinition, builder: ModulePackageBuilder, source: GitHubLocation) {
+    private fun buildAndInstall(definition: ModuleDefinition, builder: ModulePackageBuilder, source: GitHubLocation, requireAuthorization: Boolean) {
         val moduleId = definition.id
         try {
-            val built = builder.build(moduleId, source) { step ->
+            val built = builder.build(moduleId, source, requireAuthorization) { step ->
                 installStates[moduleId] = ModuleInstallState(InstallStatus.Installing) { tr(step) }
             }
             central.connection.use { connection ->
@@ -1562,8 +1635,14 @@ class CompanyProvisioningService(
                 installStates[entry.id] = ModuleInstallState(InstallStatus.Failed) { tr("No se pudo instalar tras varios intentos; vuelve a pedirlo.") }
                 return@forEach
             }
+            // The install runs with the current rights of who asked for it; without them it is dropped.
+            val actor = queuedActors.current(entry.actor, com.ideasdeveloper.bms.server.admins.ServerPermission.ModulesInstall)
+            if (actor == null) {
+                dropQueuedInstall(entry.id, entry.actor)
+                return@forEach
+            }
             try {
-                installServerModule(entry.id)
+                installServerModule(entry.id, actor)
                 // Already loaded at the wanted version: there was nothing left to build.
                 if (installStates[entry.id]?.status != InstallStatus.Installing) queue.done(entry.kind, entry.id)
             } catch (failure: Exception) {
@@ -1574,7 +1653,16 @@ class CompanyProvisioningService(
         }
     }
 
-    fun deleteServerModule(moduleId: String) {
+    // A queued module install whose requester may no longer install modules: not resumed, and audited.
+    private fun dropQueuedInstall(moduleId: String, requestedBy: String) {
+        log.warn("Pending install of module {} was dropped: {} may no longer install modules.", moduleId, requestedBy)
+        installStates[moduleId] = ModuleInstallState(InstallStatus.Failed) { tr("La instalacion pendiente se cancelo: quien la pidio ya no puede instalar modulos.") }
+        installQueue?.done(PackageInstallQueue.Module, moduleId)
+        runCatching { recordAudit(AuditActor.system(), "module.install_dropped", null, moduleId, auditDetails("requestedBy" to requestedBy, "reason" to "requester_not_allowed")) }
+            .onFailure { log.error("Audit entry module.install_dropped could not be written", it) }
+    }
+
+    fun deleteServerModule(moduleId: String, actor: AuditActor) {
         val normalizedModuleId = moduleId.trim()
         val definition = moduleRegistry.definition(normalizedModuleId)
             ?: throw CompanyProvisioningException(tr("Modulo no reconocido o no instalado en el servidor."))
@@ -1596,6 +1684,7 @@ class CompanyProvisioningService(
                     }
                 }
                 moduleRegistry.remove(definition.id)
+                insertAudit(connection, actor, "module.removed", null, definition.id, auditDetails("version" to definition.version))
                 connection.commit()
             } catch (failure: Exception) {
                 connection.rollback()
@@ -1723,6 +1812,9 @@ class CompanyProvisioningService(
         }
         if (companyName.isBlank()) {
             throw CompanyProvisioningException(tr("El nombre de la empresa es obligatorio."))
+        }
+        if (UserProfileRules.hasControlCharacters(companyName)) {
+            throw CompanyProvisioningException(tr("El nombre no puede tener caracteres de control."))
         }
         if (!postgresRolePattern.matches(ownerUsername)) {
             throw CompanyProvisioningException(tr("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
@@ -2208,8 +2300,8 @@ class CompanyProvisioningService(
     }
 
     /** Audit entry written by other Core services (extensions); [details] is a JSON object. */
-    fun recordAudit(actorRole: String, action: String, companyCode: String?, moduleId: String?, details: String) {
-        central.connection.use { connection -> insertAudit(connection, actorRole, action, companyCode, moduleId, details) }
+    fun recordAudit(actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) {
+        central.connection.use { connection -> insertAudit(connection, actor, action, companyCode, moduleId, details) }
     }
 
     /**
@@ -2247,33 +2339,27 @@ class CompanyProvisioningService(
         }
     }
 
+    /** Runs [block] in one central transaction (committed at the end, rolled back on any failure). */
+    private fun <T> inCentralTransaction(block: (Connection) -> T): T = central.connection.use { connection ->
+        connection.autoCommit = false
+        try {
+            block(connection).also { connection.commit() }
+        } catch (failure: Throwable) {
+            runCatching { connection.rollback() }
+            throw failure
+        } finally {
+            runCatching { connection.autoCommit = true }
+        }
+    }
+
     private fun insertAudit(
         connection: Connection,
-        actorRole: String,
+        actor: AuditActor,
         action: String,
         companyCode: String?,
         moduleId: String?,
         details: String,
-    ) {
-        connection.prepareStatement(
-            """
-            INSERT INTO provisioning_audit_log (id, actor_role, action, company_code, module_id, details, actor_name, actor_email)
-            SELECT ?, ?, ?, ?, ?, CAST(? AS jsonb), users.display_name, users.email
-            FROM (SELECT 1) AS one
-            LEFT JOIN application_users users ON users.postgres_role = ?
-            """.trimIndent()
-        ).use { insert ->
-            insert.setObject(1, UUID.randomUUID())
-            insert.setString(2, actorRole)
-            insert.setString(3, action)
-            insert.setString(4, companyCode)
-            insert.setString(5, moduleId)
-            insert.setString(6, details)
-            // Who made the change, by name and email as they are now.
-            insert.setString(7, actorRole)
-            insert.executeUpdate()
-        }
-    }
+    ) = ProvisioningAudit.insert(connection, actor, action, companyCode, moduleId, details)
 
     private fun Connection.exists(table: String, column: String, value: String): Boolean {
         prepareStatement("SELECT 1 FROM $table WHERE $column = ?").use { query ->
@@ -2298,7 +2384,6 @@ class CompanyProvisioningService(
 
     private fun quoteLiteral(value: String): String = "'" + value.replace("'", "''") + "'"
 
-    private fun String.escapeJson(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 
     private fun Connection.setProvisioningRole(role: String) {
         createStatement().use { statement ->

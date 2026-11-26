@@ -121,6 +121,17 @@ class PasswordAttemptLimiter(
         synchronized(entry) { entry.failures++ }
     }
 
+    /** Failures recorded for [key] in its current window (0 when none or expired). */
+    fun failures(key: String): Int {
+        val entry = entries[key] ?: return 0
+        synchronized(entry) { return if (live(entry, clock())) entry.failures else 0 }
+    }
+
+    /** Forgets [key] (a successful sign-in). */
+    fun reset(key: String) {
+        entries.remove(key)
+    }
+
     private fun live(entry: Entry, now: Instant) = entry.windowStart.plus(window).isAfter(now)
 }
 
@@ -142,6 +153,10 @@ const val KeepLanguage = "keep"
 class AccountPasswords(
     val serverOwner: (userId: UUID, password: String) -> Unit,
     val businessOwner: (companyCode: String, password: String) -> Unit,
+    // Server administrators (central database, server_admins): sets the hash and revokes their sessions.
+    val serverAdmin: (userId: UUID, password: String) -> Unit = { _, _ ->
+        throw AccountException("PASSWORD_NOT_UPDATED", tr("No se pudo cambiar la contrasena."))
+    },
 )
 
 /**
@@ -186,7 +201,7 @@ class AccountService(
     }
 
     fun profile(accessToken: String, companyCode: String?): AccountProfile = database(companyCode).use { connection ->
-        val account = sessionAccount(connection, accessToken, companyCode == null)
+        val account = sessionAccount(connection, accessToken, companyCode)
             ?: throw AccountException("INVALID_SESSION", tr("La sesion no es valida."))
         account.profile(ApplicationUserCodes.ensure(connection, account.id), userLanguage(connection, account.id))
     }
@@ -206,7 +221,7 @@ class AccountService(
             throw AccountException("INVALID_LANGUAGE", tr("El idioma no es valido."))
         }
         return database(companyCode).use { connection ->
-            val account = sessionAccount(connection, accessToken, companyCode == null)
+            val account = sessionAccount(connection, accessToken, companyCode)
                 ?: throw AccountException("INVALID_SESSION", tr("La sesion no es valida."))
             // Cambiar el correo propio exige la contrasena actual; cambiar solo el nombre no.
             val emailChanges = EmailChangeRule.isChange(account.email, email)
@@ -563,7 +578,13 @@ class AccountService(
     }
 
     private fun setPassword(connection: Connection, account: Account, companyCode: String?, password: String) {
-        if (companyCode == null) return passwords.serverOwner(account.id, password)
+        if (companyCode == null) {
+            val owner = connection.prepareStatement("SELECT 1 FROM server_owners WHERE user_id = ?").use { query ->
+                query.setObject(1, account.id)
+                query.executeQuery().use { it.next() }
+            }
+            return if (owner) passwords.serverOwner(account.id, password) else passwords.serverAdmin(account.id, password)
+        }
         val businessOwner = connection.prepareStatement("SELECT 1 FROM business_owner WHERE user_id = ?").use { query ->
             query.setObject(1, account.id)
             query.executeQuery().use { it.next() }
@@ -621,8 +642,38 @@ class AccountService(
         }.connection
     }
 
-    // In the central database only server owners have accounts that sign in.
-    private fun ownerFilter(server: Boolean) = if (server) "AND EXISTS (SELECT 1 FROM server_owners owners WHERE owners.user_id = users.id)" else ""
+    // In the central database only server owners and active server administrators have accounts that sign in.
+    private fun ownerFilter(server: Boolean) = if (server) {
+        "AND (EXISTS (SELECT 1 FROM server_owners owners WHERE owners.user_id = users.id) OR ${adminFilter()})"
+    } else {
+        ""
+    }
+
+    // Before control V015 there is no server_admins table: only owners then.
+    private fun adminFilter(): String =
+        if (adminsTable()) "EXISTS (SELECT 1 FROM server_admins admins WHERE admins.user_id = users.id AND admins.is_active)" else "FALSE"
+
+    @Volatile private var adminsTableSeen = false
+
+    private fun adminsTable(): Boolean {
+        if (adminsTableSeen) return true
+        adminsTableSeen = central.connection.use { connection ->
+            connection.prepareStatement("SELECT to_regclass('server_admins') IS NOT NULL").use { query -> query.executeQuery().use { it.next() && it.getBoolean(1) } }
+        }
+        return adminsTableSeen
+    }
+
+    // A server administrator who must change the initial password can do nothing else (SERVER_ADMINS.md §4).
+    private fun mustChangePassword(connection: Connection, userId: UUID): Boolean = adminsTable() &&
+        connection.prepareStatement("SELECT must_change_password FROM server_admins WHERE user_id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { it.next() && it.getBoolean(1) }
+        }
+
+    // The account of a session; a company session the switcher opened must still be allowed (LoginDatabases.companySessionAllowed).
+    private fun sessionAccount(connection: Connection, accessToken: String, companyCode: String?): Account? =
+        sessionAccount(connection, accessToken, companyCode == null)
+            ?.takeIf { companyCode == null || loginDatabases.companySessionAllowed(companyCode, accessToken) }
 
     private fun sessionAccount(connection: Connection, accessToken: String, server: Boolean): Account? = connection.prepareStatement(
         """
@@ -638,6 +689,10 @@ class AccountService(
     ).use { query ->
         query.setString(1, tokens.hash(accessToken))
         query.executeQuery().use { rows -> if (rows.next()) account(rows) else null }
+    }?.also { account ->
+        if (server && mustChangePassword(connection, account.id)) {
+            throw AccountException("PASSWORD_CHANGE_REQUIRED", tr("Cambia tu contrasena antes de continuar."))
+        }
     }
 
     private fun accountByUsername(connection: Connection, username: String, server: Boolean): Account? = connection.prepareStatement(

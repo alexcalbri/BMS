@@ -214,22 +214,23 @@ class JdbcCoreUpdateStore(private val central: DataSource) : CoreUpdateStore {
             }
         }
 
-    private fun audit(connection: Connection, actorRole: String, row: CoreUpdateRow) {
-        connection.prepareStatement(
-            """
-            INSERT INTO provisioning_audit_log (id, actor_role, action, company_code, module_id, details, actor_name, actor_email)
-            SELECT ?, ?, 'server.core_update_requested', NULL, NULL, CAST(? AS jsonb), users.display_name, users.email
-            FROM (SELECT 1) AS one
-            LEFT JOIN application_users users ON users.postgres_role = ?
-            """.trimIndent()
-        ).use { insert ->
-            insert.setObject(1, UUID.randomUUID())
-            insert.setString(2, actorRole)
-            // Las versiones ya pasaron la validacion semver, no necesitan escape.
-            insert.setString(3, "{\"from\":\"${row.fromVersion}\",\"to\":\"${row.targetVersion}\",\"requestId\":${row.id}}")
-            insert.setString(4, actorRole)
-            insert.executeUpdate()
+    // [requestedBy] is the login of the server owner or administrator who asked (never the executing role).
+    private fun audit(connection: Connection, requestedBy: String, row: CoreUpdateRow) {
+        val (userId, owner) = connection.prepareStatement(
+            "SELECT users.id, EXISTS (SELECT 1 FROM server_owners owners WHERE owners.user_id = users.id) FROM application_users users WHERE users.postgres_role = ?"
+        ).use { query ->
+            query.setString(1, requestedBy)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) to rows.getBoolean(2) else null to false }
         }
+        val kind = when {
+            userId == null -> com.ideasdeveloper.bms.server.admins.AuditActor.SystemKind
+            owner -> com.ideasdeveloper.bms.server.admins.AuditActor.ServerOwnerKind
+            else -> com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind
+        }
+        ProvisioningAudit.insert(
+            connection, com.ideasdeveloper.bms.server.admins.AuditActor(requestedBy, userId, kind), "server.core_update_requested", null, null,
+            auditDetails("from" to row.fromVersion, "to" to row.targetVersion, "requestId" to row.id),
+        )
     }
 
     private fun ResultSet.toRow() = CoreUpdateRow(

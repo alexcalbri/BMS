@@ -41,7 +41,9 @@ Implementación actual:
   exige firma Ed25519 valida o, si no viene firmada, que su hash este autorizado
   aqui. Con `MODULE_SIGNATURE_ENFORCED=true` (recomendado en produccion), sin
   firma ni autorizacion la instalacion se rechaza; con `false` (por defecto,
-  dev/pruebas) se permite sin firma con un aviso en el log. La autorizacion de
+  dev/pruebas) se permite sin firma con un aviso en el log, salvo cuando lo pide
+  un administrador del servidor: para ellos la compuerta es siempre estricta
+  (SERVER_ADMINS.md §8). La autorizacion de
   modulos es independiente de la de extensiones (se guarda con prefijo
   `module-commit:`).
 - `PUT /companies/{code}/modules/{moduleId}` habilita o deshabilita modulos
