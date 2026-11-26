@@ -70,6 +70,14 @@ The Empresa screen also includes a basic tenant user flow: `business_owner`
 can create application users and assign permissions declared by active modules
 inside its own tenant database.
 
+Since Core 0.11.0 the owner can also create **server administrators** from the
+app (control migration `V015__create_server_admins.sql`, applied by `install.sh`
+and `update.sh`, which also grant the service user `server_admins*` and
+`INSERT` of new rows in `application_users`). Administrators sign in to the
+server like the owner (no company code) with an application password (16+
+characters, changed at the first sign-in); they get no PostgreSQL role and only
+the permissions and companies the owner gives them. See `SERVER_ADMINS.md`.
+
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
 authentication for that account. This verifies login and the backend is wired

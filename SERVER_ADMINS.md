@@ -142,3 +142,86 @@ Tests with `/home/user/tools/bms-test.sh <worktree> ["*Filter*"]`; never commit 
 `gradle/gradle-daemon-jvm.properties`. Commits: author/committer `alexcalbri
 <164930758+alexcalbri@users.noreply.github.com>`, Spanish conventional message, no co-author or
 session trailers, no push. Never edit an existing migration.
+
+## 7. Server implementation (Core 0.11.0)
+
+- Code: `server/.../server/admins/` (`ServerPermission`, `ServerActor`, `ServerAdminStore`,
+  `ServerAdminService`, `ServerRoutePolicies`, `ServerAudit`, `ServerAdminRoutes`); contract in
+  `core/src/commonMain/.../bms/ServerAdmins.kt` (`ServerPermissionIds`, DTOs).
+- **One table decides every server route**: `ServerRoutePolicies.all` maps `"METHOD /path"` to
+  `OwnerOnly`, `AnyServerUser` or `Requires(permission, company = None|Path|Header, workspace)`.
+  Handlers call `call.serverActor(resolver, message)`, which looks the matched route up by its Ktor
+  routing node; an unlisted route is owner only. `ServerRouteMatrixTest` mounts every server router,
+  enumerates the routing tree and fails for an unclassified route, then checks (a)–(d) and the
+  password-change gate for each entry. `ServerAdminsPostgresTest` (`BMS_SERVER_ADMINS_PG_URL`)
+  covers (e) and (f) on real databases.
+- Login (central scope): `role` `server_owner` | `server_admin`, `serverPermissions` (all ids for
+  the owner), `serverCompanies` (null = all), `mustChangePassword`. Administrators get
+  `enabledModules = []`; `workspaceCompanyCode` only with `server.workspace`.
+- Routes: `GET /server/me` → `{userId, login, kind, displayName, email, permissions, allCompanies,
+  companies, mustChangePassword}` (answers normally while the password must change);
+  `PUT /auth/password {currentPassword, newPassword}` → 204 (administrators; keeps the current
+  session, revokes the others and the company sessions they opened); owner only:
+  `GET /server/admin-permissions` (`[{id, group (translated heading), title, description, risk,
+  scoped}]`), `GET/POST /server/admins`, `GET/PUT/DELETE /server/admins/{id}` (PUT `{displayName,
+  email, allCompanies?, companies?}`), `PUT …/permissions {permissions, allCompanies?, companies?}`,
+  `PUT …/password {password}` (204), `PUT …/status {active}`; `GET /server/audit?company=&action=
+  &actor=&from=YYYY-MM-DD&to=YYYY-MM-DD&page=0&pageSize=50` → `{items, page, pageSize, hasMore}`.
+  Errors are `{code, message}`; refusals `SERVER_OWNER_REQUIRED`, `SERVER_PERMISSION_REQUIRED`,
+  `PASSWORD_CHANGE_REQUIRED` (403), `SERVER_OWNER_UNAVAILABLE` (503, no active owner to execute).
+- Deleting an administrator keeps the `application_users` row (audit references stay valid, the
+  login is never reused) and removes `server_admins`; it can no longer sign in anywhere.
+- New audit rows: module install/update request, module removal, catalog URL change, workspace
+  profile/mail/users changes, every administrator change, `server_admin.entered_company`.
+
+## 8. Threat notes
+
+- **Granting themself / editing own row / managing other administrators.** All `/server/admins*`
+  and `/server/admin-permissions` are `OwnerOnly` in the table and `ServerAdminService` calls
+  `requireOwner()` again; no permission id mentions administrators or owners (tested).
+  `server_owners` is read-only for the service user.
+- **Owner ↔ administrator overlap.** Triggers on `server_admins` and `server_owners` refuse a user in
+  both; the sign-in checks `server_owners` first and an owner never gets an administrator actor.
+- **Login collisions.** A new administrator's login must not be a PostgreSQL role, a central user
+  (owner or a removed administrator) or a user of any company (fail closed); a trigger refuses a
+  login that is a PostgreSQL role. New business owners (create, duplicate, rename) may not take a
+  central login either. Administrators never authenticate against PostgreSQL.
+- **Timing / enumeration at login.** Every server sign-in path computes one PBKDF2 hash (dummy for
+  unknown users and alongside the owner's role check); unknown user, wrong password and inactive
+  administrator all return the same `LOGIN_REJECTED` under the existing login rate limit. This also
+  removes the old central fallback to `application_user_credentials` (a table the central database
+  does not have), which turned wrong server passwords into 503.
+- **must_change_password bypass.** The resolver returns `PasswordChangeRequired`; the gate lets it
+  through only for `GET /server/me` and `PUT /auth/password`; the switcher, `/auth/profile`,
+  `/companies/current/*` and the workspace self-service refuse it.
+- **Resetting the owner's or another admin's password.** Owner-only routes; recovery by email code
+  needs that user's mailbox and revokes their sessions. `PUT /auth/password` changes only the
+  caller's own hash and needs the current password (attempt limiter).
+- **Owner-password / business-owner edit out of scope.** Both are scoped by the path company; in
+  addition every company that shares the owner's PostgreSQL role (duplicates) and every company of
+  its owner group must be in scope (fail closed if a company cannot be read). Changing the owner's
+  user or password needs `server.companies.owner_password` too.
+- **Duplicate / link tricks.** Linking and unlinking (companies and extension groups) are owner
+  only. Duplicating needs the source in scope; the copy joins the creator's scope. Entering a
+  company requires its whole owner group in scope, so a duplicate (or a group) reaching an
+  out-of-scope company cannot be entered (the business owner inside could switch or let an agent
+  act across the group). Extension group operations, retries and the group view are limited to the
+  scope.
+- **`X-Company-Code` on `/companies/current/*`.** A server session there goes through the same
+  policy with the company taken from the header (permission + scope), never "server owner acts
+  anywhere".
+- **Switcher session kept after revocation.** `LoginDatabases.companySessionAllowed` runs on every
+  use of a company session (module access, notifications, self-service, `/auth/profile`, extension
+  routes, switcher) and re-checks the opener live; when it fails the tenant session is revoked and
+  the `server_owner_company_sessions` row is kept until expiry, so it keeps failing even if the
+  revoke failed. Deactivating, deleting or resetting an administrator also revokes their central and
+  company sessions first; if inserting the switcher row fails, the opened company session is revoked.
+  A company session opened by an administrator cannot edit the business owner from inside.
+- **Owner-only power that stays owner only.** MCP tools (`serverOwnerSessionUser`), workspace modules
+  with implicit rights, `UserModuleAccess.serverOwner`, agent sign-in at server level
+  (`verifyCredentials` revokes and refuses administrator sessions), the four raw-SQL owner checks.
+- **Residual risks (accepted).** `server.companies.enter` and `owner_password` equal full control of
+  that company: inside it the administrator can create staff users or connect an agent that outlive
+  their revocation (audited as `server_admin.entered_company`). `activeCompanyCount` in the module
+  list counts every company. Changes recorded only by login (extension packages) are attributed by
+  that login.

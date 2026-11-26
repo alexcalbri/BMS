@@ -97,6 +97,12 @@ class SessionService(
         )
     }
 
+    /** Revokes the session whose token hash is [tokenHash] (the token itself is not known). */
+    fun revokeHash(tokenHash: String): Boolean = sessionRepository.revoke(
+        tokenHash = tokenHash,
+        revokedAt = OffsetDateTime.now(clock),
+    )
+
     fun revokeAllForUser(userId: Uuid): Int {
         return sessionRepository.revokeAllForUser(
             userId = userId,

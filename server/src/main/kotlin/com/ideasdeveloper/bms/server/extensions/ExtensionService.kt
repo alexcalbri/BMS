@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.extensions
 
+import com.ideasdeveloper.bms.server.admins.AuditActor
 import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.i18n.trIn
@@ -19,7 +20,7 @@ import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 
 /** Writes provisioning_audit_log (CompanyProvisioningService.insertAudit); details is a JSON object. */
-typealias ExtensionAuditor = (actorRole: String, action: String, companyCode: String?, moduleId: String?, details: String) -> Unit
+typealias ExtensionAuditor = (actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) -> Unit
 
 /**
  * Tells a user about something in a company through the Core's notification center. Both overloads are
@@ -69,8 +70,23 @@ fun interface ExtensionMigrationRunner {
     fun run(companyCode: String, extension: ServerExtension)
 }
 
-/** Who acts. [role] is the PostgreSQL role written to the audit log; [companyCode] is the company of a business owner. */
-data class ExtensionActor(val role: String, val serverOwner: Boolean, val companyCode: String? = null)
+/**
+ * Who acts. [role] is the login of who acts (stored as installed_by); [audit] is who the audit log
+ * names; [companyCode] is the company of a business owner. A server administrator has
+ * [serverAdmin] set with the companies of their scope (null: all); [serverOwner] stays false for them.
+ */
+data class ExtensionActor(
+    val role: String,
+    val serverOwner: Boolean,
+    val companyCode: String? = null,
+    val audit: AuditActor = if (serverOwner) AuditActor.owner(role, null) else AuditActor.businessOwner(role),
+    val serverAdmin: ServerAdminScope? = null,
+)
+
+/** Company scope of a server administrator acting on extensions; [companies] null means every company. */
+data class ServerAdminScope(val companies: Set<String>?) {
+    fun includes(companyCode: String): Boolean = companies == null || companyCode in companies
+}
 
 /**
  * Extensions per company (PLAN_CAMBIOS_2.md 11.3): list, install, configure, enable, disable,
@@ -129,7 +145,7 @@ class ExtensionService(
         authorize(actor, companyCode)
         val extension = requireExtension(extensionId)
         installOne(companyCode, extension, actor)
-        audit(actor.role, "extension.install", companyCode, extension.manifest.module, details("extension" to extensionId))
+        audit(actor.audit, "extension.install", companyCode, extension.manifest.module, details("extension" to extensionId))
         return summary(companyCode, extension)
     }
 
@@ -171,7 +187,7 @@ class ExtensionService(
             }
         }
         // Only the names of the changed settings are recorded, never their values.
-        audit(actor.role, "extension.configure", companyCode, manifest.module, details("extension" to extensionId, keys = changes.keys.sorted()))
+        audit(actor.audit, "extension.configure", companyCode, manifest.module, details("extension" to extensionId, keys = changes.keys.sorted()))
         return summary(companyCode, extension)
     }
 
@@ -179,7 +195,7 @@ class ExtensionService(
         authorize(actor, companyCode)
         val extension = requireExtension(extensionId)
         enableOne(companyCode, extension)
-        audit(actor.role, "extension.enable", companyCode, extension.manifest.module, details("extension" to extensionId))
+        audit(actor.audit, "extension.enable", companyCode, extension.manifest.module, details("extension" to extensionId))
         return summary(companyCode, extension)
     }
 
@@ -195,7 +211,7 @@ class ExtensionService(
                 }
             }
         }
-        audit(actor.role, "extension.disable", companyCode, extension.manifest.module, details("extension" to extensionId))
+        audit(actor.audit, "extension.disable", companyCode, extension.manifest.module, details("extension" to extensionId))
         return summary(companyCode, extension)
     }
 
@@ -215,7 +231,7 @@ class ExtensionService(
         val extension = requireExtension(extensionId)
         val choices = UninstallChoices.resolve(extension.manifest.uninstall.options, answers)
         uninstallOne(companyCode, extension, choices)
-        audit(actor.role, "extension.uninstall", companyCode, extension.manifest.module, details("extension" to extensionId, choices = choices))
+        audit(actor.audit, "extension.uninstall", companyCode, extension.manifest.module, details("extension" to extensionId, choices = choices))
     }
 
     /**
@@ -243,7 +259,7 @@ class ExtensionService(
                                 tr("El modulo ahora es la version {0} y la extension necesita {1}. Esta desactivada hasta que se instale una version compatible.", newVersion, extension.manifest.minModuleVersion),
                             )
                         }
-                        audit(SystemActor, "extension.incompatible", company, moduleId, details("extension" to row.extensionId, "moduleVersion" to newVersion))
+                        audit(AuditActor.system(), "extension.incompatible", company, moduleId, details("extension" to row.extensionId, "moduleVersion" to newVersion))
                     }
                 }
             } catch (failure: Exception) {
@@ -257,7 +273,8 @@ class ExtensionService(
 
     fun group(companyCode: String, actor: ExtensionActor): GroupResponse {
         authorize(actor, companyCode)
-        val members = groupMembers(companyCode)
+        // A scoped administrator does not see the companies of the group outside their scope.
+        val members = groupMembers(companyCode).filter { actor.serverAdmin?.includes(it.code) ?: true }
         return GroupResponse(companyCode, members.map { member ->
             GroupMemberView(member.code, member.name, member.suspended, ownerEmailMatches = !evaluateGroupOwner(member.code, persist = false).suspendedNow)
         })
@@ -292,7 +309,7 @@ class ExtensionService(
                 }
             }
         }
-        audit(actor.role, "extension.group.linked", companyCode, null, details("linkedTo" to targetCode))
+        audit(actor.audit, "extension.group.linked", companyCode, null, details("linkedTo" to targetCode))
         return group(companyCode, actor)
     }
 
@@ -307,7 +324,7 @@ class ExtensionService(
                 }
             }
         }
-        audit(actor.role, "extension.group.unlinked", companyCode, null, details())
+        audit(actor.audit, "extension.group.unlinked", companyCode, null, details())
         return group(companyCode, actor)
     }
 
@@ -324,7 +341,7 @@ class ExtensionService(
                 update.executeUpdate()
             }
         }
-        audit(actor.role, "extension.group.reviewed", companyCode, null, details())
+        audit(actor.audit, "extension.group.reviewed", companyCode, null, details())
         return group(companyCode, actor)
     }
 
@@ -354,7 +371,7 @@ class ExtensionService(
         authorize(actor, sourceCompany)
         val extension = requireExtension(extensionId)
         val operation = requireOperation(request.operation)
-        val plan = planGroupOperation(sourceCompany, extension, operation, request, persist = false)
+        val plan = planGroupOperation(sourceCompany, extension, operation, request, persist = false, scope = actor.serverAdmin)
         val sourceSettings = if (operation == GroupOperationType.Apply) copyableSourceSettings(sourceCompany, extension) else emptyMap()
         val targets = plan.targets.map { code ->
             val problem = plan.problems[code]
@@ -369,7 +386,7 @@ class ExtensionService(
         authorize(actor, sourceCompany)
         val extension = requireExtension(extensionId)
         val operation = requireOperation(request.operation)
-        val plan = planGroupOperation(sourceCompany, extension, operation, request, persist = true)
+        val plan = planGroupOperation(sourceCompany, extension, operation, request, persist = true, scope = actor.serverAdmin)
         val execute = executorFor(sourceCompany, extension, operation, request, actor)
         val operationId = runner.start(
             actor.role, operation, extensionId, sourceCompany, plan.targets,
@@ -377,7 +394,7 @@ class ExtensionService(
             execute = execute,
         )
         val result = result(operationId)
-        audit(actor.role, "extension.$operation.group", sourceCompany, extension.manifest.module, details("extension" to extensionId, "operationId" to operationId.toString(), "status" to result.status))
+        audit(actor.audit, "extension.$operation.group", sourceCompany, extension.manifest.module, details("extension" to extensionId, "operationId" to operationId.toString(), "status" to result.status))
         return result
     }
 
@@ -392,13 +409,18 @@ class ExtensionService(
         if (header.operation !in setOf(GroupOperationType.Apply, GroupOperationType.Uninstall)) {
             throw ExtensionException("operation_not_retryable", tr("Solo se reintentan operaciones sobre un grupo."))
         }
+        actor.serverAdmin?.let { scope ->
+            operations.targets(operationId).firstOrNull { !scope.includes(it.companyCode) }?.let {
+                throw ExtensionException("forbidden", tr("La empresa {0} no esta en tu alcance.", it.companyCode), ExtensionException.Kind.Forbidden)
+            }
+        }
         if (!checkGroupOwner(sourceCompany)) {
             throw ExtensionException("group_suspended", tr("La empresa de origen esta suspendida en su grupo."))
         }
         val execute = executorFor(sourceCompany, extension, header.operation, request, actor)
         runner.retryFailed(operationId, validate = { code -> validateTarget(sourceCompany, extension, code) }, execute = execute)
         val result = result(operationId)
-        audit(actor.role, "extension.${header.operation}.retry", sourceCompany, extension.manifest.module, details("extension" to extensionId, "operationId" to operationId.toString(), "status" to result.status))
+        audit(actor.audit, "extension.${header.operation}.retry", sourceCompany, extension.manifest.module, details("extension" to extensionId, "operationId" to operationId.toString(), "status" to result.status))
         return result
     }
 
@@ -525,7 +547,7 @@ class ExtensionService(
 
     private class GroupPlan(val targets: List<String>, val problems: Map<String, String>, val names: Map<String, String>)
 
-    private fun planGroupOperation(sourceCompany: String, extension: ServerExtension, operation: String, request: GroupOperationRequest, persist: Boolean): GroupPlan {
+    private fun planGroupOperation(sourceCompany: String, extension: ServerExtension, operation: String, request: GroupOperationRequest, persist: Boolean, scope: ServerAdminScope?): GroupPlan {
         val manifest = extension.manifest
         val source = evaluateGroupOwner(sourceCompany, persist)
         if (source.blocked) throw ExtensionException("group_suspended", tr("La empresa de origen esta suspendida en su grupo o no se pudo verificar su business owner."))
@@ -541,6 +563,11 @@ class ExtensionService(
             throw ExtensionException("too_many_targets", tr("Elige como maximo {0} empresas por operacion.", MaxGroupTargets), ExtensionException.Kind.BadRequest)
         }
         if (targets.isEmpty()) throw ExtensionException("no_targets", tr("Elige al menos una empresa de destino."), ExtensionException.Kind.BadRequest)
+        scope?.let { admin ->
+            targets.firstOrNull { !admin.includes(it) }?.let {
+                throw ExtensionException("forbidden", tr("La empresa {0} no esta en tu alcance.", it), ExtensionException.Kind.Forbidden)
+            }
+        }
         val members = groupMembers(sourceCompany).associateBy { it.code }
         val problems = HashMap<String, String>()
         for (code in targets) {
@@ -598,7 +625,7 @@ class ExtensionService(
             return { code ->
                 val installed = withTenant(code) { storage.row(it, manifest.id)?.status }
                 if (installed != null && installed != ExtensionStatus.Removed) uninstallOne(code, extension, choices)
-                audit(actor.role, "extension.uninstall", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, choices = choices))
+                audit(actor.audit, "extension.uninstall", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, choices = choices))
             }
         }
         // Read once for all targets: plain values live only in this closure while the operation runs.
@@ -612,7 +639,7 @@ class ExtensionService(
                 }
             }
             enableOne(code, extension)
-            audit(actor.role, "extension.apply", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, keys = values.keys.sorted()))
+            audit(actor.audit, "extension.apply", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, keys = values.keys.sorted()))
         }
     }
 
@@ -645,7 +672,7 @@ class ExtensionService(
                     update.executeUpdate()
                 }
             }
-            audit(SystemActor, "extension.group.suspended", companyCode, null, details())
+            audit(AuditActor.system(), "extension.group.suspended", companyCode, null, details())
         }
         return GroupOwnerState(blocked = true, suspendedNow = true, currentEmail = current)
     }
@@ -704,6 +731,12 @@ class ExtensionService(
 
     private fun authorize(actor: ExtensionActor, companyCode: String) {
         if (actor.serverOwner) return
+        actor.serverAdmin?.let { scope ->
+            if (!scope.includes(companyCode)) {
+                throw ExtensionException("forbidden", tr("No puedes administrar las extensiones de esta empresa."), ExtensionException.Kind.Forbidden)
+            }
+            return
+        }
         if (actor.companyCode == null || actor.companyCode != companyCode) {
             throw ExtensionException("forbidden", tr("No puedes administrar las extensiones de esta empresa."), ExtensionException.Kind.Forbidden)
         }
@@ -729,9 +762,9 @@ class ExtensionService(
             ?: throw ExtensionException("extension_not_installed", tr("La extension no esta instalada en esta empresa."), ExtensionException.Kind.NotFound)
 
     // The audit never changes the outcome of what already happened: a failure is logged, not thrown.
-    private fun audit(actorRole: String, action: String, companyCode: String?, moduleId: String?, details: String) {
+    private fun audit(actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) {
         try {
-            auditor(actorRole, action, companyCode, moduleId, details)
+            auditor(actor, action, companyCode, moduleId, details)
         } catch (failure: Exception) {
             log.error("Audit entry {} could not be written: {}", action, failure.javaClass.simpleName)
         }
@@ -827,7 +860,6 @@ class ExtensionService(
     }
 
     companion object {
-        const val SystemActor = "system"
         const val MaxGroupTargets = 50
     }
 }

@@ -365,6 +365,15 @@ company.
   other companies or grant itself server-level privileges. It cannot install
   modules on the server or enable/disable modules for its company; module
   availability is a `server_owner` decision.
+- **Server administrators** (Core 0.11.0, `SERVER_ADMINS.md`) are server-level
+  users the server owner creates, each with explicit server permissions
+  (`server.companies.*`, `server.modules.*`, ...) and an optional company scope.
+  They have no PostgreSQL role: their work runs with `SET ROLE` to the owner's
+  role while the audit log names the administrator (`actor_user_id`,
+  `actor_kind`). Every server route is classified in `ServerRoutePolicies`
+  (unlisted routes are owner only); permissions, scope and active state are read
+  on every request. Only the owner manages administrators; MCP tools, workspace
+  modules and server-level agent sign-in stay owner only.
 - Ownership transfer replaces the company's owner atomically; it must not
   leave an active company without an owner or with multiple owners.
 - The server administration UI is visible only to `server_owner`. Ktor

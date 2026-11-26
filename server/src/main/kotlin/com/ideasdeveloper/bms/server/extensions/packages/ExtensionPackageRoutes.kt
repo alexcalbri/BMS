@@ -3,6 +3,8 @@ package com.ideasdeveloper.bms.server.extensions.packages
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
+import com.ideasdeveloper.bms.server.admins.ServerActorResolver
+import com.ideasdeveloper.bms.server.admins.serverActor
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
@@ -49,12 +51,30 @@ fun Route.extensionPackageRoutes(
     service: ExtensionPackageService,
     uploadEnabled: Boolean,
     serverOwnerRole: suspend (ApplicationCall) -> String?,
+) = extensionPackageRoutesFor(service, uploadEnabled) { call, message ->
+    serverOwnerRole(call).also { role -> if (role == null) call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", message)) }
+}
+
+/**
+ * Same routes for the server owner and server administrators: what each route needs is in
+ * ServerRoutePolicies (catalog routes take server.extensions.*, ZIP/URL packages stay owner only).
+ * The services receive the login of who acted, for the audit.
+ */
+fun Route.extensionPackageRoutes(
+    service: ExtensionPackageService,
+    uploadEnabled: Boolean,
+    resolver: ServerActorResolver,
+) = extensionPackageRoutesFor(service, uploadEnabled) { call, message -> call.serverActor(resolver, message)?.login }
+
+private fun Route.extensionPackageRoutesFor(
+    service: ExtensionPackageService,
+    uploadEnabled: Boolean,
+    // Login of who may use the route, or null after answering the refusal.
+    authorize: suspend (ApplicationCall, String) -> String?,
 ) {
     suspend fun ApplicationCall.owner(message: String): String? {
         response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val role = serverOwnerRole(this)
-        if (role == null) respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", message))
-        return role
+        return authorize(this, message)
     }
 
     // Rutas de ZIP/URL: ademas de server_owner exigen EXTENSION_UPLOAD_ENABLED; se corta antes de tocar el staging.

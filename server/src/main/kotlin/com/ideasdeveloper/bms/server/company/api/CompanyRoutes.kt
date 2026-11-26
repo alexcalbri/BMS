@@ -9,7 +9,11 @@ import com.ideasdeveloper.bms.server.company.application.CompanyMailRejectedExce
 import com.ideasdeveloper.bms.server.company.application.CompanyMailStorageException
 import com.ideasdeveloper.bms.server.company.application.CompanySelfException
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
-import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
+import com.ideasdeveloper.bms.server.admins.ServerActor
+import com.ideasdeveloper.bms.server.admins.ServerActorResolver
+import com.ideasdeveloper.bms.server.admins.ServerPermission
+import com.ideasdeveloper.bms.server.admins.ServerPermissionException
+import com.ideasdeveloper.bms.server.admins.serverActor
 import com.ideasdeveloper.bms.server.app.RecentServerErrors
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
 import com.ideasdeveloper.bms.server.app.ServerLogsResponse
@@ -35,10 +39,12 @@ import kotlinx.coroutines.withContext
 import java.sql.SQLException
 
 fun Route.companyRoutes(
-    authorizer: ServerOwnerAuthorizer,
+    authorizer: ServerActorResolver,
     provisioning: CompanyProvisioningService?,
     selfService: CompanySelfService?,
     coreUpdates: CoreUpdateService? = null,
+    // Adds a company a scoped server administrator created (or duplicated) to their scope.
+    addToScope: (userId: java.util.UUID, companyCode: String) -> Unit = { _, _ -> },
 ) {
     // Devuelve el perfil de la empresa asociada a la sesion business_owner.
     get("/companies/me") {
@@ -328,17 +334,7 @@ fun Route.companyRoutes(
 
     get("/companies") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para consultar empresas."),
-                ),
-            )
-            return@get
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para consultar empresas.")) ?: return@get
 
         val service = provisioning
         if (service == null) {
@@ -352,34 +348,18 @@ fun Route.companyRoutes(
             return@get
         }
 
-        call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.listCompanies() })
+        call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.listCompanies(actor.companyScope) })
     }
 
     get("/server/logs") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        if (call.serverOwnerRole(authorizer) == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para consultar los errores.")),
-            )
-            return@get
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para consultar los errores.")) ?: return@get
         call.respond(HttpStatusCode.OK, ServerLogsResponse(RecentServerErrors.snapshot().asReversed()))
     }
 
     get("/server/modules") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para administrar modulos del servidor."),
-                ),
-            )
-            return@get
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para administrar modulos del servidor.")) ?: return@get
 
         val service = provisioning
         if (service == null) {
@@ -398,11 +378,7 @@ fun Route.companyRoutes(
 
     get("/server/modules/catalog") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para consultar el catalogo.")))
-            return@get
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para consultar el catalogo.")) ?: return@get
         val service = provisioning
         if (service == null) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
@@ -413,11 +389,7 @@ fun Route.companyRoutes(
 
     put("/server/modules/catalog") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para configurar el catalogo.")))
-            return@put
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para configurar el catalogo.")) ?: return@put
         val service = provisioning
         if (service == null) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
@@ -433,7 +405,7 @@ fun Route.companyRoutes(
             return@put
         }
         try {
-            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerModuleCatalog(request.catalogUrl) })
+            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerModuleCatalog(request.catalogUrl, actor.audit) })
         } catch (exception: CompanyProvisioningException) {
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("SERVER_MODULE_CATALOG_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el catalogo.")))
         }
@@ -441,17 +413,7 @@ fun Route.companyRoutes(
 
     delete("/server/modules/{moduleId}") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para eliminar modulos del servidor."),
-                ),
-            )
-            return@delete
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para eliminar modulos del servidor.")) ?: return@delete
 
         val service = provisioning
         if (service == null) {
@@ -468,7 +430,7 @@ fun Route.companyRoutes(
         val moduleId = call.parameters["moduleId"].orEmpty()
         try {
             withContext(Dispatchers.IO) {
-                service.deleteServerModule(moduleId)
+                service.deleteServerModule(moduleId, actor.audit)
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -483,17 +445,7 @@ fun Route.companyRoutes(
 
     post("/server/modules/{moduleId}/install") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para instalar modulos del servidor."),
-                ),
-            )
-            return@post
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para instalar modulos del servidor.")) ?: return@post
 
         val service = provisioning
         if (service == null) {
@@ -510,7 +462,7 @@ fun Route.companyRoutes(
         val moduleId = call.parameters["moduleId"].orEmpty()
         val response = try {
             withContext(Dispatchers.IO) {
-                service.installServerModule(moduleId, call.request.headers["X-App-Version"])
+                service.installServerModule(moduleId, actor.audit, call.request.headers["X-App-Version"])
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -526,10 +478,7 @@ fun Route.companyRoutes(
     // Descarga el modulo del catalogo y devuelve su commit y hash para que el dueno los revise (igual que las extensiones).
     get("/server/modules/{moduleId}/inspect") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        if (call.serverOwnerRole(authorizer) == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para revisar paquetes de modulos.")))
-            return@get
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para revisar paquetes de modulos.")) ?: return@get
         val service = provisioning ?: run {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
             return@get
@@ -544,11 +493,7 @@ fun Route.companyRoutes(
     // El dueno autoriza el hash y commit de un modulo sin firma, con confirmacion escrita (igual que las extensiones).
     post("/server/modules/{moduleId}/authorize-unsigned") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para autorizar paquetes sin firma.")))
-            return@post
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para autorizar paquetes sin firma.")) ?: return@post
         val service = provisioning ?: run {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
             return@post
@@ -564,7 +509,7 @@ fun Route.companyRoutes(
                 HttpStatusCode.OK,
                 withContext(Dispatchers.IO) {
                     service.authorizeUnsignedServerModule(
-                        call.parameters["moduleId"].orEmpty(), serverOwnerRole, request.confirmationText,
+                        call.parameters["moduleId"].orEmpty(), actor.audit, request.confirmationText,
                         request.expectedPackageSha256, request.expectedCommit,
                     )
                 },
@@ -578,14 +523,8 @@ fun Route.companyRoutes(
     // Single-company installs use it as their company: the server owner is its business owner.
     post("/server/workspace") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para crear la empresa del servidor.")),
-            )
-            return@post
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para crear la empresa del servidor.")) ?: return@post
+        val serverOwnerRole = actor.executorRole
         val service = provisioning
         if (service == null) {
             call.respond(
@@ -595,7 +534,7 @@ fun Route.companyRoutes(
             return@post
         }
         val code = try {
-            withContext(Dispatchers.IO) { service.ensureServerWorkspace(serverOwnerRole) }
+            withContext(Dispatchers.IO) { service.ensureServerWorkspace(serverOwnerRole, actor.audit) }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
@@ -609,17 +548,8 @@ fun Route.companyRoutes(
     // Uses a module in the server workspace (created on first use), without a company.
     put("/server/modules/{moduleId}/server-usage") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para usar modulos en el servidor."),
-                ),
-            )
-            return@put
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para usar modulos en el servidor.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
         val service = provisioning
         if (service == null) {
             call.respond(
@@ -635,7 +565,7 @@ fun Route.companyRoutes(
         val moduleId = call.parameters["moduleId"].orEmpty()
         val response = try {
             withContext(Dispatchers.IO) {
-                service.setServerModuleUsage(moduleId, request.enabled, serverOwnerRole)
+                service.setServerModuleUsage(moduleId, request.enabled, serverOwnerRole, actor.audit)
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -650,18 +580,8 @@ fun Route.companyRoutes(
     post("/companies") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
 
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para crear empresas."),
-                ),
-            )
-            return@post
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para crear empresas.")) ?: return@post
+        val serverOwnerRole = actor.executorRole
 
         val service = provisioning
         if (service == null) {
@@ -687,7 +607,10 @@ fun Route.companyRoutes(
 
         val response = try {
             withContext(Dispatchers.IO) {
-                service.createCompany(request, serverOwnerRole)
+                service.createCompany(request, serverOwnerRole, actor.audit).also { created ->
+                    // A company a scoped administrator creates joins their scope.
+                    if (actor.companyScope != null) addToScope(actor.userId, created.code)
+                }
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -709,17 +632,8 @@ fun Route.companyRoutes(
 
     put("/companies/{code}") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para administrar empresas."),
-                ),
-            )
-            return@put
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para administrar empresas.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
 
         val service = provisioning
         if (service == null) {
@@ -746,7 +660,7 @@ fun Route.companyRoutes(
         val code = call.parameters["code"].orEmpty()
         val response = try {
             withContext(Dispatchers.IO) {
-                service.updateCompany(code, request, serverOwnerRole)
+                service.updateCompany(code, request, serverOwnerRole, actor.audit)
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -767,17 +681,8 @@ fun Route.companyRoutes(
 
     put("/companies/{code}/status") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para administrar empresas."),
-                ),
-            )
-            return@put
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para administrar empresas.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
 
         val service = provisioning
         if (service == null) {
@@ -804,7 +709,7 @@ fun Route.companyRoutes(
         val code = call.parameters["code"].orEmpty()
         val response = try {
             withContext(Dispatchers.IO) {
-                service.setCompanyActive(code, request.active, serverOwnerRole)
+                service.setCompanyActive(code, request.active, serverOwnerRole, actor.audit)
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -825,17 +730,8 @@ fun Route.companyRoutes(
 
     delete("/companies/{code}") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para eliminar empresas."),
-                ),
-            )
-            return@delete
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para eliminar empresas.")) ?: return@delete
+        val serverOwnerRole = actor.executorRole
 
         val service = provisioning
         if (service == null) {
@@ -852,7 +748,7 @@ fun Route.companyRoutes(
         val code = call.parameters["code"].orEmpty()
         try {
             withContext(Dispatchers.IO) {
-                service.deleteInactiveCompany(code, serverOwnerRole)
+                service.deleteInactiveCompany(code, serverOwnerRole, actor.audit)
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -876,17 +772,8 @@ fun Route.companyRoutes(
         // Regla core: solo server_owner decide la disponibilidad de modulos por empresa.
         // business_owner administra usuarios/permisos solo dentro de su propia base tenant,
         // pero no habilita modulos.
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para administrar modulos."),
-                ),
-            )
-            return@put
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para administrar modulos.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
 
         val service = provisioning
         if (service == null) {
@@ -914,7 +801,7 @@ fun Route.companyRoutes(
         val moduleId = call.parameters["moduleId"].orEmpty()
         val response = try {
             withContext(Dispatchers.IO) {
-                service.setModuleEnabled(code, moduleId, request.enabled, serverOwnerRole)
+                service.setModuleEnabled(code, moduleId, request.enabled, serverOwnerRole, actor.audit)
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
@@ -937,15 +824,19 @@ fun Route.companyRoutes(
     // Solo el dueno del servidor duplica: la copia mantiene el business owner o recibe uno nuevo (newOwner).
     post("/companies/{code}/duplicate") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@post call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para duplicar empresas.")))
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para duplicar empresas.")) ?: return@post
+        val serverOwnerRole = actor.executorRole
         val service = provisioning
             ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<DuplicateCompanyRequest>() }.getOrNull()
             ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Indica el codigo de la nueva empresa.")))
         val source = call.parameters["code"].orEmpty()
         try {
-            val created = withContext(Dispatchers.IO) { service.duplicateCompany(source, request.code, serverOwnerRole, request.newOwner) }
+            val created = withContext(Dispatchers.IO) {
+                service.duplicateCompany(source, request.code, serverOwnerRole, actor.audit, request.newOwner).also { copy ->
+                    if (actor.companyScope != null) addToScope(actor.userId, copy.code)
+                }
+            }
             call.respond(HttpStatusCode.Created, created)
         } catch (exception: CompanyProvisioningException) {
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_DUPLICATED", exception.message ?: tr("No se pudo duplicar la empresa.")))
@@ -957,14 +848,14 @@ fun Route.companyRoutes(
     // El dueno del servidor vincula la empresa al grupo de otra (mismo business owner) o la desvincula.
     put("/companies/{code}/link") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner para vincular empresas.")))
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para vincular empresas.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
         val service = provisioning
             ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<LinkCompanyRequest>() }.getOrNull()
             ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
         try {
-            val companies = withContext(Dispatchers.IO) { service.linkCompany(call.parameters["code"].orEmpty(), request.targetCode, serverOwnerRole) }
+            val companies = withContext(Dispatchers.IO) { service.linkCompany(call.parameters["code"].orEmpty(), request.targetCode, serverOwnerRole, actor.audit) }
             call.respond(HttpStatusCode.OK, companies)
         } catch (exception: CompanyProvisioningException) {
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_LINKED", exception.message ?: tr("No se pudo vincular la empresa.")))
@@ -976,8 +867,7 @@ fun Route.companyRoutes(
     // Estado de la actualizacion del Core y ultima solicitud hecha desde la app.
     get("/server/core-update") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        call.serverOwnerRole(authorizer)
-            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@get
         val service = coreUpdates
             ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", tr("La actualizacion del servidor no esta disponible.")))
         call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.status() })
@@ -986,11 +876,10 @@ fun Route.companyRoutes(
     // Pide actualizar el Core a la ultima version del catalogo; la ejecuta el ayudante root del servidor.
     post("/server/core-update") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@post call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@post
         val service = coreUpdates
             ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", tr("La actualizacion del servidor no esta disponible.")))
-        when (val outcome = withContext(Dispatchers.IO) { service.request(serverOwnerRole) }) {
+        when (val outcome = withContext(Dispatchers.IO) { service.request(actor.login) }) {
             is CoreUpdateOutcome.Accepted -> call.respond(HttpStatusCode.Accepted, outcome.request)
             CoreUpdateOutcome.CatalogUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("VERSION_CATALOG_UNAVAILABLE", tr("No se pudo leer el catalogo de versiones.")))
             CoreUpdateOutcome.UpToDate -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UP_TO_DATE", tr("El servidor ya tiene la ultima version.")))
@@ -1001,14 +890,14 @@ fun Route.companyRoutes(
     // Nombre del servidor que ven los server owners en el panel y el selector de empresas.
     put("/server/name") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
         val service = provisioning
             ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<ServerNameRequest>() }.getOrNull()
             ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
         try {
-            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerName(request.name, serverOwnerRole) })
+            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerName(request.name, serverOwnerRole, actor.audit) })
         } catch (exception: CompanyProvisioningException) {
             call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("SERVER_NAME_INVALID", exception.message ?: tr("Nombre invalido.")))
         }
@@ -1017,8 +906,7 @@ fun Route.companyRoutes(
     // The business owner of a company, for the server owner to edit it.
     get("/companies/{code}/business-owner") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        call.serverOwnerRole(authorizer)
-            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@get
         val service = provisioning
             ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         try {
@@ -1033,17 +921,27 @@ fun Route.companyRoutes(
     // User, name, email and password of a company's business owner, by the server owner.
     put("/companies/{code}/business-owner") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", tr("Debes iniciar sesion como server_owner.")))
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
         val service = provisioning
             ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
         val request = runCatching { call.receive<UpdateBusinessOwnerRequest>() }.getOrNull()
             ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
+        val code = call.parameters["code"].orEmpty()
         try {
             call.respond(
                 HttpStatusCode.OK,
-                withContext(Dispatchers.IO) { service.updateBusinessOwner(call.parameters["code"].orEmpty(), request, serverOwnerRole) },
+                withContext(Dispatchers.IO) {
+                    // A new password, and a new user (which needs one), is the high-risk owner_password permission.
+                    if (request.password.isNotEmpty() || request.username.trim() != service.businessOwner(code).username) {
+                        actor.requireCompany(ServerPermission.CompaniesOwnerPassword, code)
+                    }
+                    requireOwnerInScope(actor, service, code)
+                    service.updateBusinessOwner(code, request, serverOwnerRole, actor.audit)
+                },
             )
+        } catch (refusal: ServerPermissionException) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse(refusal.code, refusal.message.orEmpty()))
         } catch (exception: CompanyProvisioningException) {
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BUSINESS_OWNER_NOT_UPDATED", exception.message ?: tr("No se pudo actualizar el business owner.")))
         } catch (exception: SQLException) {
@@ -1053,17 +951,8 @@ fun Route.companyRoutes(
 
     put("/companies/{code}/owner-password") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val serverOwnerRole = call.serverOwnerRole(authorizer)
-        if (serverOwnerRole == null) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                CompanyErrorResponse(
-                    code = "SERVER_OWNER_REQUIRED",
-                    message = tr("Debes iniciar sesion como server_owner para cambiar la contrasena del business owner."),
-                ),
-            )
-            return@put
-        }
+        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para cambiar la contrasena del business owner.")) ?: return@put
+        val serverOwnerRole = actor.executorRole
 
         val service = provisioning
         if (service == null) {
@@ -1090,8 +979,12 @@ fun Route.companyRoutes(
         val code = call.parameters["code"].orEmpty()
         try {
             withContext(Dispatchers.IO) {
-                service.resetBusinessOwnerPassword(code, request.password, serverOwnerRole)
+                requireOwnerInScope(actor, service, code)
+                service.resetBusinessOwnerPassword(code, request.password, serverOwnerRole, actor.audit)
             }
+        } catch (refusal: ServerPermissionException) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse(refusal.code, refusal.message.orEmpty()))
+            return@put
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
@@ -1135,17 +1028,17 @@ private fun modulePackageStatus(exception: CompanyProvisioningException): HttpSt
     else -> HttpStatusCode.BadRequest
 }
 
-private suspend fun io.ktor.server.application.ApplicationCall.serverOwnerRole(
-    authorizer: ServerOwnerAuthorizer,
-): String? {
-    val authorization = request.headers[HttpHeaders.Authorization]
-    val token = authorization
-        ?.takeIf { it.startsWith("Bearer ") }
-        ?.removePrefix("Bearer ")
-        ?: return null
-    return withContext(Dispatchers.IO) { authorizer.serverOwnerRole(token) }
+/**
+ * A scoped administrator may change a business owner only when every company that owner owns (the
+ * PostgreSQL role is shared by duplicated companies) and every company of its owner group (whose
+ * business owner switches into all of them without a password) is in their scope.
+ */
+private fun requireOwnerInScope(actor: ServerActor, service: CompanyProvisioningService, code: String) {
+    val scope = actor.companyScope ?: return
+    (service.companiesSharingOwner(code) + service.ownerGroupOf(code)).firstOrNull { it !in scope }?.let {
+        throw ServerPermissionException(ServerPermission.CompaniesEdit, it)
+    }
 }
-
 
 private fun SQLException.toProvisioningMessage(): String =
     tr("No se pudo completar la provision de la empresa. PostgreSQL {0}: {1}", sqlState.orEmpty(), message.orEmpty())
