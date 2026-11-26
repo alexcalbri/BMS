@@ -153,6 +153,42 @@ class TareasI18nTest {
     }
 
     @Test
+    fun onlyCommentsWrittenByStaffAreSentForTranslation() {
+        val connection = java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.sql.Connection::class.java)) { _, _, _ -> null } as java.sql.Connection
+        val taskId = UUID.randomUUID()
+        fun comment(author: UUID?, body: String) = TaskComment(UUID.randomUUID(), taskId, author, "x", body, java.time.Instant.EPOCH)
+        val comments = listOf(comment(null, "Importado de monday"), comment(me, "Por favor revisa"), comment(null, "Otro importado"), comment(other, "Gracias"))
+        val asked = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val store = object : com.ideasdeveloper.bms.server.i18n.TextTranslationStore {
+            val rows = java.util.concurrent.ConcurrentHashMap<String, String>()
+            override fun find(tenant: java.sql.Connection, language: String, hashes: Collection<String>) = hashes.mapNotNull { h -> rows[h]?.let { h to it } }.toMap()
+            override fun saveAutomatic(tenant: java.sql.Connection, language: String, translations: Map<String, String>, keepSource: Boolean) {
+                translations.forEach { (source, translated) -> rows[com.ideasdeveloper.bms.server.i18n.TextTranslation.hash(source)] = translated }
+            }
+            override fun saveManual(tenant: java.sql.Connection, language: String, source: String, translated: String) = Unit
+            override fun deleteManual(tenant: java.sql.Connection, language: String, source: String) = Unit
+            override fun findManual(tenant: java.sql.Connection, language: String, hashes: Collection<String>) = emptyMap<String, String>()
+        }
+        fun service(notesAllowed: Boolean) = com.ideasdeveloper.bms.server.i18n.TextTranslation({ connection }, { "es" }, store, waitMillis = 3_000).apply {
+            registerTextTranslator("crm", object : com.ideasdeveloper.bms.server.i18n.TextTranslator {
+                override fun translate(tenant: java.sql.Connection, texts: List<String>, source: String, target: String): List<String> {
+                    asked += texts
+                    return texts.map { "EN:$it" }
+                }
+                override fun notesAllowed(tenant: java.sql.Connection) = notesAllowed
+            })
+        }
+        // Switch off (the default): nothing is sent, whoever wrote it.
+        val off = service(false)
+        assertEquals(listOf<String?>(null, null, null, null), TareasRoutes.staffCommentTranslations(comments) { off.noteTranslations("acme", connection, it, "en") })
+        assertTrue(asked.isEmpty())
+        // Switch on: only the two staff comments, aligned with the list.
+        val on = service(true)
+        assertEquals(listOf(null, "EN:Por favor revisa", null, "EN:Gracias"), TareasRoutes.staffCommentTranslations(comments) { on.noteTranslations("acme", connection, it, "en") })
+        assertEquals(listOf("Por favor revisa", "Gracias"), asked.toList())
+    }
+
+    @Test
     fun rulesAndErrorsAreEnglish() {
         val input = TaskInput(UUID.randomUUID(), title = " ")
         assertEquals(listOf("El título es obligatorio."), input.validate())

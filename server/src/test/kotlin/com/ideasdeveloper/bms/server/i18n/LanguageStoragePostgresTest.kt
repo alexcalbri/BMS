@@ -103,4 +103,19 @@ class LanguageStoragePostgresTest {
         assertEquals(setOf(TextTranslation.hash("Nuevo")), store.find(db, "en", hashes).keys)
         assertEquals(emptyMap(), store.find(db, "es", hashes))
     }
+
+    @Test
+    fun notesKeepNoSourceText() = withDb { db ->
+        db.migrate()
+        val store = JdbcTextTranslationStore
+        store.saveAutomatic(db, "en", mapOf("Llamar al cliente Juan" to "Call customer Juan"), keepSource = false)
+        store.saveAutomatic(db, "en", mapOf("Nuevo" to "New"))
+        db.createStatement().use { st ->
+            st.executeQuery("SELECT hash, source_text FROM text_translations").use { rows ->
+                val stored = buildMap { while (rows.next()) put(rows.getString(1).trim(), rows.getString(2)) }
+                assertEquals("", stored.getValue(TextTranslation.hash("Llamar al cliente Juan")))
+                assertEquals("Nuevo", stored.getValue(TextTranslation.hash("Nuevo")))
+            }
+        }
+    }
 }

@@ -92,6 +92,8 @@ data class CrmActivity(
     val createdAt: Instant,
     // Id of the history entry (a note's mentions hang from it); null when built without the database.
     val id: UUID? = null,
+    // User who wrote the entry; null for imports and the system. Only notes with an author are staff-written (I18N.md §8).
+    val userId: UUID? = null,
 )
 
 /**

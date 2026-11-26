@@ -87,6 +87,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V020__system_sections.sql",
         "modules/crm/migrations/V021__automations_templates_translation.sql",
         "modules/crm/migrations/V022__extensions_and_secrets.sql",
+        "modules/crm/migrations/V023__translate_staff_notes.sql",
     )
 
     override val runtimeTables = listOf(

@@ -195,6 +195,19 @@ object TareasRoutes {
     }
 
     /**
+     * Translations for [comments], index-aligned: only comments with an author (written inside BMS) are passed to [translate];
+     * imported ones (monday: no author) and blank ones get null and are never sent.
+     */
+    fun staffCommentTranslations(comments: List<TaskComment>, translate: (List<String>) -> List<String?>): List<String?> {
+        val staff = comments.indices.filter { comments[it].authorId != null && comments[it].body.isNotBlank() }
+        val result = MutableList<String?>(comments.size) { null }
+        if (staff.isEmpty()) return result
+        val translated = translate(staff.map { comments[it].body })
+        staff.forEachIndexed { position, index -> result[index] = translated.getOrNull(position) }
+        return result
+    }
+
+    /**
      * Board and group names are configuration written by the company: shown translated through the dynamic translation
      * (one batched lookup per screen); the values the app posts back stay the originals.
      */
@@ -265,9 +278,11 @@ object TareasRoutes {
                         activity = TareasRepository.listActivity(tenant, task.id),
                         attachments = TareasRepository.listAttachments(tenant, task.id),
                         customerName = customerName,
-                        // Comments are written by staff: the translation shows under the original (never the task title or detail).
-                        commentTranslations = runCatching { access.textTranslation.noteTranslations(permissions.companyCode, tenant, comments.map { it.body }) }
-                            .getOrDefault(emptyList()),
+                        // Only comments written by staff in BMS (an author) are translated, under the original (never the task title or detail,
+                        // never imported comments); Core also requires the company's notes switch (I18N.md §8).
+                        commentTranslations = runCatching {
+                            staffCommentTranslations(comments) { bodies -> access.textTranslation.noteTranslations(permissions.companyCode, tenant, bodies) }
+                        }.getOrDefault(emptyList()),
                     ),
                     notice, submitted,
                 )

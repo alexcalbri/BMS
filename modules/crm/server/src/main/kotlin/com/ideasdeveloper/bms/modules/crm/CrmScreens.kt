@@ -939,8 +939,9 @@ object CrmScreens {
         }
         val noteMentions = CrmMentions.byNote(context.tenant, lead.id)
         val activities = CrmRepository.activity(context.tenant, lead.id, 100)
-        // The notes written by the staff are shown with their translation under them (one provider call for all of them); nothing else is sent.
-        val noted = activities.filter { it.kind == "note" && it.body.isNotBlank() }
+        // Only notes written by staff inside BMS (an author user) get a translation under them, one provider call for all of them (and only
+        // when the company turned the notes switch on, Core checks it). Imported notes (no user) and everything else are never sent.
+        val noted = CrmTexts.staffNotes(activities)
         val noteTexts = noted.map { it.id }.zip(CrmTexts.notes(context.tenant, context.permissions.companyCode, noted.map { it.body })).toMap()
         val timeline = UiCard(
             listOf(

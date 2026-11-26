@@ -994,8 +994,17 @@ recipient (user, else company, else Spanish). Emails and templates sent to custo
   (`registerTextTranslator`), backed by the provider and key of Integrations > Traduccion; without them the originals are
   shown. Stage names are shown translated as labels (board columns, filters, selects, badges) while the stored name stays
   the value; the stage editor has a manual translation per language, which wins over the provider. The notes of a lead are
-  shown with their translation under the original (`UiTimelineEntry.translation`). Customer data (names, emails, phones,
-  custom field values, imported content, customer emails) is never sent to the provider.
+  shown with their translation under the original (`UiTimelineEntry.translation`), see the privacy paragraph below.
+  Customer data (names, emails, phones, custom field values, imported content, customer emails) is never sent to the provider.
+- **Languages / translation privacy.** Only texts written by staff inside BMS may reach the translation provider. Notes of a
+  lead are sent only when they have an author user (`crm_activity.user_id`, read as `CrmActivity.userId`; `CrmTexts.staffNotes`):
+  notes created by imports (CSV/XLSX columns, monday updates, replies and subitems, WordPress forms) have no user and are never
+  sent. On top of that, sending staff notes is off by default: Integraciones > Traduccion has the switch "Traducir notas del
+  personal" (`crm_settings.translate_staff_notes`, V023, `CrmTranslationSettings.translateNotes`), which says that notes go to
+  the configured provider and may mention customers. Core enforces it for every module (the translator reports
+  `notesAllowed(tenant)` and `TextTranslation.noteTranslations` returns nothing when it is off, so Tareas comments obey it too).
+  Stage, board and other names are translated independently of the switch. The cache keeps no text of a translated note, only
+  its hash (`text_translations.source_text` is empty); manual translations of names keep their source text.
 - **Not translated.** Activity and history rows, run records of the automations, import rows and errors, spam log, the
   customer history events (written in Spanish when they happen), notes of the customer (Clientes), custom field labels,
   interests, user and template names, and the MCP tools (names, descriptions and results).

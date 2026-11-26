@@ -1,8 +1,10 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.localizedFor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.ui.UiButton
 import com.ideasdeveloper.bms.ui.UiCard
 import com.ideasdeveloper.bms.ui.UiField
@@ -33,11 +35,18 @@ object CrmImportScreens {
     )
     private val sourceLabels = mapOf("file" to msg("Archivo"))
 
-    private fun sourceLabel(job: CrmImportJob) = (CrmImportSources.label(job.source) ?: sourceLabels[job.source])?.let { tr(it) }
+    // The texts an extension's import source defines are in the extension's catalog, not the host's (I18N.md §2).
+    private fun sourceLabel(job: CrmImportJob): String? {
+        val source = CrmImportSources.of(job.source) ?: return sourceLabels[job.source]?.let { tr(it) }
+        return trIn(I18n.namespaceOf(source.javaClass), source.label)
+    }
 
     // El estado "reading" lo pone una fuente externa de lectura en segundo plano: ella lo nombra.
-    private fun statusLabel(job: CrmImportJob) =
-        (if (job.status == "reading") CrmImportSources.of(job.source)?.readingLabel ?: msg("Leyendo") else statusLabels[job.status])?.let { tr(it) }
+    private fun statusLabel(job: CrmImportJob): String? {
+        if (job.status != "reading") return statusLabels[job.status]?.let { tr(it) }
+        val source = CrmImportSources.of(job.source) ?: return tr("Leyendo")
+        return trIn(I18n.namespaceOf(source.javaClass), source.readingLabel)
+    }
 
     // ---- Sources and jobs ----
 

@@ -27,6 +27,13 @@ object CrmTexts {
         return runCatching { access.textTranslation.noteTranslations(companyCode, tenant, notes) }.getOrDefault(none).takeIf { it.size == notes.size } ?: none
     }
 
+    /**
+     * The entries of a lead's history whose text may be translated: notes written by staff inside BMS (an author user). Imported notes
+     * (CSV, monday, forms: no user) are customer or third-party content and are never sent (I18N.md §8).
+     */
+    fun staffNotes(activities: List<CrmActivity>): List<CrmActivity> =
+        activities.filter { it.kind == "note" && it.userId != null && it.body.isNotBlank() }
+
     /** Languages a manual translation of a name can be written in: the supported ones except the company's own. */
     fun otherLanguages(companyCode: String): List<String> {
         val own = companyLanguage(companyCode)
