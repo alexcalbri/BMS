@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.membresia_monday
 
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.net.PinnedHost
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -119,14 +120,14 @@ object MembresiaMondayClient {
     // ---- Red ----
 
     private fun requireToken(token: String) {
-        if (token.isBlank()) throw MembresiaMondayException("Escribe el token de la API de monday.")
+        if (token.isBlank()) throw MembresiaMondayException(tr("Escribe el token de la API de monday."))
     }
 
     private fun requireBoard(boardId: String) {
-        if (!isBoardId(boardId)) throw MembresiaMondayException("El id del tablero debe ser un numero.")
+        if (!isBoardId(boardId)) throw MembresiaMondayException(tr("El id del tablero debe ser un numero."))
     }
 
-    private fun notFound(boardId: String) = MembresiaMondayException("monday no devolvio el tablero $boardId (revisa el id y los permisos del token).")
+    private fun notFound(boardId: String) = MembresiaMondayException(tr("monday no devolvio el tablero {0} (revisa el id y los permisos del token).", boardId))
 
     // Pantallas y herramientas esperan a una persona: timeouts cortos. La lectura en segundo plano usa los largos.
     private const val Interactive = true
@@ -144,16 +145,16 @@ object MembresiaMondayClient {
         } catch (failure: Exception) {
             // Solo el tipo de fallo: el mensaje de la excepcion podria incluir la solicitud.
             log.warn("No se pudo contactar monday: {}", failure.javaClass.simpleName)
-            throw MembresiaMondayException("No se pudo contactar monday.", MondayErrorKind.Transient)
+            throw MembresiaMondayException(tr("No se pudo contactar monday."), MondayErrorKind.Transient)
         }
-        if (text.length > MaxBytes) throw MembresiaMondayException("monday respondio algo demasiado grande; elige un tablero mas chico.", MondayErrorKind.TooLarge)
-        if (status == 401 || status == 403) throw MembresiaMondayException("monday rechazo el token.")
+        if (text.length > MaxBytes) throw MembresiaMondayException(tr("monday respondio algo demasiado grande; elige un tablero mas chico."), MondayErrorKind.TooLarge)
+        if (status == 401 || status == 403) throw MembresiaMondayException(tr("monday rechazo el token."))
         val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
         body?.get("errors").arr().firstOrNull()?.let { error ->
             val code = error.obj()?.get("extensions").obj()?.get("code").str()
             val message = error.obj()?.get("message").str()
-            throw MembresiaMondayException("monday: ${message.take(MondayReading.MaxMessage)}", MondayReading.classify(status, code, message))
+            throw MembresiaMondayException(tr("monday: {0}", message.take(MondayReading.MaxMessage)), MondayReading.classify(status, code, message))
         }
-        return body?.get("data").obj() ?: throw MembresiaMondayException("monday respondio HTTP $status.", MondayReading.classify(status, "", ""))
+        return body?.get("data").obj() ?: throw MembresiaMondayException(tr("monday respondio HTTP {0}.", status), MondayReading.classify(status, "", ""))
     }
 }

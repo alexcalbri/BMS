@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.extensions.membresia_monday
 
 import com.ideasdeveloper.bms.modules.membresia.ImportedMember
 import com.ideasdeveloper.bms.modules.membresia.ImportedVisit
+import com.ideasdeveloper.bms.server.i18n.msg
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -56,22 +57,22 @@ object MondayTarget {
 
     // En el orden en que se muestran en el formulario de mapeo.
     val all = listOf(
-        Definition(Email, "Correo"),
-        Definition(Phone, "Telefono"),
-        Definition(Plan, "Tipo de membresia (plan)"),
-        Definition(Period, "Periodo (inicio y fin)"),
-        Definition(Start, "Fecha de inicio (si no hay periodo)"),
-        Definition(End, "Fecha de fin (si no hay periodo)"),
-        Definition(Amount, "Monto"),
-        Definition(GuestPasses, "Pases de invitado"),
-        Definition(Source, "Origen"),
-        Definition(Host, "Anfitrion"),
-        Definition(Room, "Unidad o habitacion"),
-        Definition(Notes, "Notas"),
-        Definition(Country, "País", CustomerCountry),
-        Definition(Document, "Documento o pasaporte", CustomerDocument),
-        Definition(Birth, "Fecha de nacimiento", CustomerBirth),
-        Definition(Emergency, "Contacto de emergencia", CustomerEmergency),
+        Definition(Email, msg("Correo")),
+        Definition(Phone, msg("Telefono")),
+        Definition(Plan, msg("Tipo de membresia (plan)")),
+        Definition(Period, msg("Periodo (inicio y fin)")),
+        Definition(Start, msg("Fecha de inicio (si no hay periodo)")),
+        Definition(End, msg("Fecha de fin (si no hay periodo)")),
+        Definition(Amount, msg("Monto")),
+        Definition(GuestPasses, msg("Pases de invitado")),
+        Definition(Source, msg("Origen")),
+        Definition(Host, msg("Anfitrion")),
+        Definition(Room, msg("Unidad o habitacion")),
+        Definition(Notes, msg("Notas")),
+        Definition(Country, msg("País"), CustomerCountry),
+        Definition(Document, msg("Documento o pasaporte"), CustomerDocument),
+        Definition(Birth, msg("Fecha de nacimiento"), CustomerBirth),
+        Definition(Emergency, msg("Contacto de emergencia"), CustomerEmergency),
     )
 
     // Etiquetas de los campos personalizados de Clientes (ensureCustomerFields crea los que falten; "nacimiento" es de tipo fecha).
