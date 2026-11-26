@@ -1,7 +1,7 @@
 {
   "Accion desconocida: {0}.": "Unknown action: {0}.",
   "Asigna al menos una habitacion.": "Assign at least one room.",
-  "Busca habitaciones libres, crea reservas y hace el check-in en Cloudbeds desde el lead; envia la bienvenida y archiva al salir el huesped.": "Finds free rooms, creates reservations and checks guests in at Cloudbeds from the lead; sends the welcome and archives the lead when the guest checks out.",
+  "Busca habitaciones libres, crea reservas y hace el check-in en Cloudbeds desde el lead; envia la bienvenida y archiva al salir el huesped.": "Finds free rooms, creates reservations and checks guests in at Cloudbeds from the lead; sends the welcome email and archives the lead when the guest checks out.",
   "Cada habitacion necesita al menos un adulto ({0}).": "Each room needs at least one adult ({0}).",
   "Check-in hecho en la reserva {0}.": "Checked in to reservation {0}.",
   "Cloudbeds": "Cloudbeds",
@@ -12,7 +12,7 @@
   "Cloudbeds respondio HTTP {0}.": "Cloudbeds responded with HTTP {0}.",
   "Cloudbeds: {0}": "Cloudbeds: {0}",
   "Conexion con Cloudbeds y su API key (se borran)": "Cloudbeds connection and its API key (deleted)",
-  "El ID de la propiedad solo lleva numeros.": "The property ID only has numbers.",
+  "El ID de la propiedad solo lleva numeros.": "The property ID must contain only numbers.",
   "El lead no tiene una reserva de Cloudbeds pendiente de check-in.": "The lead has no Cloudbeds reservation pending check-in.",
   "El pais es un codigo de 2 letras, por ejemplo NI o US.": "The country is a 2-letter code, for example NI or US.",
   "El pais por defecto es un codigo de 2 letras, por ejemplo US o NI.": "The default country is a 2-letter code, for example US or NI.",
@@ -39,6 +39,6 @@
   "Vuelve a asignar {0}.": "Assign {0} again.",
   "Ya no estan libres: {0}. Busca de nuevo las habitaciones.": "No longer available: {0}. Search for the rooms again.",
   "la operacion no se completo": "the operation did not complete",
-  "{0} admite hasta {1} personas.": "{0} allows up to {1} guests.",
+  "{0} admite hasta {1} personas.": "{0} allows up to {1} people.",
   "{0} asignada a {1}.": "{0} assigned to {1}."
 }

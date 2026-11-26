@@ -67,8 +67,8 @@ class CrmExtensionsTest {
     @Test
     fun manifestsRequireTheModuleVersionThatShipsThem() {
         assertEquals("0.30.0", CrmServerModule.definition.version)
-        // Las extensiones piden la version del CRM que las saco del modulo; el modulo puede ir por delante.
-        assertEquals("0.27.0", CrmExtensions.MinModuleVersion)
+        // Las extensiones piden la primera version bilingue del CRM; el modulo puede ir por delante.
+        assertEquals("0.30.0", CrmExtensions.MinModuleVersion)
         assertEquals("0.10.0", CrmServerModule.definition.minCoreVersion)
         assertEquals("0.7.0", CrmServerModule.definition.minAppVersion)
         assertTrue("modules/crm/migrations/V022__extensions_and_secrets.sql" in CrmServerModule.migrationPaths)
@@ -82,6 +82,16 @@ class CrmExtensionsTest {
         assertEquals(CrmServerModule.definition.version, field("version"))
         assertEquals(CrmServerModule.definition.minCoreVersion, field("minCoreVersion"))
         assertEquals(CrmServerModule.definition.minAppVersion, field("minAppVersion"))
+    }
+
+    @Test
+    fun crmExtensionsRequireTheSameModuleVersionAsTheCrm() {
+        // Cada extension del CRM declara (extension.json) la primera version bilingue del CRM: la misma constante.
+        listOf("meta", "wordpress", "encuentra24", "cloudbeds").forEach { id ->
+            val file = listOf("extensions/$id/extension.json", "../extensions/$id/extension.json", "../../extensions/$id/extension.json").map(::File).firstOrNull { it.isFile } ?: return
+            val json = kotlinx.serialization.json.Json.parseToJsonElement(file.readText()) as kotlinx.serialization.json.JsonObject
+            assertEquals(CrmExtensions.MinModuleVersion, (json["minModuleVersion"] as kotlinx.serialization.json.JsonPrimitive).content, id)
+        }
     }
 
     // ---- Rutas nuevas ----

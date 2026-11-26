@@ -59,7 +59,7 @@ class CloudbedsI18nTest {
         assertEquals("Cloudbeds", CrmCloudbedsExtension.manifest.displayName)
         I18n.withLanguage("en") {
             assertEquals(
-                "Finds free rooms, creates reservations and checks guests in at Cloudbeds from the lead; sends the welcome and archives the lead when the guest checks out.",
+                "Finds free rooms, creates reservations and checks guests in at Cloudbeds from the lead; sends the welcome email and archives the lead when the guest checks out.",
                 I18n.translate(CrmCloudbedsExtension.manifest.description),
             )
         }

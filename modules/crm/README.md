@@ -832,7 +832,7 @@ that apply to every lead) with a button that opens the customer's profile. The l
 An extension package can add screens to the CRM by implementing `CrmScreenProvider` next to `ServerExtension`
 (the Core links the extensions with `CrmModuleExtensions.link`; the CRM lists the providers with
 `CrmModuleExtensions.screenProviders()`). The change is additive: nothing the CRM did before changes and
-`CrmExtensions.MinModuleVersion` stays 0.27.0.
+`CrmExtensions.MinModuleVersion` was 0.27.0 then (now 0.30.0, the first bilingual CRM).
 
 - `sections`: `CrmExtensionSection(id, label, permission, inMenu)`. The id must start with `<extensionId>_`; ids that
   clash with a screen of the CRM, or lack the prefix, are ignored. `permission` is one of the CRM permissions.

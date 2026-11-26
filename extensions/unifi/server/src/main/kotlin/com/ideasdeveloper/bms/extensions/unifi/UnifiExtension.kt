@@ -28,7 +28,7 @@ object UnifiExtension : ServerExtension, NetworkControllerProvider {
         displayName = "UniFi",
         description = "Controlador de red UniFi: autoriza y desconecta a los visitantes del portal en una consola UniFi a traves de UniFi Site Manager (api.ui.com) y lista sus redes WiFi.",
         version = "1.1.0",
-        minModuleVersion = "0.11.0",
+        minModuleVersion = "0.13.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/unifi",

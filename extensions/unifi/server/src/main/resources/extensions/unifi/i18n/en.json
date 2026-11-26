@@ -1,7 +1,7 @@
 {
-  "Autoriza a los visitantes en una consola UniFi a traves de UniFi Site Manager (api.ui.com).": "Authorizes guests on a UniFi console through UniFi Site Manager (api.ui.com).",
+  "Autoriza a los visitantes en una consola UniFi a traves de UniFi Site Manager (api.ui.com).": "Authorizes visitors on a UniFi console through UniFi Site Manager (api.ui.com).",
   "Configura la consola y el sitio de UniFi primero.": "Set up the UniFi console and site first.",
-  "Controlador de red UniFi: autoriza y desconecta a los visitantes del portal en una consola UniFi a traves de UniFi Site Manager (api.ui.com) y lista sus redes WiFi.": "UniFi network controller: authorizes and disconnects portal guests on a UniFi console through UniFi Site Manager (api.ui.com) and lists its WiFi networks.",
+  "Controlador de red UniFi: autoriza y desconecta a los visitantes del portal en una consola UniFi a traves de UniFi Site Manager (api.ui.com) y lista sus redes WiFi.": "UniFi network controller: authorizes and disconnects portal visitors on a UniFi console through UniFi Site Manager (api.ui.com) and lists its WiFi networks.",
   "El sitio de UniFi configurado no aparece en la consola.": "The configured UniFi site does not appear in the console.",
   "No se pudo contactar UniFi: {0}": "Could not reach UniFi: {0}",
   "Referencia: {0}": "Reference: {0}",

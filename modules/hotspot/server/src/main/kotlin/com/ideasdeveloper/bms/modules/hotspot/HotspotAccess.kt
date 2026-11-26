@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiButton
@@ -248,10 +249,12 @@ class HotspotAccess(private val access: ModuleAccessService) {
         val catalog = HotspotIntegrations.catalog(tenant)
         fun card(integration: HotspotIntegration): UiNode {
             val on = integration.id in enabled
+            // A controller's texts belong to its extension's catalog (I18N.md section 2).
+            fun text(source: String) = integration.namespace?.let { trIn(it, source) } ?: tr(source)
             return UiCard(
-                title = tr(integration.title),
+                title = text(integration.title),
                 children = listOf(
-                    UiText(tr(integration.description), UiTextStyle.Caption),
+                    UiText(text(integration.description), UiTextStyle.Caption),
                     UiStatus(if (on) tr("Activa") else tr("Inactiva"), if (on) UiTone.Success else UiTone.Neutral),
                     UiButton(
                         if (on) tr("Desactivar") else tr("Activar"),

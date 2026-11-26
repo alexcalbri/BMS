@@ -61,7 +61,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
         displayName = "Meta (WhatsApp, Messenger e Instagram)",
         description = "Recibe y responde mensajes de WhatsApp, Messenger e Instagram en el CRM, con la app de Meta de la empresa o la del servidor.",
         version = "1.1.0",
-        minModuleVersion = "0.27.0",
+        minModuleVersion = "0.30.0", // the bilingual CRM (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/meta",

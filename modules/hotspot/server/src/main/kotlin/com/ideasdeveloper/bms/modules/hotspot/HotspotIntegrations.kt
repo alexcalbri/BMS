@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
+import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
@@ -91,8 +92,12 @@ object HotspotModuleExtensions {
     fun providerFor(id: String): NetworkControllerProvider? = providers.firstOrNull { it.controller().id == id }
 }
 
-/** An integration the hotspot offers: a network controller ("network") or another module ("module"). */
-data class HotspotIntegration(val id: String, val kind: String, val title: String, val description: String)
+/**
+ * An integration the hotspot offers: a network controller ("network") or another module ("module").
+ * [namespace] is the catalog that translates [title] and [description] first: the controller's extension
+ * (its texts live in that extension's catalog), or null for the hotspot's own.
+ */
+data class HotspotIntegration(val id: String, val kind: String, val title: String, val description: String, val namespace: String? = null)
 
 /**
  * Integrations of the hotspot; their state lives in hotspot_integrations. Network controllers and
@@ -112,7 +117,7 @@ object HotspotIntegrations {
     val controllers: List<NetworkController> get() = HotspotModuleExtensions.controllers()
 
     // Integrations defined by the hotspot itself (network controllers from extensions + Usuarios).
-    val builtIn: List<HotspotIntegration> get() = controllers.map { HotspotIntegration(it.id, Network, it.name, it.description) } +
+    val builtIn: List<HotspotIntegration> get() = controllers.map { HotspotIntegration(it.id, Network, it.name, it.description, I18n.namespaceOf(it.javaClass)) } +
         HotspotIntegration(
             Users, Module, msg("Usuarios"),
             msg("Los usuarios de la empresa se conectan con su codigo de usuario a las redes con acceso \"Codigo de usuario\"."),

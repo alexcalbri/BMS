@@ -32,7 +32,7 @@ class MetaI18nTest {
         )
         I18n.withLanguage("en") {
             assertEquals(
-                "The page ID only takes numbers.",
+                "The page ID must contain only numbers.",
                 assertFailsWith<CrmValidationException> { CrmMeta.merge(nothingConnected, mapOf("pageId" to "abc")) }.message,
             )
         }

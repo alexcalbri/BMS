@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.server.outbound.monday
 
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.i18n.trIn
 import com.ideasdeveloper.bms.server.outbound.OutboundRecordType
 import com.ideasdeveloper.bms.ui.UiAction
 import com.ideasdeveloper.bms.ui.UiBadge
@@ -31,6 +32,10 @@ data class MondayConfigResult(val config: MondayOutboundConfig, val warnings: Li
 
 /** Nodos reutilizables de las pantallas de configuracion y estado del envio a monday. */
 object MondayOutboundUi {
+    /** Record type and field labels come from the package that declares the type (its catalog first). */
+    private fun labelOf(recordType: OutboundRecordType, label: String): String =
+        recordType.namespace?.let { trIn(it, label) } ?: tr(label)
+
     const val NoneOption = "(no enviar)"
     const val NoGroupOption = "(primer grupo del tablero)"
     const val ColumnPrefix = "col:"
@@ -66,7 +71,7 @@ object MondayOutboundUi {
         val cfg = config ?: MondayOutboundConfig(recordType.id)
         val formId = "mondayOut_${recordType.id}"
         val fields = mutableListOf(
-            UiField("enabled", tr("Enviar a monday los {0}", tr(recordType.label).lowercase()), type = "boolean", section = tr("General")),
+            UiField("enabled", tr("Enviar a monday los {0}", labelOf(recordType, recordType.label).lowercase()), type = "boolean", section = tr("General")),
             UiField("board", tr("Tablero"), type = "dropdown", options = boards.map { optionLabel(it.name + " - " + it.workspace, it.id) }, section = tr("General"),
                 help = tr("Al guardar con otro tablero se cargan sus columnas para el mapeo.")),
         )
@@ -100,7 +105,7 @@ object MondayOutboundUi {
             recordType.fields.forEach { field ->
                 val accepted = MondayColumnValues.compatible(field.type)
                 val options = schema.columns.filter { it.type in accepted }
-                fields += UiField(ColumnPrefix + field.key, tr(field.label), type = "dropdown", options = listOf(NoneOption) + options.map { optionLabel(it.title, it.id) }, section = tr("Columnas"))
+                fields += UiField(ColumnPrefix + field.key, labelOf(recordType, field.label), type = "dropdown", options = listOf(NoneOption) + options.map { optionLabel(it.title, it.id) }, section = tr("Columnas"))
                 val chosen = cfg.columns[field.key]?.let { ref -> options.firstOrNull { it.id == ref.id }?.let { optionLabel(it.title, it.id) } } ?: NoneOption
                 values[ColumnPrefix + field.key] = chosen
             }
@@ -124,7 +129,7 @@ object MondayOutboundUi {
                 ),
                 schema?.let { UiButton(tr("Sugerir desde la importacion"), form(formId, action("suggest", extra)), style = "secondary") },
             ),
-            title = tr("Envio a monday: {0}", tr(recordType.label)),
+            title = tr("Envio a monday: {0}", labelOf(recordType, recordType.label)),
         )
     }
 
@@ -176,8 +181,8 @@ object MondayOutboundUi {
                 val id = optionId(values[ColumnPrefix + field.key]) ?: return@forEach
                 val column = schema.columns.firstOrNull { it.id == id }
                 when {
-                    column == null -> warnings += tr("La columna de \"{0}\" ya no existe en el tablero y se quito.", tr(field.label))
-                    column.type !in MondayColumnValues.compatible(field.type) -> warnings += tr("La columna \"{0}\" no acepta el campo \"{1}\" y se quito.", column.title, tr(field.label))
+                    column == null -> warnings += tr("La columna de \"{0}\" ya no existe en el tablero y se quito.", labelOf(recordType, field.label))
+                    column.type !in MondayColumnValues.compatible(field.type) -> warnings += tr("La columna \"{0}\" no acepta el campo \"{1}\" y se quito.", column.title, labelOf(recordType, field.label))
                     else -> columns[field.key] = MondayColumnRef(column.id, column.type)
                 }
             }

@@ -22,7 +22,7 @@ class MantenimientoMondayI18nTest {
         assertEquals("El id del tablero debe ser un numero.", assertFailsWith<MantenimientoMondayException> { MantenimientoMondayClient.boardInfo("token", "x") }.message)
         assertEquals("Escribe el token de la API de monday.", assertFailsWith<MantenimientoMondayException> { MantenimientoMondayClient.boards("") }.message)
         I18n.withLanguage("en") {
-            assertEquals("The board ID must be a number.", assertFailsWith<MantenimientoMondayException> { MantenimientoMondayClient.boardInfo("token", "x") }.message)
+            assertEquals("The board id must be a number.", assertFailsWith<MantenimientoMondayException> { MantenimientoMondayClient.boardInfo("token", "x") }.message)
             assertEquals("Enter the monday API token.", assertFailsWith<MantenimientoMondayException> { MantenimientoMondayClient.boards("") }.message)
         }
     }
@@ -37,7 +37,7 @@ class MantenimientoMondayI18nTest {
             assertEquals("Preventive templates", MondayDestination.label(MondayDestination.Plans))
             assertEquals("Reading", MantenimientoMondayFlow.statusLabel(MondayJobStatus.Reading))
             assertEquals("No usar", MantenimientoMondayFlow.NoColumn)
-            assertEquals("Matched to users: Ana.", tr("Se emparejan con usuarios: {0}.", "Ana"))
+            assertEquals("Matched with users: Ana.", tr("Se emparejan con usuarios: {0}.", "Ana"))
         }
     }
 }

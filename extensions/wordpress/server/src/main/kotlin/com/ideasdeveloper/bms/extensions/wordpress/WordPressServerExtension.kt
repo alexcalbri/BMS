@@ -60,7 +60,7 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
         displayName = "WordPress (Real Estate 7)",
         description = "Conecta el sitio WordPress (Real Estate 7) con el plugin BMS Connector: formularios y consultas crean leads, y las propiedades se buscan y se vinculan a ellos.",
         version = "1.1.0",
-        minModuleVersion = "0.27.0",
+        minModuleVersion = "0.30.0", // the bilingual CRM (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/wordpress",

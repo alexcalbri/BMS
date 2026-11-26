@@ -35,7 +35,7 @@ object Encuentra24ServerExtension : ServerExtension, Encuentra24Provider {
         displayName = "Encuentra24",
         description = "Importa como leads los mensajes, chats y llamadas de los anuncios de Encuentra24 y deja el anuncio en los intereses del lead.",
         version = "1.1.0",
-        minModuleVersion = "0.27.0",
+        minModuleVersion = "0.30.0", // the bilingual CRM (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/encuentra24",

@@ -42,7 +42,7 @@ class UnifiI18nTest {
                 assertFailsWith<NetworkControllerException> { UnifiController.wifiNetworks(unconfigured) }.message,
             )
             assertEquals(
-                "Authorizes guests on a UniFi console through UniFi Site Manager (api.ui.com).",
+                "Authorizes visitors on a UniFi console through UniFi Site Manager (api.ui.com).",
                 UnifiController.description,
             )
             assertEquals("UniFi", UnifiController.name)
@@ -63,7 +63,7 @@ class UnifiI18nTest {
         assertEquals("UniFi", UnifiExtension.manifest.displayName)
         I18n.withLanguage("en") {
             assertEquals(
-                "UniFi network controller: authorizes and disconnects portal guests on a UniFi console through UniFi Site Manager (api.ui.com) and lists its WiFi networks.",
+                "UniFi network controller: authorizes and disconnects portal visitors on a UniFi console through UniFi Site Manager (api.ui.com) and lists its WiFi networks.",
                 I18n.translate(UnifiExtension.manifest.description),
             )
         }

@@ -18,7 +18,7 @@
   "El Phone Number ID": "The Phone Number ID",
   "El WhatsApp Business Account ID": "The WhatsApp Business Account ID",
   "El enlace vencio o no es valido: abre otra vez la conexion desde Integraciones.": "The link expired or is not valid: open the connection again from Integrations.",
-  "El espacio del servidor no tiene el CRM activo: pide al dueno del servidor que lo active.": "The server space does not have the CRM active: ask the server owner to turn it on.",
+  "El espacio del servidor no tiene el CRM activo: pide al dueno del servidor que lo active.": "The server workspace does not have the CRM turned on: ask the server owner to turn it on.",
   "El numero del lead no esta permitido para esta cuenta de WhatsApp.": "The lead's number is not allowed for this WhatsApp account.",
   "El numero del lead no puede recibir este mensaje (puede que no tenga WhatsApp).": "The lead's number cannot receive this message (it may not have WhatsApp).",
   "El numero {0} es nuevo en la API: escribe un PIN de 6 digitos para la verificacion en dos pasos y conecta otra vez.": "The number {0} is new to the API: enter a 6-digit PIN for two-step verification and connect again.",
@@ -104,6 +104,6 @@
   "{0} - revisa que el usuario del sistema tenga asignados la pagina, Instagram y la cuenta de WhatsApp, con los permisos pages_messaging, instagram_manage_messages, whatsapp_business_management y whatsapp_business_messaging.": "{0} - check that the system user has the page, Instagram and the WhatsApp account assigned, with the pages_messaging, instagram_manage_messages, whatsapp_business_management and whatsapp_business_messaging permissions.",
   "{0} Las primeras partes del mensaje si se enviaron.": "{0} The first parts of the message were sent.",
   "{0} rechazo el mensaje: {1}": "{0} rejected the message: {1}",
-  "{0} solo lleva numeros.": "{0} only takes numbers.",
+  "{0} solo lleva numeros.": "{0} must contain only numbers.",
   "{0} ya esta conectada a otra empresa de este servidor.": "{0} is already connected to another company on this server."
 }

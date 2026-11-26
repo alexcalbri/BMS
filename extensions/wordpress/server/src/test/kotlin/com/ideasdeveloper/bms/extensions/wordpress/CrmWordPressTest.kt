@@ -95,7 +95,7 @@ class CrmWordPressTest {
         assertEquals(CrmExtensionIds.WordPress, manifest.id)
         assertTrue(ExtensionIdPattern.matches(manifest.id))
         assertEquals("crm", manifest.module)
-        assertEquals("0.27.0", manifest.minModuleVersion)
+        assertEquals("0.30.0", manifest.minModuleVersion)
         // Recibe llamadas publicas del sitio y guarda un secreto.
         assertTrue(ExtensionPermissions.WebhookPublic in manifest.permissions)
         assertTrue(ExtensionPermissions.SecretsWrite in manifest.permissions)

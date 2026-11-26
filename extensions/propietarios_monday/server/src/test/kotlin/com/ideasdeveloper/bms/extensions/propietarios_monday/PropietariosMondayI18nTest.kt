@@ -22,7 +22,7 @@ class PropietariosMondayI18nTest {
         assertEquals("El id del tablero debe ser un numero.", assertFailsWith<PropietariosMondayException> { PropietariosMondayClient.boardInfo("token", "x") }.message)
         assertEquals("Escribe el token de la API de monday.", assertFailsWith<PropietariosMondayException> { PropietariosMondayClient.boards("") }.message)
         I18n.withLanguage("en") {
-            assertEquals("The board ID must be a number.", assertFailsWith<PropietariosMondayException> { PropietariosMondayClient.boardInfo("token", "x") }.message)
+            assertEquals("The board id must be a number.", assertFailsWith<PropietariosMondayException> { PropietariosMondayClient.boardInfo("token", "x") }.message)
             assertEquals("Enter the monday API token.", assertFailsWith<PropietariosMondayException> { PropietariosMondayClient.boards("") }.message)
         }
     }
@@ -38,7 +38,7 @@ class PropietariosMondayI18nTest {
             assertEquals("Owner", tr(MondayTarget.all.first().label))
             assertEquals("New development (with the board name)", tr(PropietariosMondayFlow.NewDevelopment))
             assertEquals(
-                "The mapping uses a column that no longer exists on the board.",
+                "The mapping uses a column that no longer exists in the board.",
                 PropietariosMondayFlow.mappingProblem(MondayMapping(mapOf(MondayTarget.Owner to "gone")), emptyList()),
             )
         }

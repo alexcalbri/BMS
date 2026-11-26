@@ -22,7 +22,7 @@ class MembresiaMondayI18nTest {
         assertEquals("El id del tablero debe ser un numero.", assertFailsWith<MembresiaMondayException> { MembresiaMondayClient.boardInfo("token", "x") }.message)
         assertEquals("Escribe el token de la API de monday.", assertFailsWith<MembresiaMondayException> { MembresiaMondayClient.boards("") }.message)
         I18n.withLanguage("en") {
-            assertEquals("The board ID must be a number.", assertFailsWith<MembresiaMondayException> { MembresiaMondayClient.boardInfo("token", "x") }.message)
+            assertEquals("The board id must be a number.", assertFailsWith<MembresiaMondayException> { MembresiaMondayClient.boardInfo("token", "x") }.message)
             assertEquals("Enter the monday API token.", assertFailsWith<MembresiaMondayException> { MembresiaMondayClient.boards("") }.message)
         }
     }

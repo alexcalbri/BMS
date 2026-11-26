@@ -38,7 +38,7 @@ object MembresiaMondayServerExtension : ServerExtension, MembresiaImportSource {
         displayName = "Importacion de membresias desde monday",
         description = "Importa un tablero de monday como membresias: lee el tablero con el token de la empresa, mapea sus columnas y trae planes, clientes, membresias y visitas.",
         version = "1.1.0",
-        minModuleVersion = "0.2.0",
+        minModuleVersion = "0.4.0", // the bilingual release (minCoreVersion 0.10.0: tr)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/membresia_monday",
