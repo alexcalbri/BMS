@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.auth.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionStore
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
 import com.ideasdeveloper.bms.app.core.theme.appFieldColors
@@ -125,7 +126,7 @@ fun LoginScreen(
             val version = VersionApi(serverUrl).use { it.version() }
             versionMessage = version?.latestAppVersion
                 ?.takeIf { it.isNotBlank() && it != ClientVersion }
-                ?.let { "Nueva version de la app disponible: $it" }
+                ?.let { tr("Nueva version de la app disponible: {0}", it) }
         }
     }
 
@@ -165,7 +166,7 @@ fun LoginScreen(
             )
 
             Text(
-                text = "Inicia sesión en tu cuenta",
+                text = tr("Inicia sesión en tu cuenta"),
                 fontSize = 16.sp,
                 color = AppTheme.colors.onScreenMuted,
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 32.dp)
@@ -173,7 +174,7 @@ fun LoginScreen(
             // Aviso cuando la app regreso aqui porque la sesion vencio o el servidor la rechazo.
             if (sessionExpired) {
                 Text(
-                    text = "Tu sesion expiro. Inicia sesion de nuevo para continuar.",
+                    text = tr("Tu sesion expiro. Inicia sesion de nuevo para continuar."),
                     color = AppTheme.colors.onScreen,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(bottom = 8.dp),
@@ -199,13 +200,13 @@ fun LoginScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "Servidor: $serverUrl",
+                        text = tr("Servidor: {0}", serverUrl),
                         color = AppTheme.colors.muted,
                         fontSize = 13.sp,
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(onClick = { editingServer = true }, enabled = !isLoading) {
-                        Text("Cambiar servidor", color = AppTheme.colors.text)
+                        Text(tr("Cambiar servidor"), color = AppTheme.colors.text)
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -215,8 +216,8 @@ fun LoginScreen(
                     OutlinedTextField(
                         value = serverUrl,
                         onValueChange = { serverUrl = it },
-                        label = { Text("URL del servidor") },
-                        placeholder = { Text("https://sub.domain.tld o http://sub.domain.tld") },
+                        label = { Text(tr("URL del servidor")) },
+                        placeholder = { Text(tr("https://sub.domain.tld o http://sub.domain.tld")) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = submitKeyboardActions,
@@ -232,7 +233,7 @@ fun LoginScreen(
                         OutlinedTextField(
                             value = companyCode,
                             onValueChange = { companyCode = it },
-                            label = { Text("Código de empresa") },
+                            label = { Text(tr("Código de empresa")) },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                             keyboardActions = submitKeyboardActions,
@@ -248,7 +249,7 @@ fun LoginScreen(
                 OutlinedTextField(
                     value = username,
                     onValueChange = { username = it },
-                    label = { Text("Usuario") },
+                    label = { Text(tr("Usuario")) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Go),
                     keyboardActions = submitKeyboardActions,
@@ -263,7 +264,7 @@ fun LoginScreen(
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text("Contraseña") },
+                    label = { Text(tr("Contraseña")) },
                     singleLine = true,
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
@@ -273,7 +274,7 @@ fun LoginScreen(
                         IconButton(onClick = { showPassword = !showPassword }) {
                             Icon(
                                 imageVector = if (showPassword) AppIcons.VisibilityOff else AppIcons.Visibility,
-                                contentDescription = if (showPassword) "Ocultar contraseña" else "Mostrar contraseña",
+                                contentDescription = if (showPassword) tr("Ocultar contraseña") else tr("Mostrar contraseña"),
                             )
                         }
                     },
@@ -294,7 +295,7 @@ fun LoginScreen(
                     onCheckedChange = { keepSignedIn = it },
                     enabled = !isLoading,
                 )
-                Text("Mantener sesión iniciada", color = AppTheme.colors.text)
+                Text(tr("Mantener sesión iniciada"), color = AppTheme.colors.text)
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -336,7 +337,7 @@ fun LoginScreen(
                     )
                 } else {
                     Text(
-                        text = "INICIAR SESIÓN",
+                        text = tr("INICIAR SESIÓN"),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -348,7 +349,7 @@ fun LoginScreen(
                 onClick = { recoveringPassword = true },
                 enabled = !isLoading && serverUrl.isNotBlank() && (serverAdministration || companyCode.isNotBlank()),
             ) {
-                Text("¿Olvidaste tu contraseña?", color = AppTheme.colors.text)
+                Text(tr("¿Olvidaste tu contraseña?"), color = AppTheme.colors.text)
             }
                 }
             }
@@ -381,7 +382,7 @@ fun LoginScreen(
                         onCheckedChange = { serverAdministration = it },
                         enabled = !isLoading,
                     )
-                    Text("Administrar servidor", color = AppTheme.colors.onScreen)
+                    Text(tr("Administrar servidor"), color = AppTheme.colors.onScreen)
                 }
             } else {
                 Spacer(modifier = Modifier.width(1.dp))

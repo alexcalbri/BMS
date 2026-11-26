@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
 import com.ideasdeveloper.bms.app.core.layout.contentWidth
@@ -186,8 +187,8 @@ fun CompanyManagementScreen(
         modifier = modifier.background(AppTheme.colors.copy(accent = primaryCompose, accentSecondary = secondaryCompose).screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Empresa",
-                subtitle = "Perfil y backups",
+                title = tr("Empresa"),
+                subtitle = tr("Perfil y backups"),
                 primaryColor = primaryCompose,
                 onReturnToDashboard = ::requestReturnToDashboard,
                 onSettings = onSettings,
@@ -198,8 +199,8 @@ fun CompanyManagementScreen(
         if (confirmReturnToDashboard) {
             AlertDialog(
                 onDismissRequest = { confirmReturnToDashboard = false },
-                title = { Text("Salir sin guardar") },
-                text = { Text("Hay cambios sin guardar. Deseas volver al panel?") },
+                title = { Text(tr("Salir sin guardar")) },
+                text = { Text(tr("Hay cambios sin guardar. Deseas volver al panel?")) },
                 confirmButton = {
                     TextButton(
                         onClick = {
@@ -207,12 +208,12 @@ fun CompanyManagementScreen(
                             onReturnToDashboard()
                         },
                     ) {
-                        Text("Salir y volver")
+                        Text(tr("Salir y volver"))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { confirmReturnToDashboard = false }) {
-                        Text("Permanecer")
+                        Text(tr("Permanecer"))
                     }
                 },
             )
@@ -242,7 +243,7 @@ fun CompanyManagementScreen(
                         modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                    Text("Datos de empresa", style = MaterialTheme.typography.titleLarge, color = primaryCompose)
+                    Text(tr("Datos de empresa"), style = MaterialTheme.typography.titleLarge, color = primaryCompose)
 
                     CompanyProfileFields(
                         name = name,
@@ -271,7 +272,7 @@ fun CompanyManagementScreen(
                             enabled = !isLoading,
                             colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryCompose),
                         ) {
-                            Text("Volver al panel")
+                            Text(tr("Volver al panel"))
                         }
                         // Integraciones de los modulos de la empresa (Meta, WordPress, etc.).
                         Button(
@@ -279,7 +280,7 @@ fun CompanyManagementScreen(
                             enabled = !isLoading && session?.companyCode != null,
                             colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryCompose),
                         ) {
-                            Text("Extensiones")
+                            Text(tr("Extensiones"))
                         }
                         Button(
                             enabled = !isLoading && serverUrl != null && session?.companyCode != null,
@@ -306,7 +307,7 @@ fun CompanyManagementScreen(
                                             )
                                         }
                                         applyProfile(profile)
-                                        message = "Empresa actualizada."
+                                        message = tr("Empresa actualizada.")
                                     } catch (exception: CompanyException) {
                                         error = exception.message
                                     } finally {
@@ -319,15 +320,15 @@ fun CompanyManagementScreen(
                             if (isLoading) {
                                 CircularProgressIndicator(color = AppTheme.colors.onAccent, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
                             } else {
-                                Text("Guardar")
+                                Text(tr("Guardar"))
                             }
                         }
                     }
 
                     // Copias del perfil: se usan pocas veces, empiezan cerradas.
-                    CollapsibleSection("Exportar e importar", primaryCompose, subtitle = "ZIP del perfil de empresa") {
+                    CollapsibleSection(tr("Exportar e importar"), primaryCompose, subtitle = tr("ZIP del perfil de empresa")) {
                         Text(
-                            "Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor.",
+                            tr("Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor."),
                             color = AppTheme.colors.muted,
                         )
                         Button(
@@ -344,7 +345,7 @@ fun CompanyManagementScreen(
                                         val created = CompanyApi(activeServerUrl).use { api ->
                                             api.createBackup(activeSession.accessToken, companyCode)
                                         }
-                                        message = "Backup ${created.fileName} creado."
+                                        message = tr("Backup {0} creado.", created.fileName)
                                         refreshBackups()
                                     } catch (exception: CompanyException) {
                                         error = exception.message
@@ -355,7 +356,7 @@ fun CompanyManagementScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
                         ) {
-                            Text("Exportar ZIP")
+                            Text(tr("Exportar ZIP"))
                         }
 
                         backups.forEach { backup ->
@@ -375,7 +376,7 @@ fun CompanyManagementScreen(
                                                     api.deleteBackup(activeSession.accessToken, companyCode, backup.fileName)
                                                 }
                                                 backups = backups.filterNot { it.fileName == backup.fileName }
-                                                message = "Backup eliminado."
+                                                message = tr("Backup eliminado.")
                                             } catch (exception: CompanyException) {
                                                 error = exception.message
                                             }
@@ -400,7 +401,7 @@ fun CompanyManagementScreen(
                         accessToken = session?.accessToken,
                         companyCode = session?.companyCode,
                         primaryColor = primaryCompose,
-                        description = "El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos.",
+                        description = tr("El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos."),
                     )
 
                     Spacer(modifier = Modifier.height(2.dp))
@@ -427,15 +428,15 @@ private fun BackupRow(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(backup.fileName, fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
-        Text("Tamano: ${backup.sizeBytes} bytes", color = AppTheme.colors.muted)
-        Text("Descarga: ${serverUrl.trimEnd('/')}${backup.downloadUrl}", color = AppTheme.colors.text)
+        Text(tr("Tamano: {0} bytes", backup.sizeBytes), color = AppTheme.colors.muted)
+        Text(tr("Descarga: {0}{1}", serverUrl.trimEnd('/'), backup.downloadUrl), color = AppTheme.colors.text)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Button(
                 enabled = enabled,
                 onClick = onDelete,
                 colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.danger),
             ) {
-                Text("Eliminar")
+                Text(tr("Eliminar"))
             }
         }
     }

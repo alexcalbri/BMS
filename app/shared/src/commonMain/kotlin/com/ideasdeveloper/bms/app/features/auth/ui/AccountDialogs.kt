@@ -1,13 +1,19 @@
 package com.ideasdeveloper.bms.app.features.auth.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -17,10 +23,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
 import com.ideasdeveloper.bms.app.features.auth.data.AccountApi
 import com.ideasdeveloper.bms.app.features.auth.data.AccountProfile
@@ -46,6 +55,8 @@ fun ProfileDialog(
     var displayName by remember { mutableStateOf(session.displayName.orEmpty()) }
     var email by remember { mutableStateOf(session.email.orEmpty()) }
     var userCode by remember { mutableStateOf("") }
+    // Idioma elegido en el dialogo; null = seguir al de la empresa. Se aplica al guardar.
+    var languageChoice by remember { mutableStateOf(AppLanguage.choice) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     // Contrasena actual: solo se pide al cambiar el correo; vive unicamente en el estado del dialogo.
@@ -69,16 +80,16 @@ fun ProfileDialog(
 
     AlertDialog(
         onDismissRequest = { if (!required) onDismiss() },
-        title = { Text(if (required) "Completa tu perfil" else "Mi perfil") },
+        title = { Text(if (required) tr("Completa tu perfil") else tr("Mi perfil")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (required) {
-                    Text("Para continuar escribe tu nombre y tu correo. Tus cambios quedan registrados con tu nombre y el correo sirve para recuperar tu contrasena.")
+                    Text(tr("Para continuar escribe tu nombre y tu correo. Tus cambios quedan registrados con tu nombre y el correo sirve para recuperar tu contrasena."))
                 }
                 OutlinedTextField(
                     value = displayName,
                     onValueChange = { displayName = it },
-                    label = { Text("Nombre completo") },
+                    label = { Text(tr("Nombre completo")) },
                     singleLine = true,
                     enabled = !saving,
                     modifier = Modifier.fillMaxWidth(),
@@ -86,21 +97,23 @@ fun ProfileDialog(
                 OutlinedTextField(
                     value = email,
                     onValueChange = { email = it.trim() },
-                    label = { Text("Correo") },
+                    label = { Text(tr("Correo")) },
                     singleLine = true,
                     enabled = !saving,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text(tr("Idioma"), color = AppTheme.colors.muted)
+                LanguageSelector(selected = languageChoice, enabled = !saving) { languageChoice = it }
                 if (showPassword) {
-                    Text("Para cambiar el correo, confirma tu contrasena.", color = AppTheme.colors.muted)
+                    Text(tr("Para cambiar el correo, confirma tu contrasena."), color = AppTheme.colors.muted)
                     OutlinedTextField(
                         value = currentPassword,
                         onValueChange = {
                             currentPassword = it
                             passwordError = null
                         },
-                        label = { Text("Contrasena actual") },
+                        label = { Text(tr("Contrasena actual")) },
                         singleLine = true,
                         enabled = !saving,
                         visualTransformation = PasswordVisualTransformation(),
@@ -114,7 +127,7 @@ fun ProfileDialog(
                     OutlinedTextField(
                         value = userCode,
                         onValueChange = {},
-                        label = { Text("Codigo de usuario") },
+                        label = { Text(tr("Codigo de usuario")) },
                         readOnly = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -135,9 +148,10 @@ fun ProfileDialog(
                         try {
                             val password = currentPassword.takeIf { showPassword && it.isNotEmpty() }
                             val profile = AccountApi(url).use {
-                                it.updateProfile(session.accessToken, session.companyCode, displayName, email, password)
+                                it.updateProfile(session.accessToken, session.companyCode, displayName, email, languageChoice, password)
                             }
                             currentPassword = ""
+                            AppLanguage.select(languageChoice)
                             onSaved(profile)
                         } catch (exception: LoginException) {
                             // Los errores de contrasena se muestran junto a su campo.
@@ -151,16 +165,43 @@ fun ProfileDialog(
                         }
                     }
                 },
-            ) { Text("Guardar") }
+            ) { Text(tr("Guardar")) }
         },
         dismissButton = {
             if (required) {
-                TextButton(onClick = onLogout, enabled = !saving) { Text("Cerrar sesion") }
+                TextButton(onClick = onLogout, enabled = !saving) { Text(tr("Cerrar sesion")) }
             } else {
-                TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancelar") }
+                TextButton(onClick = onDismiss, enabled = !saving) { Text(tr("Cancelar")) }
             }
         },
     )
+}
+
+/**
+ * Selector de idioma: seguir al de la empresa, Espanol o English. [selected] null = seguir a la empresa.
+ * Los nombres de los idiomas se escriben en su propio idioma y no se traducen.
+ */
+@Composable
+fun LanguageSelector(selected: String?, enabled: Boolean, onSelect: (String?) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        LanguageOption(tr("Seguir el idioma de la empresa"), null, selected, enabled, onSelect)
+        LanguageOption("Espa\u00f1ol", "es", selected, enabled, onSelect)
+        LanguageOption("English", "en", selected, enabled, onSelect)
+    }
+}
+
+@Composable
+private fun LanguageOption(label: String, value: String?, selected: String?, enabled: Boolean, onSelect: (String?) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = value == selected, enabled = enabled, role = Role.RadioButton, onClick = { onSelect(value) }),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = value == selected, onClick = null, enabled = enabled)
+        Spacer(Modifier.width(8.dp))
+        Text(label, color = AppTheme.colors.text)
+    }
 }
 
 /**
@@ -202,20 +243,20 @@ fun PasswordResetDialog(
 
     AlertDialog(
         onDismissRequest = { if (!working) onDismiss() },
-        title = { Text("Recuperar contrasena") },
+        title = { Text(tr("Recuperar contrasena")) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    if (companyCode == null) "Dueno del servidor" else "Empresa: $companyCode",
+                    if (companyCode == null) tr("Dueno del servidor") else tr("Empresa: {0}", companyCode),
                     color = AppTheme.colors.muted,
                 )
                 OutlinedTextField(
                     value = username,
                     onValueChange = { username = it.trim() },
-                    label = { Text("Usuario") },
+                    label = { Text(tr("Usuario")) },
                     singleLine = true,
                     enabled = !working && !codeSent && !done,
                     modifier = Modifier.fillMaxWidth(),
@@ -224,7 +265,7 @@ fun PasswordResetDialog(
                     OutlinedTextField(
                         value = code,
                         onValueChange = { value -> code = value.filter(Char::isDigit).take(6) },
-                        label = { Text("Codigo de 6 digitos") },
+                        label = { Text(tr("Codigo de 6 digitos")) },
                         singleLine = true,
                         enabled = !working,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -233,7 +274,7 @@ fun PasswordResetDialog(
                     OutlinedTextField(
                         value = newPassword,
                         onValueChange = { newPassword = it },
-                        label = { Text("Nueva contrasena (minimo $minimum)") },
+                        label = { Text(tr("Nueva contrasena (minimo {0})", minimum)) },
                         singleLine = true,
                         enabled = !working,
                         visualTransformation = PasswordVisualTransformation(),
@@ -242,7 +283,7 @@ fun PasswordResetDialog(
                     OutlinedTextField(
                         value = confirmation,
                         onValueChange = { confirmation = it },
-                        label = { Text("Confirmar contrasena") },
+                        label = { Text(tr("Confirmar contrasena")) },
                         singleLine = true,
                         enabled = !working,
                         visualTransformation = PasswordVisualTransformation(),
@@ -256,7 +297,7 @@ fun PasswordResetDialog(
         },
         confirmButton = {
             when {
-                done -> TextButton(onClick = onDismiss) { Text("Iniciar sesion") }
+                done -> TextButton(onClick = onDismiss) { Text(tr("Iniciar sesion")) }
                 !codeSent -> TextButton(
                     enabled = !working && username.isNotBlank(),
                     onClick = {
@@ -265,7 +306,7 @@ fun PasswordResetDialog(
                             codeSent = true
                         }
                     },
-                ) { Text("Enviar codigo") }
+                ) { Text(tr("Enviar codigo")) }
                 else -> TextButton(
                     enabled = !working && code.length == 6 && newPassword.length >= minimum && newPassword == confirmation,
                     onClick = {
@@ -274,17 +315,17 @@ fun PasswordResetDialog(
                             done = true
                         }
                     },
-                ) { Text("Cambiar contrasena") }
+                ) { Text(tr("Cambiar contrasena")) }
             }
         },
         dismissButton = {
             if (!done) {
                 if (codeSent) {
                     TextButton(enabled = !working, onClick = { run { api -> info = api.requestPasswordReset(username, companyCode) } }) {
-                        Text("Reenviar codigo")
+                        Text(tr("Reenviar codigo"))
                     }
                 }
-                TextButton(enabled = !working, onClick = onDismiss) { Text("Cancelar") }
+                TextButton(enabled = !working, onClick = onDismiss) { Text(tr("Cancelar")) }
             }
         },
     )

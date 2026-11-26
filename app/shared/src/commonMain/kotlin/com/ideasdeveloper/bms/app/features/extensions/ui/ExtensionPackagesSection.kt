@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.extensions.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -61,12 +62,12 @@ private sealed interface PackageDialog {
 
 // Estado de un paquete en palabras para el usuario.
 private fun packageStatusLabel(entry: ExtensionPackageEntry): String = when (entry.status) {
-    "installing" -> "Instalando"
-    "error" -> "Error al instalar"
-    "pending_restart" -> "Instalado, pendiente de reinicio"
-    "installed" -> "Instalado"
-    "removed" -> "Quitado"
-    else -> "Disponible"
+    "installing" -> tr("Instalando")
+    "error" -> tr("Error al instalar")
+    "pending_restart" -> tr("Instalado, pendiente de reinicio")
+    "installed" -> tr("Instalado")
+    "removed" -> tr("Quitado")
+    else -> tr("Disponible")
 }
 
 /**
@@ -81,10 +82,10 @@ fun ExtensionPackagesSection(
 ) {
     val colors = AppTheme.colors
     CollapsibleSection(
-        title = "Paquetes de extensiones",
+        title = tr("Paquetes de extensiones"),
         color = colors.accentText,
         modifier = modifier,
-        subtitle = "Catalogo de extensiones externas del servidor",
+        subtitle = tr("Catalogo de extensiones externas del servidor"),
     ) {
         ExtensionPackagesContent(serverUrl, session)
     }
@@ -112,7 +113,7 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
     DisposableEffect(api) { onDispose { api?.close() } }
 
     // Ejecuta una llamada con el cliente compartido de la seccion.
-    suspend fun <T> withApi(block: suspend ExtensionApi.(String) -> T): T = (api ?: error("URL del servidor invalida")).block(token.orEmpty())
+    suspend fun <T> withApi(block: suspend ExtensionApi.(String) -> T): T = (api ?: error(tr("URL del servidor invalida"))).block(token.orEmpty())
 
     LaunchedEffect(serverUrl, token, reloadTick) {
         if (!canWork) return@LaunchedEffect
@@ -161,7 +162,7 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "Los paquetes vienen del catalogo de extensiones configurado en el servidor. Un paquete firmado se instala directamente; uno sin firma necesita tu autorizacion expresa.",
+            tr("Los paquetes vienen del catalogo de extensiones configurado en el servidor. Un paquete firmado se instala directamente; uno sin firma necesita tu autorizacion expresa."),
             color = colors.muted,
             modifier = Modifier.widthIn(max = ContentWidth.Form),
         )
@@ -170,8 +171,8 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
                 enabled = canWork && !loading,
                 onClick = { reloadTick += 1 },
                 colors = ButtonDefaults.buttonColors(containerColor = colors.surfaceAlt, contentColor = colors.accentText),
-            ) { Text("Actualizar catalogo") }
-            if (loading) Text("Cargando paquetes...", color = colors.muted)
+            ) { Text(tr("Actualizar catalogo")) }
+            if (loading) Text(tr("Cargando paquetes..."), color = colors.muted)
         }
         error?.let { Text(it, color = colors.danger) }
         message?.let { Text(it, color = colors.success) }
@@ -188,7 +189,7 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
                 reloadTick += 1
             },
         )
-        if (!loading && entries.isEmpty() && error == null) Text("El catalogo no tiene paquetes.", color = colors.muted)
+        if (!loading && entries.isEmpty() && error == null) Text(tr("El catalogo no tiene paquetes."), color = colors.muted)
 
         AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 420.dp, gap = 12.dp, equalHeight = false) {
             entries.forEach { entry ->
@@ -209,27 +210,27 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
     when (val current = dialog) {
         is PackageDialog.Install -> AlertDialog(
             onDismissRequest = { dialog = null },
-            title = { Text("Instalar ${current.entry.displayName}") },
-            text = { Text("El servidor se reiniciara para cargar el paquete. Durante unos segundos nadie podra usar la app.", color = colors.text) },
+            title = { Text(tr("Instalar {0}", current.entry.displayName)) },
+            text = { Text(tr("El servidor se reiniciara para cargar el paquete. Durante unos segundos nadie podra usar la app."), color = colors.text) },
             confirmButton = {
                 TextButton(onClick = {
                     dialog = null
-                    act(current.entry.id, "Instalando ${current.entry.displayName}: el servidor descarga y compila el paquete y luego se reinicia.") { installPackage(it, current.entry.id) }
-                }) { Text("Instalar") }
+                    act(current.entry.id, tr("Instalando {0}: el servidor descarga y compila el paquete y luego se reinicia.", current.entry.displayName)) { installPackage(it, current.entry.id) }
+                }) { Text(tr("Instalar")) }
             },
-            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancelar") } },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text(tr("Cancelar")) } },
         )
         is PackageDialog.Remove -> AlertDialog(
             onDismissRequest = { dialog = null },
-            title = { Text("Quitar ${current.entry.displayName}") },
-            text = { Text("El paquete deja de cargarse la proxima vez que arranque el servidor. Los datos de las empresas no se tocan.", color = colors.text) },
+            title = { Text(tr("Quitar {0}", current.entry.displayName)) },
+            text = { Text(tr("El paquete deja de cargarse la proxima vez que arranque el servidor. Los datos de las empresas no se tocan."), color = colors.text) },
             confirmButton = {
                 TextButton(onClick = {
                     dialog = null
-                    act(current.entry.id, "${current.entry.displayName} quitada del servidor.") { removePackage(it, current.entry.id) }
-                }) { Text("Quitar", color = colors.danger) }
+                    act(current.entry.id, tr("{0} quitada del servidor.", current.entry.displayName)) { removePackage(it, current.entry.id) }
+                }) { Text(tr("Quitar"), color = colors.danger) }
             },
-            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancelar") } },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text(tr("Cancelar")) } },
         )
         is PackageDialog.AuthorizeUnsigned -> AuthorizeUnsignedDialog(
             entry = current.entry,
@@ -237,7 +238,7 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
             authorize = { text, sha, commit -> withApi { authorizeUnsigned(it, current.entry.id, text, sha, commit) } },
             onAuthorized = {
                 dialog = null
-                message = "Paquete ${current.entry.displayName} autorizado sin firma. Ya puedes instalarlo."
+                message = tr("Paquete {0} autorizado sin firma. Ya puedes instalarlo.", current.entry.displayName)
                 error = null
                 reloadTick += 1
             },
@@ -276,7 +277,7 @@ private fun PackageCard(
                 border = BorderStroke(1.5.dp, if (entry.signed) colors.success else colors.warning),
             ) {
                 Text(
-                    if (entry.signed) "Firmado" else "Sin firma",
+                    if (entry.signed) tr("Firmado") else tr("Sin firma"),
                     style = MaterialTheme.typography.labelMedium,
                     color = colors.text,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -285,23 +286,23 @@ private fun PackageCard(
         }
         Text(entry.description, color = colors.muted)
         Text(
-            "Modulo ${entry.module} · Version ${entry.version}" + (entry.installedVersion?.let { " · Instalada: $it" } ?: ""),
+            tr("Modulo {0} · Version {1}", entry.module, entry.version) + (entry.installedVersion?.let { tr(" · Instalada: {0}", it) } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted,
         )
         if (entry.permissions.isNotEmpty()) {
-            Text("Permisos: ${entry.permissions.joinToString()}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+            Text(tr("Permisos: {0}", entry.permissions.joinToString()), style = MaterialTheme.typography.bodySmall, color = colors.muted)
         }
         if (entry.commit.isNotBlank()) {
-            Text("Commit ${entry.commit.take(8)}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+            Text(tr("Commit {0}", entry.commit.take(8)), style = MaterialTheme.typography.bodySmall, color = colors.muted)
         }
         Text(
-            "Estado: ${packageStatusLabel(entry)}" + (entry.message?.takeIf { it.isNotBlank() }?.let { " - $it" } ?: ""),
+            tr("Estado: {0}", packageStatusLabel(entry)) + (entry.message?.takeIf { it.isNotBlank() }?.let { " - $it" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = if (entry.status == "error") colors.danger else colors.text,
         )
         if (entry.status == "pending_restart" || entry.restartRequired) {
-            Text("Reinicia el servidor para cargar el paquete.", style = MaterialTheme.typography.bodySmall, color = colors.warning)
+            Text(tr("Reinicia el servidor para cargar el paquete."), style = MaterialTheme.typography.bodySmall, color = colors.warning)
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             if (!entry.signed && !installed) {
@@ -310,20 +311,20 @@ private fun PackageCard(
                     onClick = { onAuthorizeUnsigned() },
                     colors = ButtonDefaults.buttonColors(containerColor = colors.surface, contentColor = colors.warning),
                     border = BorderStroke(1.dp, colors.warning),
-                ) { Text("Autorizar paquete sin firma") }
+                ) { Text(tr("Autorizar paquete sin firma")) }
             }
             if (!installed) {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onInstall() },
                     colors = accentButtonColors(),
-                ) { Text(if (entry.status == "installing") "Instalando..." else if (entry.status == "error") "Reintentar" else "Instalar") }
+                ) { Text(if (entry.status == "installing") tr("Instalando...") else if (entry.status == "error") tr("Reintentar") else tr("Instalar")) }
             } else {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onRemove() },
                     colors = ButtonDefaults.buttonColors(containerColor = colors.surface, contentColor = colors.danger),
-                ) { Text("Quitar") }
+                ) { Text(tr("Quitar")) }
             }
         }
     }
@@ -374,41 +375,41 @@ private fun AuthorizeUnsignedDialog(
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Autorizar paquete sin firma") },
+        title = { Text(tr("Autorizar paquete sin firma")) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "${entry.displayName} no tiene una firma valida, asi que nadie garantiza su origen. Una vez instalado, su codigo corre con los privilegios del servidor: puede leer y escribir datos de todas las empresas.",
+                    tr("{0} no tiene una firma valida, asi que nadie garantiza su origen. Una vez instalado, su codigo corre con los privilegios del servidor: puede leer y escribir datos de todas las empresas.", entry.displayName),
                     color = colors.text,
                 )
-                Text("Autoriza solo paquetes que hayas revisado y de una fuente de confianza.", color = colors.warning)
-                if (loading) Text("Descargando y revisando el paquete...", color = colors.muted)
+                Text(tr("Autoriza solo paquetes que hayas revisado y de una fuente de confianza."), color = colors.warning)
+                if (loading) Text(tr("Descargando y revisando el paquete..."), color = colors.muted)
                 if (current != null) {
-                    Text("Esto es lo que se descargo ahora:", color = colors.text, style = MaterialTheme.typography.titleSmall)
-                    Text("Commit ${current.commit.take(8)}", color = colors.text)
+                    Text(tr("Esto es lo que se descargo ahora:"), color = colors.text, style = MaterialTheme.typography.titleSmall)
+                    Text(tr("Commit {0}", current.commit.take(8)), color = colors.text)
                     if (current.commitUrl.isNotBlank()) {
                         TextButton(onClick = { runCatching { uriHandler.openUri(current.commitUrl) } }) {
-                            Text("Abrir el commit en el navegador", color = colors.accentText)
+                            Text(tr("Abrir el commit en el navegador"), color = colors.accentText)
                         }
-                        CopyableCode(label = "Enlace", code = current.commitUrl)
+                        CopyableCode(label = tr("Enlace"), code = current.commitUrl)
                     }
-                    Text("Hash ${current.packageSha256.take(12)}...", color = colors.text)
-                    CopyableCode(label = "Hash completo", code = current.packageSha256)
+                    Text(tr("Hash {0}...", current.packageSha256.take(12)), color = colors.text)
+                    CopyableCode(label = tr("Hash completo"), code = current.packageSha256)
                     if (current.signed) {
-                        Text("El paquete esta firmado: no necesita autorizacion.", color = colors.success)
+                        Text(tr("El paquete esta firmado: no necesita autorizacion."), color = colors.success)
                     }
                     current.signatureProblem?.let {
-                        Text("El paquete trae una firma que no vale ($it). No se puede autorizar.", color = colors.danger)
+                        Text(tr("El paquete trae una firma que no vale ({0}). No se puede autorizar.", it), color = colors.danger)
                     }
                     if (!blocked) {
-                        Text("Para confirmar escribe: $phrase", color = colors.text)
+                        Text(tr("Para confirmar escribe: {0}", phrase), color = colors.text)
                         OutlinedTextField(
                             value = typed,
                             onValueChange = { typed = it },
-                            label = { Text("Texto de confirmacion") },
+                            label = { Text(tr("Texto de confirmacion")) },
                             singleLine = true,
                             enabled = !busy,
                             colors = appFieldColors(),
@@ -434,7 +435,7 @@ private fun AuthorizeUnsignedDialog(
                         } catch (exception: CompanyException) {
                             if (exception.status == 409) {
                                 // PACKAGE_CHANGED: lo descargado ya no es lo revisado; se inspecciona otra vez.
-                                notice = "El paquete cambio desde que lo revisaste; revisalo de nuevo."
+                                notice = tr("El paquete cambio desde que lo revisaste; revisalo de nuevo.")
                                 inspectTick += 1
                             } else {
                                 error = exception.message
@@ -443,9 +444,9 @@ private fun AuthorizeUnsignedDialog(
                         }
                     }
                 },
-            ) { Text(if (busy) "Autorizando..." else "Autorizar", color = if (matches) colors.danger else colors.muted) }
+            ) { Text(if (busy) tr("Autorizando...") else tr("Autorizar"), color = if (matches) colors.danger else colors.muted) }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text(tr("Cancelar")) } },
     )
 }
 
@@ -454,11 +455,11 @@ private const val MaxZipBytes = 50L * 1024 * 1024
 
 // Mensaje claro segun el codigo HTTP del servidor; en los demas casos, el mensaje del propio servidor.
 private fun stagedErrorMessage(exception: CompanyException): String = when (exception.status) {
-    413 -> "El archivo es demasiado grande: el limite es de 50 MB."
-    502 -> "No se pudo descargar el paquete desde esa URL (el servidor no respondio, o la direccion es interna o no esta permitida)."
-    409 -> "El paquete cambio desde que lo revisaste. Vuelve a subirlo o descargarlo para revisarlo de nuevo."
-    404 -> "La sesion de instalacion caduco (dura 30 minutos). Vuelve a subir o descargar el paquete."
-    else -> exception.message ?: "No se pudo completar la operacion."
+    413 -> tr("El archivo es demasiado grande: el limite es de 50 MB.")
+    502 -> tr("No se pudo descargar el paquete desde esa URL (el servidor no respondio, o la direccion es interna o no esta permitida).")
+    409 -> tr("El paquete cambio desde que lo revisaste. Vuelve a subirlo o descargarlo para revisarlo de nuevo.")
+    404 -> tr("La sesion de instalacion caduco (dura 30 minutos). Vuelve a subir o descargar el paquete.")
+    else -> exception.message ?: tr("No se pudo completar la operacion.")
 }
 
 /**
@@ -492,8 +493,8 @@ private fun ManualInstallPanel(
         zip = null
         error = null
         when {
-            !file.name.endsWith(".zip", ignoreCase = true) -> error = "Elige un archivo .zip."
-            file.bytes == null -> error = "El archivo pesa ${file.size / (1024 * 1024)} MB y supera el limite de 50 MB."
+            !file.name.endsWith(".zip", ignoreCase = true) -> error = tr("Elige un archivo .zip.")
+            file.bytes == null -> error = tr("El archivo pesa {0} MB y supera el limite de 50 MB.", file.size / (1024 * 1024))
             else -> zip = file
         }
     }
@@ -525,41 +526,41 @@ private fun ManualInstallPanel(
         modifier = Modifier.fillMaxWidth().background(colors.surfaceAlt, MaterialTheme.shapes.small).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Instalar desde archivo o URL", style = MaterialTheme.typography.titleSmall, color = colors.accentText)
+        Text(tr("Instalar desde archivo o URL"), style = MaterialTheme.typography.titleSmall, color = colors.accentText)
         Text(
-            "Sube un ZIP (hasta 50 MB) o indica una URL de descarga. Antes de instalar veras el hash del paquete; uno sin firma necesita tu autorizacion expresa.",
+            tr("Sube un ZIP (hasta 50 MB) o indica una URL de descarga. Antes de instalar veras el hash del paquete; uno sin firma necesita tu autorizacion expresa."),
             color = colors.muted,
             modifier = Modifier.widthIn(max = ContentWidth.Form),
         )
         OutlinedTextField(
             value = id,
             onValueChange = { id = it },
-            label = { Text("Id de la extension") },
+            label = { Text(tr("Id de la extension")) },
             singleLine = true,
             enabled = !busy,
             colors = appFieldColors(),
             modifier = Modifier.fillMaxWidth().widthIn(max = ContentWidth.Form),
         )
-        Text("Desde archivo (ZIP)", style = MaterialTheme.typography.labelLarge, color = colors.text)
+        Text(tr("Desde archivo (ZIP)"), style = MaterialTheme.typography.labelLarge, color = colors.text)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 enabled = canWork && !busy && picker.supported,
                 onClick = { picker.pickFiles() },
                 colors = ButtonDefaults.buttonColors(containerColor = colors.surface, contentColor = colors.accentText),
-            ) { Text("Elegir ZIP") }
+            ) { Text(tr("Elegir ZIP")) }
             Button(
                 enabled = canWork && !busy && zip != null && id.isNotBlank(),
                 onClick = { zip?.let { file -> stage { stageZip(id.trim(), file) } } },
                 colors = accentButtonColors(),
-            ) { Text("Subir y revisar") }
+            ) { Text(tr("Subir y revisar")) }
         }
-        Text(zip?.let { "${it.name} (${it.size / 1024} KB)" } ?: "Ningun archivo elegido", color = colors.muted)
-        if (!picker.supported) Text("Esta plataforma aun no permite elegir archivos.", color = colors.warning)
-        Text("Desde URL", style = MaterialTheme.typography.labelLarge, color = colors.text)
+        Text(zip?.let { tr("{0} ({1} KB)", it.name, it.size / 1024) } ?: tr("Ningun archivo elegido"), color = colors.muted)
+        if (!picker.supported) Text(tr("Esta plataforma aun no permite elegir archivos."), color = colors.warning)
+        Text(tr("Desde URL"), style = MaterialTheme.typography.labelLarge, color = colors.text)
         OutlinedTextField(
             value = url,
             onValueChange = { url = it },
-            label = { Text("URL del paquete (https://...)") },
+            label = { Text(tr("URL del paquete (https://...)")) },
             singleLine = true,
             enabled = !busy,
             colors = appFieldColors(),
@@ -569,8 +570,8 @@ private fun ManualInstallPanel(
             enabled = canWork && !busy && url.isNotBlank() && id.isNotBlank(),
             onClick = { stage { stageUrl(id.trim(), url.trim()) } },
             colors = accentButtonColors(),
-        ) { Text("Descargar y revisar") }
-        if (busy) Text("Trabajando...", color = colors.muted)
+        ) { Text(tr("Descargar y revisar")) }
+        if (busy) Text(tr("Trabajando..."), color = colors.muted)
         error?.let { Text(it, color = colors.danger) }
         notice?.let { Text(it, color = colors.success) }
 
@@ -579,22 +580,22 @@ private fun ManualInstallPanel(
                 modifier = Modifier.fillMaxWidth().background(colors.surface, MaterialTheme.shapes.small).padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text("Paquete listo para revisar: ${current.id}", style = MaterialTheme.typography.titleSmall, color = colors.accentText)
+                Text(tr("Paquete listo para revisar: {0}", current.id), style = MaterialTheme.typography.titleSmall, color = colors.accentText)
                 Text(
-                    "Origen: " + (if (current.source == "url") "URL" else "archivo ZIP") + (current.sourceUrl?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""),
+                    tr("Origen: ") + (if (current.source == "url") tr("URL") else tr("archivo ZIP")) + (current.sourceUrl?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.muted,
                 )
                 Text(
-                    if (current.signed) "Firmado" + (current.keyId?.let { " con la clave $it" } ?: "") else "Sin firma",
+                    if (current.signed) tr("Firmado") + (current.keyId?.let { tr(" con la clave {0}", it) } ?: "") else tr("Sin firma"),
                     color = if (current.signed) colors.success else colors.warning,
                 )
                 current.signatureProblem?.let {
-                    Text("La firma del paquete no vale ($it). No se puede autorizar ni instalar.", color = colors.danger)
+                    Text(tr("La firma del paquete no vale ({0}). No se puede autorizar ni instalar.", it), color = colors.danger)
                 }
-                CopyableCode(label = "Hash del paquete", code = current.packageSha256)
+                CopyableCode(label = tr("Hash del paquete"), code = current.packageSha256)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    TextButton(enabled = !busy, onClick = { staged = null }) { Text("Descartar") }
+                    TextButton(enabled = !busy, onClick = { staged = null }) { Text(tr("Descartar")) }
                     if (current.installable) {
                         Button(
                             enabled = canWork && !busy,
@@ -610,7 +611,7 @@ private fun ManualInstallPanel(
                                         url = ""
                                         zip = null
                                         notice = null
-                                        onInstalled("Instalando ${current.id}: el servidor compila el paquete y luego se reinicia.")
+                                        onInstalled(tr("Instalando {0}: el servidor compila el paquete y luego se reinicia.", current.id))
                                     } catch (exception: CompanyException) {
                                         fail(exception)
                                     } finally {
@@ -618,14 +619,14 @@ private fun ManualInstallPanel(
                                     }
                                 }
                             },
-                        ) { Text("Instalar") }
+                        ) { Text(tr("Instalar")) }
                     } else if (current.signatureProblem == null) {
                         Button(
                             enabled = canWork && !busy,
                             onClick = { authorizing = true },
                             colors = ButtonDefaults.buttonColors(containerColor = colors.surface, contentColor = colors.warning),
                             border = BorderStroke(1.dp, colors.warning),
-                        ) { Text("Autorizar paquete sin firma") }
+                        ) { Text(tr("Autorizar paquete sin firma")) }
                     }
                 }
             }
@@ -641,7 +642,7 @@ private fun ManualInstallPanel(
                 authorizing = false
                 // Autorizado el hash, el paquete ya se puede instalar con el boton Instalar.
                 staged = reviewed.copy(installable = true)
-                notice = "Paquete autorizado sin firma. Pulsa Instalar para continuar."
+                notice = tr("Paquete autorizado sin firma. Pulsa Instalar para continuar.")
                 error = null
             },
             onFailed = { exception ->
@@ -675,24 +676,24 @@ private fun AuthorizeStagedDialog(
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Autorizar paquete sin firma") },
+        title = { Text(tr("Autorizar paquete sin firma")) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "${inspection.id} no tiene una firma valida, asi que nadie garantiza su origen. Una vez instalado, su codigo corre con los privilegios del servidor: puede leer y escribir datos de todas las empresas.",
+                    tr("{0} no tiene una firma valida, asi que nadie garantiza su origen. Una vez instalado, su codigo corre con los privilegios del servidor: puede leer y escribir datos de todas las empresas.", inspection.id),
                     color = colors.text,
                 )
-                Text("Autoriza solo paquetes que hayas revisado y de una fuente de confianza.", color = colors.warning)
-                Text("Hash ${inspection.packageSha256.take(12)}...", color = colors.text)
-                CopyableCode(label = "Hash completo", code = inspection.packageSha256)
-                Text("Para confirmar escribe: $phrase", color = colors.text)
+                Text(tr("Autoriza solo paquetes que hayas revisado y de una fuente de confianza."), color = colors.warning)
+                Text(tr("Hash {0}...", inspection.packageSha256.take(12)), color = colors.text)
+                CopyableCode(label = tr("Hash completo"), code = inspection.packageSha256)
+                Text(tr("Para confirmar escribe: {0}", phrase), color = colors.text)
                 OutlinedTextField(
                     value = typed,
                     onValueChange = { typed = it },
-                    label = { Text("Texto de confirmacion") },
+                    label = { Text(tr("Texto de confirmacion")) },
                     singleLine = true,
                     enabled = !busy,
                     colors = appFieldColors(),
@@ -718,8 +719,8 @@ private fun AuthorizeStagedDialog(
                         }
                     }
                 },
-            ) { Text(if (busy) "Autorizando..." else "Autorizar", color = if (matches) colors.danger else colors.muted) }
+            ) { Text(if (busy) tr("Autorizando...") else tr("Autorizar"), color = if (matches) colors.danger else colors.muted) }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text(tr("Cancelar")) } },
     )
 }

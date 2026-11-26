@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
@@ -107,8 +108,8 @@ fun CompanyProvisioningScreen(
             try {
                 companies = CompanyApi(activeServerUrl).use { api -> api.linkCompany(activeSession.accessToken, company.code, targetCode) }
                 linkingCompany = null
-                message = if (targetCode == null) "${company.name} ya no esta vinculada a otras empresas."
-                else "${company.name} quedo vinculada con $targetCode: su business owner puede cambiar entre ellas sin volver a iniciar sesion."
+                message = if (targetCode == null) tr("{0} ya no esta vinculada a otras empresas.", company.name)
+                else tr("{0} quedo vinculada con {1}: su business owner puede cambiar entre ellas sin volver a iniciar sesion.", company.name, targetCode)
             } catch (exception: CompanyException) {
                 error = exception.message
             } finally {
@@ -180,9 +181,9 @@ fun CompanyProvisioningScreen(
                             val created = CompanyApi(activeServerUrl).use { api -> api.duplicateCompany(activeSession.accessToken, source.code, newCode, newOwner) }
                             duplicatingCompany = null
                             message = buildString {
-                                append("Empresa ${created.code} creada como copia de ${source.name}")
-                                append(if (newOwner == null) "; su business owner entra con el mismo usuario y puede cambiar entre ambas." else " con el business owner ${created.businessOwnerUsername}.")
-                                if (created.settingsNotCopied.isNotEmpty()) append(" No se copio la configuracion de: ${created.settingsNotCopied.joinToString()}.")
+                                append(tr("Empresa {0} creada como copia de {1}", created.code, source.name))
+                                append(if (newOwner == null) tr("; su business owner entra con el mismo usuario y puede cambiar entre ambas.") else tr(" con el business owner {0}.", created.businessOwnerUsername))
+                                if (created.settingsNotCopied.isNotEmpty()) append(tr(" No se copio la configuracion de: {0}.", created.settingsNotCopied.joinToString()))
                             }
                             companies = CompanyApi(activeServerUrl).use { api -> api.listCompanies(activeSession.accessToken) }
                         } catch (exception: CompanyException) {
@@ -246,8 +247,8 @@ fun CompanyProvisioningScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Empresa",
-                subtitle = "Crear empresa",
+                title = tr("Empresa"),
+                subtitle = tr("Crear empresa"),
                 primaryColor = primaryColor,
                 onReturnToDashboard = ::requestReturnToDashboard,
                 onSettings = onSettings,
@@ -258,8 +259,8 @@ fun CompanyProvisioningScreen(
         if (confirmReturnToDashboard) {
             AlertDialog(
                 onDismissRequest = { confirmReturnToDashboard = false },
-                title = { Text("Salir sin guardar") },
-                text = { Text("Hay cambios sin guardar. Deseas volver al panel?") },
+                title = { Text(tr("Salir sin guardar")) },
+                text = { Text(tr("Hay cambios sin guardar. Deseas volver al panel?")) },
                 confirmButton = {
                     TextButton(
                         onClick = {
@@ -267,12 +268,12 @@ fun CompanyProvisioningScreen(
                             onReturnToDashboard()
                         },
                     ) {
-                        Text("Salir y volver")
+                        Text(tr("Salir y volver"))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { confirmReturnToDashboard = false }) {
-                        Text("Permanecer")
+                        Text(tr("Permanecer"))
                     }
                 },
             )
@@ -308,14 +309,14 @@ fun CompanyProvisioningScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Nueva empresa", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
+                        Text(tr("Nueva empresa"), style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
                         if (companies.isNotEmpty()) {
                             Button(
                                 enabled = !isLoading,
                                 onClick = { isCreateCompanyExpanded = !isCreateCompanyExpanded },
                                 colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                             ) {
-                                Text(if (isCreateCompanyExpanded) "Ocultar" else "Crear nueva")
+                                Text(if (isCreateCompanyExpanded) tr("Ocultar") else tr("Crear nueva"))
                             }
                         }
                     }
@@ -325,7 +326,7 @@ fun CompanyProvisioningScreen(
                         OutlinedTextField(
                             value = code,
                             onValueChange = { code = it.trim().lowercase() },
-                            label = { Text("Codigo") },
+                            label = { Text(tr("Codigo")) },
                             singleLine = true,
                             enabled = !isLoading,
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
@@ -334,7 +335,7 @@ fun CompanyProvisioningScreen(
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
-                            label = { Text("Nombre") },
+                            label = { Text(tr("Nombre")) },
                             singleLine = true,
                             enabled = !isLoading,
                             modifier = Modifier.fillMaxWidth(),
@@ -342,7 +343,7 @@ fun CompanyProvisioningScreen(
                         OutlinedTextField(
                             value = ownerUsername,
                             onValueChange = { ownerUsername = it.trim().lowercase() },
-                            label = { Text("Usuario business owner") },
+                            label = { Text(tr("Usuario business owner")) },
                             singleLine = true,
                             enabled = !isLoading,
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
@@ -351,7 +352,7 @@ fun CompanyProvisioningScreen(
                         OutlinedTextField(
                             value = ownerName,
                             onValueChange = { ownerName = it },
-                            label = { Text("Nombre completo del business owner") },
+                            label = { Text(tr("Nombre completo del business owner")) },
                             singleLine = true,
                             enabled = !isLoading,
                             modifier = Modifier.fillMaxWidth(),
@@ -359,7 +360,7 @@ fun CompanyProvisioningScreen(
                         OutlinedTextField(
                             value = ownerEmail,
                             onValueChange = { ownerEmail = it.trim() },
-                            label = { Text("Correo del business owner") },
+                            label = { Text(tr("Correo del business owner")) },
                             singleLine = true,
                             enabled = !isLoading,
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
@@ -368,7 +369,7 @@ fun CompanyProvisioningScreen(
                         OutlinedTextField(
                             value = ownerPassword,
                             onValueChange = { ownerPassword = it },
-                            label = { Text("Contrasena business owner") },
+                            label = { Text(tr("Contrasena business owner")) },
                             singleLine = true,
                             enabled = !isLoading,
                             visualTransformation = PasswordVisualTransformation(),
@@ -377,14 +378,14 @@ fun CompanyProvisioningScreen(
                         OutlinedTextField(
                             value = ownerPasswordConfirmation,
                             onValueChange = { ownerPasswordConfirmation = it },
-                            label = { Text("Confirmar contrasena") },
+                            label = { Text(tr("Confirmar contrasena")) },
                             singleLine = true,
                             enabled = !isLoading,
                             visualTransformation = PasswordVisualTransformation(),
                             isError = ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation,
                             supportingText = {
                                 if (ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation) {
-                                    Text("Las contrasenas no coinciden.")
+                                    Text(tr("Las contrasenas no coinciden."))
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -405,7 +406,7 @@ fun CompanyProvisioningScreen(
                             enabled = !isLoading,
                             colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                         ) {
-                            Text("Cancelar")
+                            Text(tr("Cancelar"))
                         }
                         Button(
                             enabled = !isLoading &&
@@ -440,7 +441,7 @@ fun CompanyProvisioningScreen(
                                                 ),
                                             )
                                         }
-                                        message = "Empresa ${response.name} creada. Ya puedes iniciar sesion con codigo ${response.code}."
+                                        message = tr("Empresa {0} creada. Ya puedes iniciar sesion con codigo {1}.", response.name, response.code)
                                         code = ""
                                         name = ""
                                         ownerUsername = ""
@@ -462,15 +463,15 @@ fun CompanyProvisioningScreen(
                             if (isLoading) {
                                 CircularProgressIndicator(color = AppTheme.colors.onAccent, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
                             } else {
-                                Text("Crear")
+                                Text(tr("Crear"))
                             }
                         }
                     }
 
-                    Text("Empresas", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
+                    Text(tr("Empresas"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
 
                     if (isRefreshing) {
-                        Text("Cargando empresas...", color = AppTheme.colors.muted)
+                        Text(tr("Cargando empresas..."), color = AppTheme.colors.muted)
                     }
                     }
 
@@ -499,9 +500,9 @@ fun CompanyProvisioningScreen(
                                                 if (it.code == updated.code) updated else it
                                             }
                                             message = if (updated.isActive) {
-                                                "Empresa ${updated.name} reactivada."
+                                                tr("Empresa {0} reactivada.", updated.name)
                                             } else {
-                                                "Empresa ${updated.name} desactivada. Ahora puedes eliminarla si corresponde."
+                                                tr("Empresa {0} desactivada. Ahora puedes eliminarla si corresponde.", updated.name)
                                             }
                                         } catch (exception: CompanyException) {
                                             error = exception.message
@@ -539,7 +540,7 @@ fun CompanyProvisioningScreen(
                                             }
                                             companies = companies.filterNot { it.code == company.code }
                                             companyPendingDeletion = null
-                                            message = "Empresa ${company.name} eliminada junto con su base tenant."
+                                            message = tr("Empresa {0} eliminada junto con su base tenant.", company.name)
                                         } catch (exception: CompanyException) {
                                             error = exception.message
                                         } finally {
@@ -607,7 +608,7 @@ fun CompanyProvisioningScreen(
                                             editingCompanyPrimaryColor = "#667EEA"
                                             editingCompanySecondaryColor = "#764BA2"
                                             editingCompanyAccentColor = "#FFFFFF"
-                                            message = "Empresa ${updated.name} actualizada."
+                                            message = tr("Empresa {0} actualizada.", updated.name)
                                         } catch (exception: CompanyException) {
                                             error = exception.message
                                         } finally {
@@ -617,8 +618,8 @@ fun CompanyProvisioningScreen(
                                 }
                             },
                             loadOwner = {
-                                val activeServerUrl = serverUrl ?: throw CompanyException("Configura el servidor.")
-                                val activeSession = session ?: throw CompanyException("Inicia sesion de nuevo.")
+                                val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
+                                val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
                                 CompanyApi(activeServerUrl).use { api -> api.businessOwner(activeSession.accessToken, company.code) }
                             },
                             onSaveOwner = { request, onSaved ->
@@ -634,8 +635,8 @@ fun CompanyProvisioningScreen(
                                                 api.updateBusinessOwner(activeSession.accessToken, company.code, request)
                                             }
                                             onSaved(saved)
-                                            message = "Business owner de ${company.name} actualizado" +
-                                                if (request.password.isNotEmpty()) ": se cerraron sus sesiones." else "."
+                                            message = tr("Business owner de {0} actualizado", company.name) +
+                                                if (request.password.isNotEmpty()) tr(": se cerraron sus sesiones.") else "."
                                         } catch (exception: CompanyException) {
                                             error = exception.message
                                         } finally {
@@ -659,7 +660,7 @@ fun CompanyProvisioningScreen(
                                             companies = companies.map {
                                                 if (it.code == updated.code) updated else it
                                             }
-                                            message = "Modulo actualizado para ${updated.name}."
+                                            message = tr("Modulo actualizado para {0}.", updated.name)
                                         } catch (exception: CompanyException) {
                                             error = exception.message
                                         } finally {
@@ -737,26 +738,26 @@ private fun CompanyModulesRow(
         } else {
             Text(company.name, style = MaterialTheme.typography.titleSmall, color = AppTheme.colors.accentText)
         }
-        Text("Codigo: ${company.code}", style = MaterialTheme.typography.bodySmall, color = AppTheme.colors.muted)
+        Text(tr("Codigo: {0}", company.code), style = MaterialTheme.typography.bodySmall, color = AppTheme.colors.muted)
         Text(
-            "Estado: ${if (company.isActive) "activa" else "desactivada"}",
+            if (company.isActive) tr("Estado: activa") else tr("Estado: desactivada"),
             style = MaterialTheme.typography.bodySmall,
             color = if (company.isActive) AppTheme.colors.success else AppTheme.colors.warning,
         )
         Text(
-            if (linkedNames.isEmpty()) "Sin empresas vinculadas" else "Mismo business owner que: ${linkedNames.joinToString()}",
+            if (linkedNames.isEmpty()) tr("Sin empresas vinculadas") else tr("Mismo business owner que: {0}", linkedNames.joinToString()),
             style = MaterialTheme.typography.bodySmall,
             color = AppTheme.colors.muted,
         )
         if (!isEditing) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(enabled = enabled, onClick = onLink) { Text("Vincular", color = AppTheme.colors.accentText) }
+                TextButton(enabled = enabled, onClick = onLink) { Text(tr("Vincular"), color = AppTheme.colors.accentText) }
                 // Extensiones de los modulos de esa empresa y revision de su grupo.
                 if (company.isActive) {
-                    TextButton(enabled = enabled, onClick = onExtensions) { Text("Extensiones", color = AppTheme.colors.accentText) }
+                    TextButton(enabled = enabled, onClick = onExtensions) { Text(tr("Extensiones"), color = AppTheme.colors.accentText) }
                 }
                 if (linkedNames.isNotEmpty()) {
-                    TextButton(enabled = enabled, onClick = onUnlink) { Text("Desvincular", color = AppTheme.colors.danger) }
+                    TextButton(enabled = enabled, onClick = onUnlink) { Text(tr("Desvincular"), color = AppTheme.colors.danger) }
                 }
             }
         }
@@ -772,14 +773,14 @@ private fun CompanyModulesRow(
                     onClick = onSaveEdit,
                     colors = accentButtonColors(),
                 ) {
-                    Text("Guardar")
+                    Text(tr("Guardar"))
                 }
                 Button(
                     enabled = enabled,
                     onClick = onCancelEdit,
                     colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
-                    Text("Cancelar")
+                    Text(tr("Cancelar"))
                 }
             } else {
                 Button(
@@ -787,7 +788,7 @@ private fun CompanyModulesRow(
                     onClick = onStartEdit,
                     colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
-                    Text("Editar")
+                    Text(tr("Editar"))
                 }
             }
             if (company.isActive && !isEditing) {
@@ -797,7 +798,7 @@ private fun CompanyModulesRow(
                     onClick = onDuplicate,
                     colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
-                    Text("Duplicar")
+                    Text(tr("Duplicar"))
                 }
             }
             // Cambia entre activar y desactivar la empresa completa.
@@ -809,7 +810,7 @@ private fun CompanyModulesRow(
                     contentColor = if (company.isActive) AppTheme.colors.accentText else AppTheme.colors.onAccent,
                 ),
             ) {
-                Text(if (company.isActive) "Desactivar empresa" else "Reactivar empresa")
+                Text(if (company.isActive) tr("Desactivar empresa") else tr("Reactivar empresa"))
             }
             if (!company.isActive) {
                 // Exige una segunda pulsacion antes de borrar la base tenant.
@@ -821,7 +822,7 @@ private fun CompanyModulesRow(
                         contentColor = if (pendingDeletion) Color.White else AppTheme.colors.danger,
                     ),
                 ) {
-                    Text(if (pendingDeletion) "Confirmar borrar DB" else "Eliminar")
+                    Text(if (pendingDeletion) tr("Confirmar borrar DB") else tr("Eliminar"))
                 }
                 if (pendingDeletion) {
                     Button(
@@ -829,7 +830,7 @@ private fun CompanyModulesRow(
                         onClick = onCancelDelete,
                         colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                     ) {
-                        Text("Cancelar")
+                        Text(tr("Cancelar"))
                     }
                 }
             }
@@ -838,7 +839,7 @@ private fun CompanyModulesRow(
         if (isEditing) {
             // Datos del business owner. Las empresas creadas por un agente IA quedan con una contrasena
             // aleatoria porque las credenciales no pasan por el MCP: aqui se pone la primera.
-            CollapsibleSection("Business owner", primaryColor, subtitle = "Usuario, nombre, correo y contrasena") {
+            CollapsibleSection(tr("Business owner"), primaryColor, subtitle = tr("Usuario, nombre, correo y contrasena")) {
                 BusinessOwnerFields(
                     companyCode = company.code,
                     enabled = enabled,
@@ -849,12 +850,12 @@ private fun CompanyModulesRow(
             }
 
             CollapsibleSection(
-                "Modulos disponibles",
+                tr("Modulos disponibles"),
                 primaryColor,
-                subtitle = "${company.modules.count { it.enabled }} de ${company.modules.size} activos",
+                subtitle = tr("{0} de {1} activos", company.modules.count { it.enabled }, company.modules.size),
             ) {
                 Text(
-                    "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",
+                    tr("Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa."),
                     color = AppTheme.colors.muted,
                 )
                 company.modules.forEach { module ->
@@ -865,7 +866,7 @@ private fun CompanyModulesRow(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "${module.displayName}: ${if (module.enabled) "activo" else "inactivo"}",
+                            text = if (module.enabled) tr("{0}: activo", module.displayName) else tr("{0}: inactivo", module.displayName),
                             color = AppTheme.colors.text,
                         )
                         Button(
@@ -876,7 +877,7 @@ private fun CompanyModulesRow(
                                 contentColor = if (module.enabled) AppTheme.colors.accentText else AppTheme.colors.onAccent,
                             ),
                         ) {
-                            Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
+                            Text(if (module.enabled) tr("Desactivar modulo") else tr("Activar modulo"))
                         }
                     }
                 }
@@ -924,15 +925,15 @@ private fun BusinessOwnerFields(
     val current = owner ?: return
     val renamed = username.trim() != current.username
     val passwordProblem = when {
-        password.isNotEmpty() && password.length < 12 -> "Minimo 12 caracteres."
-        confirmation.isNotEmpty() && password != confirmation -> "Las contrasenas no coinciden."
-        renamed && password.isEmpty() -> "Para cambiar el usuario escribe una contrasena nueva."
+        password.isNotEmpty() && password.length < 12 -> tr("Minimo 12 caracteres.")
+        confirmation.isNotEmpty() && password != confirmation -> tr("Las contrasenas no coinciden.")
+        renamed && password.isEmpty() -> tr("Para cambiar el usuario escribe una contrasena nueva.")
         else -> null
     }
     OutlinedTextField(
         value = username,
         onValueChange = { username = it.trim() },
-        label = { Text("Usuario") },
+        label = { Text(tr("Usuario")) },
         singleLine = true,
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
@@ -940,7 +941,7 @@ private fun BusinessOwnerFields(
     OutlinedTextField(
         value = displayName,
         onValueChange = { displayName = it },
-        label = { Text("Nombre completo") },
+        label = { Text(tr("Nombre completo")) },
         singleLine = true,
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
@@ -948,7 +949,7 @@ private fun BusinessOwnerFields(
     OutlinedTextField(
         value = email,
         onValueChange = { email = it.trim() },
-        label = { Text("Correo") },
+        label = { Text(tr("Correo")) },
         singleLine = true,
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
@@ -956,7 +957,7 @@ private fun BusinessOwnerFields(
     OutlinedTextField(
         value = password,
         onValueChange = { password = it },
-        label = { Text("Contrasena nueva") },
+        label = { Text(tr("Contrasena nueva")) },
         singleLine = true,
         enabled = enabled,
         visualTransformation = PasswordVisualTransformation(),
@@ -965,13 +966,13 @@ private fun BusinessOwnerFields(
     OutlinedTextField(
         value = confirmation,
         onValueChange = { confirmation = it },
-        label = { Text("Confirmar contrasena") },
+        label = { Text(tr("Confirmar contrasena")) },
         singleLine = true,
         enabled = enabled,
         visualTransformation = PasswordVisualTransformation(),
         isError = passwordProblem != null,
         supportingText = {
-            Text(passwordProblem ?: "Vacia mantiene la actual. Si la cambias se cierran sus sesiones. Se aplica en todas sus empresas.")
+            Text(passwordProblem ?: tr("Vacia mantiene la actual. Si la cambias se cierran sus sesiones. Se aplica en todas sus empresas."))
         },
         modifier = Modifier.fillMaxWidth(),
     )
@@ -984,7 +985,7 @@ private fun BusinessOwnerFields(
             },
             colors = accentButtonColors(),
         ) {
-            Text("Guardar business owner")
+            Text(tr("Guardar business owner"))
         }
     }
 }
@@ -1013,14 +1014,14 @@ private fun LinkCompanyDialog(
     var selected by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Vincular ${company.name}") },
+        title = { Text(tr("Vincular {0}", company.name)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "Vincula solo empresas del mismo dueno: el business owner de una podra entrar a la otra sin contrasena.",
+                    tr("Vincula solo empresas del mismo dueno: el business owner de una podra entrar a la otra sin contrasena."),
                     color = AppTheme.colors.muted,
                 )
-                if (candidates.isEmpty()) Text("No hay otras empresas para vincular.", color = AppTheme.colors.muted)
+                if (candidates.isEmpty()) Text(tr("No hay otras empresas para vincular."), color = AppTheme.colors.muted)
                 candidates.forEach { candidate ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1035,8 +1036,8 @@ private fun LinkCompanyDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { selected?.let(onConfirm) }, enabled = selected != null && !busy) { Text("Vincular") }
+            TextButton(onClick = { selected?.let(onConfirm) }, enabled = selected != null && !busy) { Text(tr("Vincular")) }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text(tr("Cancelar")) } },
     )
 }

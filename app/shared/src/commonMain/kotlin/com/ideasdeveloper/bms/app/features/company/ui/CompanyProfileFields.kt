@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,7 +28,7 @@ fun CompanyProfileFields(
     OutlinedTextField(
         value = name,
         onValueChange = onNameChange,
-        label = { Text("Nombre") },
+        label = { Text(tr("Nombre")) },
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
     )
@@ -42,14 +43,14 @@ fun CompanyProfileFields(
         OutlinedTextField(
             value = primaryColor,
             onValueChange = onPrimaryColorChange,
-            label = { Text("Color primario") },
+            label = { Text(tr("Color primario")) },
             enabled = enabled,
             modifier = Modifier.weight(1f),
         )
         OutlinedTextField(
             value = secondaryColor,
             onValueChange = onSecondaryColorChange,
-            label = { Text("Color secundario") },
+            label = { Text(tr("Color secundario")) },
             enabled = enabled,
             modifier = Modifier.weight(1f),
         )
@@ -57,7 +58,7 @@ fun CompanyProfileFields(
     OutlinedTextField(
         value = accentColor,
         onValueChange = onAccentColorChange,
-        label = { Text("Color acento") },
+        label = { Text(tr("Color acento")) },
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
     )

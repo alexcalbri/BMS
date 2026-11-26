@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -36,7 +37,7 @@ import com.ideasdeveloper.bms.app.features.shell.ui.CollapsibleSection
 import kotlinx.coroutines.launch
 
 // Opciones de seguridad del SMTP: valor del contrato y texto visible.
-private val MailSecurityOptions = listOf("starttls" to "STARTTLS", "ssl" to "SSL", "none" to "Ninguna")
+private fun mailSecurityOptions() = listOf("starttls" to "STARTTLS", "ssl" to "SSL", "none" to tr("Ninguna"))
 
 @Composable
 // Seccion plegable "Correo / SMTP" de la empresa. Carga la configuracion al entrar en la pantalla.
@@ -106,15 +107,15 @@ fun CompanyMailSection(
     val portValue = port.toIntOrNull()
 
     CollapsibleSection(
-        title = "Correo / SMTP",
+        title = tr("Correo / SMTP"),
         color = primaryColor,
         modifier = modifier,
-        subtitle = "Servidor de salida para los correos de la empresa",
+        subtitle = tr("Servidor de salida para los correos de la empresa"),
     ) {
         OutlinedTextField(
             value = host,
             onValueChange = { host = it; clearFeedback() },
-            label = { Text("Servidor (host)") },
+            label = { Text(tr("Servidor (host)")) },
             singleLine = true,
             enabled = canEdit,
             modifier = Modifier.fillMaxWidth(),
@@ -123,7 +124,7 @@ fun CompanyMailSection(
             OutlinedTextField(
                 value = port,
                 onValueChange = { value -> port = value.filter { it.isDigit() }.take(5); clearFeedback() },
-                label = { Text("Puerto") },
+                label = { Text(tr("Puerto")) },
                 singleLine = true,
                 isError = portValue == null,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -133,7 +134,7 @@ fun CompanyMailSection(
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it; clearFeedback() },
-                label = { Text("Usuario") },
+                label = { Text(tr("Usuario")) },
                 singleLine = true,
                 enabled = canEdit,
                 modifier = Modifier.weight(2f),
@@ -142,7 +143,7 @@ fun CompanyMailSection(
         OutlinedTextField(
             value = from,
             onValueChange = { from = it; clearFeedback() },
-            label = { Text("Remitente (from)") },
+            label = { Text(tr("Remitente (from)")) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             enabled = canEdit,
@@ -150,9 +151,9 @@ fun CompanyMailSection(
         )
 
         // No hay selector reutilizable en la app: grupo de FilterChip de Material 3.
-        Text("Seguridad", style = MaterialTheme.typography.labelLarge, color = AppTheme.colors.muted)
+        Text(tr("Seguridad"), style = MaterialTheme.typography.labelLarge, color = AppTheme.colors.muted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MailSecurityOptions.forEach { (value, label) ->
+            mailSecurityOptions().forEach { (value, label) ->
                 FilterChip(
                     selected = security == value,
                     onClick = { security = value; clearFeedback() },
@@ -165,11 +166,11 @@ fun CompanyMailSection(
         OutlinedTextField(
             value = password,
             onValueChange = { password = it; if (it.isNotEmpty()) clearPassword = false; clearFeedback() },
-            label = { Text("Contrasena") },
-            placeholder = { if (passwordSet) Text("••••• (sin cambios)") },
+            label = { Text(tr("Contrasena")) },
+            placeholder = { if (passwordSet) Text(tr("••••• (sin cambios)")) },
             supportingText = {
                 Text(
-                    if (passwordSet) "Vacio conserva la contrasena guardada." else "Aun no hay contrasena guardada.",
+                    if (passwordSet) tr("Vacio conserva la contrasena guardada.") else tr("Aun no hay contrasena guardada."),
                 )
             },
             singleLine = true,
@@ -185,13 +186,13 @@ fun CompanyMailSection(
                     onCheckedChange = { clearPassword = it; if (it) password = ""; clearFeedback() },
                     enabled = canEdit,
                 )
-                Text("Borrar la contrasena guardada", color = AppTheme.colors.text)
+                Text(tr("Borrar la contrasena guardada"), color = AppTheme.colors.text)
             }
         }
 
         // Aviso, no bloqueo: sin cifrado las credenciales viajan en claro.
         if (security == "none" && (username.isNotBlank() || password.isNotEmpty())) {
-            Text("Sin cifrado, las credenciales viajan en claro.", color = AppTheme.colors.danger)
+            Text(tr("Sin cifrado, las credenciales viajan en claro."), color = AppTheme.colors.danger)
         }
         error?.let { Text(it, color = AppTheme.colors.danger) }
         message?.let { Text(it, color = AppTheme.colors.success) }
@@ -229,7 +230,7 @@ fun CompanyMailSection(
                                     ),
                                 )
                                 apply(saved)
-                                message = "Correo actualizado."
+                                message = tr("Correo actualizado.")
                             } finally {
                                 api.close()
                             }
@@ -245,7 +246,7 @@ fun CompanyMailSection(
                 if (isBusy) {
                     CircularProgressIndicator(color = AppTheme.colors.onAccent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                 } else {
-                    Text("Guardar correo")
+                    Text(tr("Guardar correo"))
                 }
             }
         }

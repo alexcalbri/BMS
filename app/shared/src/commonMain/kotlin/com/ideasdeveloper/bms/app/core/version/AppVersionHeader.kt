@@ -1,17 +1,21 @@
 package com.ideasdeveloper.bms.app.core.version
 
 import com.ideasdeveloper.bms.ModuleVersion
+import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.header
+import io.ktor.http.HttpHeaders
 
 // Header con la version de la app; el servidor lo usa para validar la version minima de los modulos.
 const val AppVersionHeader = "X-App-Version"
 
-// Agrega el header a todas las peticiones del cliente. Se usa en cada HttpClient que habla con el servidor.
+// Agrega el header de version y el idioma de la app (Accept-Language) a todas las peticiones del cliente.
+// Se usa en cada HttpClient que habla con el servidor; el idioma se lee en cada peticion, asi que un cambio aplica de inmediato.
 fun HttpClientConfig<*>.installAppVersionHeader() {
     defaultRequest {
         header(AppVersionHeader, ClientVersion)
+        header(HttpHeaders.AcceptLanguage, AppLanguage.current)
     }
 }
 

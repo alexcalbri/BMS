@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.core.platform
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import java.io.File
 
 actual fun saveTextFile(fileName: String, content: String, mimeType: String): String =
@@ -12,8 +13,8 @@ actual fun saveBinaryFile(fileName: String, bytes: ByteArray, mimeType: String):
     val target = File(directory, File(fileName).name)
     return try {
         target.writeBytes(bytes)
-        "Archivo guardado en ${target.absolutePath}"
+        tr("Archivo guardado en {0}", target.absolutePath)
     } catch (exception: Exception) {
-        "No se pudo guardar el archivo: ${exception.message}"
+        tr("No se pudo guardar el archivo: {0}", exception.message)
     }
 }

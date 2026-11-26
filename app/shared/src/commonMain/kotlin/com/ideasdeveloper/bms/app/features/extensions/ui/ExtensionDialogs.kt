@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.extensions.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,7 +45,7 @@ import com.ideasdeveloper.bms.app.features.extensions.data.UninstallPreviewRespo
 import kotlinx.coroutines.launch
 
 // Texto mostrado cuando un secreto ya esta guardado: el servidor nunca devuelve su valor.
-private const val StoredSecretPlaceholder = "******** (guardado)"
+private fun storedSecretPlaceholder(): String = tr("******** (guardado)")
 
 @Composable
 /**
@@ -87,7 +88,7 @@ internal fun ConfigureExtensionDialog(
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Configurar ${extension.displayName}") },
+        title = { Text(tr("Configurar {0}", extension.displayName)) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -103,7 +104,7 @@ internal fun ConfigureExtensionDialog(
                             if (setting.secret && it.isNotEmpty() && isCleared) cleared = cleared - setting.key
                         },
                         label = { Text(setting.label.ifBlank { setting.key } + if (setting.required) " *" else "") },
-                        placeholder = if (storedSecret) ({ Text(StoredSecretPlaceholder) }) else null,
+                        placeholder = if (storedSecret) ({ Text(storedSecretPlaceholder()) }) else null,
                         supportingText = if (setting.help.isNotBlank()) ({ Text(setting.help) }) else null,
                         visualTransformation = if (setting.secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                         singleLine = true,
@@ -114,8 +115,8 @@ internal fun ConfigureExtensionDialog(
                     if (setting.secret && setting.isSet) {
                         if (isCleared) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Se borrara al guardar.", color = colors.warning, style = MaterialTheme.typography.bodySmall)
-                                TextButton(enabled = !busy, onClick = { cleared = cleared - setting.key }) { Text("Deshacer", color = colors.accentText) }
+                                Text(tr("Se borrara al guardar."), color = colors.warning, style = MaterialTheme.typography.bodySmall)
+                                TextButton(enabled = !busy, onClick = { cleared = cleared - setting.key }) { Text(tr("Deshacer"), color = colors.accentText) }
                             }
                         } else {
                             TextButton(
@@ -124,7 +125,7 @@ internal fun ConfigureExtensionDialog(
                                     cleared = cleared + setting.key
                                     values[setting.key] = ""
                                 },
-                            ) { Text("Quitar valor guardado", color = colors.danger) }
+                            ) { Text(tr("Quitar valor guardado"), color = colors.danger) }
                         }
                     }
                 }
@@ -140,16 +141,16 @@ internal fun ConfigureExtensionDialog(
                     scope.launch {
                         try {
                             context.run { token, target -> configure(token, target, extension.id, changes) }
-                            onDone("Ajustes de ${extension.displayName} guardados.")
+                            onDone(tr("Ajustes de {0} guardados.", extension.displayName))
                         } catch (exception: CompanyException) {
                             error = exception.message
                             busy = false
                         }
                     }
                 },
-            ) { Text(if (busy) "Guardando..." else "Guardar") }
+            ) { Text(if (busy) tr("Guardando...") else tr("Guardar")) }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text(tr("Cancelar")) } },
     )
 }
 
@@ -191,7 +192,7 @@ internal fun UninstallExtensionDialog(
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Desinstalar ${extension.displayName} (${step + 1} de 3)") },
+        title = { Text(tr("Desinstalar {0} ({1} de 3)", extension.displayName, step + 1)) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -199,37 +200,37 @@ internal fun UninstallExtensionDialog(
             ) {
                 val loaded = preview
                 when {
-                    loaded == null && error == null -> Text("Calculando que se va a borrar...", color = colors.muted)
+                    loaded == null && error == null -> Text(tr("Calculando que se va a borrar..."), color = colors.muted)
                     loaded == null -> Unit
                     step == 0 -> {
-                        Text("Esto es lo que encontramos en esta empresa:", color = colors.text)
-                        if (loaded.items.isEmpty()) Text("No hay datos asociados.", color = colors.muted)
+                        Text(tr("Esto es lo que encontramos en esta empresa:"), color = colors.text)
+                        if (loaded.items.isEmpty()) Text(tr("No hay datos asociados."), color = colors.muted)
                         loaded.items.forEach { item ->
                             val action = when (item.action) {
-                                "delete" -> "se borra"
-                                "keep" -> "se conserva"
+                                "delete" -> tr("se borra")
+                                "keep" -> tr("se conserva")
                                 else -> item.action
                             }
                             Text("${item.label}: ${item.count} ($action)", color = colors.text)
                         }
-                        Text("Los clientes y contactos nunca se borran.", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                        Text(tr("Los clientes y contactos nunca se borran."), style = MaterialTheme.typography.bodySmall, color = colors.muted)
                     }
                     step == 1 -> {
-                        if (options.isEmpty()) Text("Esta extension no tiene opciones que elegir.", color = colors.muted)
+                        if (options.isEmpty()) Text(tr("Esta extension no tiene opciones que elegir."), color = colors.muted)
                         options.forEach { option ->
                             Text(option.label.ifBlank { option.id }, color = colors.text, style = MaterialTheme.typography.titleSmall)
-                            ChoiceRow("Conservar", choices[option.id] == "keep", !busy) { choices[option.id] = "keep" }
-                            ChoiceRow("Borrar", choices[option.id] == "delete", !busy) { choices[option.id] = "delete" }
-                            if (choices[option.id] == null) Text("Debes elegir una opcion.", style = MaterialTheme.typography.bodySmall, color = colors.warning)
+                            ChoiceRow(tr("Conservar"), choices[option.id] == "keep", !busy) { choices[option.id] = "keep" }
+                            ChoiceRow(tr("Borrar"), choices[option.id] == "delete", !busy) { choices[option.id] = "delete" }
+                            if (choices[option.id] == null) Text(tr("Debes elegir una opcion."), style = MaterialTheme.typography.bodySmall, color = colors.warning)
                         }
                     }
                     else -> {
-                        Text("Se desinstalara ${extension.displayName} de esta empresa con estas decisiones:", color = colors.text)
+                        Text(tr("Se desinstalara {0} de esta empresa con estas decisiones:", extension.displayName), color = colors.text)
                         options.forEach { option ->
-                            val answer = if (choices[option.id] == "delete") "borrar" else "conservar"
+                            val answer = if (choices[option.id] == "delete") tr("borrar") else tr("conservar")
                             Text("${option.label.ifBlank { option.id }}: $answer", color = colors.text)
                         }
-                        Text("No se puede deshacer; la extension se puede volver a instalar despues.", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                        Text(tr("No se puede deshacer; la extension se puede volver a instalar despues."), style = MaterialTheme.typography.bodySmall, color = colors.muted)
                     }
                 }
                 error?.let { Text(it, color = colors.danger) }
@@ -247,7 +248,7 @@ internal fun UninstallExtensionDialog(
                         scope.launch {
                             try {
                                 context.run { token, target -> uninstall(token, target, extension.id, options.associate { it.id to (choices[it.id] ?: "keep") }) }
-                                onDone("${extension.displayName} desinstalada.")
+                                onDone(tr("{0} desinstalada.", extension.displayName))
                             } catch (exception: CompanyException) {
                                 error = exception.message
                                 busy = false
@@ -255,12 +256,12 @@ internal fun UninstallExtensionDialog(
                         }
                     }
                 },
-            ) { Text(if (step < 2) "Siguiente" else if (busy) "Desinstalando..." else "Desinstalar", color = if (step == 2) colors.danger else colors.accentText) }
+            ) { Text(if (step < 2) tr("Siguiente") else if (busy) tr("Desinstalando...") else tr("Desinstalar"), color = if (step == 2) colors.danger else colors.accentText) }
         },
         dismissButton = {
             Row {
-                if (step > 0) TextButton(onClick = { step -= 1 }, enabled = !busy) { Text("Atras") }
-                TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") }
+                if (step > 0) TextButton(onClick = { step -= 1 }, enabled = !busy) { Text(tr("Atras")) }
+                TextButton(onClick = onDismiss, enabled = !busy) { Text(tr("Cancelar")) }
             }
         },
     )
@@ -318,8 +319,8 @@ internal fun ApplyToGroupDialog(
     }
 
     AlertDialog(
-        onDismissRequest = { if (!busy) onDone(result?.let { "Aplicacion de ${extension.displayName} terminada." }) },
-        title = { Text("Aplicar ${extension.displayName} al grupo") },
+        onDismissRequest = { if (!busy) onDone(result?.let { tr("Aplicacion de {0} terminada.", extension.displayName) }) },
+        title = { Text(tr("Aplicar {0} al grupo", extension.displayName)) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -327,7 +328,7 @@ internal fun ApplyToGroupDialog(
             ) {
                 when (step) {
                     0 -> {
-                        Text("Elige las empresas del grupo que recibiran la extension con los ajustes de esta empresa.", color = colors.text)
+                        Text(tr("Elige las empresas del grupo que recibiran la extension con los ajustes de esta empresa."), color = colors.text)
                         members.forEach { member ->
                             val checked = selected[member.code] == true && !member.suspended
                             Row(
@@ -339,7 +340,7 @@ internal fun ApplyToGroupDialog(
                             ) {
                                 Checkbox(checked = checked, onCheckedChange = null, enabled = !busy && !member.suspended)
                                 Text(
-                                    "${member.name.ifBlank { member.code }} (${member.code})" + if (member.suspended) " · suspendida" else "",
+                                    "${member.name.ifBlank { member.code }} (${member.code})" + if (member.suspended) tr(" · suspendida") else "",
                                     color = if (member.suspended) colors.muted else colors.text,
                                     modifier = Modifier.padding(start = 8.dp),
                                 )
@@ -351,22 +352,22 @@ internal fun ApplyToGroupDialog(
                             Text(names[target.companyCode] ?: target.companyCode, style = MaterialTheme.typography.titleSmall, color = colors.text)
                             val problem = target.problem
                             if (problem != null) {
-                                Text("No se puede aplicar: $problem", color = colors.danger, style = MaterialTheme.typography.bodySmall)
+                                Text(tr("No se puede aplicar: {0}", problem), color = colors.danger, style = MaterialTheme.typography.bodySmall)
                             } else {
                                 target.steps.forEachIndexed { index, text ->
                                     Text("${index + 1}. $text", color = colors.muted, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
-                        if (applicable.isEmpty()) Text("Ninguna empresa puede recibir la extension.", color = colors.warning)
+                        if (applicable.isEmpty()) Text(tr("Ninguna empresa puede recibir la extension."), color = colors.warning)
                     }
                     else -> {
                         result?.targets.orEmpty().forEach { target ->
                             val (label, tone) = when (target.status) {
-                                "applied" -> "Aplicada" to colors.success
-                                "failed" -> "Fallida" to colors.danger
-                                "skipped" -> "Omitida" to colors.warning
-                                else -> "Pendiente" to colors.muted
+                                "applied" -> tr("Aplicada") to colors.success
+                                "failed" -> tr("Fallida") to colors.danger
+                                "skipped" -> tr("Omitida") to colors.warning
+                                else -> tr("Pendiente") to colors.muted
                             }
                             Text(
                                 "${names[target.companyCode] ?: target.companyCode}: $label" + (target.reason?.takeIf { it.isNotBlank() }?.let { " - $it" } ?: ""),
@@ -390,7 +391,7 @@ internal fun ApplyToGroupDialog(
                             step = 1
                         }
                     },
-                ) { Text(if (busy) "Calculando..." else "Ver vista previa") }
+                ) { Text(if (busy) tr("Calculando...") else tr("Ver vista previa")) }
                 1 -> TextButton(
                     enabled = !busy && applicable.isNotEmpty(),
                     onClick = {
@@ -401,7 +402,7 @@ internal fun ApplyToGroupDialog(
                             step = 2
                         }
                     },
-                ) { Text(if (busy) "Aplicando..." else "Aplicar") }
+                ) { Text(if (busy) tr("Aplicando...") else tr("Aplicar")) }
                 else -> Row {
                     if (failed.isNotEmpty()) {
                         TextButton(
@@ -414,14 +415,14 @@ internal fun ApplyToGroupDialog(
                                     }
                                 }
                             },
-                        ) { Text(if (busy) "Reintentando..." else "Reintentar fallidas") }
+                        ) { Text(if (busy) tr("Reintentando...") else tr("Reintentar fallidas")) }
                     }
-                    TextButton(onClick = { onDone("Aplicacion de ${extension.displayName} terminada.") }, enabled = !busy) { Text("Cerrar") }
+                    TextButton(onClick = { onDone(tr("Aplicacion de {0} terminada.", extension.displayName)) }, enabled = !busy) { Text(tr("Cerrar")) }
                 }
             }
         },
         dismissButton = {
-            if (step < 2) TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") }
+            if (step < 2) TextButton(onClick = onDismiss, enabled = !busy) { Text(tr("Cancelar")) }
         },
     )
 }

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -96,7 +97,7 @@ fun ServerUpdateScreen(
     // Carga inicial del estado.
     LaunchedEffect(serverUrl, token) {
         if (serverUrl == null || token == null) {
-            error = "No hay una sesion de server owner activa."
+            error = tr("No hay una sesion de server owner activa.")
             return@LaunchedEffect
         }
         loading = true
@@ -185,20 +186,19 @@ fun ServerUpdateScreen(
     if (confirming) {
         AlertDialog(
             onDismissRequest = { confirming = false },
-            title = { Text("Actualizar servidor") },
+            title = { Text(tr("Actualizar servidor")) },
             text = {
                 Text(
-                    "Se compilara la nueva version en el servidor (varios minutos) y el servicio se reiniciara; " +
-                        "durante el reinicio la app no respondera unos segundos.",
+                    tr("Se compilara la nueva version en el servidor (varios minutos) y el servicio se reiniciara; durante el reinicio la app no respondera unos segundos."),
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirming = false
                     requestUpdate()
-                }) { Text("Actualizar") }
+                }) { Text(tr("Actualizar")) }
             },
-            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancelar") } },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text(tr("Cancelar")) } },
         )
     }
 
@@ -206,8 +206,8 @@ fun ServerUpdateScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Actualizar servidor",
-                subtitle = "Actualiza el Core y la webapp del servidor",
+                title = tr("Actualizar servidor"),
+                subtitle = tr("Actualiza el Core y la webapp del servidor"),
                 primaryColor = colors.accent,
                 onReturnToDashboard = onReturnToDashboard,
                 onSettings = onSettings,
@@ -228,21 +228,21 @@ fun ServerUpdateScreen(
             ) {
                 val current = status
                 if (current != null) {
-                    Text("Version actual ${current.currentVersion}", color = colors.text, fontWeight = FontWeight.SemiBold)
+                    Text(tr("Version actual {0}", current.currentVersion), color = colors.text, fontWeight = FontWeight.SemiBold)
                     Text(
-                        current.latestVersion?.let { "Ultima version $it" } ?: "No se pudo consultar el catalogo",
+                        current.latestVersion?.let { tr("Ultima version {0}", it) } ?: tr("No se pudo consultar el catalogo"),
                         color = colors.muted,
                     )
                 } else if (loading) {
-                    Text("Cargando...", color = colors.muted)
+                    Text(tr("Cargando..."), color = colors.muted)
                 }
                 error?.let { Text(it, color = colors.danger) }
                 if (stalled) {
                     Text(
-                        "El servidor no responde despues de 5 minutos. Revisa el servidor por SSH (journalctl -u bms).",
+                        tr("El servidor no responde despues de 5 minutos. Revisa el servidor por SSH (journalctl -u bms)."),
                         color = colors.danger,
                     )
-                    Button(onClick = { pollRound++ }, colors = accentButtonColors()) { Text("Reintentar") }
+                    Button(onClick = { pollRound++ }, colors = accentButtonColors()) { Text(tr("Reintentar")) }
                 }
 
                 if (current != null) {
@@ -253,10 +253,10 @@ fun ServerUpdateScreen(
                                 enabled = !requesting,
                                 colors = accentButtonColors(),
                             ) {
-                                Text(if (requesting) "Solicitando..." else "Actualizar a ${current.latestVersion}")
+                                Text(if (requesting) tr("Solicitando...") else tr("Actualizar a {0}", current.latestVersion))
                             }
                         } else if (current.latestVersion != null) {
-                            Text("El servidor ya tiene la ultima version.", color = colors.muted)
+                            Text(tr("El servidor ya tiene la ultima version."), color = colors.muted)
                         }
                     }
                     if (request != null) {
@@ -274,31 +274,30 @@ private fun UpdateRequestPanel(request: CoreUpdateRequestDto, restarting: Boolea
     val colors = AppTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         when (request.status) {
-            "pending" -> Text("Pendiente: esperando al servidor", color = colors.text, fontWeight = FontWeight.SemiBold)
-            "running" -> Text("Actualizando...", color = colors.text, fontWeight = FontWeight.SemiBold)
+            "pending" -> Text(tr("Pendiente: esperando al servidor"), color = colors.text, fontWeight = FontWeight.SemiBold)
+            "running" -> Text(tr("Actualizando..."), color = colors.text, fontWeight = FontWeight.SemiBold)
             "done" -> {
-                Text("Actualizado a ${request.targetVersion}", color = colors.text, fontWeight = FontWeight.SemiBold)
+                Text(tr("Actualizado a {0}", request.targetVersion), color = colors.text, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "La version de la app de escritorio o movil es independiente y se actualiza por separado.",
+                    tr("La version de la app de escritorio o movil es independiente y se actualiza por separado."),
                     color = colors.muted,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
             "error" -> {
-                Text("La actualizacion fallo", color = colors.danger, fontWeight = FontWeight.SemiBold)
+                Text(tr("La actualizacion fallo"), color = colors.danger, fontWeight = FontWeight.SemiBold)
                 request.message?.takeIf { it.isNotBlank() }?.let { Text(it, color = colors.danger) }
             }
             else -> Text(request.status, color = colors.muted)
         }
         if (request.status == "pending" && request.stalePending) {
             Text(
-                "El servidor aun no tiene el actualizador instalado. Ejecuta una vez sudo bash update.sh por SSH; " +
-                    "despues las actualizaciones se podran hacer desde aqui.",
+                tr("El servidor aun no tiene el actualizador instalado. Ejecuta una vez sudo bash update.sh por SSH; despues las actualizaciones se podran hacer desde aqui."),
                 color = colors.danger,
             )
         }
         if (restarting && request.isActive()) {
-            Text("El servidor se esta reiniciando...", color = colors.muted)
+            Text(tr("El servidor se esta reiniciando..."), color = colors.muted)
         }
         request.logTail?.takeIf { it.isNotBlank() }?.let { LogBox(it) }
     }

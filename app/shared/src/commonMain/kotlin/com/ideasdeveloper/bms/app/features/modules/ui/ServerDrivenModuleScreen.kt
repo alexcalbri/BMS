@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.modules.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.version.ClientVersion
 import com.ideasdeveloper.bms.app.core.version.isAppOlderThan
@@ -85,13 +86,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 // Tipos de campo dinamico de Clientes que acepta el servidor (clave del servidor, nombre en pantalla).
-private val customerFieldTypes = listOf(
-    "text" to "Texto",
-    "textarea" to "Texto largo",
-    "number" to "Numero",
-    "date" to "Fecha",
-    "datetime" to "Fecha y hora",
-    "boolean" to "Si/No",
+private fun customerFieldTypes() = listOf(
+    "text" to tr("Texto"),
+    "textarea" to tr("Texto largo"),
+    "number" to tr("Numero"),
+    "date" to tr("Fecha"),
+    "datetime" to tr("Fecha y hora"),
+    "boolean" to tr("Si/No"),
 )
 
 @Composable
@@ -139,7 +140,7 @@ fun ServerDrivenModuleScreen(
         try {
             switchTargets = api.switchTargets(activeSession.accessToken, switchCompanyCode)
         } catch (exception: CompanyException) {
-            switchMessage = exception.message ?: "No se pudieron cargar las empresas."
+            switchMessage = exception.message ?: tr("No se pudieron cargar las empresas.")
         } finally {
             api.close()
         }
@@ -149,7 +150,7 @@ fun ServerDrivenModuleScreen(
         val activeServerUrl = serverUrl ?: return
         val activeSession = session ?: return
         switchingCompany = true
-        switchMessage = "Entrando a ${target?.name ?: switchTargets?.serverName ?: "el servidor"}..."
+        switchMessage = tr("Entrando a {0}...", target?.name ?: switchTargets?.serverName ?: tr("el servidor"))
         scope.launch {
             val failure = CompanySwitch.switchTo(activeServerUrl, activeSession, target)
             switchingCompany = false
@@ -161,7 +162,7 @@ fun ServerDrivenModuleScreen(
     val titleMenu = switchTargets?.takeIf { !switchingCompany }?.let { targets ->
         buildList {
             targets.serverName?.let { name ->
-                add(TopBarMenuItem(name, caption = "Servidor", current = switchCompanyCode == null) { switchTo(null) })
+                add(TopBarMenuItem(name, caption = tr("Servidor"), current = switchCompanyCode == null) { switchTo(null) })
             }
             targets.companies.forEach { company ->
                 add(TopBarMenuItem(company.name, caption = company.code, current = company.code == switchCompanyCode) { switchTo(company) })
@@ -172,7 +173,7 @@ fun ServerDrivenModuleScreen(
     LaunchedEffect(moduleId, serverUrl) {
         val activeServerUrl = serverUrl
         if (activeServerUrl == null) {
-            error = "No hay URL de servidor configurada."
+            error = tr("No hay URL de servidor configurada.")
             return@LaunchedEffect
         }
         loading = true
@@ -221,12 +222,12 @@ fun ServerDrivenModuleScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    text = "Este modulo necesita la app ${definition.minAppVersion} o superior. Tu app es $ClientVersion. Actualiza la app.",
+                    text = tr("Este modulo necesita la app {0} o superior. Tu app es {1}. Actualiza la app.", definition.minAppVersion, ClientVersion),
                     style = MaterialTheme.typography.titleMedium,
                     color = colors.text,
                 )
                 Button(onClick = onReturnToDashboard, colors = accentButtonColors()) {
-                    Text("Volver al inicio")
+                    Text(tr("Volver al inicio"))
                 }
             }
         }
@@ -323,16 +324,16 @@ fun ServerDrivenModuleScreen(
                         loading -> CircularProgressIndicator(color = AppTheme.colors.accentText)
                         error != null -> Text(error.orEmpty(), color = AppTheme.colors.danger)
                         metadata != null && ui != null && callContext == null -> Text(
-                            "Este modulo requiere iniciar sesion en una empresa.",
+                            tr("Este modulo requiere iniciar sesion en una empresa."),
                             color = AppTheme.colors.danger,
                         )
                         metadata != null && ui != null -> Text(
-                            "Este modulo usa un tipo de interfaz (${ui.type}) que esta version de la app no conoce.",
+                            tr("Este modulo usa un tipo de interfaz ({0}) que esta version de la app no conoce.", ui.type),
                             color = AppTheme.colors.muted,
                         )
                         metadata != null -> {
                             Text(metadata?.description.orEmpty(), color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
-                            Text("Este modulo no declara una interfaz para la app.", color = AppTheme.colors.muted)
+                            Text(tr("Este modulo no declara una interfaz para la app."), color = AppTheme.colors.muted)
                         }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
@@ -340,7 +341,7 @@ fun ServerDrivenModuleScreen(
                         onClick = onReturnToDashboard,
                         colors = accentButtonColors(),
                     ) {
-                        Text("Volver al panel")
+                        Text(tr("Volver al panel"))
                     }
                 }
             }
@@ -444,7 +445,7 @@ private fun CustomerServerDrivenContent(
         scope.launch {
             try {
                 ModuleApi(activeServerUrl).use { api -> api.deleteCustomer(token, companyCode, customerId) }
-                message = "Cliente eliminado."
+                message = tr("Cliente eliminado.")
                 if (editingId == customerId) clearForm()
                 loadAll()
             } catch (exception: ModuleException) {
@@ -482,14 +483,14 @@ private fun CustomerServerDrivenContent(
         item {
             // El formulario empieza cerrado para ver la lista; Editar lo abre con los datos del cliente.
             CollapsibleSection(
-                title = if (editingId == null) "Crear cliente" else "Editar cliente",
+                title = if (editingId == null) tr("Crear cliente") else tr("Editar cliente"),
                 color = AppTheme.colors.accentText,
                 open = customerFormOpen || editingId != null,
                 onToggle = { if (editingId != null) clearForm() else customerFormOpen = !customerFormOpen },
             ) {
-                OutlinedTextField(name, { name = it }, label = { Text("Nombre *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(email, { email = it }, label = { Text("Correo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(phone, { phone = it }, label = { Text("Telefono") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(name, { name = it }, label = { Text(tr("Nombre *")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(email, { email = it }, label = { Text(tr("Correo")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(phone, { phone = it }, label = { Text(tr("Telefono")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 fields.forEach { field ->
                     val fieldLabel = field.label + if (field.required) " *" else ""
                     val fieldValue = dynamicValues[field.fieldKey].orEmpty()
@@ -543,7 +544,7 @@ private fun CustomerServerDrivenContent(
                                     val id = editingId
                                     if (id == null) api.createCustomer(token, companyCode, request()) else api.updateCustomer(token, companyCode, id, request())
                                 }
-                                message = if (editingId == null) "Cliente creado." else "Cliente actualizado."
+                                message = if (editingId == null) tr("Cliente creado.") else tr("Cliente actualizado.")
                                 clearForm()
                                 loadAll()
                             } catch (exception: ModuleException) {
@@ -554,43 +555,43 @@ private fun CustomerServerDrivenContent(
                         }
                     },
                     colors = accentButtonColors(),
-                ) { Text(if (editingId == null) "Crear cliente" else "Guardar cambios") }
+                ) { Text(if (editingId == null) tr("Crear cliente") else tr("Guardar cambios")) }
                 if (editingId != null) {
-                    Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) { Text("Cancelar edicion") }
+                    Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) { Text(tr("Cancelar edicion")) }
                 }
             }
         }
         item {
             // Se configuran una vez: empiezan cerrados.
             CollapsibleSection(
-                "Campos dinamicos de Clientes",
+                tr("Campos dinamicos de Clientes"),
                 primaryColor,
                 open = dynamicFieldsOpen,
                 onToggle = { dynamicFieldsOpen = !dynamicFieldsOpen },
-                subtitle = "Campos extra de la ficha de todos los clientes",
+                subtitle = tr("Campos extra de la ficha de todos los clientes"),
             ) {
-                OutlinedTextField(newFieldKey, { newFieldKey = it }, label = { Text("Clave del campo, ej: direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(newFieldLabel, { newFieldLabel = it }, label = { Text("Etiqueta, ej: Direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(newFieldKey, { newFieldKey = it }, label = { Text(tr("Clave del campo, ej: direccion")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(newFieldLabel, { newFieldLabel = it }, label = { Text(tr("Etiqueta, ej: Direccion")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 var typeMenuOpen by remember { mutableStateOf(false) }
-                Text("Tipo de dato", color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
+                Text(tr("Tipo de dato"), color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
                 Box {
                     OutlinedButton(onClick = { typeMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            customerFieldTypes.firstOrNull { it.first == newFieldType }?.second ?: "Texto",
+                            customerFieldTypes().firstOrNull { it.first == newFieldType }?.second ?: tr("Texto"),
                             color = AppTheme.colors.text,
                             modifier = Modifier.weight(1f),
                         )
                         Text("v", color = AppTheme.colors.muted)
                     }
                     DropdownMenu(expanded = typeMenuOpen, onDismissRequest = { typeMenuOpen = false }) {
-                        customerFieldTypes.forEach { (type, name) ->
+                        customerFieldTypes().forEach { (type, name) ->
                             DropdownMenuItem(text = { Text(name) }, onClick = { newFieldType = type; typeMenuOpen = false })
                         }
                     }
                 }
                 androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = newFieldRequired, onCheckedChange = { newFieldRequired = it })
-                    Text("Requerido")
+                    Text(tr("Requerido"))
                 }
                 Button(
                     enabled = !loading && newFieldKey.isNotBlank() && newFieldLabel.isNotBlank(),
@@ -606,7 +607,7 @@ private fun CustomerServerDrivenContent(
                                 newFieldLabel = ""
                                 newFieldRequired = false
                                 newFieldType = "text"
-                                message = "Campo dinamico creado."
+                                message = tr("Campo dinamico creado.")
                                 loadAll()
                             } catch (exception: ModuleException) {
                                 error = exception.message
@@ -616,14 +617,14 @@ private fun CustomerServerDrivenContent(
                         }
                     },
                     colors = accentButtonColors(),
-                ) { Text("Agregar campo") }
+                ) { Text(tr("Agregar campo")) }
             }
         }
         message?.let { text -> item { Text(text, color = AppTheme.colors.success) } }
         error?.let { text -> item { Text(text, color = AppTheme.colors.danger) } }
-        item { Text("Clientes", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText) }
+        item { Text(tr("Clientes"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText) }
         if (customers.isEmpty()) {
-            item { Text("Aun no hay clientes.", color = AppTheme.colors.muted) }
+            item { Text(tr("Aun no hay clientes."), color = AppTheme.colors.muted) }
         } else {
             items(customers, key = { it.id }) { customer ->
                 CustomerRow(
@@ -638,7 +639,7 @@ private fun CustomerServerDrivenContent(
         }
         item { Spacer(modifier = Modifier.height(8.dp)) }
         item {
-            Button(onClick = onReturnToDashboard, colors = accentButtonColors()) { Text("Volver al panel") }
+            Button(onClick = onReturnToDashboard, colors = accentButtonColors()) { Text(tr("Volver al panel")) }
         }
     }
     val profileId = profileCustomerId
@@ -672,12 +673,12 @@ private fun CustomerRow(
     Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small).padding(10.dp)) {
         Text(listOf(customer.displayName, customer.primaryEmail, customer.primaryPhone).filter { it.isNotBlank() }.joinToString(" - ") + if (customer.customerType != "general") " (${customer.customerType})" else "", color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
         if (customer.customerCode.isNotBlank()) {
-            CopyableCode(label = "Codigo de cliente", code = customer.customerCode)
+            CopyableCode(label = tr("Codigo de cliente"), code = customer.customerCode)
         }
         androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onEdit(customer) }, colors = secondaryButtonColors) { Text("Editar") }
-            Button(onClick = { onDelete(customer.id) }, colors = dangerButtonColors) { Text("Eliminar") }
-            Button(onClick = { onProfile(customer.id) }, colors = secondaryButtonColors) { Text("Ficha") }
+            Button(onClick = { onEdit(customer) }, colors = secondaryButtonColors) { Text(tr("Editar")) }
+            Button(onClick = { onDelete(customer.id) }, colors = dangerButtonColors) { Text(tr("Eliminar")) }
+            Button(onClick = { onProfile(customer.id) }, colors = secondaryButtonColors) { Text(tr("Ficha")) }
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.auth.data
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import io.ktor.client.HttpClient
@@ -28,12 +29,17 @@ data class AccountProfile(
     val email: String? = null,
     val profileComplete: Boolean = false,
     val userCode: String = "",
+    // Idioma propio del usuario (null = sigue al de la empresa) y el de su empresa; null en servidores antiguos.
+    val language: String? = null,
+    val companyLanguage: String? = null,
 )
 
 @Serializable
 private data class UpdateAccountProfileRequest(
     val displayName: String,
     val email: String,
+    // "es", "en" o null (seguir al idioma de la empresa); sin valor por defecto para que null tambien se envie.
+    val language: String?,
     // Solo se envia al cambiar el correo; nunca se guarda ni se registra.
     val currentPassword: String? = null,
 )
@@ -76,13 +82,14 @@ class AccountApi(serverUrl: String) {
         companyCode: String?,
         displayName: String,
         email: String,
+        language: String?,
         currentPassword: String? = null,
     ): AccountProfile = call {
         client.put("$baseUrl/auth/profile") {
             bearerAuth(accessToken)
             companyCode?.let { header("X-Company-Code", it) }
             contentType(ContentType.Application.Json)
-            setBody(UpdateAccountProfileRequest(displayName, email, currentPassword?.takeIf { it.isNotEmpty() }))
+            setBody(UpdateAccountProfileRequest(displayName, email, language, currentPassword?.takeIf { it.isNotEmpty() }))
         }
     }
 
@@ -105,15 +112,15 @@ class AccountApi(serverUrl: String) {
         try {
             val response = request()
             if (response.status == HttpStatusCode.OK) return response.body()
-            if (response.status == HttpStatusCode.TooManyRequests) throw LoginException("Demasiados intentos. Espera un minuto.")
+            if (response.status == HttpStatusCode.TooManyRequests) throw LoginException(tr("Demasiados intentos. Espera un minuto."))
             val error = runCatching { response.body<LoginErrorResponse>() }.getOrNull()
-            throw LoginException(error?.message ?: "El servidor no pudo completar la operacion.", error?.code)
+            throw LoginException(error?.message ?: tr("El servidor no pudo completar la operacion."), error?.code)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: LoginException) {
             throw exception
         } catch (_: Exception) {
-            throw LoginException("No se pudo comunicar con el servidor.")
+            throw LoginException(tr("No se pudo comunicar con el servidor."))
         }
     }
 

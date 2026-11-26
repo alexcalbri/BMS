@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.modules.data
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -87,13 +88,13 @@ class ModuleApi(serverUrl: String) {
             if (response.status == HttpStatusCode.OK) {
                 return response.body()
             }
-            throw ModuleException("El servidor no encontro el modulo.")
+            throw ModuleException(tr("El servidor no encontro el modulo."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo cargar el modulo desde el servidor.")
+            throw ModuleException(tr("No se pudo cargar el modulo desde el servidor."))
         }
     }
 
@@ -104,13 +105,13 @@ class ModuleApi(serverUrl: String) {
                 header("X-Company-Code", companyCode)
             }
             if (response.status == HttpStatusCode.OK) return response.body()
-            throw ModuleException("No se pudieron cargar los clientes.")
+            throw ModuleException(tr("No se pudieron cargar los clientes."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo comunicar con el servidor.")
+            throw ModuleException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -122,13 +123,13 @@ class ModuleApi(serverUrl: String) {
                 header("X-Company-Code", companyCode)
             }
             if (response.status == HttpStatusCode.OK) return response.body<CustomerHistoryResponse>().entries
-            throw ModuleException("No se pudo cargar el historial del cliente.")
+            throw ModuleException(tr("No se pudo cargar el historial del cliente."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo comunicar con el servidor.")
+            throw ModuleException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -141,13 +142,13 @@ class ModuleApi(serverUrl: String) {
                 setBody(request)
             }
             if (response.status == HttpStatusCode.Created) return response.body()
-            throw ModuleException("No se pudo crear el cliente. Verifica nombre, correo y telefono.")
+            throw ModuleException(tr("No se pudo crear el cliente. Verifica nombre, correo y telefono."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo comunicar con el servidor.")
+            throw ModuleException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -160,13 +161,13 @@ class ModuleApi(serverUrl: String) {
                 setBody(request)
             }
             if (response.status == HttpStatusCode.OK) return response.body()
-            throw ModuleException("No se pudo actualizar el cliente.")
+            throw ModuleException(tr("No se pudo actualizar el cliente."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo comunicar con el servidor.")
+            throw ModuleException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -177,13 +178,13 @@ class ModuleApi(serverUrl: String) {
                 header("X-Company-Code", companyCode)
             }
             if (response.status == HttpStatusCode.NoContent) return
-            throw ModuleException("No se pudo eliminar el cliente.")
+            throw ModuleException(tr("No se pudo eliminar el cliente."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo comunicar con el servidor.")
+            throw ModuleException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -194,13 +195,13 @@ class ModuleApi(serverUrl: String) {
                 header("X-Company-Code", companyCode)
             }
             if (response.status == HttpStatusCode.OK) return response.body()
-            throw ModuleException("No se pudieron cargar los campos dinamicos.")
+            throw ModuleException(tr("No se pudieron cargar los campos dinamicos."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo comunicar con el servidor.")
+            throw ModuleException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -213,13 +214,13 @@ class ModuleApi(serverUrl: String) {
                 setBody(request)
             }
             if (response.status == HttpStatusCode.Created) return response.body()
-            throw ModuleException("No se pudo crear el campo dinamico.")
+            throw ModuleException(tr("No se pudo crear el campo dinamico."))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo comunicar con el servidor.")
+            throw ModuleException(tr("No se pudo comunicar con el servidor."))
         }
     }
 
@@ -239,7 +240,7 @@ class ModuleApi(serverUrl: String) {
      */
     suspend fun image(accessToken: String, companyCode: String, url: String): ByteArray {
         val moduleRoute = url.startsWith("/modules/") && !url.contains("..")
-        if (!moduleRoute && !url.startsWith("https://") && !url.startsWith("http://")) throw ModuleException("Imagen invalida.")
+        if (!moduleRoute && !url.startsWith("https://") && !url.startsWith("http://")) throw ModuleException(tr("Imagen invalida."))
         try {
             val response = if (moduleRoute) {
                 client.get("$baseUrl$url") {
@@ -249,16 +250,16 @@ class ModuleApi(serverUrl: String) {
             } else {
                 imageClient.get(url)
             }
-            if (!response.status.isSuccess()) throw ModuleException("No se pudo cargar la imagen.")
+            if (!response.status.isSuccess()) throw ModuleException(tr("No se pudo cargar la imagen."))
             val bytes = response.readRawBytes()
-            if (bytes.size > MaxImageBytes) throw ModuleException("La imagen es demasiado grande.")
+            if (bytes.size > MaxImageBytes) throw ModuleException(tr("La imagen es demasiado grande."))
             return bytes
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo cargar la imagen.")
+            throw ModuleException(tr("No se pudo cargar la imagen."))
         }
     }
 
@@ -273,7 +274,7 @@ class ModuleApi(serverUrl: String) {
 
     // Sube un archivo de un campo "files" (UiFiles.upload); el servidor responde la referencia que guarda el formulario.
     suspend fun upload(accessToken: String, companyCode: String, route: String, name: String, path: String, mimeType: String, bytes: ByteArray): UiFileRef {
-        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException("La accion no es valida.")
+        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException(tr("La accion no es valida."))
         try {
             val response = client.post("$baseUrl$route") {
                 bearerAuth(accessToken)
@@ -288,33 +289,33 @@ class ModuleApi(serverUrl: String) {
             val text = response.bodyAsText()
             if (response.status.isSuccess()) return UiJson.decodeFromString(UiFileRef.serializer(), text)
             val message = runCatching { Json.parseToJsonElement(text).jsonObject["message"]?.jsonPrimitive?.contentOrNull }.getOrNull()
-            throw ModuleException(message ?: "No se pudo subir $name (${response.status.value}).")
+            throw ModuleException(message ?: tr("No se pudo subir {0} ({1}).", name, response.status.value))
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo subir $name.")
+            throw ModuleException(tr("No se pudo subir {0}.", name))
         }
     }
 
     // Descarga un adjunto de un campo "files": GET {download}/{id}.
     suspend fun downloadFile(accessToken: String, companyCode: String, route: String, id: String): ByteArray {
-        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException("La accion no es valida.")
+        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException(tr("La accion no es valida."))
         try {
             val response = client.get("$baseUrl$route/${id.encodeURLPathPart()}") {
                 bearerAuth(accessToken)
                 header("X-Company-Code", companyCode)
                 timeout { requestTimeoutMillis = 10 * 60_000 }
             }
-            if (!response.status.isSuccess()) throw ModuleException("No se pudo descargar el archivo (${response.status.value}).")
+            if (!response.status.isSuccess()) throw ModuleException(tr("No se pudo descargar el archivo ({0}).", response.status.value))
             return response.readRawBytes()
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo descargar el archivo.")
+            throw ModuleException(tr("No se pudo descargar el archivo."))
         }
     }
 
@@ -326,14 +327,14 @@ class ModuleApi(serverUrl: String) {
     suspend fun webSession(accessToken: String, companyCode: String, moduleId: String): String {
         val text = send("POST", "/modules/$moduleId/web-session", accessToken, companyCode, emptyMap())
         val path = UiJson.parseToJsonElement(text).jsonObject["url"]?.jsonPrimitive?.contentOrNull
-            ?: throw ModuleException("El servidor no devolvio el enlace del modulo.")
+            ?: throw ModuleException(tr("El servidor no devolvio el enlace del modulo."))
         return baseUrl + path
     }
 
     private fun decodeScreen(text: String): UiScreen = try {
         UiJson.decodeFromString(UiScreen.serializer(), text)
     } catch (_: IllegalArgumentException) {
-        throw ModuleException("El servidor devolvio una pantalla que esta version de la app no entiende.")
+        throw ModuleException(tr("El servidor devolvio una pantalla que esta version de la app no entiende."))
     }
 
     private suspend fun send(
@@ -345,7 +346,7 @@ class ModuleApi(serverUrl: String) {
         body: String? = null,
     ): String {
         // Las acciones vienen del servidor; solo se permiten rutas de modulos del mismo servidor.
-        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException("La accion no es valida.")
+        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException(tr("La accion no es valida."))
         try {
             val response = client.request("$baseUrl$route") {
                 this.method = HttpMethod.parse(method.uppercase())
@@ -369,13 +370,13 @@ class ModuleApi(serverUrl: String) {
                 code?.takeIf { it.isNotBlank() }?.let { add(it) }
                 message?.takeIf { it.isNotBlank() }?.let { add(it) }
             }.joinToString(" · ")
-            throw ModuleException(details.ifBlank { "El servidor rechazo la accion." })
+            throw ModuleException(details.ifBlank { tr("El servidor rechazo la accion.") })
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {
             throw exception
         } catch (_: Exception) {
-            throw ModuleException("No se pudo conectar con el servidor.")
+            throw ModuleException(tr("No se pudo conectar con el servidor."))
         }
     }
 

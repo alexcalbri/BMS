@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.company.ui
 
+import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
@@ -126,7 +127,7 @@ fun ServerModuleManagementScreen(
                 val finished = modules.filter { it.status == "installing" || it.status == "restarting" }
                     .mapNotNull { previous -> latest.firstOrNull { it.moduleId == previous.moduleId && it.installed && it.status == null } }
                 modules = latest
-                finished.forEach { message = "Modulo ${it.displayName} instalado y cargado." }
+                finished.forEach { message = tr("Modulo {0} instalado y cargado.", it.displayName) }
                 if (latest.none { it.status == "installing" || it.status == "restarting" }) return@LaunchedEffect
             } catch (_: CompanyException) {
                 // El servidor se esta reiniciando para cargar el modulo.
@@ -138,8 +139,8 @@ fun ServerModuleManagementScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
             AuthenticatedTopBar(
-                title = "Modulos del servidor",
-                subtitle = "Catalogo activo",
+                title = tr("Modulos del servidor"),
+                subtitle = tr("Catalogo activo"),
                 primaryColor = primaryColor,
                 onReturnToDashboard = onReturnToDashboard,
                 onSettings = onSettings,
@@ -171,12 +172,12 @@ fun ServerModuleManagementScreen(
                         modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                    Text("Modulos instalados", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
-                    Text("Repositorio de modulos", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
+                    Text(tr("Modulos instalados"), style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
+                    Text(tr("Repositorio de modulos"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
                     OutlinedTextField(
                         value = catalogUrl,
                         onValueChange = { catalogUrl = it },
-                        label = { Text("URL del repositorio de modulos") },
+                        label = { Text(tr("URL del repositorio de modulos")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -198,7 +199,7 @@ fun ServerModuleManagementScreen(
                                             catalogUrl = CompanyApi(activeServerUrl).use { api ->
                                                 api.updateServerModuleCatalog(activeSession.accessToken, catalogUrl).catalogUrl
                                             }
-                                            message = "Catalogo actualizado."
+                                            message = tr("Catalogo actualizado.")
                                             refreshModules()
                                         } catch (exception: CompanyException) {
                                             error = exception.message
@@ -210,7 +211,7 @@ fun ServerModuleManagementScreen(
                             },
                             colors = accentButtonColors(),
                         ) {
-                            Text("Guardar catalogo")
+                            Text(tr("Guardar catalogo"))
                         }
                         Button(
                             enabled = !isLoading,
@@ -220,13 +221,13 @@ fun ServerModuleManagementScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                         ) {
-                            Text("Actualizar lista")
+                            Text(tr("Actualizar lista"))
                         }
                     }
                     error?.let { Text(it, color = AppTheme.colors.danger) }
                     message?.let { Text(it, color = AppTheme.colors.success) }
                     if (isLoading) {
-                        Text("Cargando modulos...", color = AppTheme.colors.muted)
+                        Text(tr("Cargando modulos..."), color = AppTheme.colors.muted)
                     }
                     }
 
@@ -254,9 +255,9 @@ fun ServerModuleManagementScreen(
                                             }
                                             message = when (installed.status) {
                                                 "installing", "restarting" ->
-                                                    "Instalando ${installed.displayName}: el servidor descarga y compila el modulo y luego se reinicia unos segundos."
+                                                    tr("Instalando {0}: el servidor descarga y compila el modulo y luego se reinicia unos segundos.", installed.displayName)
                                                 "failed" -> null
-                                                else -> "Modulo ${installed.displayName} instalado."
+                                                else -> tr("Modulo {0} instalado.", installed.displayName)
                                             }?.let { text ->
                                                 installed.warning?.takeIf { it.isNotBlank() }?.let { "$text $it" } ?: text
                                             }
@@ -288,9 +289,9 @@ fun ServerModuleManagementScreen(
                                             // El panel del server_owner muestra al momento los modulos del espacio del servidor.
                                             SessionStore.update { current -> current.withServerWorkspace(latest) }
                                             message = if (enabled) {
-                                                "${module.displayName} activo en el espacio del servidor."
+                                                tr("{0} activo en el espacio del servidor.", module.displayName)
                                             } else {
-                                                "${module.displayName} desactivado en el espacio del servidor."
+                                                tr("{0} desactivado en el espacio del servidor.", module.displayName)
                                             }
                                         } catch (exception: CompanyException) {
                                             error = exception.message
@@ -320,7 +321,7 @@ fun ServerModuleManagementScreen(
                                                 }
                                             }
                                             pendingDeletion = null
-                                            message = "Modulo ${module.displayName} eliminado del servidor."
+                                            message = tr("Modulo {0} eliminado del servidor.", module.displayName)
                                         } catch (exception: CompanyException) {
                                             error = exception.message
                                         } finally {
@@ -372,7 +373,7 @@ private fun ServerModuleRow(
         val minApp = if (installing) module.latestMinAppVersion ?: module.minAppVersion else module.minAppVersion
         val blockedReason = module.installBlockedReason?.takeIf { it.isNotBlank() }
             ?: if (installing && isAppOlderThan(minApp)) {
-                "Este modulo necesita la app $minApp o superior; tu app es $ClientVersion. Actualizala antes de instalar."
+                tr("Este modulo necesita la app {0} o superior; tu app es {1}. Actualizala antes de instalar.", minApp, ClientVersion)
             } else {
                 null
             }
@@ -391,11 +392,11 @@ private fun ServerModuleRow(
         Text(module.description, color = AppTheme.colors.muted)
         Text(
             text = buildString {
-                append("Version instalada: ${module.version}")
+                append(tr("Version instalada: {0}", module.version))
                 when {
-                    module.updateAvailable -> append(" · Disponible: ${module.latestVersion}")
+                    module.updateAvailable -> append(tr(" · Disponible: {0}", module.latestVersion))
                     // Cambiar a un catalogo con una version anterior nunca degrada el modulo.
-                    module.newerThanCatalog -> append(" · Mas nueva que la del catalogo (${module.latestVersion})")
+                    module.newerThanCatalog -> append(tr(" · Mas nueva que la del catalogo ({0})", module.latestVersion))
                 }
             },
             style = MaterialTheme.typography.bodySmall,
@@ -407,17 +408,17 @@ private fun ServerModuleRow(
         )
         if (requirement.minCore != null || requirement.minApp != null) {
             Text(
-                text = "Requiere Core ≥ ${requirement.minCore ?: "-"} · App ≥ ${requirement.minApp ?: "-"}",
+                text = tr("Requiere Core ≥ {0} · App ≥ {1}", requirement.minCore ?: "-", requirement.minApp ?: "-"),
                 style = MaterialTheme.typography.bodySmall,
                 color = AppTheme.colors.muted,
             )
         }
         Text(
             text = when {
-                module.locked -> "Modulo base del sistema"
-                !module.installed -> "Disponible para instalar"
-                module.activeCompanyCount > 0 -> "Activo en ${module.activeCompanyCount} empresa(s)"
-                else -> "Instalado sin empresas activas"
+                module.locked -> tr("Modulo base del sistema")
+                !module.installed -> tr("Disponible para instalar")
+                module.activeCompanyCount > 0 -> tr("Activo en {0} empresa(s)", module.activeCompanyCount)
+                else -> tr("Instalado sin empresas activas")
             },
             style = MaterialTheme.typography.bodySmall,
             color = if (module.activeCompanyCount > 0 || module.locked) AppTheme.colors.warning else AppTheme.colors.success,
@@ -432,7 +433,7 @@ private fun ServerModuleRow(
                     enabled = enabled && !fixed,
                 )
                 Text(
-                    text = if (fixed) "Usar en el servidor (modulo base, siempre activo)" else "Usar en el servidor",
+                    text = if (fixed) tr("Usar en el servidor (modulo base, siempre activo)") else tr("Usar en el servidor"),
                     style = MaterialTheme.typography.bodySmall,
                     color = AppTheme.colors.text,
                 )
@@ -441,10 +442,10 @@ private fun ServerModuleRow(
         module.statusMessage?.takeIf { module.status != null }?.let { status ->
             Text(
                 text = when (module.status) {
-                    "installing" -> "Instalando: $status..."
+                    "installing" -> tr("Instalando: {0}...", status)
                     "restarting" -> "$status..."
-                    "attention" -> "Atencion: $status"
-                    else -> "No se pudo instalar: $status"
+                    "attention" -> tr("Atencion: {0}", status)
+                    else -> tr("No se pudo instalar: {0}", status)
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (module.status == "failed" || module.status == "attention") AppTheme.colors.danger else AppTheme.colors.accent,
@@ -468,10 +469,10 @@ private fun ServerModuleRow(
                 ) {
                     Text(
                         when {
-                            inProgress -> "Instalando..."
-                            updateAvailable -> "Actualizar a ${module.latestVersion}"
-                            module.status == "failed" -> "Reintentar"
-                            else -> "Instalar"
+                            inProgress -> tr("Instalando...")
+                            updateAvailable -> tr("Actualizar a {0}", module.latestVersion)
+                            module.status == "failed" -> tr("Reintentar")
+                            else -> tr("Instalar")
                         }
                     )
                 }
@@ -484,7 +485,7 @@ private fun ServerModuleRow(
                     contentColor = if (pendingDeletion) Color.White else AppTheme.colors.danger,
                 ),
             ) {
-                Text(if (pendingDeletion) "Confirmar eliminar" else "Eliminar del servidor")
+                Text(if (pendingDeletion) tr("Confirmar eliminar") else tr("Eliminar del servidor"))
             }
             if (pendingDeletion) {
                 Button(
@@ -492,7 +493,7 @@ private fun ServerModuleRow(
                     onClick = onCancelDelete,
                     colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
-                    Text("Cancelar")
+                    Text(tr("Cancelar"))
                 }
             }
         }
