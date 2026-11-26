@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiButton
@@ -43,11 +44,11 @@ class HotspotAccess(private val access: ModuleAccessService) {
             }
         }
         val mine = UiCard(
-            title = "Mi acceso WiFi",
+            title = tr("Mi acceso WiFi"),
             children = listOfNotNull(
-                own?.let { UiMetric("Tu codigo de usuario", it, "Escribelo en las redes con acceso \"Codigo de usuario\".") }
-                    ?: UiText("No se pudo identificar tu usuario.", UiTextStyle.Caption),
-                if (usersEnabled) null else UiStatus("El acceso con codigo de usuario aun no esta activo en esta empresa (Integraciones > Usuarios).", UiTone.Warning),
+                own?.let { UiMetric(tr("Tu codigo de usuario"), it, tr("Escribelo en las redes con acceso \"Codigo de usuario\".")) }
+                    ?: UiText(tr("No se pudo identificar tu usuario."), UiTextStyle.Caption),
+                if (usersEnabled) null else UiStatus(tr("El acceso con codigo de usuario aun no esta activo en esta empresa (Integraciones > Usuarios)."), UiTone.Warning),
             ),
         )
         if (!permissions.businessOwner && !permissions.serverOwner) return listOf(mine)
@@ -58,19 +59,19 @@ class HotspotAccess(private val access: ModuleAccessService) {
             HotspotUserCodes.users(tenant, null)
         }
         val table = UiCard(
-            title = "Codigos de los usuarios",
+            title = tr("Codigos de los usuarios"),
             children = listOf(
                 UiTable(
-                    listOf(UiTableColumn("user", "Usuario"), UiTableColumn("code", "Codigo"), UiTableColumn("kind", "Tipo"), UiTableColumn("state", "Estado")),
+                    listOf(UiTableColumn("user", tr("Usuario")), UiTableColumn("code", tr("Codigo")), UiTableColumn("kind", tr("Tipo")), UiTableColumn("state", tr("Estado"))),
                     users.map {
                         mapOf(
                             "user" to if (it.displayName.isNullOrBlank()) it.username else "${it.name} (${it.username})",
                             "code" to it.code,
-                            "kind" to if (it.serverOwner) "Dueno del servidor" else "Usuario",
-                            "state" to if (it.active) "Activo" else "Inactivo",
+                            "kind" to if (it.serverOwner) tr("Dueno del servidor") else tr("Usuario"),
+                            "state" to if (it.active) tr("Activo") else tr("Inactivo"),
                         )
                     },
-                    "Aun no hay usuarios.",
+                    tr("Aun no hay usuarios."),
                 ),
                 UiGrid(
                     minItemWidth = 260,
@@ -80,15 +81,15 @@ class HotspotAccess(private val access: ModuleAccessService) {
                             children = listOf(
                                 UiText(user.code, UiTextStyle.Subtitle),
                                 UiStatus(
-                                    if (user.wifiAccessEnabled) "Acceso activo" else "Acceso revocado",
+                                    if (user.wifiAccessEnabled) tr("Acceso activo") else tr("Acceso revocado"),
                                     if (user.wifiAccessEnabled) UiTone.Success else UiTone.Warning,
                                 ),
                                 UiButton(
-                                    if (user.wifiAccessEnabled) "Revocar acceso" else "Restaurar acceso",
+                                    if (user.wifiAccessEnabled) tr("Revocar acceso") else tr("Restaurar acceso"),
                                     UiRequest(
                                         "${HotspotScreens.UiRoute}/access",
                                         params = mapOf("usercode" to if (user.wifiAccessEnabled) "revoke" else "restore", "id" to user.id.toString()),
-                                        confirm = if (user.wifiAccessEnabled) "Revocar el acceso WiFi de este usuario y desconectar sus dispositivos?" else null,
+                                        confirm = if (user.wifiAccessEnabled) tr("Revocar el acceso WiFi de este usuario y desconectar sus dispositivos?") else null,
                                     ),
                                     style = if (user.wifiAccessEnabled) "danger" else "primary",
                                 ),
@@ -103,20 +104,20 @@ class HotspotAccess(private val access: ModuleAccessService) {
     }
 
     fun userCodeAction(tenant: Connection, step: String, rawId: String?, permissions: ModulePermissions): Pair<String, String> {
-        if (!permissions.businessOwner && !permissions.serverOwner) return "No tienes permiso para cambiar accesos." to UiTone.Danger
+        if (!permissions.businessOwner && !permissions.serverOwner) return tr("No tienes permiso para cambiar accesos.") to UiTone.Danger
         val userId = rawId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-            ?: return "El usuario no es valido." to UiTone.Danger
+            ?: return tr("El usuario no es valido.") to UiTone.Danger
         val user = if (permissions.serverOwner) {
             access.centralConnection().use { central -> HotspotUserCodes.users(tenant, central) }
         } else {
             HotspotUserCodes.users(tenant, null)
-        }.firstOrNull { it.id == userId } ?: return "Ese usuario no existe." to UiTone.Warning
+        }.firstOrNull { it.id == userId } ?: return tr("Ese usuario no existe.") to UiTone.Warning
         val enabled = when (step) {
             "revoke" -> false
             "restore" -> true
-            else -> return "Accion desconocida." to UiTone.Danger
+            else -> return tr("Accion desconocida.") to UiTone.Danger
         }
-        if (!HotspotUserCodes.setAccessEnabled(tenant, userId, enabled)) return "No se pudo actualizar el acceso." to UiTone.Danger
+        if (!HotspotUserCodes.setAccessEnabled(tenant, userId, enabled)) return tr("No se pudo actualizar el acceso.") to UiTone.Danger
         if (!enabled) {
             val settings = HotspotSettingsRepository.load(tenant)
             val now = java.time.Instant.now()
@@ -124,7 +125,7 @@ class HotspotAccess(private val access: ModuleAccessService) {
             HotspotCodeSessions.expire(tenant, settings, HotspotIntegrations.controller(tenant), now)
             revokeContinuations(userId, permissions.companyCode, now)
         }
-        return (if (enabled) "Acceso WiFi restaurado." else "Acceso WiFi revocado.") to UiTone.Success
+        return (if (enabled) tr("Acceso WiFi restaurado.") else tr("Acceso WiFi revocado.")) to UiTone.Success
     }
 
     // Sessions this user's code continued on the shared networks of linked companies end too.
@@ -147,23 +148,22 @@ class HotspotAccess(private val access: ModuleAccessService) {
         val grants = HotspotUserCodes.grants(tenant)
         val networks = otherCompanyNetworks()
         val list = UiCard(
-            title = "Acceso a redes de otras empresas",
+            title = tr("Acceso a redes de otras empresas"),
             children = listOf(
                 UiText(
-                    "Usuarios de la empresa del servidor que pueden conectarse con su codigo a redes \"Codigo de usuario\" de otras empresas. " +
-                        "Solo los duenos del servidor lo cambian.",
+                    tr("Usuarios de la empresa del servidor que pueden conectarse con su codigo a redes \"Codigo de usuario\" de otras empresas. Solo los duenos del servidor lo cambian."),
                     UiTextStyle.Caption,
                 ),
-                if (grants.isEmpty()) UiText("Aun no hay accesos.", UiTextStyle.Caption) else UiGrid(
+                if (grants.isEmpty()) UiText(tr("Aun no hay accesos."), UiTextStyle.Caption) else UiGrid(
                     minItemWidth = 260,
                     children = grants.map { grant ->
                         UiCard(
                             title = "${grant.companyCode}$separator${grant.ssid}",
                             children = listOf(
-                                UiText(names[grant.userId] ?: "Usuario eliminado", UiTextStyle.Caption),
+                                UiText(names[grant.userId] ?: tr("Usuario eliminado"), UiTextStyle.Caption),
                                 UiButton(
-                                    "Quitar",
-                                    UiRequest("${HotspotScreens.UiRoute}/access", params = mapOf("grant" to "delete", "id" to grant.id.toString()), confirm = "Quitar este acceso?"),
+                                    tr("Quitar"),
+                                    UiRequest("${HotspotScreens.UiRoute}/access", params = mapOf("grant" to "delete", "id" to grant.id.toString()), confirm = tr("Quitar este acceso?")),
                                     style = "danger",
                                 ),
                             ),
@@ -173,18 +173,18 @@ class HotspotAccess(private val access: ModuleAccessService) {
             ),
         )
         val form = UiCard(
-            title = "Dar acceso",
+            title = tr("Dar acceso"),
             children = listOf(
                 if (networks.isEmpty()) {
-                    UiText("Ninguna otra empresa tiene redes con acceso \"Codigo de usuario\".", UiTextStyle.Caption)
+                    UiText(tr("Ninguna otra empresa tiene redes con acceso \"Codigo de usuario\"."), UiTextStyle.Caption)
                 } else {
                     UiForm(
                         id = "grant",
                         fields = listOf(
-                            UiField("network", "Red", "dropdown", required = true, options = networks),
-                            UiField("user", "Usuario", "dropdown", required = true, options = users.filter { it.active }.map(::userLabel)),
+                            UiField("network", tr("Red"), "dropdown", required = true, options = networks),
+                            UiField("user", tr("Usuario"), "dropdown", required = true, options = users.filter { it.active }.map(::userLabel)),
                         ),
-                        submit = UiButton("Dar acceso", UiRequest("${HotspotScreens.UiRoute}/access", params = mapOf("grant" to "add"), formId = "grant")),
+                        submit = UiButton(tr("Dar acceso"), UiRequest("${HotspotScreens.UiRoute}/access", params = mapOf("grant" to "add"), formId = "grant")),
                     )
                 },
             ),
@@ -197,20 +197,20 @@ class HotspotAccess(private val access: ModuleAccessService) {
         return when (step) {
             "add" -> {
                 val (companyCode, ssid) = values["network"].orEmpty().split(separator, limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] }
-                    ?: return "Elige la red." to UiTone.Danger
-                if ("$companyCode$separator$ssid" !in otherCompanyNetworks()) return "Esa red ya no tiene acceso por codigo de usuario." to UiTone.Danger
+                    ?: return tr("Elige la red.") to UiTone.Danger
+                if ("$companyCode$separator$ssid" !in otherCompanyNetworks()) return tr("Esa red ya no tiene acceso por codigo de usuario.") to UiTone.Danger
                 val user = access.centralConnection().use { central -> HotspotUserCodes.users(tenant, central) }
                     .firstOrNull { it.active && userLabel(it) == values["user"] }
-                    ?: return "Elige el usuario." to UiTone.Danger
+                    ?: return tr("Elige el usuario.") to UiTone.Danger
                 HotspotUserCodes.addGrant(tenant, companyCode, ssid, user.id)
-                "${user.name} puede conectarse a $ssid de $companyCode." to UiTone.Success
+                tr("{0} puede conectarse a {1} de {2}.", user.name, ssid, companyCode) to UiTone.Success
             }
             "delete" -> {
                 val grantId = id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                if (grantId != null && HotspotUserCodes.deleteGrant(tenant, grantId)) "Acceso quitado." to UiTone.Success
-                else "Ese acceso ya no existe." to UiTone.Warning
+                if (grantId != null && HotspotUserCodes.deleteGrant(tenant, grantId)) tr("Acceso quitado.") to UiTone.Success
+                else tr("Ese acceso ya no existe.") to UiTone.Warning
             }
-            else -> "Accion desconocida." to UiTone.Danger
+            else -> tr("Accion desconocida.") to UiTone.Danger
         }
     }
 
@@ -249,16 +249,16 @@ class HotspotAccess(private val access: ModuleAccessService) {
         fun card(integration: HotspotIntegration): UiNode {
             val on = integration.id in enabled
             return UiCard(
-                title = integration.title,
+                title = tr(integration.title),
                 children = listOf(
-                    UiText(integration.description, UiTextStyle.Caption),
-                    UiStatus(if (on) "Activa" else "Inactiva", if (on) UiTone.Success else UiTone.Neutral),
+                    UiText(tr(integration.description), UiTextStyle.Caption),
+                    UiStatus(if (on) tr("Activa") else tr("Inactiva"), if (on) UiTone.Success else UiTone.Neutral),
                     UiButton(
-                        if (on) "Desactivar" else "Activar",
+                        if (on) tr("Desactivar") else tr("Activar"),
                         UiRequest(
                             "${HotspotScreens.UiRoute}/integrations",
                             params = mapOf("integration" to integration.id, "enabled" to (!on).toString()),
-                            confirm = if (on && integration.kind == HotspotIntegrations.Network) "Sin controlador de red el portal deja de autorizar visitantes. Continuar?" else null,
+                            confirm = if (on && integration.kind == HotspotIntegrations.Network) tr("Sin controlador de red el portal deja de autorizar visitantes. Continuar?") else null,
                         ),
                         style = if (on) "secondary" else "primary",
                     ),
@@ -267,18 +267,17 @@ class HotspotAccess(private val access: ModuleAccessService) {
         }
         return listOf(
             UiCard(
-                title = "Controlador de red",
+                title = tr("Controlador de red"),
                 children = listOf(
-                    UiText("Ecosistema de red donde el portal autoriza a los visitantes. Solo uno puede estar activo.", UiTextStyle.Caption),
+                    UiText(tr("Ecosistema de red donde el portal autoriza a los visitantes. Solo uno puede estar activo."), UiTextStyle.Caption),
                     UiGrid(minItemWidth = 260, children = catalog.filter { it.kind == HotspotIntegrations.Network }.map(::card)),
                 ),
             ),
             UiCard(
-                title = "Modulos",
+                title = tr("Modulos"),
                 children = listOf(
                     UiText(
-                        "Conecta el hotspot con otros modulos. Los modulos que dan acceso a sus clientes (hotel, membresia...) " +
-                            "aparecen aqui al instalarse. Solo el dueno de la empresa o del servidor las cambia.",
+                        tr("Conecta el hotspot con otros modulos. Los modulos que dan acceso a sus clientes (hotel, membresia...) aparecen aqui al instalarse. Solo el dueno de la empresa o del servidor las cambia."),
                         UiTextStyle.Caption,
                     ),
                     UiGrid(minItemWidth = 260, children = catalog.filter { it.kind == HotspotIntegrations.Module }.map(::card)),

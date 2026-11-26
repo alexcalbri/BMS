@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerTimeline
 import com.ideasdeveloper.bms.server.modules.CustomerTimelineEntry
 import java.time.OffsetDateTime
@@ -9,7 +11,7 @@ import java.time.OffsetDateTime
  * through the portal, with the network and the time granted. Same permission as the visitor reports.
  */
 object HotspotCustomerTimeline {
-    private val accessModes = mapOf("formulario" to "formulario y codigo por correo", "codigo_cliente" to "codigo de cliente")
+    private val accessModes = mapOf("formulario" to msg("formulario y codigo por correo"), "codigo_cliente" to msg("codigo de cliente"))
 
     val timeline = CustomerTimeline(permission = HotspotScreens.ReportsView) { query ->
         query.tenant.prepareStatement(
@@ -33,14 +35,14 @@ object HotspotCustomerTimeline {
                             CustomerTimelineEntry(
                                 at = rows.getObject("created_at", OffsetDateTime::class.java).toInstant(),
                                 kind = "wifi",
-                                title = "Conexion WiFi" + (ssid?.let { " a $it" } ?: ""),
+                                title = if (ssid != null) tr("Conexion WiFi a {0}", ssid) else tr("Conexion WiFi"),
                                 detail = listOfNotNull(
-                                    "Tiempo: ${rows.getInt("minutes")} minutos",
-                                    "Acceso por ${accessModes[mode] ?: mode}",
-                                    "Dispositivo: ${rows.getString("mac")}",
-                                    "Se unio a la sesion de otro dispositivo con el mismo codigo".takeIf { rows.getBoolean("joined") },
+                                    tr("Tiempo: {0} minutos", rows.getInt("minutes")),
+                                    tr("Acceso por {0}", accessModes[mode]?.let { tr(it) } ?: mode),
+                                    tr("Dispositivo: {0}", rows.getString("mac")),
+                                    tr("Se unio a la sesion de otro dispositivo con el mismo codigo").takeIf { rows.getBoolean("joined") },
                                     rows.getObject("disconnected_at", OffsetDateTime::class.java)?.let {
-                                        "Desconectado al vencer el tiempo: ${it.toLocalDateTime().toString().take(16).replace('T', ' ')} UTC"
+                                        tr("Desconectado al vencer el tiempo: {0} UTC", it.toLocalDateTime().toString().take(16).replace('T', ' '))
                                     },
                                 ).joinToString("\n"),
                             )

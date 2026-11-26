@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.modules.hotspot.HotspotPortalPages.BasePath
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 
 /**
@@ -36,19 +38,19 @@ object HotspotTemplates {
 
     val Form = View(
         id = HotspotNetworks.Form,
-        label = "Formulario",
+        label = msg("Formulario"),
         action = "$BasePath/register",
         requiredFields = listOf("name", "email", "phone", "terms"),
         placeholders = common + listOf("nombre", "correo", "celular", "cumpleanos", "consentimiento", "terminos_url", "privacidad_url"),
     )
     val CustomerCode = View(
         id = HotspotNetworks.CustomerCode,
-        label = "Codigo de cliente",
+        label = msg("Codigo de cliente"),
         action = "$BasePath/code",
         requiredFields = listOf("code"),
         placeholders = common + "tipo_codigo",
     )
-    val UserCode = CustomerCode.copy(id = HotspotNetworks.UserCode, label = "Codigo de usuario")
+    val UserCode = CustomerCode.copy(id = HotspotNetworks.UserCode, label = msg("Codigo de usuario"))
 
     val views = listOf(Form, CustomerCode, UserCode)
 
@@ -114,7 +116,7 @@ object HotspotTemplates {
             out.append(html, index, open)
             val body = open + 4
             if (html.startsWith(">", body) || html.startsWith("->", body)) {
-                problems += "No se permiten los comentarios <!--> ni <!--->: el navegador los cierra de inmediato."
+                problems += tr("No se permiten los comentarios <!--> ni <!--->: el navegador los cierra de inmediato.")
                 index = body + (if (html.startsWith(">", body)) 1 else 2)
                 continue
             }
@@ -122,10 +124,10 @@ object HotspotTemplates {
             val bang = html.indexOf("--!>", body)
             val close = listOf(plain, bang).filter { it >= 0 }.minOrNull()
             if (close == null) {
-                problems += "Hay un comentario <!-- sin cerrar con -->: el navegador lo extiende hasta el final de la pagina."
+                problems += tr("Hay un comentario <!-- sin cerrar con -->: el navegador lo extiende hasta el final de la pagina.")
                 break
             }
-            if (close == bang) problems += "No se permite cerrar un comentario con --!>: usa -->."
+            if (close == bang) problems += tr("No se permite cerrar un comentario con --!>: usa -->.")
             index = close + (if (close == bang) 4 else 3)
         }
         return out.toString() to problems.distinct()
@@ -169,12 +171,12 @@ object HotspotTemplates {
         }
         val clean = unescaped.filter { it > ' ' && !it.isWhitespace() }.lowercase()
         if ("expression(" in clean || "-moz-binding" in clean || "behavior:" in clean || "@import" in clean) {
-            return "No se permiten expression(, behavior, -moz-binding ni @import en los estilos."
+            return tr("No se permiten expression(, behavior, -moz-binding ni @import en los estilos.")
         }
         cssUrl.findAll(clean).forEach { match ->
             val address = match.groupValues[1].trim('"', '\'')
             if (dangerousSchemes.any { address.startsWith(it) } && !address.startsWith("data:image/")) {
-                return "No se permiten direcciones ${address.substringBefore(':')}: dentro de url() en los estilos."
+                return tr("No se permiten direcciones {0}: dentro de url() en los estilos.", address.substringBefore(':'))
             }
         }
         return null
@@ -183,11 +185,11 @@ object HotspotTemplates {
     /** Problems that keep [html] from working as [view]; empty when it can be saved. */
     fun validate(view: View, html: String): List<String> {
         // Too long: nothing else runs (no pattern is evaluated over a huge text).
-        if (html.length > MaxLength) return listOf("El HTML no puede pasar de $MaxLength caracteres.")
+        if (html.length > MaxLength) return listOf(tr("El HTML no puede pasar de {0} caracteres.", MaxLength))
         return try {
             check(view, html)
         } catch (overflow: StackOverflowError) {
-            listOf("La plantilla tiene una etiqueta demasiado larga.")
+            listOf(tr("La plantilla tiene una etiqueta demasiado larga."))
         }
     }
 
@@ -201,28 +203,28 @@ object HotspotTemplates {
         // Read in two ways so a stray quote cannot hide a tag.
         val scanned = (tags(html) + tags(html, looseTagPattern)).filter { !it.closing }
         scanned.map { it.name }.filter { it in forbiddenTags }.distinct().forEach {
-            problems += "No se permite la etiqueta <$it>: el portal no ejecuta scripts ni incrusta otras paginas."
+            problems += tr("No se permite la etiqueta <{0}>: el portal no ejecuta scripts ni incrusta otras paginas.", it)
         }
         scanned.forEach { tag ->
-            tag.attributeList.map { it.first }.firstOrNull { it.startsWith("on") }?.let { problems += "No se permiten eventos como $it= en <${tag.name}>." }
+            tag.attributeList.map { it.first }.firstOrNull { it.startsWith("on") }?.let { problems += tr("No se permiten eventos como {0}= en <{1}>.", it, tag.name) }
             tag.attributeList.filter { it.first in urlAttributes }.firstNotNullOfOrNull { dangerousScheme(it.second) }
-                ?.let { problems += "No se permiten direcciones $it en <${tag.name}>." }
+                ?.let { problems += tr("No se permiten direcciones {0} en <{1}>.", it, tag.name) }
             tag.attributeList.firstOrNull { it.first == "style" }?.let { cssProblem(decodeEntities(it.second)) }?.let { problems += it }
             if (tag.name == "meta" && decodeEntities(tag.attributes["http-equiv"].orEmpty()).trim().lowercase() == "refresh") {
-                problems += "No se permite <meta http-equiv=\"refresh\">."
+                problems += tr("No se permite <meta http-equiv=\"refresh\">.")
             }
-            if ("formaction" in tag.attributes) problems += "No se permite formaction en <${tag.name}>."
+            if ("formaction" in tag.attributes) problems += tr("No se permite formaction en <{0}>.", tag.name)
             // A {{marker}} that builds part of a name or value could assemble "<script>" or "javascript:" once filled.
             val raw = html.substring(tag.start, tag.end)
             val rest = wholeValuePlaceholder.replace(raw) { if (it.groupValues[2] in rawPlaceholders) it.value else "=\"\"" }
             if ("{{" in rest) {
-                problems += "No se permiten {{marcadores}} dentro de una etiqueta (<${tag.name}>), salvo como valor completo entre comillas, por ejemplo value=\"{{nombre}}\"."
+                problems += tr("No se permiten {{marcadores}} dentro de una etiqueta (<{0}>), salvo como valor completo entre comillas, por ejemplo value=\"{{nombre}}\".", tag.name)
             }
         }
         styleBlockPattern.findAll(html).forEach { block -> cssProblem(block.groupValues[1])?.let { problems += it } }
         val foreign = scanned.filter { it.name == "form" && normalizePath(it.attributes["action"].orEmpty()) != view.action }.distinctBy { it.start }
         if (foreign.isNotEmpty()) {
-            problems += "Todos los formularios deben enviar a ${view.action}; hay ${foreign.size} que envia(n) a otra direccion."
+            problems += tr("Todos los formularios deben enviar a {0}; hay {1} que envia(n) a otra direccion.", view.action, foreign.size)
         }
         return problems
     }
@@ -240,34 +242,34 @@ object HotspotTemplates {
         val forms = tags.filter { !it.closing && it.name == "form" }
         val form = forms.firstOrNull { normalizePath(it.attributes["action"].orEmpty()) == view.action }
         if (form == null) {
-            problems += "Falta el formulario: <form action=\"${view.action}\" method=\"post\">."
+            problems += tr("Falta el formulario: <form action=\"{0}\" method=\"post\">.", view.action)
         } else {
-            if (forms.count { normalizePath(it.attributes["action"].orEmpty()) == view.action } > 1) problems += "Debe haber un solo formulario."
-            if (form.attributes["method"]?.lowercase() != "post") problems += "El formulario debe usar method=\"post\"."
+            if (forms.count { normalizePath(it.attributes["action"].orEmpty()) == view.action } > 1) problems += tr("Debe haber un solo formulario.")
+            if (form.attributes["method"]?.lowercase() != "post") problems += tr("El formulario debe usar method=\"post\".")
             val close = tags.firstOrNull { it.closing && it.name == "form" && it.start > form.end }
-            if (close == null) problems += "Falta cerrar el formulario con </form>."
+            if (close == null) problems += tr("Falta cerrar el formulario con </form>.")
             val inside = tags.filter { !it.closing && it.start > form.end && (close == null || it.start < close.start) }
             val named = inside.filter { it.name in setOf("input", "select", "textarea") }.groupBy { it.attributes["name"].orEmpty() }
             view.requiredFields.forEach { field ->
-                if (field !in named) problems += "Falta dentro del formulario el campo name=\"$field\"."
+                if (field !in named) problems += tr("Falta dentro del formulario el campo name=\"{0}\".", field)
             }
             if (view == Form) {
                 val terms = named["terms"]?.firstOrNull()
                 if (terms != null && (terms.attributes["type"]?.lowercase() != "checkbox" || terms.attributes["value"] != "si")) {
-                    problems += "El campo terms debe ser <input type=\"checkbox\" name=\"terms\" value=\"si\">."
+                    problems += tr("El campo terms debe ser <input type=\"checkbox\" name=\"terms\" value=\"si\">.")
                 }
             }
             val hidden = placeholderPattern.findAll(code).firstOrNull { it.groupValues[1] == "campos_ocultos" }
             if (hidden == null) {
-                problems += "Falta {{campos_ocultos}} dentro del formulario (identifica el dispositivo y la red)."
+                problems += tr("Falta {{campos_ocultos}} dentro del formulario (identifica el dispositivo y la red).")
             } else if (hidden.range.first < form.end || (close != null && hidden.range.first > close.start)) {
-                problems += "{{campos_ocultos}} debe ir dentro del formulario."
+                problems += tr("{{campos_ocultos}} debe ir dentro del formulario.")
             }
         }
 
         val used = placeholderPattern.findAll(code).map { it.groupValues[1] }.toSet()
-        if ("error" !in used) problems += "Falta {{error}} para mostrar los mensajes (codigo incorrecto, datos invalidos...)."
-        (used - view.placeholders.toSet()).sorted().forEach { problems += "{{$it}} no existe en esta vista." }
+        if ("error" !in used) problems += tr("Falta {{error}} para mostrar los mensajes (codigo incorrecto, datos invalidos...).")
+        (used - view.placeholders.toSet()).sorted().forEach { problems += tr("{0} no existe en esta vista.", "{{$it}}") }
         return problems.distinct()
     }
 

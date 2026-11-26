@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiBarChart
 import com.ideasdeveloper.bms.ui.UiButton
@@ -49,14 +51,14 @@ object HotspotScreens {
     private data class Section(val id: String, val label: String, val permission: String)
 
     private val sections = listOf(
-        Section("dashboard", "Dashboard", ReportsView),
-        Section("visitors", "Visitantes", ReportsView),
-        Section("reports", "Reportes", ReportsView),
-        Section("access", "Accesos WiFi", View),
-        Section("portal", "Portal cautivo", SettingsView),
-        Section("design", "Diseño", SettingsView),
-        Section("settings", "Configuracion", SettingsView),
-        Section("integrations", "Integraciones", OwnerOnly),
+        Section("dashboard", msg("Dashboard"), ReportsView),
+        Section("visitors", msg("Visitantes"), ReportsView),
+        Section("reports", msg("Reportes"), ReportsView),
+        Section("access", msg("Accesos WiFi"), View),
+        Section("portal", msg("Portal cautivo"), SettingsView),
+        Section("design", msg("Diseño"), SettingsView),
+        Section("settings", msg("Configuracion"), SettingsView),
+        Section("integrations", msg("Integraciones"), OwnerOnly),
     )
 
     fun isScreen(id: String) = sections.any { it.id == id }
@@ -84,9 +86,9 @@ object HotspotScreens {
         customBody: List<UiNode>? = null,
     ): UiScreen {
         val settings = HotspotSettingsRepository.load(tenant)
-        val title = sections.first { it.id == screen }.label
+        val title = tr(sections.first { it.id == screen }.label)
         if (!permissions.has(permissionFor(screen)!!)) {
-            return frame(settings, permissions, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
+            return frame(settings, permissions, screen, title, UiNotice(tr("No tienes permiso para ver esta seccion."), UiTone.Danger), emptyList())
         }
         val values = submittedValues ?: HotspotSettingsRepository.toFormValues(
             settings, domainStatus, sendingAvailable, HotspotCrmPipeline.stageName(tenant, settings.crmStageId),
@@ -113,7 +115,7 @@ object HotspotScreens {
         title = title,
         navigation = UiNavigation(
             title = settings.networkName,
-            items = sections.filter { permissions.has(it.permission) }.map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },
+            items = sections.filter { permissions.has(it.permission) }.map { UiNavItem(it.id, tr(it.label), UiNavigate(it.id)) },
             selected = selected,
         ),
         notice = notice,
@@ -128,31 +130,31 @@ object HotspotScreens {
         val newThisMonth = HotspotReports.newEmailsSince(tenant, today.withDayOfMonth(1))
         val controller = HotspotIntegrations.controller(tenant)
         val health = when {
-            controller == null -> UiStatus("Falta elegir el controlador de red en Integraciones", UiTone.Warning)
-            !controller.isConfigured(settings) -> UiStatus("Falta configurar ${controller.name}", UiTone.Warning)
-            settings.domain == null -> UiStatus("Falta configurar el dominio del portal", UiTone.Warning)
-            !domainActive -> UiStatus("El dominio del portal aun no esta activo", UiTone.Warning)
-            else -> UiStatus("Todo funcionando correctamente", UiTone.Success)
+            controller == null -> UiStatus(tr("Falta elegir el controlador de red en Integraciones"), UiTone.Warning)
+            !controller.isConfigured(settings) -> UiStatus(tr("Falta configurar {0}", controller.name), UiTone.Warning)
+            settings.domain == null -> UiStatus(tr("Falta configurar el dominio del portal"), UiTone.Warning)
+            !domainActive -> UiStatus(tr("El dominio del portal aun no esta activo"), UiTone.Warning)
+            else -> UiStatus(tr("Todo funcionando correctamente"), UiTone.Success)
         }
         val from = today.minusDays(6)
         return listOf(
             UiGrid(
                 minItemWidth = 220,
                 children = listOf(
-                    UiCard(listOf(UiMetric("Visitantes hoy", todayCount.toString(), trend, trendTone))),
-                    UiCard(listOf(UiMetric("Correos obtenidos", HotspotReports.totalEmails(tenant).toString(), "+$newThisMonth este mes", UiTone.Success))),
-                    UiCard(listOf(UiText("Red Wi-Fi activa", UiTextStyle.Caption), health)),
+                    UiCard(listOf(UiMetric(tr("Visitantes hoy"), todayCount.toString(), trend, trendTone))),
+                    UiCard(listOf(UiMetric(tr("Correos obtenidos"), HotspotReports.totalEmails(tenant).toString(), tr("+{0} este mes", newThisMonth), UiTone.Success))),
+                    UiCard(listOf(UiText(tr("Red Wi-Fi activa"), UiTextStyle.Caption), health)),
                 ),
             ),
             UiCard(
-                title = "Conexiones por dia",
+                title = tr("Conexiones por dia"),
                 actions = listOfNotNull(exportButton(permissions, mapOf("from" to from.toString(), "to" to today.toString()))),
                 children = listOf(UiBarChart(HotspotReports.connectionsPerDay(tenant, from, today))),
             ),
             UiCard(
-                title = "Ultimos registros",
-                actions = listOf(UiButton("Ver todos", UiNavigate("visitors"), style = "secondary")),
-                children = listOf(UiTable(HotspotReports.columns, HotspotReports.visitors(tenant, "", 10, 0).rows, "Aun no hay registros.")),
+                title = tr("Ultimos registros"),
+                actions = listOf(UiButton(tr("Ver todos"), UiNavigate("visitors"), style = "secondary")),
+                children = listOf(UiTable(HotspotReports.columns, HotspotReports.visitors(tenant, "", 10, 0).rows, tr("Aun no hay registros."))),
             ),
         )
     }
@@ -169,21 +171,21 @@ object HotspotScreens {
                 listOf(
                     UiForm(
                         id = "search",
-                        fields = listOf(UiField("q", "Buscar", placeholder = "Nombre, correo o celular")),
+                        fields = listOf(UiField("q", tr("Buscar"), placeholder = tr("Nombre, correo o celular"))),
                         values = mapOf("q" to search),
-                        submit = UiButton("Buscar", UiNavigate("visitors", formId = "search")),
+                        submit = UiButton(tr("Buscar"), UiNavigate("visitors", formId = "search")),
                     ),
                 )
             ),
             UiCard(
-                title = "Visitantes",
+                title = tr("Visitantes"),
                 children = listOf(
-                    UiTable(HotspotReports.columns, result.rows, if (search.isBlank()) "Aun no hay registros." else "Sin resultados para \"$search\"."),
+                    UiTable(HotspotReports.columns, result.rows, if (search.isBlank()) tr("Aun no hay registros.") else tr("Sin resultados para \"{0}\".", search)),
                     UiRow(
                         listOf(
-                            UiText("Mostrando $first-$last de ${result.total}", UiTextStyle.Caption),
-                            UiButton("Anterior", UiNavigate("visitors", searchParams + ("page" to (page - 1).toString())), style = "secondary", enabled = page > 1),
-                            UiButton("Siguiente", UiNavigate("visitors", searchParams + ("page" to (page + 1).toString())), style = "secondary", enabled = last < result.total),
+                            UiText(tr("Mostrando {0}-{1} de {2}", first, last, result.total), UiTextStyle.Caption),
+                            UiButton(tr("Anterior"), UiNavigate("visitors", searchParams + ("page" to (page - 1).toString())), style = "secondary", enabled = page > 1),
+                            UiButton(tr("Siguiente"), UiNavigate("visitors", searchParams + ("page" to (page + 1).toString())), style = "secondary", enabled = last < result.total),
                         )
                     ),
                 ),
@@ -204,9 +206,9 @@ object HotspotScreens {
                 listOf(
                     UiForm(
                         id = "range",
-                        fields = listOf(UiField("from", "Desde", "date"), UiField("to", "Hasta", "date")),
+                        fields = listOf(UiField("from", tr("Desde"), "date"), UiField("to", tr("Hasta"), "date")),
                         values = range,
-                        submit = UiButton("Consultar", UiNavigate("reports", formId = "range")),
+                        submit = UiButton(tr("Consultar"), UiNavigate("reports", formId = "range")),
                         minFieldWidth = 180,
                     ),
                 )
@@ -214,20 +216,20 @@ object HotspotScreens {
             UiGrid(
                 minItemWidth = 180,
                 children = listOf(
-                    UiCard(listOf(UiMetric("Registros", summary.registrations.toString()))),
-                    UiCard(listOf(UiMetric("Visitantes unicos", summary.visitors.toString(), "Correos distintos"))),
-                    UiCard(listOf(UiMetric("Conexiones", summary.connections.toString(), "Autorizadas en la red"))),
-                    UiCard(listOf(UiMetric("Fallas al autorizar", summary.failures.toString(), captionTone = if (summary.failures > 0) UiTone.Danger else UiTone.Neutral))),
+                    UiCard(listOf(UiMetric(tr("Registros"), summary.registrations.toString()))),
+                    UiCard(listOf(UiMetric(tr("Visitantes unicos"), summary.visitors.toString(), tr("Correos distintos")))),
+                    UiCard(listOf(UiMetric(tr("Conexiones"), summary.connections.toString(), tr("Autorizadas en la red")))),
+                    UiCard(listOf(UiMetric(tr("Fallas al autorizar"), summary.failures.toString(), captionTone = if (summary.failures > 0) UiTone.Danger else UiTone.Neutral))),
                 ),
             ),
             UiCard(
-                title = "Conexiones por dia",
+                title = tr("Conexiones por dia"),
                 actions = listOfNotNull(exportButton(permissions, range)),
                 children = listOf(UiBarChart(HotspotReports.connectionsPerDay(tenant, from, to))),
             ),
             UiCard(
-                title = "Registros del periodo",
-                children = listOf(UiTable(HotspotReports.columns, HotspotReports.latest(tenant, from, to, limit = 50), "Sin registros en este periodo.")),
+                title = tr("Registros del periodo"),
+                children = listOf(UiTable(HotspotReports.columns, HotspotReports.latest(tenant, from, to, limit = 50), tr("Sin registros en este periodo."))),
             ),
         )
     }
@@ -240,10 +242,10 @@ object HotspotScreens {
         }
         val logo = values["logoUrl"].orEmpty().takeIf { it.startsWith("https://") || it.startsWith("http://") }
         return listOfNotNull(
-            UiCard(title = "Estado del portal", children = listOf(UiStatus(domainStatus, tone))),
-            logo?.let { UiCard(title = "Logo actual", children = listOf(UiImage(it, height = 80, description = "Logo del portal"))) },
+            UiCard(title = tr("Estado del portal"), children = listOf(UiStatus(domainStatus, tone))),
+            logo?.let { UiCard(title = tr("Logo actual"), children = listOf(UiImage(it, height = 80, description = tr("Logo del portal")))) },
             // Apariencia, textos legales, tiempos y dominio: each section opens on its own.
-            UiCard(listOf(settingsFormNode("portal", "portal", portalFields, permissions, values).copy(collapsibleSections = true))),
+            UiCard(listOf(settingsFormNode("portal", "portal", portalFields(), permissions, values).copy(collapsibleSections = true))),
         )
     }
 
@@ -265,20 +267,14 @@ object HotspotScreens {
         val saved = HotspotTemplates.load(tenant)
         val canManage = permissions.has(SettingsManage)
         val intro = UiCard(
-            title = "Como funciona",
+            title = tr("Como funciona"),
             children = listOf(
                 UiText(
-                    "Puedes reemplazar el diseno de las paginas de entrada del portal por tu propio HTML (pagina completa, con su CSS). " +
-                        "Al guardar se valida que conserve lo que el portal necesita; si falta algo no se guarda y se indica que corregir. " +
-                        "Deja el editor vacio y guarda para volver al diseno de BMS. No se permiten scripts, eventos (onclick...), " +
-                        "iframes ni formularios que envien a otra direccion. Las demas paginas (codigo por correo, exito, mensajes) " +
-                        "usan el diseno de BMS con los colores de arriba.",
+                    tr("Puedes reemplazar el diseno de las paginas de entrada del portal por tu propio HTML (pagina completa, con su CSS). Al guardar se valida que conserve lo que el portal necesita; si falta algo no se guarda y se indica que corregir. Deja el editor vacio y guarda para volver al diseno de BMS. No se permiten scripts, eventos (onclick...), iframes ni formularios que envien a otra direccion. Las demas paginas (codigo por correo, exito, mensajes) usan el diseno de BMS con los colores de arriba."),
                     UiTextStyle.Caption,
                 ),
                 UiText(
-                    "En todas: {{error}} (obligatorio; muestra los mensajes) y {{campos_ocultos}} (obligatorio, dentro del formulario; " +
-                        "identifica el dispositivo y la red). Opcionales: {{titulo}}, {{subtitulo}}, {{red}}, {{logo_url}}, {{pie}}, " +
-                        "{{color_primario}}, {{color_secundario}}, {{color_texto}}.",
+                    tr("En todas: {{error}} (obligatorio; muestra los mensajes) y {{campos_ocultos}} (obligatorio, dentro del formulario; identifica el dispositivo y la red). Opcionales: {{titulo}}, {{subtitulo}}, {{red}}, {{logo_url}}, {{pie}}, {{color_primario}}, {{color_secundario}}, {{color_texto}}."),
                     UiTextStyle.Caption,
                 ),
             ),
@@ -286,57 +282,54 @@ object HotspotScreens {
         val own = HotspotSettingsRepository.load(tenant).portalColors
         fun color(key: String, saved: String?) = values[colorKey(key)] ?: saved.orEmpty()
         val colors = UiCard(
-            title = "Colores del portal",
+            title = tr("Colores del portal"),
             children = listOfNotNull(
                 UiText(
-                    "Colores de todas las paginas del portal (y de {{color_primario}}, {{color_secundario}} y {{color_texto}} en tu HTML). " +
-                        "Deja un color vacio para usar el de la empresa (Empresa); si la empresa no tiene, se usa el de BMS.",
+                    tr("Colores de todas las paginas del portal (y de {{color_primario}}, {{color_secundario}} y {{color_texto}} en tu HTML). Deja un color vacio para usar el de la empresa (Empresa); si la empresa no tiene, se usa el de BMS."),
                     UiTextStyle.Caption,
                 ),
                 UiForm(
                     id = "colors",
                     fields = listOf(
-                        UiField("primary", "Color principal (botones y fondo)", "color", readOnly = !canManage, placeholder = "Vacio = color de la empresa"),
-                        UiField("secondary", "Color secundario (degradado del fondo)", "color", readOnly = !canManage, placeholder = "Vacio = color de la empresa"),
-                        UiField("text", "Color del texto sobre los botones", "color", readOnly = !canManage, placeholder = "Vacio = color de la empresa"),
+                        UiField("primary", tr("Color principal (botones y fondo)"), "color", readOnly = !canManage, placeholder = tr("Vacio = color de la empresa")),
+                        UiField("secondary", tr("Color secundario (degradado del fondo)"), "color", readOnly = !canManage, placeholder = tr("Vacio = color de la empresa")),
+                        UiField("text", tr("Color del texto sobre los botones"), "color", readOnly = !canManage, placeholder = tr("Vacio = color de la empresa")),
                     ),
                     values = mapOf(
                         "primary" to color("primary", own.primary),
                         "secondary" to color("secondary", own.secondary),
                         "text" to color("text", own.text),
                     ),
-                    submit = if (canManage) UiButton("Guardar colores", UiRequest("$UiRoute/design", params = mapOf("view" to ColorsView), formId = "colors")) else null,
+                    submit = if (canManage) UiButton(tr("Guardar colores"), UiRequest("$UiRoute/design", params = mapOf("view" to ColorsView), formId = "colors")) else null,
                     minFieldWidth = 200,
                 ),
             ),
         )
         val cards = HotspotTemplates.views.map { view ->
             val requirements = if (view == HotspotTemplates.Form) {
-                "Formulario: <form action=\"${view.action}\" method=\"post\"> con los campos name, email, phone y " +
-                    "<input type=\"checkbox\" name=\"terms\" value=\"si\">; birthday es opcional. Valores: {{nombre}}, {{correo}}, " +
-                    "{{celular}}, {{cumpleanos}} (lo ya escrito si hubo un error), {{consentimiento}}, {{terminos_url}}, {{privacidad_url}}."
+                tr("Formulario: <form action=\"{0}\" method=\"post\"> con los campos name, email, phone y <input type=\"checkbox\" name=\"terms\" value=\"si\">; birthday es opcional. Valores: {{nombre}}, {{correo}}, {{celular}}, {{cumpleanos}} (lo ya escrito si hubo un error), {{consentimiento}}, {{terminos_url}}, {{privacidad_url}}.", view.action)
             } else {
-                "Formulario: <form action=\"${view.action}\" method=\"post\"> con el campo name=\"code\". Valor: {{tipo_codigo}} (\"${view.label}\")."
+                tr("Formulario: <form action=\"{0}\" method=\"post\"> con el campo name=\"code\". Valor: {{tipo_codigo}} (\"{1}\").", view.action, tr(view.label))
             }
             val text = values[templateKey(view.id)]
                 ?: if (params["example"] == view.id) HotspotTemplates.example(view) else saved[view.id].orEmpty()
             UiCard(
-                title = view.label,
+                title = tr(view.label),
                 collapsible = true,
                 expanded = values.containsKey(templateKey(view.id)) || params["example"] == view.id,
                 children = listOfNotNull(
-                    UiStatus(if (view.id in saved) "Usa tu HTML" else "Usa el diseno de BMS", if (view.id in saved) UiTone.Success else UiTone.Neutral),
+                    UiStatus(if (view.id in saved) tr("Usa tu HTML") else tr("Usa el diseno de BMS"), if (view.id in saved) UiTone.Success else UiTone.Neutral),
                     UiText(requirements, UiTextStyle.Caption),
                     UiForm(
                         id = view.id,
                         fields = listOf(
-                            UiField("html", "HTML de la pagina", "textarea", readOnly = !canManage,
-                                placeholder = "<!DOCTYPE html> ... (vacio = diseno de BMS)"),
+                            UiField("html", tr("HTML de la pagina"), "textarea", readOnly = !canManage,
+                                placeholder = tr("<!DOCTYPE html> ... (vacio = diseno de BMS)")),
                         ),
                         values = mapOf("html" to text),
-                        submit = if (canManage) UiButton("Validar y guardar", UiRequest("$UiRoute/design", params = mapOf("view" to view.id), formId = view.id)) else null,
+                        submit = if (canManage) UiButton(tr("Validar y guardar"), UiRequest("$UiRoute/design", params = mapOf("view" to view.id), formId = view.id)) else null,
                     ),
-                    if (!canManage) null else UiButton("Cargar un ejemplo", UiNavigate("design", mapOf("example" to view.id)), style = "secondary"),
+                    if (!canManage) null else UiButton(tr("Cargar un ejemplo"), UiNavigate("design", mapOf("example" to view.id)), style = "secondary"),
                 ),
             )
         }
@@ -359,8 +352,8 @@ object HotspotScreens {
         val controllerCards = when {
             controller == null -> listOf(
                 UiCard(
-                    title = "Controlador de red",
-                    children = listOf(UiStatus("Elige el controlador de red (UniFi u otro) en Integraciones.", UiTone.Warning)),
+                    title = tr("Controlador de red"),
+                    children = listOf(UiStatus(tr("Elige el controlador de red (UniFi u otro) en Integraciones."), UiTone.Warning)),
                 )
             )
             controller.id == HotspotIntegrations.NetworkUnifi -> listOf(unifiCard(settings, permissions, values)) + pickers
@@ -368,32 +361,32 @@ object HotspotScreens {
         }
         val crmFields = listOf(
             UiField(
-                "crmAccessEnabled", "Validar el codigo de cliente con un estado del CRM", "boolean",
-                help = "Al activarlo, el codigo de cliente solo funciona si su lead esta en el estado seleccionado.",
+                "crmAccessEnabled", tr("Validar el codigo de cliente con un estado del CRM"), "boolean",
+                help = tr("Al activarlo, el codigo de cliente solo funciona si su lead esta en el estado seleccionado."),
             ),
             UiField(
-                "crmStage", "Estado del embudo que permite el acceso", "dropdown", required = settings.crmAccessEnabled,
+                "crmStage", tr("Estado del embudo que permite el acceso"), "dropdown", required = settings.crmAccessEnabled,
                 options = crmStages.map { it.name },
-                help = if (crmInstalled) "Se valida el estado actual del lead y, si tiene fechas, la fecha de inicio y fin." else "Instala CRM para seleccionar un estado.",
+                help = if (crmInstalled) tr("Se valida el estado actual del lead y, si tiene fechas, la fecha de inicio y fin.") else tr("Instala CRM para seleccionar un estado."),
                 visibleWhen = UiFieldCondition("crmAccessEnabled", listOf("true")),
             ),
             UiField(
-                "crmScheduleMode", "Programacion de la revision", "select", required = true,
-                options = listOf("Diario a una hora", "Cada intervalo"),
+                "crmScheduleMode", tr("Programacion de la revision"), "select", required = true,
+                options = listOf(msg("Diario a una hora"), msg("Cada intervalo")),
             ),
             UiField(
-                "crmCheckTime", "Hora diaria de revision (HH:mm)", required = true,
+                "crmCheckTime", tr("Hora diaria de revision (HH:mm)"), required = true,
                 visibleWhen = UiFieldCondition("crmScheduleMode", listOf("Diario a una hora")),
             ),
             UiField(
-                "crmCheckIntervalMinutes", "Intervalo de revision (minutos)", "number", required = true,
+                "crmCheckIntervalMinutes", tr("Intervalo de revision (minutos)"), "number", required = true,
                 visibleWhen = UiFieldCondition("crmScheduleMode", listOf("Cada intervalo")),
             ),
         ).map { field -> if (field.key == "crmAccessEnabled" && !crmInstalled) field.copy(readOnly = true) else field }
         val crmCard = UiCard(
-            title = "Integracion con CRM",
+            title = tr("Integracion con CRM"),
             children = listOfNotNull(
-                if (crmInstalled) null else UiStatus("CRM no esta instalado en esta empresa; los codigos de cliente permanecen desactivados.", UiTone.Warning),
+                if (crmInstalled) null else UiStatus(tr("CRM no esta instalado en esta empresa; los codigos de cliente permanecen desactivados."), UiTone.Warning),
                 settingsFormNode("settings", "crm", crmFields, permissions, values),
             ),
             collapsible = true,
@@ -402,8 +395,8 @@ object HotspotScreens {
         // The controller and the networks stay open; the rest is configured once and starts closed.
         return controllerCards + networks(tenant, settings, controller, permissions, params, networkValues) +
             crmCard +
-            UiCard(title = "Acceso", children = listOf(settingsFormNode("settings", "times", accessFields, permissions, values)), collapsible = true, expanded = false) +
-            UiCard(title = "Correo", children = listOf(settingsFormNode("settings", "mail", mailFields, permissions, values)), collapsible = true, expanded = false)
+            UiCard(title = tr("Acceso"), children = listOf(settingsFormNode("settings", "times", accessFields(), permissions, values)), collapsible = true, expanded = false) +
+            UiCard(title = tr("Correo"), children = listOf(settingsFormNode("settings", "mail", mailFields(), permissions, values)), collapsible = true, expanded = false)
     }
 
     /**
@@ -415,17 +408,17 @@ object HotspotScreens {
         val consoleId = settings.unifiConsoleId?.takeIf { it.isNotBlank() }
         val (hint, action) = when {
             !canManage -> null to null
-            consoleId == null -> "Escribe la API key y pulsa Buscar consolas para elegir la consola y el sitio por su nombre." to
-                UiButton("Buscar consolas", unifiStep("consoles"))
-            settings.unifiSiteId.isNullOrBlank() -> "Falta elegir el sitio de la consola." to UiButton("Elegir sitio", unifiStep("console", consoleId))
+            consoleId == null -> tr("Escribe la API key y pulsa Buscar consolas para elegir la consola y el sitio por su nombre.") to
+                UiButton(tr("Buscar consolas"), unifiStep("consoles"))
+            settings.unifiSiteId.isNullOrBlank() -> tr("Falta elegir el sitio de la consola.") to UiButton(tr("Elegir sitio"), unifiStep("console", consoleId))
             else -> null to null
         }
         return UiCard(
-            title = "Conexion con UniFi",
+            title = tr("Conexion con UniFi"),
             actions = listOfNotNull(action),
             children = listOfNotNull(
                 hint?.let { UiText(it, UiTextStyle.Caption) },
-                settingsFormNode("settings", "unifi", unifiFields, permissions, values),
+                settingsFormNode("settings", "unifi", unifiFields(), permissions, values),
             ),
         )
     }
@@ -445,17 +438,16 @@ object HotspotScreens {
     ): List<UiNode> {
         val canManage = permissions.has(SettingsManage)
         val networks = HotspotNetworks.list(tenant)
-        val sourceNames = (listOf(HotspotPasses.hotspotCustomers) + HotspotPasses.sources(tenant)).associate { it.id to it.name }
+        val sourceNames = (listOf(HotspotPasses.hotspotCustomers) + HotspotPasses.sources(tenant)).associate { it.id to tr(it.name) }
         val list = UiCard(
-            title = "Redes WiFi",
+            title = tr("Redes WiFi"),
             children = listOf(
                 UiText(
-                    "Segun la red a la que se conecta el visitante, el portal muestra el formulario de registro o pide su codigo de cliente o de usuario. " +
-                        "Las redes que no esten en la lista usan el formulario.",
+                    tr("Segun la red a la que se conecta el visitante, el portal muestra el formulario de registro o pide su codigo de cliente o de usuario. Las redes que no esten en la lista usan el formulario."),
                     UiTextStyle.Caption,
                 ),
                 if (networks.isEmpty()) {
-                    UiText("Aun no hay redes configuradas.", UiTextStyle.Caption)
+                    UiText(tr("Aun no hay redes configuradas."), UiTextStyle.Caption)
                 } else {
                     UiGrid(minItemWidth = 260, children = networks.map { networkCard(it, sourceNames, canManage) })
                 },
@@ -469,23 +461,23 @@ object HotspotScreens {
             val taken = networks.map { it.ssid }.toSet() - setOfNotNull(editing?.ssid)
             (ssids + listOfNotNull(editing?.ssid)).distinct().filter { it !in taken }
         }
-        val title = editing?.let { "Editar red ${it.ssid}" } ?: "Agregar red"
+        val title = editing?.let { tr("Editar red {0}", it.ssid) } ?: tr("Agregar red")
         if (editing == null && available != null && available.isEmpty()) {
-            return listOf(list, UiCard(title = title, children = listOf(UiText("Todas las redes de la consola ya estan configuradas.", UiTextStyle.Caption))))
+            return listOf(list, UiCard(title = title, children = listOf(UiText(tr("Todas las redes de la consola ya estan configuradas."), UiTextStyle.Caption))))
         }
         val crmAccessEnabled = settings.crmAccessEnabled && HotspotCrmPipeline.isInstalled(tenant)
         val sources = if (crmAccessEnabled) HotspotPasses.choosable(tenant) else emptyList()
         val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
         val form = UiCard(
             title = title,
-            actions = if (editing == null) emptyList() else listOf(UiButton("Cancelar", UiNavigate("settings"), style = "secondary")),
+            actions = if (editing == null) emptyList() else listOf(UiButton(tr("Cancelar"), UiNavigate("settings"), style = "secondary")),
             children = listOfNotNull(
                 console.problem?.let { UiStatus(it, UiTone.Warning) },
                 UiForm(
                     id = "network",
                     fields = listOf(ssidField(available, controller)) + networkFields(sources, usersEnabled, crmAccessEnabled),
                     values = submitted ?: HotspotNetworks.toFormValues(editing),
-                    submit = UiButton("Guardar red", networkAction("save", editing?.id?.toString(), withForm = true)),
+                    submit = UiButton(tr("Guardar red"), networkAction("save", editing?.id?.toString(), withForm = true)),
                 ),
             ),
         )
@@ -497,41 +489,41 @@ object HotspotScreens {
 
     private fun consoleSsids(settings: HotspotSettings, controller: NetworkController?): ConsoleSsids = when {
         controller == null -> ConsoleSsids(null, null)
-        !controller.isConfigured(settings) -> ConsoleSsids(null, "Configura ${controller.name} para elegir la red de la lista de la consola.")
+        !controller.isConfigured(settings) -> ConsoleSsids(null, tr("Configura {0} para elegir la red de la lista de la consola.", controller.name))
         else -> try {
             ConsoleSsids(controller.wifiNetworks(settings), null)
         } catch (failure: NetworkControllerException) {
-            ConsoleSsids(null, "No se pudieron leer las redes de ${controller.name}: ${failure.message.orEmpty()} Escribe el nombre de la red.")
+            ConsoleSsids(null, tr("No se pudieron leer las redes de {0}: {1} Escribe el nombre de la red.", controller.name, failure.message.orEmpty()))
         }
     }
 
     private fun ssidField(options: List<String>?, controller: NetworkController?): UiField = if (options != null) {
-        UiField("ssid", "Red WiFi (SSID)", "dropdown", required = true, options = options,
-            help = "Redes WiFi de la consola de ${controller?.name.orEmpty()}.")
+        UiField("ssid", tr("Red WiFi (SSID)"), "dropdown", required = true, options = options,
+            help = tr("Redes WiFi de la consola de {0}.", controller?.name.orEmpty()))
     } else {
-        UiField("ssid", "Nombre de la red (SSID)", required = true, placeholder = "MiEmpresa_WiFi",
-            help = "Exactamente como aparece en el controlador de red; distingue mayusculas y minusculas.")
+        UiField("ssid", tr("Nombre de la red (SSID)"), required = true, placeholder = "MiEmpresa_WiFi",
+            help = tr("Exactamente como aparece en el controlador de red; distingue mayusculas y minusculas."))
     }
 
     private fun networkCard(network: HotspotNetwork, sourceNames: Map<String, String>, canManage: Boolean): UiNode {
-        fun minutes(value: Int?) = value?.let { "$it minutos" } ?: "el de la configuracion general"
+        fun minutes(value: Int?) = value?.let { tr("{0} minutos", it) } ?: tr("el de la configuracion general")
         return UiCard(
             title = network.ssid,
             children = listOfNotNull(
-                UiText("Acceso: ${HotspotNetworks.modeLabel(network.accessMode)}", UiTextStyle.Caption),
+                UiText(tr("Acceso: {0}", tr(HotspotNetworks.modeLabel(network.accessMode))), UiTextStyle.Caption),
                 if (!network.byCustomerCode) null else UiText(
-                    "Pueden entrar: " + network.accessSources.joinToString(", ") { sourceNames[it] ?: it },
+                    tr("Pueden entrar: {0}", network.accessSources.joinToString(", ") { sourceNames[it] ?: it }),
                     UiTextStyle.Caption,
                 ),
-                UiText("Tiempo de acceso: ${minutes(network.accessMinutes)}", UiTextStyle.Caption),
-                UiText("Tiempo para reconectar: ${minutes(network.reconnectMinutes)}", UiTextStyle.Caption),
-                if (!network.shared) null else UiText("Compartida con empresas vinculadas", UiTextStyle.Caption),
+                UiText(tr("Tiempo de acceso: {0}", minutes(network.accessMinutes)), UiTextStyle.Caption),
+                UiText(tr("Tiempo para reconectar: {0}", minutes(network.reconnectMinutes)), UiTextStyle.Caption),
+                if (!network.shared) null else UiText(tr("Compartida con empresas vinculadas"), UiTextStyle.Caption),
                 if (!canManage) null else UiRow(
                     listOf(
-                        UiButton("Editar", UiNavigate("settings", mapOf("networkId" to network.id.toString())), style = "secondary"),
+                        UiButton(tr("Editar"), UiNavigate("settings", mapOf("networkId" to network.id.toString())), style = "secondary"),
                         UiButton(
-                            "Eliminar",
-                            networkAction("delete", network.id.toString(), confirm = "Eliminar la red ${network.ssid}? Volvera a usar el formulario de registro."),
+                            tr("Eliminar"),
+                            networkAction("delete", network.id.toString(), confirm = tr("Eliminar la red {0}? Volvera a usar el formulario de registro.", network.ssid)),
                             style = "danger",
                         ),
                     )
@@ -554,21 +546,22 @@ object HotspotScreens {
     private fun networkFields(sources: List<PassSource>, usersEnabled: Boolean, crmAccessEnabled: Boolean): List<UiField> {
         val byCustomerCode = UiFieldCondition("accessMode", listOf(HotspotNetworks.modeLabel(HotspotNetworks.CustomerCode)))
         return listOf(
-            UiField("accessMode", "Tipo de acceso", "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled, crmAccessEnabled),
-                help = "Formulario: registro y codigo por correo; el visitante queda como cliente tipo hotspot. " +
-                    "Codigo de cliente: el codigo de su ficha en Clientes." +
-                    if (usersEnabled) " Codigo de usuario: el codigo de Accesos WiFi de cada usuario." else " Activa la integracion Usuarios para el acceso por codigo de usuario."),
+            UiField("accessMode", tr("Tipo de acceso"), "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled, crmAccessEnabled),
+                help = if (usersEnabled) {
+                    tr("Formulario: registro y codigo por correo; el visitante queda como cliente tipo hotspot. Codigo de cliente: el codigo de su ficha en Clientes. Codigo de usuario: el codigo de Accesos WiFi de cada usuario.")
+                } else {
+                    tr("Formulario: registro y codigo por correo; el visitante queda como cliente tipo hotspot. Codigo de cliente: el codigo de su ficha en Clientes. Activa la integracion Usuarios para el acceso por codigo de usuario.")
+                }),
         ) + sources.map { source ->
-            UiField(HotspotNetworks.sourceKey(source.id), source.name, "boolean", help = source.description,
-                section = "Quien puede conectarse con codigo de cliente", visibleWhen = byCustomerCode)
+            UiField(HotspotNetworks.sourceKey(source.id), tr(source.name), "boolean", help = tr(source.description),
+                section = tr("Quien puede conectarse con codigo de cliente"), visibleWhen = byCustomerCode)
         } + listOf(
-            UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", section = "Tiempos",
-                help = "Vacio usa el de la configuracion general. Con un pase de otro modulo la sesion no pasa del fin del pase ni de su saldo."),
-            UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", section = "Tiempos",
-                help = "Vacio usa el de la configuracion general. 0 = sin espera. No aplica a los pases de otros modulos."),
-            UiField("shared", "Compartida con empresas vinculadas", "boolean", section = "Red compartida",
-                help = "La misma red existe en el gateway de una empresa vinculada (por ejemplo, creada con UniFi Fabric) y alli tambien esta marcada como compartida. " +
-                    "Un dispositivo con acceso vigente en una entra a la otra sin volver a registrarse, solo por el tiempo que le queda."),
+            UiField("accessMinutes", tr("Tiempo de acceso (minutos)"), "number", section = tr("Tiempos"),
+                help = tr("Vacio usa el de la configuracion general. Con un pase de otro modulo la sesion no pasa del fin del pase ni de su saldo.")),
+            UiField("reconnectMinutes", tr("Tiempo para reconectar (minutos)"), "number", section = tr("Tiempos"),
+                help = tr("Vacio usa el de la configuracion general. 0 = sin espera. No aplica a los pases de otros modulos.")),
+            UiField("shared", tr("Compartida con empresas vinculadas"), "boolean", section = tr("Red compartida"),
+                help = tr("La misma red existe en el gateway de una empresa vinculada (por ejemplo, creada con UniFi Fabric) y alli tambien esta marcada como compartida. Un dispositivo con acceso vigente en una entra a la otra sin volver a registrarse, solo por el tiempo que le queda.")),
         )
     }
 
@@ -583,9 +576,9 @@ object HotspotScreens {
     )
 
     fun consolePicker(consoles: List<ControllerOption>, selectedId: String?): UiNode = UiCard(
-        title = "Selecciona la consola",
+        title = tr("Selecciona la consola"),
         children = if (consoles.isEmpty()) {
-            listOf(UiText("La API key no tiene acceso a ninguna consola.", UiTextStyle.Caption))
+            listOf(UiText(tr("La API key no tiene acceso a ninguna consola."), UiTextStyle.Caption))
         } else {
             listOf(
                 UiGrid(
@@ -594,10 +587,10 @@ object HotspotScreens {
                         UiCard(
                             title = console.name,
                             children = listOfNotNull(
-                                UiText(console.detail.ifBlank { "Consola UniFi" }, UiTextStyle.Caption),
+                                UiText(console.detail.ifBlank { tr("Consola UniFi") }, UiTextStyle.Caption),
                                 UiText(console.id, UiTextStyle.Caption),
-                                if (console.id == selectedId) UiStatus("Seleccionada", UiTone.Success) else null,
-                                UiButton("Usar esta consola", unifiStep("console", console.id)),
+                                if (console.id == selectedId) UiStatus(tr("Seleccionada"), UiTone.Success) else null,
+                                UiButton(tr("Usar esta consola"), unifiStep("console", console.id)),
                             ),
                         )
                     },
@@ -607,9 +600,9 @@ object HotspotScreens {
     )
 
     fun sitePicker(sites: List<ControllerOption>, selectedId: String?): UiNode = UiCard(
-        title = "Selecciona el sitio",
+        title = tr("Selecciona el sitio"),
         children = if (sites.isEmpty()) {
-            listOf(UiText("Esta consola no tiene sitios disponibles en la API de UniFi.", UiTextStyle.Caption))
+            listOf(UiText(tr("Esta consola no tiene sitios disponibles en la API de UniFi."), UiTextStyle.Caption))
         } else {
             listOf(
                 UiGrid(
@@ -620,8 +613,8 @@ object HotspotScreens {
                             children = listOfNotNull(
                                 site.detail.takeIf { it.isNotBlank() }?.let { UiText(it, UiTextStyle.Caption) },
                                 UiText(site.id, UiTextStyle.Caption),
-                                if (site.id == selectedId) UiStatus("Seleccionado", UiTone.Success) else null,
-                                UiButton("Usar este sitio", unifiStep("site", site.id)),
+                                if (site.id == selectedId) UiStatus(tr("Seleccionado"), UiTone.Success) else null,
+                                UiButton(tr("Usar este sitio"), unifiStep("site", site.id)),
                             ),
                         )
                     },
@@ -638,65 +631,65 @@ object HotspotScreens {
             id = id,
             fields = if (canManage) fields else fields.map { it.copy(readOnly = true) },
             values = values.filterKeys { it in keys },
-            submit = if (canManage) UiButton("Guardar cambios", UiRequest("$UiRoute/$screen", formId = id)) else null,
+            submit = if (canManage) UiButton(tr("Guardar cambios"), UiRequest("$UiRoute/$screen", formId = id)) else null,
         )
     }
 
     private fun exportButton(permissions: ModulePermissions, range: Map<String, String>): UiButton? =
         if (!permissions.has(ReportsExport)) null else UiButton(
-            label = "Exportar CSV",
+            label = tr("Exportar CSV"),
             action = UiDownload(ExportRoute, "hotspot-${range["from"]}-${range["to"]}.csv", range),
             style = "secondary",
         )
 
     private fun trend(today: Long, yesterday: Long): Pair<String, String> = when {
-        yesterday == 0L && today == 0L -> "Sin visitantes ayer" to UiTone.Neutral
-        yesterday == 0L -> "Ayer no hubo visitantes" to UiTone.Success
+        yesterday == 0L && today == 0L -> tr("Sin visitantes ayer") to UiTone.Neutral
+        yesterday == 0L -> tr("Ayer no hubo visitantes") to UiTone.Success
         else -> {
             val percent = (today - yesterday) * 1000 / yesterday / 10.0
-            (if (percent >= 0) "+$percent% vs ayer" else "$percent% vs ayer") to (if (percent >= 0) UiTone.Success else UiTone.Danger)
+            (if (percent >= 0) tr("+{0}% vs ayer", percent) else tr("{0}% vs ayer", percent)) to (if (percent >= 0) UiTone.Success else UiTone.Danger)
         }
     }
 
-    private val portalFields = listOf(
-        UiField("domain", "Dominio del portal", section = "Dominio", placeholder = "wifi.miempresa.com",
-            help = "Crea un registro DNS A/AAAA que apunte a este servidor. HTTPS se configura solo en unos minutos."),
-        UiField("portalUrl", "Direccion del portal externo (para el controlador de red)", readOnly = true, section = "Dominio"),
-        UiField("networkName", "Nombre de la red WiFi", required = true, section = "Apariencia",
-            help = "Se muestra cuando el controlador de red no envia el nombre de la red. El acceso por red se configura en Configuracion > Redes WiFi."),
-        UiField("portalTitle", "Titulo", required = true, section = "Apariencia"),
-        UiField("portalSubtitle", "Subtitulo", section = "Apariencia"),
-        UiField("logoUrl", "URL del logo", "url", section = "Apariencia",
-            help = "Los colores del portal se configuran en Diseño; vacios usan los de la empresa (o los de BMS)."),
-        UiField("consentText", "Texto de consentimiento", "textarea", required = true, section = "Textos legales"),
-        UiField("termsUrl", "URL de terminos", "url", section = "Textos legales"),
-        UiField("privacyUrl", "URL de privacidad", "url", section = "Textos legales"),
-        UiField("footerText", "Pie de pagina", section = "Textos legales"),
-        UiField("successUrl", "Abrir al conectarse (URLs)", section = "Textos legales", placeholder = "https://miempresa.com, https://promo.miempresa.com",
-            help = "Una o varias direcciones separadas por coma. Al conectarse se abre una de ellas al azar."),
+    private fun portalFields() = listOf(
+        UiField("domain", tr("Dominio del portal"), section = tr("Dominio"), placeholder = "wifi.miempresa.com",
+            help = tr("Crea un registro DNS A/AAAA que apunte a este servidor. HTTPS se configura solo en unos minutos.")),
+        UiField("portalUrl", tr("Direccion del portal externo (para el controlador de red)"), readOnly = true, section = tr("Dominio")),
+        UiField("networkName", tr("Nombre de la red WiFi"), required = true, section = tr("Apariencia"),
+            help = tr("Se muestra cuando el controlador de red no envia el nombre de la red. El acceso por red se configura en Configuracion > Redes WiFi.")),
+        UiField("portalTitle", tr("Titulo"), required = true, section = tr("Apariencia")),
+        UiField("portalSubtitle", tr("Subtitulo"), section = tr("Apariencia")),
+        UiField("logoUrl", tr("URL del logo"), "url", section = tr("Apariencia"),
+            help = tr("Los colores del portal se configuran en Diseño; vacios usan los de la empresa (o los de BMS).")),
+        UiField("consentText", tr("Texto de consentimiento"), "textarea", required = true, section = tr("Textos legales")),
+        UiField("termsUrl", tr("URL de terminos"), "url", section = tr("Textos legales")),
+        UiField("privacyUrl", tr("URL de privacidad"), "url", section = tr("Textos legales")),
+        UiField("footerText", tr("Pie de pagina"), section = tr("Textos legales")),
+        UiField("successUrl", tr("Abrir al conectarse (URLs)"), section = tr("Textos legales"), placeholder = "https://miempresa.com, https://promo.miempresa.com",
+            help = tr("Una o varias direcciones separadas por coma. Al conectarse se abre una de ellas al azar.")),
     )
 
     // Only shown while UniFi is the enabled network controller.
-    val unifiFields = listOf(
-        UiField("unifiConsoleId", "ID de consola", help = "Para cambiar de consola borralo y guarda; volvera a aparecer Buscar consolas."),
-        UiField("unifiSiteId", "ID de sitio", help = "Se llena al elegir el sitio despues de la consola."),
-        UiField("unifiApiKey", "API key de UniFi", "password", help = "Si ya hay una clave guardada se muestra oculta; dejala asi para conservarla."),
+    fun unifiFields() = listOf(
+        UiField("unifiConsoleId", tr("ID de consola"), help = tr("Para cambiar de consola borralo y guarda; volvera a aparecer Buscar consolas.")),
+        UiField("unifiSiteId", tr("ID de sitio"), help = tr("Se llena al elegir el sitio despues de la consola.")),
+        UiField("unifiApiKey", tr("API key de UniFi"), "password", help = tr("Si ya hay una clave guardada se muestra oculta; dejala asi para conservarla.")),
     )
 
-    private val accessFields = listOf(
-        UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", required = true),
-        UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", required = true,
-            help = "Un correo no puede volver a conectarse hasta que pase este tiempo desde su ultimo acceso. 0 = sin espera."),
-        UiField("codeTtlMinutes", "Vigencia del codigo (minutos)", "number", required = true),
-        UiField("dataLimitMb", "Limite de datos (MB, 0 = sin limite)", "number"),
-        UiField("rxKbps", "Descarga (kbps, 0 = sin limite)", "number"),
-        UiField("txKbps", "Subida (kbps, 0 = sin limite)", "number"),
+    private fun accessFields() = listOf(
+        UiField("accessMinutes", tr("Tiempo de acceso (minutos)"), "number", required = true),
+        UiField("reconnectMinutes", tr("Tiempo para reconectar (minutos)"), "number", required = true,
+            help = tr("Un correo no puede volver a conectarse hasta que pase este tiempo desde su ultimo acceso. 0 = sin espera.")),
+        UiField("codeTtlMinutes", tr("Vigencia del codigo (minutos)"), "number", required = true),
+        UiField("dataLimitMb", tr("Limite de datos (MB, 0 = sin limite)"), "number"),
+        UiField("rxKbps", tr("Descarga (kbps, 0 = sin limite)"), "number"),
+        UiField("txKbps", tr("Subida (kbps, 0 = sin limite)"), "number"),
     )
 
     // Codes are emailed the same way whatever network controller is enabled.
-    private val mailFields = listOf(
-        UiField("mailSource", "Correo de envio", readOnly = true,
-            help = "Los codigos se envian con el SMTP de la empresa (lo configura el dueno de la empresa); si no hay, con el del servidor."),
-        UiField("emailSubject", "Asunto del correo", required = true),
+    private fun mailFields() = listOf(
+        UiField("mailSource", tr("Correo de envio"), readOnly = true,
+            help = tr("Los codigos se envian con el SMTP de la empresa (lo configura el dueno de la empresa); si no hay, con el del servidor.")),
+        UiField("emailSubject", tr("Asunto del correo"), required = true),
     )
 }

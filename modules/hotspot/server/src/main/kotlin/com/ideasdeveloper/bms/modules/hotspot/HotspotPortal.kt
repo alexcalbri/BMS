@@ -4,6 +4,7 @@ import com.ideasdeveloper.bms.modules.hotspot.HotspotPortalPages.BasePath
 import com.ideasdeveloper.bms.modules.hotspot.HotspotPortalPages.FormValues
 import com.ideasdeveloper.bms.modules.hotspot.HotspotPortalPages.GuestContext
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.MailException
 import com.ideasdeveloper.bms.server.modules.MailSender
@@ -56,8 +57,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private val codeFailureWindow = Duration.ofMinutes(15)
     private val maxCodeFailuresPerMinute = 30
     // The device is on another network than the one the portal link names (edited link or stale tab).
-    private val wrongNetworkText =
-        "Este acceso no corresponde a la red WiFi a la que estas conectado. Cierra esta pagina y abre el navegador de nuevo desde la red WiFi."
+    private fun wrongNetworkText() =
+        tr("Este acceso no corresponde a la red WiFi a la que estas conectado. Cierra esta pagina y abre el navegador de nuevo desde la red WiFi.")
 
     private class PortalTarget(
         val companyCode: String,
@@ -172,7 +173,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     private fun tooManyRequestsHtml() =
-        HotspotPortalPages.message(null, "Demasiados intentos", "Espera unos minutos y vuelve a intentarlo.", retry = false)
+        HotspotPortalPages.message(null, tr("Demasiados intentos"), tr("Espera unos minutos y vuelve a intentarlo."), retry = false)
 
     private suspend fun ApplicationCall.register() {
         val ip = clientIp()
@@ -204,7 +205,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val continueUrl = safeUrl(form["url"])
         val html = withPortal { target ->
             if (pendingId == null) {
-                HotspotPortalPages.message(target.settings, "Solicitud invalida", "Vuelve a empezar el registro.")
+                HotspotPortalPages.message(target.settings, tr("Solicitud invalida"), tr("Vuelve a empezar el registro."))
             } else {
                 verify(target, pendingId, code, continueUrl)
             }
@@ -239,24 +240,24 @@ class HotspotPortal(private val access: ModuleAccessService) {
         fun retry(message: String) = HotspotPortalPages.form(settings, guest, values, message)
 
         if (!macPattern.matches(guest.mac)) return deviceNotIdentified(settings)
-        if (values.name.isBlank() || values.name.length > 60) return retry("Escribe tu nombre.")
-        if (values.email.length > 120 || !emailPattern.matches(values.email)) return retry("Escribe un correo valido.")
-        if (!phonePattern.matches(values.phone)) return retry("Escribe un numero de celular valido.")
+        if (values.name.isBlank() || values.name.length > 60) return retry(tr("Escribe tu nombre."))
+        if (values.email.length > 120 || !emailPattern.matches(values.email)) return retry(tr("Escribe un correo valido."))
+        if (!phonePattern.matches(values.phone)) return retry(tr("Escribe un numero de celular valido."))
         val birthday = values.birthday.takeIf { it.isNotBlank() }?.let {
             runCatching { LocalDate.parse(it) }.getOrNull()?.takeIf { date -> date.isBefore(LocalDate.now()) && date.year > 1900 }
-                ?: return retry("La fecha de cumpleanos no es valida.")
+                ?: return retry(tr("La fecha de cumpleanos no es valida."))
         }
-        if (!acceptedTerms) return retry("Debes aceptar los terminos para continuar.")
+        if (!acceptedTerms) return retry(tr("Debes aceptar los terminos para continuar."))
 
         val smtp = HotspotMail.smtp(connection, access.serverMail, access.secrets)
-            ?: return HotspotPortalPages.message(settings, "Portal no disponible", "El envio de codigos no esta configurado. Avisa al personal del local.")
+            ?: return HotspotPortalPages.message(settings, tr("Portal no disponible"), tr("El envio de codigos no esta configurado. Avisa al personal del local."))
 
         minutesUntilReconnect(connection, values.email, settings.reconnectMinutes)?.let { remaining ->
             return HotspotPortalPages.wait(settings, remaining)
         }
 
         recentPendingCode(connection, values.email)?.let { pendingId ->
-            return HotspotPortalPages.code(settings, pendingId.toString(), values.email, guest.continueUrl, "Ya te enviamos un codigo hace un momento. Revisa tu correo.")
+            return HotspotPortalPages.code(settings, pendingId.toString(), values.email, guest.continueUrl, tr("Ya te enviamos un codigo hace un momento. Revisa tu correo."))
         }
 
         val code = (0 until 6).joinToString("") { random.nextInt(10).toString() }
@@ -281,14 +282,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
                 settings = smtp,
                 to = values.email,
                 subject = settings.emailSubject,
-                body = """
-                    Hola ${values.name},
-
-                    Tu codigo de acceso a ${settings.networkName} es: $code
-
-                    Vence en ${settings.codeTtlMinutes} minutos y solo puede usarse una vez.
-                    Si no lo solicitaste, ignora este correo.
-                """.trimIndent(),
+                body = tr("Hola {0},\n\nTu codigo de acceso a {1} es: {2}\n\nVence en {3} minutos y solo puede usarse una vez.\nSi no lo solicitaste, ignora este correo.", values.name, settings.networkName, code, settings.codeTtlMinutes),
             )
         } catch (failure: MailException) {
             log.warn("Hotspot {}: no se pudo enviar el codigo a {}: {}", target.companyCode, values.email, failure.cause?.message ?: failure.message)
@@ -296,7 +290,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
                 delete.setObject(1, codeId)
                 delete.executeUpdate()
             }
-            return retry("No pudimos enviar el codigo a tu correo. Verificalo e intenta de nuevo.")
+            return retry(tr("No pudimos enviar el codigo a tu correo. Verificalo e intenta de nuevo."))
         }
         return HotspotPortalPages.code(settings, codeId.toString(), values.email, guest.continueUrl)
     }
@@ -327,13 +321,13 @@ class HotspotPortal(private val access: ModuleAccessService) {
                     ssid = rows.getString("ssid").orEmpty(),
                 )
             }
-        } ?: return HotspotPortalPages.message(target.settings, "Codigo no encontrado", "Vuelve a registrarte para recibir un codigo nuevo.")
+        } ?: return HotspotPortalPages.message(target.settings, tr("Codigo no encontrado"), tr("Vuelve a registrarte para recibir un codigo nuevo."))
         // Times of the network the guest registered from, when it is configured.
         val settings = HotspotNetworks.findBySsid(connection, pending.ssid)?.applyTo(target.settings) ?: target.settings
 
-        if (pending.used) return HotspotPortalPages.message(settings, "Codigo ya utilizado", "Cada codigo se usa una sola vez.")
-        if (Instant.now().isAfter(pending.expiresAt)) return HotspotPortalPages.message(settings, "Codigo vencido", "Vuelve a registrarte para recibir un codigo nuevo.")
-        if (pending.attempts >= maxCodeAttempts) return HotspotPortalPages.message(settings, "Demasiados intentos", "Vuelve a registrarte para recibir un codigo nuevo.")
+        if (pending.used) return HotspotPortalPages.message(settings, tr("Codigo ya utilizado"), tr("Cada codigo se usa una sola vez."))
+        if (Instant.now().isAfter(pending.expiresAt)) return HotspotPortalPages.message(settings, tr("Codigo vencido"), tr("Vuelve a registrarte para recibir un codigo nuevo."))
+        if (pending.attempts >= maxCodeAttempts) return HotspotPortalPages.message(settings, tr("Demasiados intentos"), tr("Vuelve a registrarte para recibir un codigo nuevo."))
 
         if (code.length != 6 || !MessageDigest.isEqual(codeHash(codeId, code).toByteArray(), pending.hash.toByteArray())) {
             connection.prepareStatement("UPDATE hotspot_codes SET attempts = attempts + 1 WHERE id = ?").use { update ->
@@ -341,8 +335,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
                 update.executeUpdate()
             }
             val left = maxCodeAttempts - pending.attempts - 1
-            if (left <= 0) return HotspotPortalPages.message(settings, "Demasiados intentos", "Vuelve a registrarte para recibir un codigo nuevo.")
-            return HotspotPortalPages.code(settings, codeId.toString(), pending.email, continueUrl, "Codigo incorrecto. Te quedan $left intentos.")
+            if (left <= 0) return HotspotPortalPages.message(settings, tr("Demasiados intentos"), tr("Vuelve a registrarte para recibir un codigo nuevo."))
+            return HotspotPortalPages.code(settings, codeId.toString(), pending.email, continueUrl, tr("Codigo incorrecto. Te quedan {0} intentos.", left))
         }
 
         // The interval may have been consumed by another device with the same email meanwhile.
@@ -357,13 +351,13 @@ class HotspotPortal(private val access: ModuleAccessService) {
             update.setObject(1, codeId)
             update.executeUpdate() == 1
         }
-        if (!claimed) return HotspotPortalPages.message(settings, "Codigo ya utilizado", "Cada codigo se usa una sola vez.")
+        if (!claimed) return HotspotPortalPages.message(settings, tr("Codigo ya utilizado"), tr("Cada codigo se usa una sola vez."))
 
         val result = target.controller.authorizeGuest(settings, pending.mac, pending.ssid)
         recordAccess(connection, pending.registrationId, Owner.Customer(null), pending.email, pending.mac, result, settings.accessMinutes)
         if (result.wrongNetwork) {
             log.warn("Hotspot {}: red distinta para {}: {}", target.companyCode, pending.mac, result.message)
-            return HotspotPortalPages.message(settings, "Red WiFi distinta", wrongNetworkText)
+            return HotspotPortalPages.message(settings, tr("Red WiFi distinta"), wrongNetworkText())
         }
         if (!result.authorized) {
             log.warn("Hotspot {}: UniFi rechazo {}: {}", target.companyCode, pending.mac, result.message)
@@ -372,7 +366,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
                 update.setObject(1, codeId)
                 update.executeUpdate()
             }
-            return HotspotPortalPages.code(settings, codeId.toString(), pending.email, continueUrl, "No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos.")
+            return HotspotPortalPages.code(settings, codeId.toString(), pending.email, continueUrl, tr("No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos."))
         }
         // One of the configured pages at random; without any, the page the guest was opening.
         return HotspotPortalPages.success(settings, pending.name, settings.successUrls.randomOrNull() ?: continueUrl.takeIf { it.isNotBlank() })
@@ -394,7 +388,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
 
         if (!macPattern.matches(guest.mac)) return deviceNotIdentified(settings)
         if (tooManyCodeFailures(connection, guest.mac)) {
-            return retry("Demasiados intentos. Espera unos minutos y vuelve a intentarlo.")
+            return retry(tr("Demasiados intentos. Espera unos minutos y vuelve a intentarlo."))
         }
         if (network.byUserCode) return userCode(target, guest, network, settings, code, ::retry)
 
@@ -407,14 +401,14 @@ class HotspotPortal(private val access: ModuleAccessService) {
         if (customer == null || values == null || window == null) {
             // The same answer for unknown codes and for customers the network does not let in.
             recordCodeFailure(connection, guest.mac)
-            return retry("El codigo no es valido para esta red. Revisalo e intenta de nuevo.")
+            return retry(tr("El codigo no es valido para esta red. Revisalo e intenta de nuevo."))
         }
         val owner = Owner.Customer(customer.id)
         val notAfter = window.expiresAt()
         if (HotspotPasses.HotspotCustomers !in network.accessSources) {
             val sources = (network.accessSources.toSet() intersect HotspotIntegrations.enabled(connection)) - HotspotPasses.HotspotCustomers
             val passes = HotspotPasses.passes(connection, customer.id, sources)
-            val notCurrent = "Tu acceso a esta red no esta vigente. Consulta al personal del local."
+            val notCurrent = tr("Tu acceso a esta red no esta vigente. Consulta al personal del local.")
             val (pass, minutes) = HotspotPasses.usable(passes, settings.accessMinutes, Instant.now()) ?: return retry(notCurrent)
             joinOpenSession(target, guest, settings, owner, values, HotspotNetworks.CustomerCode, ::retry, notAfter = notAfter)?.let { return it }
             val spent = pass.rule == HotspotPasses.Balance
@@ -450,9 +444,9 @@ class HotspotPortal(private val access: ModuleAccessService) {
         retry: (String) -> String,
     ): String {
         val connection = target.connection
-        val invalid = "El codigo no es valido para esta red. Revisalo e intenta de nuevo."
+        val invalid = tr("El codigo no es valido para esta red. Revisalo e intenta de nuevo.")
         if (!HotspotIntegrations.isEnabled(connection, HotspotIntegrations.Users)) {
-            return HotspotPortalPages.message(settings, "Red no disponible", "El acceso con codigo de usuario no esta activo. Avisa al personal del local.")
+            return HotspotPortalPages.message(settings, tr("Red no disponible"), tr("El acceso con codigo de usuario no esta activo. Avisa al personal del local."))
         }
         if (!HotspotUserCodes.isUserCode(code)) {
             recordCodeFailure(connection, guest.mac)
@@ -574,7 +568,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         )
         if (result.wrongNetwork) {
             log.warn("Hotspot {}: red distinta para {}: {}", target.companyCode, guest.mac, result.message)
-            return HotspotPortalPages.message(settings, "Red WiFi distinta", wrongNetworkText)
+            return HotspotPortalPages.message(settings, tr("Red WiFi distinta"), wrongNetworkText())
         }
         if (!result.authorized) {
             log.warn("Hotspot {}: {} rechazo la continuacion de {}: {}", target.companyCode, target.controller.name, guest.mac, result.message)
@@ -629,8 +623,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
         if (!result.authorized) {
             onRejected()
             log.warn("Hotspot {}: {} rechazo {}: {}", target.companyCode, target.controller.name, guest.mac, result.message)
-            if (result.wrongNetwork) return HotspotPortalPages.message(settings, "Red WiFi distinta", wrongNetworkText)
-            return retry("No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos.")
+            if (result.wrongNetwork) return HotspotPortalPages.message(settings, tr("Red WiFi distinta"), wrongNetworkText())
+            return retry(tr("No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos."))
         }
         return HotspotPortalPages.success(
             settings, values.name, settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() }, showDuration = false,
@@ -695,8 +689,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
 
     private fun deviceNotIdentified(settings: HotspotSettings) = HotspotPortalPages.message(
         settings,
-        "Abre el portal desde la red WiFi",
-        "No se pudo identificar tu dispositivo. Conectate a la red ${settings.networkName} y vuelve a abrir el navegador.",
+        tr("Abre el portal desde la red WiFi"),
+        tr("No se pudo identificar tu dispositivo. Conectate a la red {0} y vuelve a abrir el navegador.", settings.networkName),
     )
 
     private fun findCustomerByCode(connection: Connection, code: String): CodeCustomer? = connection.prepareStatement(
@@ -904,7 +898,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
                     if (settings.domain != host) return@withContext null
                     val controller = HotspotIntegrations.controller(connection)?.takeIf { it.isConfigured(settings) }
                     if (controller == null) {
-                        HotspotPortalPages.message(settings, "Portal en configuracion", "Este portal WiFi aun no esta listo. Avisa al personal del local.", retry = false)
+                        HotspotPortalPages.message(settings, tr("Portal en configuracion"), tr("Este portal WiFi aun no esta listo. Avisa al personal del local."), retry = false)
                     } else {
                         block(PortalTarget(companyCode, connection, settings, controller))
                     }
@@ -912,11 +906,11 @@ class HotspotPortal(private val access: ModuleAccessService) {
             }
         } catch (failure: Exception) {
             log.error("Hotspot portal error for host {}", host, failure)
-            respondHtml(HotspotPortalPages.message(null, "Ocurrio un error", "Intenta de nuevo en unos segundos."), HttpStatusCode.InternalServerError)
+            respondHtml(HotspotPortalPages.message(null, tr("Ocurrio un error"), tr("Intenta de nuevo en unos segundos.")), HttpStatusCode.InternalServerError)
             return null
         }
         if (html == null) {
-            respondHtml(HotspotPortalPages.message(null, "Portal no encontrado", "Este dominio no tiene un portal WiFi activo.", retry = false), HttpStatusCode.NotFound)
+            respondHtml(HotspotPortalPages.message(null, tr("Portal no encontrado"), tr("Este dominio no tiene un portal WiFi activo."), retry = false), HttpStatusCode.NotFound)
         }
         return html
     }
