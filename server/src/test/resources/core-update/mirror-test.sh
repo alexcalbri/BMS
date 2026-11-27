@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015 # pass and fail never fail
 # Prueba de la logica del ayudante root (scripts/ubuntu/mirror.sh) con repositorios git temporales:
 # commit fijado (formato, pertenencia a la rama) y verificacion de la firma SSH con allowed_signers.
 # Uso: mirror-test.sh <raiz-del-repositorio> <directorio-temporal>
@@ -98,6 +99,19 @@ expect_fail 'llave que es un enlace' verify_signature_in "$WORK/mirror" "$WORK/l
 printf '[gpg "ssh"]\n\tprogram = /bin/true\n[gpg]\n\tprogram = /bin/true\n' > "$WORK/evil.gitconfig"
 GIT_CONFIG_GLOBAL=$WORK/evil.gitconfig expect_fail 'un programa de firma de la configuracion global no cuenta' \
     verify_signature_in "$WORK/mirror" "$SIGNERS" "$C1" 0.1.0
+
+# --- solo hacia adelante (M3): el instalado debe ser antecesor del pedido y la version pedida, mayor ---
+expect_ok 'de 0.1.0 a 0.2.0 posterior' mirror_forward_ok_in "$WORK/mirror" "$C1" "$C2" 0.2.0
+expect_fail 'volver a un commit anterior' mirror_forward_ok_in "$WORK/mirror" "$C2" "$C1" 0.1.0
+expect_fail 'commit posterior con la misma version' mirror_forward_ok_in "$WORK/mirror" "$C2" "$C_OWNER" 0.2.0
+expect_fail 'version pedida igual a la instalada' mirror_forward_ok_in "$WORK/mirror" "$C1" "$C_SIDE" 0.1.0
+expect_fail 'version pedida menor' mirror_forward_ok_in "$WORK/mirror" "$C1" "$C2" 0.0.9
+expect_fail 'version 0.10.0 frente a 0.9.x se compara como version' mirror_forward_ok_in "$WORK/mirror" "$C2" "$C_OWNER" 0.1.10
+expect_ok '0.10.0 es mayor que 0.2.0' mirror_forward_ok_in "$WORK/mirror" "$C2" "$C_OWNER" 0.10.0
+expect_fail 'sin commit instalado conocido' mirror_forward_ok_in "$WORK/mirror" '' "$C2" 0.2.0
+expect_fail 'commit instalado que el espejo no tiene' mirror_forward_ok_in "$WORK/mirror" 0123456789abcdef0123456789abcdef01234567 "$C2" 0.2.0
+expect_fail 'commit pedido invalido' mirror_forward_ok_in "$WORK/mirror" "$C1" "${C2:0:7}" 0.2.0
+expect_output 'version de un commit' 0.2.0 mirror_version_in "$WORK/mirror" "$C2"
 
 printf 'failures=%s\n' "$FAILURES"
 (( FAILURES == 0 ))
