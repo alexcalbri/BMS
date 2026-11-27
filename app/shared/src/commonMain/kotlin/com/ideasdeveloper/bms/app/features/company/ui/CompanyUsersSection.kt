@@ -58,6 +58,8 @@ fun CompanyUsersSection(
     // servidor (dueno o administrador con permiso) en vez de la del business owner.
     canResetTwoFactor: Boolean = false,
     resetViaServer: Boolean = false,
+    // La sesion de empresa se abrio desde el selector del servidor: la contrasena que se pide es la del servidor de quien actua.
+    switcherSession: Boolean = false,
 ) {
     val scope = rememberCoroutineScope()
     var resettingUser by remember { mutableStateOf<CompanyUserResponse?>(null) }
@@ -97,6 +99,7 @@ fun CompanyUsersSection(
     resettingUser?.let { target ->
         TwoFactorResetDialog(
             targetName = target.displayName?.takeIf { it.isNotBlank() } ?: target.username,
+            hint = if (switcherSession) tr("Entraste a esta empresa desde el servidor: escribe tu contrasena del servidor.") else null,
             submit = { currentPassword ->
                 val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
                 val token = accessToken ?: throw CompanyException(tr("Inicia sesion de nuevo."))
@@ -310,7 +313,8 @@ fun CompanyUsersSection(
                     Text(tr("Editar"))
                 }
                 // Quien perdio su autenticador y sus codigos; el business owner (uno mismo) no aparece aqui.
-                if (canResetTwoFactor && user.twoFactorEnabled == true && !user.isBusinessOwner) {
+                // El servidor decide (canResetTwoFactor); sin ese dato (servidor anterior) se usa la regla del cliente.
+                if (user.twoFactorEnabled == true && (user.canResetTwoFactor ?: (canResetTwoFactor && !user.isBusinessOwner))) {
                     OutlinedButton(
                         enabled = !isLoading,
                         onClick = {

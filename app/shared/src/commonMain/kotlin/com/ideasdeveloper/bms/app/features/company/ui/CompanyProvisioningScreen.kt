@@ -650,14 +650,14 @@ fun CompanyProvisioningScreen(
                                 val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
                                 CompanyApi(activeServerUrl).use { api -> api.businessOwner(activeSession.accessToken, company.code) }
                             },
-                            resetOwnerTwoFactor = { currentPassword ->
+                            resetOwnerTwoFactor = { ownerUserId, currentPassword ->
                                 val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
                                 val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
-                                // La ruta del servidor pide el id del usuario: se busca el del business owner en la lista de la empresa.
                                 CompanyApi(activeServerUrl).use { api ->
-                                    val owner = api.companyUsers(activeSession.accessToken, company.code).users.firstOrNull { it.isBusinessOwner }
+                                    // El id viene con el business owner; con un servidor anterior se busca en la lista de la empresa.
+                                    val userId = ownerUserId ?: api.companyUsers(activeSession.accessToken, company.code).users.firstOrNull { it.isBusinessOwner }?.userId
                                         ?: throw CompanyException(tr("No se encontro al business owner de la empresa."))
-                                    api.resetUserTwoFactor(activeSession.accessToken, company.code, owner.userId, currentPassword, true)
+                                    api.resetUserTwoFactor(activeSession.accessToken, company.code, userId, currentPassword, true)
                                 }
                             },
                             loadStorage = {
@@ -768,7 +768,7 @@ private fun CompanyModulesRow(
     onSaveEdit: () -> Unit,
     loadOwner: suspend () -> BusinessOwnerResponse,
     onSaveOwner: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
-    resetOwnerTwoFactor: suspend (currentPassword: String) -> TwoFactorResetResponse,
+    resetOwnerTwoFactor: suspend (ownerUserId: String?, currentPassword: String) -> TwoFactorResetResponse,
     loadStorage: suspend () -> CompanyStorageResponse?,
     saveStorage: suspend (Long?) -> CompanyStorageResponse,
     onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
@@ -974,7 +974,7 @@ private fun BusinessOwnerFields(
     loadOwner: suspend () -> BusinessOwnerResponse,
     onSave: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
     canResetTwoFactor: Boolean,
-    resetTwoFactor: suspend (currentPassword: String) -> TwoFactorResetResponse,
+    resetTwoFactor: suspend (ownerUserId: String?, currentPassword: String) -> TwoFactorResetResponse,
 ) {
     val scope = rememberCoroutineScope()
     var resetting by remember(companyCode) { mutableStateOf(false) }
@@ -1007,7 +1007,7 @@ private fun BusinessOwnerFields(
     if (resetting) {
         TwoFactorResetDialog(
             targetName = current.displayName.ifBlank { current.username },
-            submit = resetTwoFactor,
+            submit = { currentPassword -> resetTwoFactor(current.userId, currentPassword) },
             onDone = { doneMessage ->
                 resetting = false
                 resetMessage = doneMessage

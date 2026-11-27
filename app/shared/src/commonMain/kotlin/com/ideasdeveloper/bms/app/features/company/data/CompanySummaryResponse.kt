@@ -116,6 +116,8 @@ data class BusinessOwnerResponse(
     val displayName: String = "",
     val email: String = "",
     val twoFactorEnabled: Boolean? = null,
+    // Id del usuario (ruta del servidor para desactivar su verificacion); null en servidores anteriores.
+    val userId: String? = null,
 )
 
 @Serializable

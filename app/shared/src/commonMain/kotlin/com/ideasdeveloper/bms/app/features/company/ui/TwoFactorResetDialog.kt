@@ -39,6 +39,8 @@ fun TwoFactorResetDialog(
     submit: suspend (currentPassword: String) -> TwoFactorResetResponse,
     onDone: (message: String) -> Unit,
     onDismiss: () -> Unit,
+    // Aviso extra bajo la explicacion (p. ej. de que contrasena se trata).
+    hint: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
@@ -59,6 +61,7 @@ fun TwoFactorResetDialog(
                     color = AppTheme.colors.warning,
                 )
                 Text(tr("Para confirmar escribe tu contrasena actual."), color = AppTheme.colors.muted)
+                hint?.let { Text(it, color = AppTheme.colors.muted) }
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },

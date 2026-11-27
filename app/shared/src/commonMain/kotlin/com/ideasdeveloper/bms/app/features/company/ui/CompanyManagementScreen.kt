@@ -433,6 +433,7 @@ fun CompanyManagementScreen(
                         description = tr("El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos."),
                         // Una sesion abierta desde el selector del servidor usa la ruta del servidor, no esta.
                         canResetTwoFactor = session?.role == "business_owner" && session?.serverOwnerAccess != true,
+                        switcherSession = session?.serverOwnerAccess == true,
                     )
 
                     Spacer(modifier = Modifier.height(2.dp))

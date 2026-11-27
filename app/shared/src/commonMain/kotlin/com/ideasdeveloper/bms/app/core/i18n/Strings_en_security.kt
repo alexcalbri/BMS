@@ -137,6 +137,7 @@ internal fun englishSecurityPart(): Map<String, String> = mapOf(
     "Ahora basta tu contrasena; esta opcion vale hasta {0}. Despues tambien se pedira un codigo." to "Your password is enough for now; this option is valid until {0}. After that a code will also be required.",
     "Configurar un nuevo autenticador ahora" to "Set up a new authenticator now",
     "Mas tarde" to "Later",
+    "Entraste a esta empresa desde el servidor: escribe tu contrasena del servidor." to "You entered this company from the server: enter your server password.",
     // Clientes
     "Correo verificado" to "Email verified",
     "Correo sin verificar" to "Email not verified",
