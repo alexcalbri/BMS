@@ -1,10 +1,6 @@
 package com.ideasdeveloper.bms.extensions.compras_monday
 
-import com.ideasdeveloper.bms.server.activity.ActivityActions
 import com.ideasdeveloper.bms.server.activity.ActivityActor
-import com.ideasdeveloper.bms.server.activity.ActivityChange
-import com.ideasdeveloper.bms.server.activity.ActivityEntry
-import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.modules.compras.Actor
 import com.ideasdeveloper.bms.modules.compras.ComprasImportContext
 import com.ideasdeveloper.bms.modules.compras.ComprasImportEngine
@@ -99,19 +95,27 @@ object ComprasMondayImport : ComprasImportSource {
 
     // ---- Operaciones (las usan la pantalla y las herramientas MCP) ----
 
-    /** Guarda el token (vacio o el texto enmascarado no cambia nada). */
+    /** Guarda el token (vacio o el texto enmascarado no cambia nada); en el registro de actividad queda que cambio, nunca su valor. */
     fun saveToken(ctx: ComprasImportContext, typed: String) {
         requireEnabled(ctx.tenant)
         val token = typed.trim().takeIf { it.isNotEmpty() && it != "********" }
             ?: throw ComprasValidationException(tr("Escribe el token de la API de monday."))
-        ComprasMondayStore.saveToken(ctx, token)
-        ctx.actor?.let { recordTokenChange(ctx.tenant, it.activity, "Guardo el token de monday.") }
+        val actor = ctx.actor ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
+        ComprasMondayStore.transaction(ctx.tenant) {
+            val had = ComprasMondayStore.hasToken(ctx.tenant)
+            ComprasMondayStore.saveToken(ctx, token)
+            ComprasMondayActivity.token(ctx.tenant, actor.activity, if (had) "Cambio el token de la API de monday." else "Guardo el token de la API de monday.")
+        }
     }
 
     fun forgetToken(ctx: ComprasImportContext) {
         requireEnabled(ctx.tenant)
-        ComprasMondayStore.saveToken(ctx, null)
-        ctx.actor?.let { recordTokenChange(ctx.tenant, it.activity, "Quito el token de monday.") }
+        val actor = ctx.actor ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
+        ComprasMondayStore.transaction(ctx.tenant) {
+            val had = ComprasMondayStore.hasToken(ctx.tenant)
+            ComprasMondayStore.saveToken(ctx, null)
+            if (had) ComprasMondayActivity.token(ctx.tenant, actor.activity, "Borro el token de la API de monday.")
+        }
     }
 
     /**
@@ -132,7 +136,12 @@ object ComprasMondayImport : ComprasImportSource {
         ComprasMondayStore.activeJob(ctx.tenant)?.let {
             throw ComprasValidationException(tr("Ya hay una importacion de monday en curso ({0}). Cancelala o espera a que termine.", tr(statusLabel(it.status))))
         }
-        return ComprasMondayStore.insertJob(ctx.tenant, info.id, info.name, chosen, stored, actor.userId, actor.name)
+        // La fila del registro de actividad va en la misma transaccion que el trabajo en cola.
+        return ComprasMondayStore.transaction(ctx.tenant) {
+            val id = ComprasMondayStore.insertJob(ctx.tenant, info.id, info.name, chosen, stored, actor.userId, actor.name)
+            ComprasMondayActivity.importQueued(ctx.tenant, actor.activity, id, info.name, chosen.size)
+            id
+        }
     }
 
     /** Pasa una importacion leida a aplicarse. [jobId] nulo toma la que esta en curso. */
@@ -143,8 +152,12 @@ object ComprasMondayImport : ComprasImportSource {
         if (job.status != "ready") throw ComprasValidationException(tr("La importacion no esta lista para aplicarse ({0}).", tr(statusLabel(job.status))))
         if (job.readCount == 0) throw ComprasValidationException(tr("Ningun elemento de los grupos elegidos; no hay nada que importar."))
         val actor = ctx.actor ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
-        if (!ComprasMondayStore.startApplying(ctx.tenant, job.id, actor.userId, actor.name)) {
-            throw ComprasValidationException(tr("La importacion cambio de estado; actualiza la pantalla."))
+        ComprasMondayStore.transaction(ctx.tenant) {
+            // Si confirma un agente de IA se guarda su nombre: las filas importadas dicen "Importacion (Agente de <usuario>)".
+            if (!ComprasMondayStore.startApplying(ctx.tenant, job.id, actor.userId, actor.name, actor.activity.agentName)) {
+                throw ComprasValidationException(tr("La importacion cambio de estado; actualiza la pantalla."))
+            }
+            ComprasMondayActivity.applyRequested(ctx.tenant, actor.activity, job)
         }
         return job
     }
@@ -153,8 +166,12 @@ object ComprasMondayImport : ComprasImportSource {
         requireEnabled(ctx.tenant)
         val job = (jobId?.let { ComprasMondayStore.job(ctx.tenant, it) } ?: ComprasMondayStore.activeJob(ctx.tenant))
             ?: throw ComprasValidationException(tr("No hay una importacion de monday en curso."))
-        if (!ComprasMondayStore.transition(ctx.tenant, job.id, MondayJob.ActiveStatuses, "cancelled")) {
-            throw ComprasValidationException(tr("La importacion ya no esta en curso."))
+        val actor = ctx.actor ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
+        ComprasMondayStore.transaction(ctx.tenant) {
+            if (!ComprasMondayStore.transition(ctx.tenant, job.id, MondayJob.ActiveStatuses, "cancelled")) {
+                throw ComprasValidationException(tr("La importacion ya no esta en curso."))
+            }
+            ComprasMondayActivity.cancelled(ctx.tenant, actor.activity, job)
         }
     }
 
@@ -445,7 +462,7 @@ object ComprasMondayImport : ComprasImportSource {
         val userId = job.appliedBy ?: return null
         val permissions = modules?.userAccess(ctx.tenant, ctx.companyCode, userId, false)?.permissions(ComprasModule.id) ?: return null
         if (!permissions.businessOwner && !permissions.has(ImportPermission)) return null
-        return Actor(userId, job.appliedByName.ifEmpty { "Importacion de monday" }, permissions, permissions.activityActor)
+        return Actor(userId, job.appliedByName.ifEmpty { "Importacion de monday" }, permissions, startedBy(job, permissions.activityActor))
     }
 
     /** Aplica hasta [limit] filas pendientes (por lotes, hasta el plazo); devuelve cuantas proceso. Al terminar avisa a quien la lanzo. */
@@ -453,7 +470,15 @@ object ComprasMondayImport : ComprasImportSource {
         val tenant = ctx.tenant
         val importer = liveImporter(ctx, job)
         if (importer == null) {
-            ComprasMondayStore.transition(tenant, job.id, setOf("applying"), "failed", "El usuario que inicio la importacion ya no tiene permiso")
+            ComprasMondayStore.transaction(tenant) {
+                if (ComprasMondayStore.transition(tenant, job.id, setOf("applying"), "failed", "El usuario que inicio la importacion ya no tiene permiso")) {
+                    // Si ya habia creado solicitudes, queda la fila de totales (las de cada solicitud ya estan).
+                    val done = ComprasMondayStore.job(tenant, job.id) ?: job
+                    if (done.createdCount + done.existingCount + done.failedCount > 0) {
+                        ComprasMondayActivity.total(tenant, importActivity(ctx, job), job.id, job.boardName, done.createdCount, done.existingCount, done.failedCount, "Se detuvo: quien la confirmo ya no tiene permiso.")
+                    }
+                }
+            }
             return 0
         }
         val token by lazy { ComprasMondayStore.loadToken(ctx) }
@@ -472,8 +497,18 @@ object ComprasMondayImport : ComprasImportSource {
             }
         }
         ComprasMondayStore.refreshCounts(tenant, job.id)
-        if (ComprasMondayStore.pendingCount(tenant, job.id) == 0 && ComprasMondayStore.transition(tenant, job.id, setOf("applying"), "done")) {
-            finish(ctx, ComprasMondayStore.job(tenant, job.id) ?: job)
+        if (ComprasMondayStore.pendingCount(tenant, job.id) == 0) {
+            // El cierre y la fila de totales se confirman juntos; el aviso a quien la lanzo va despues.
+            val finished = ComprasMondayStore.transaction(tenant) {
+                if (ComprasMondayStore.transition(tenant, job.id, setOf("applying"), "done")) {
+                    val closed = ComprasMondayStore.job(tenant, job.id) ?: job
+                    ComprasMondayActivity.total(tenant, importActivity(ctx, closed), closed.id, closed.boardName, closed.createdCount, closed.existingCount, closed.failedCount)
+                    closed
+                } else {
+                    null
+                }
+            }
+            if (finished != null) notifyDone(ctx, finished)
         }
         return done
     }
@@ -527,14 +562,20 @@ object ComprasMondayImport : ComprasImportSource {
         }
     }
 
-    private fun finish(ctx: ComprasImportContext, job: MondayJob) {
+    /** Quien cuenta como actor de las filas de la importacion: el usuario que la confirmo (o la inicio), con su agente si lo hubo. */
+    private fun startedBy(job: MondayJob, user: ActivityActor): ActivityActor = job.appliedByAgent?.let(user::viaAgent) ?: user
+
+    /** "Importacion (<quien>)" para la fila de totales: con los permisos vivos de quien confirmo; si ya no se pueden leer, su nombre guardado. */
+    private fun importActivity(ctx: ComprasImportContext, job: MondayJob): ActivityActor {
+        val userId = job.appliedBy ?: job.createdBy
+        val live = userId?.let { modules?.userAccess(ctx.tenant, ctx.companyCode, it, false)?.permissions(ComprasModule.id)?.activityActor }
+        val user = live ?: userId?.let { ActivityActor.user(it, job.appliedByName.ifEmpty { job.createdByName }) }
+        return ActivityActor.import(user?.let { startedBy(job, it) })
+    }
+
+    // Aviso a quien lanzo la importacion (nunca falla por el aviso).
+    private fun notifyDone(ctx: ComprasImportContext, job: MondayJob) {
         val userId = job.appliedBy ?: job.createdBy ?: return
-        // Una fila con los totales; las de cada solicitud ya estan en el registro (la importacion las hizo en nombre de quien la inicio).
-        recordImportSummary(
-            ctx.tenant, job.id, job.boardName,
-            ActivityActor.import(ActivityActor.user(userId, job.appliedByName.ifEmpty { job.createdByName })),
-            job.createdCount, job.existingCount, job.failedCount,
-        )
         try {
             ctx.notifier?.notify(ctx.tenant, userId) {
                 NotificationText(
@@ -545,23 +586,5 @@ object ComprasMondayImport : ComprasImportSource {
         } catch (failure: Exception) {
             log.warn("No se pudo crear el aviso de la importacion de monday ({}).", failure.javaClass.simpleName)
         }
-    }
-
-    /** Una fila con los totales de la importacion de monday, a nombre de [importer]. */
-    internal fun recordImportSummary(tenant: Connection, jobId: java.util.UUID, boardName: String, importer: ActivityActor, created: Int, existing: Int, failed: Int) {
-        ActivityLog.record(tenant, importer, ActivityEntry(
-            moduleId = "compras", entityType = "importacion", entityId = jobId.toString(), entityLabel = boardName,
-            action = ActivityActions.Imported, summary = "Importo $created solicitudes de monday desde $boardName.",
-            changes = listOf(ActivityChange("totals", "Totales", null, "creadas $created, ya existian $existing, con error $failed")),
-        ))
-    }
-
-    /** Guardar o quitar el token de monday: el valor nunca se registra, solo que cambio (campo secreto). */
-    internal fun recordTokenChange(tenant: Connection, activity: ActivityActor, summary: String) {
-        ActivityLog.record(tenant, activity, ActivityEntry(
-            moduleId = "compras", entityType = "settings", entityId = null, entityLabel = "Monday",
-            action = ActivityActions.SettingsChanged, summary = summary,
-            changes = listOf(ActivityChange.secret("mondayToken", "Token de monday")),
-        ))
     }
 }

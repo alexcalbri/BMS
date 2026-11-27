@@ -32,7 +32,7 @@ object ComprasMondayServerExtension : ServerExtension, ComprasImportSource by Co
         module = "compras",
         displayName = "Importacion desde monday",
         description = "Importa tableros de monday como solicitudes de compra: eliges los grupos de cada tablero, mapeas sus columnas y traen cotizaciones y archivos.",
-        version = "1.2.0",
+        version = "1.3.0",
         minModuleVersion = "0.4.0", // activity log (module 0.4.0, minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -46,7 +46,7 @@ object ComprasMondayServerExtension : ServerExtension, ComprasImportSource by Co
         ),
         // El token se guarda en ext_compras_monday__settings y se edita en la pantalla Importar de Compras: ningun ajuste es obligatorio.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__staging.sql"),
+        migrations = listOf("migrations/V001__staging.sql", "migrations/V002__applied_by_agent.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(
                 ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday (token, lecturas y filas preparadas)", UninstallDefault.Delete),
@@ -54,7 +54,10 @@ object ComprasMondayServerExtension : ServerExtension, ComprasImportSource by Co
         ),
     )
 
-    override val migrationPaths = listOf("extensions/compras_monday/migrations/V001__staging.sql")
+    override val migrationPaths = listOf(
+        "extensions/compras_monday/migrations/V001__staging.sql",
+        "extensions/compras_monday/migrations/V002__applied_by_agent.sql",
+    )
 
     override val runtimeTables = listOf(ComprasMondayStore.SettingsTable, ComprasMondayStore.JobsTable, ComprasMondayStore.RowsTable)
 
