@@ -60,6 +60,8 @@ class StorageGuard(
     private val freeSpace: () -> Long? = { root?.let(::usableSpace) },
     private val clock: () -> Long = System::currentTimeMillis,
     private val remeasureMillis: Long = 10 * 60_000L,
+    // Other folders of the company that count in its quota, {root}/{company} each (its backups).
+    private val extraRoots: List<Path> = emptyList(),
 ) {
     internal class Company {
         @Volatile var measuredAt = Long.MIN_VALUE
@@ -87,12 +89,12 @@ class StorageGuard(
 
     // Bytes of every file under {root}/{company}; 0 without a local root or folder.
     private fun measure(code: String): Long {
-        val base = root ?: return 0
         if (!companyPattern.matches(code)) return 0
-        val directory = base.toAbsolutePath().normalize().resolve(code)
-        if (!Files.isDirectory(directory)) return 0
-        return Files.walk(directory).use { paths ->
-            paths.filter { Files.isRegularFile(it) }.mapToLong { runCatching { Files.size(it) }.getOrDefault(0L) }.sum()
+        return (listOfNotNull(root) + extraRoots).sumOf { base ->
+            val directory = base.toAbsolutePath().normalize().resolve(code)
+            if (!Files.isDirectory(directory)) 0L else Files.walk(directory).use { paths ->
+                paths.filter { Files.isRegularFile(it) }.mapToLong { runCatching { Files.size(it) }.getOrDefault(0L) }.sum()
+            }
         }
     }
 

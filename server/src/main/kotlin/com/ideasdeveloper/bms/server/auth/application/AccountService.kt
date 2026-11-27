@@ -425,6 +425,13 @@ class AccountService(
             deleteCode(connection, account.id)
             setPassword(connection, account, companyCode, newPassword)
             store.clear(name)
+            // Earlier access ends with the old password: company sessions a server account opened with the
+            // switcher, and the account's AI agents (Agentes subscribes to the hook); they must be reconnected.
+            if (companyCode == null) {
+                runCatching { loginDatabases.revokeCompanySessionsOpenedBy(account.id) }
+                    .onFailure { log.error("Company sessions of {} could not be revoked after a password reset", account.username, it) }
+            }
+            AccountSecurityEvents.credentialsChanged(CredentialsChanged(companyCode, account.id, CredentialsChanged.PasswordReset))
             if (companyCode == null) serverOwnerRecovered(connection, account)
             if (recovery != null && companyCode == null) {
                 val kind = if (isServerOwner(connection, account.id)) com.ideasdeveloper.bms.server.admins.AuditActor.ServerOwnerKind else com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind

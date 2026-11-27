@@ -76,7 +76,7 @@ fun Route.passwordResetRoutes(service: AccountService) {
         val request = call.receiveOrNull<PasswordResetConfirmation>() ?: return@post
         call.answer {
             service.confirmPasswordReset(request.username, request.companyCode?.trim()?.takeIf { it.isNotEmpty() }, request.code, request.newPassword, request.twoFactorCode)
-            AccountMessageResponse(tr("Contrasena actualizada. Ya puedes iniciar sesion."))
+            AccountMessageResponse(tr("Contrasena actualizada. Ya puedes iniciar sesion.") + " " + tr("Se desconectaron tus agentes de IA: vuelve a conectarlos."))
         }
     }
 }

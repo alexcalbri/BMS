@@ -117,4 +117,25 @@ class AgentSignInFlowTest {
         assertTrue(html.contains("name=\"code\""))
         assertTrue(html.contains("name=\"client_id\""))
     }
+
+    // Review item 8: the passwords held for the second step are bounded.
+    @Test
+    fun theHeldSignInsAreCappedAndOnePerUserAndAddress() {
+        var now = Instant.parse("2026-11-27T10:00:00Z")
+        val flow = AgentSignInFlow(clock = { now }, maxPending = 2)
+        val core = FakeCore()
+        assertIs<AgentSignInFlow.Step.AskCode>(flow.password("acme", "luis", "clave", origin, core))
+        // The same user from the same address replaces the earlier one.
+        val second = assertIs<AgentSignInFlow.Step.AskCode>(flow.password("acme", "luis", "clave", origin, core))
+        assertEquals(1, flow.pendingCount())
+        assertIs<AgentSignInFlow.Step.AskCode>(flow.password("acme", "luis", "clave", origin.copy(address = "198.51.100.2"), core))
+        // Full: nothing more is held.
+        assertIs<AgentSignInFlow.Step.Again>(flow.password("acme", "luis", "clave", origin.copy(address = "198.51.100.3"), core))
+        assertEquals(2, flow.pendingCount())
+        // Expired entries go on the next sign-in.
+        now = now.plusSeconds(301)
+        assertIs<AgentSignInFlow.Step.AskCode>(flow.password("acme", "luis", "clave", origin.copy(address = "198.51.100.3"), core))
+        assertEquals(1, flow.pendingCount())
+        assertIs<AgentSignInFlow.Step.Again>(flow.code(second.pending, "123456", origin, core))
+    }
 }

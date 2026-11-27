@@ -20,6 +20,8 @@ class AgentSignInFlow(
     private val clock: () -> Instant = Instant::now,
     private val lifetimeSeconds: Long = 300,
     private val maxAttempts: Int = 5,
+    // Hard cap of sign-ins waiting for their code (each holds a password in memory).
+    private val maxPending: Int = 1_000,
 ) {
     /** What the page shows next. */
     sealed interface Step {
@@ -48,7 +50,8 @@ class AgentSignInFlow(
     fun password(company: String?, username: String, password: String, origin: Origin, signIn: SignIn): Step =
         when (val result = signIn.attempt(company, username, password, null)) {
             is AgentSignIn.Verified -> Step.Accepted(result.user)
-            AgentSignIn.SecondFactorRequired -> Step.AskCode(remember(Pending(company, username, password, origin, clock().plusSeconds(lifetimeSeconds))), null)
+            AgentSignIn.SecondFactorRequired -> remember(Pending(company, username, password, origin, clock().plusSeconds(lifetimeSeconds)))
+                ?.let { Step.AskCode(it, null) } ?: Step.Again(busyMessage())
             AgentSignIn.TooManyAttempts -> Step.Again(tooManyMessage())
             AgentSignIn.InvalidCode, AgentSignIn.Rejected -> Step.Again(rejectedMessage())
         }
@@ -77,9 +80,17 @@ class AgentSignInFlow(
         }
     }
 
-    private fun remember(entry: Pending): String {
+    /**
+     * Keeps [entry] for the second step: expired entries are dropped on every call, a user keeps at most one
+     * pending sign-in per client address (a new one replaces it), and past [maxPending] nothing more is held
+     * (null: the page asks to try again later). Synchronized: the cap is never overrun.
+     */
+    @Synchronized
+    private fun remember(entry: Pending): String? {
         val now = clock()
-        if (pending.size > 1_000) pending.entries.removeIf { !it.value.expiresAt.isAfter(now) }
+        pending.entries.removeIf { !it.value.expiresAt.isAfter(now) }
+        pending.entries.removeIf { it.value.company == entry.company && it.value.username.equals(entry.username, ignoreCase = true) && it.value.origin.address == entry.origin.address }
+        if (pending.size >= maxPending) return null
         val id = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32).also(random::nextBytes))
         pending[id] = entry
         return id
@@ -89,5 +100,6 @@ class AgentSignInFlow(
 
     private fun rejectedMessage() = tr("Usuario, contrasena o empresa incorrectos.")
     private fun tooManyMessage() = tr("Demasiados codigos incorrectos. Espera unos minutos antes de volver a intentarlo.")
+    private fun busyMessage() = tr("Hay demasiados inicios de sesion en curso. Intentalo de nuevo en unos minutos.")
     private fun expiredMessage() = tr("La verificacion vencio. Inicia sesion de nuevo.")
 }

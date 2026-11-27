@@ -228,3 +228,11 @@ permission checks do not change with the language.
   code together. The second page never contains the password (it stays in the server's memory for at most 5 minutes, bound to the
   OAuth client, its redirect URI and the client address) and ends after 5 wrong codes; Core's per-account code limit applies too.
   The client address of the browser is recorded with the sign-in. Requires Core 0.13.0 (`minCoreVersion`).
+
+## 0.7.1
+
+- When an account turns on two-step verification or resets its password by email, Core tells the module
+  (`AccountSecurityEvents`) and every agent connection of that account (access and refresh tokens) is revoked: the agents
+  must be connected again. Server accounts' agents (server workspace) are revoked the same way.
+- The sign-ins waiting for their code keep at most one entry per user and client address, expired entries are dropped on
+  every sign-in, and at most 1000 wait at the same time (past that the page asks to try again in a few minutes).

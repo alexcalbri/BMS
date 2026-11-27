@@ -65,7 +65,9 @@ fun Route.authRoutes(
     // Step 2 of a sign-in (LoginDatabases.completeTwoFactor): challenge token, code, client address.
     completeTwoFactor: ((String, String, String) -> LoginSuccessResponse)? = null,
     // Delayed recovery by email (TWO_FACTOR.md §7): start (challenge, client address, public base) and finish (challenge, code, client address).
-    startEmailRecovery: ((String, String, String) -> Unit)? = null,
+    startEmailRecovery: ((String, String, String?) -> Unit)? = null,
+    // Hosts links in emails may use when BMS_PUBLIC_BASE_URL is not set (domains of this server).
+    knownPublicHost: (String) -> Boolean = { false },
     completeEmailRecovery: ((String, String, String) -> LoginSuccessResponse)? = null,
 ) {
     val codePattern = Regex("[a-z][a-z0-9_]{0,62}")
@@ -102,6 +104,8 @@ fun Route.authRoutes(
             }
             val response = try {
                 withContext(Dispatchers.IO) { switch(fromCode, token, target) }
+            } catch (refused: com.ideasdeveloper.bms.server.auth.infrastructure.database.SwitchNeedsSecondFactorException) {
+                return@post call.respond(HttpStatusCode.Forbidden, AuthErrorResponse("TWO_FACTOR_REAUTH_REQUIRED", refused.message.orEmpty()))
             } catch (_: SQLException) {
                 return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", tr("No se pudo cambiar de empresa. Intentalo mas tarde.")))
             } ?: return@post call.respond(HttpStatusCode.Forbidden, AuthErrorResponse("SWITCH_REJECTED", tr("No puedes entrar ahi con tu sesion.")))
@@ -202,7 +206,7 @@ fun Route.authRoutes(
             val request = runCatching { call.receive<EmailRecoveryStartRequest>() }.getOrNull()
                 ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             try {
-                withContext(Dispatchers.IO) { start(request.challengeToken.trim(), clientAddress(call), com.ideasdeveloper.bms.server.app.publicBase(call)) }
+                withContext(Dispatchers.IO) { start(request.challengeToken.trim(), clientAddress(call), com.ideasdeveloper.bms.server.app.publicBase(call, knownPublicHost)) }
             } catch (refused: TwoFactorSignInException) {
                 return@post call.respond(HttpStatusCode.Unauthorized, TwoFactorErrorResponse(refused.code, refused.message.orEmpty()))
             } catch (refused: TwoFactorException) {

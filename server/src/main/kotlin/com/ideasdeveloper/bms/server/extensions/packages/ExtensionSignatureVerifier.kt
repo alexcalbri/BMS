@@ -43,7 +43,8 @@ object BMSPublicKeys {
         val result = bundled.toMutableMap()
         if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) return result
         if (!trusted(directory)) {
-            log.warn("Se ignora {}: debe ser de root y nadie mas puede escribirlo.", directory)
+            // The owner installed keys here: a rejected folder means unsigned packages may pass silently otherwise.
+            log.error("Se ignora {}: debe ser de root y nadie mas puede escribirlo. Las llaves de paquetes de ese directorio NO se usan.", directory)
             return result
         }
         Files.list(directory).use { files ->
@@ -52,7 +53,7 @@ object BMSPublicKeys {
                 when {
                     !KeyIdPattern.matches(keyId) -> log.warn("Se ignora la llave {}: nombre no valido.", file)
                     !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || !trusted(file) ->
-                        log.warn("Se ignora la llave {}: debe ser un archivo de root que nadie mas pueda escribir.", file)
+                        log.error("Se ignora la llave {}: debe ser un archivo de root que nadie mas pueda escribir.", file)
                     else -> clean(Files.readString(file)).takeIf { it.isNotEmpty() }?.let { result[keyId] = it }
                 }
             }

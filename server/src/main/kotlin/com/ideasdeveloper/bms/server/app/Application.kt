@@ -150,6 +150,8 @@ fun Application.module() {
         }
     }
     DatabaseFactory.init(environment.config)
+    // Read the package signing keys now: a rejected keys folder is logged as an error at startup, not at the first install.
+    log.info("Package signing keys configured: {}", com.ideasdeveloper.bms.server.extensions.packages.BMSPublicKeys.installed)
     val modulePackagesRoot = Path.of(
         environment.config.propertyOrNull("modules.packagesRoot")?.getString()
             ?: "build/server-modules"
@@ -157,6 +159,7 @@ fun Application.module() {
     // Files modules store for each company (attachments...); back this folder up with the databases.
     // Every write is limited by the company's quota, a free-disk floor and a cap on uploads in progress (STORAGE_QUOTA.md).
     val companyFilesRoot = Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    val companyBackupsRoot = Path.of(environment.config.propertyOrNull("company.backupsRoot")?.getString() ?: "build/company-backups")
     val storageQuotas = com.ideasdeveloper.bms.server.modules.StorageQuotas(DatabaseFactory.getDataSource())
     val storageGuard = com.ideasdeveloper.bms.server.modules.StorageGuard(
         root = companyFilesRoot,
@@ -165,6 +168,8 @@ fun Application.module() {
             ?.coerceAtLeast(0) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMinFreeBytes,
         maxConcurrentUploads = environment.config.propertyOrNull("company.maxConcurrentUploads")?.getString()?.trim()?.toIntOrNull()
             ?.coerceAtLeast(1) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMaxConcurrentUploads,
+        // The company's backups count in its quota too.
+        extraRoots = listOf(companyBackupsRoot),
     )
     val companyFiles = CompanyFiles.local(companyFilesRoot, storageGuard)
     val classpathModules = loadServerModules()
@@ -479,15 +484,13 @@ fun Application.module() {
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,
         moduleRegistry = moduleRegistry,
-        backupsRoot = Path.of(
-            environment.config.propertyOrNull("company.backupsRoot")?.getString()
-                ?: "build/company-backups"
-        ),
+        backupsRoot = companyBackupsRoot,
         ownerEditor = companyProvisioning::updateBusinessOwnerBySelf,
         verifyOwnerPassword = { companyCode, username, password -> loginDatabases.verifyPassword(companyCode, username, password) },
         passwordAttempts = passwordAttempts,
         secrets = secretBox,
         serverActors = serverActors,
+        storage = storageGuard,
     ).also { companySelfServiceRef = it }
     // Hourly: every company's chain verified and anchored in provisioning_audit_log, after the startup catch-up.
     val integrityJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "activity-integrity").apply { isDaemon = true } }
@@ -544,6 +547,7 @@ fun Application.module() {
                 includeSession = false,
                 completeTwoFactor = loginDatabases::completeTwoFactor,
                 startEmailRecovery = loginDatabases::startEmailRecovery,
+                knownPublicHost = loginDatabases::knownPublicHost,
                 completeEmailRecovery = loginDatabases::completeEmailRecovery,
             )
             // The cancel link of the recovery email (no session, server-rendered page).
@@ -577,6 +581,9 @@ fun Application.module() {
                             environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty()
                         )?.latestCoreVersion
                     },
+                    // The request must carry the commit the owner approved (the app sends targetCommit). Only for an
+                    // older app: CORE_UPDATE_REQUIRE_APPROVED_COMMIT=false lets the server pin the commit itself.
+                    requireApprovedCommit = coreUpdateRequiresApprovedCommit(System.getenv("CORE_UPDATE_REQUIRE_APPROVED_COMMIT")),
                 ),
                 addToScope = { userId, code -> loginDatabases.admins.addCompany(userId, code) },
             )
@@ -632,16 +639,23 @@ private fun notifyServerOwners(central: DataSource, access: ModuleAccessService,
     }
 }
 
-// Public origin for links in emails: BMS_PUBLIC_BASE_URL when set, else the Host the proxy validated (never X-Forwarded-Host).
-internal fun publicBase(call: ApplicationCall): String {
-    System.getenv("BMS_PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }?.let { return it }
+// Public origin for links in emails (review item 4): BMS_PUBLIC_BASE_URL when set; otherwise the request's Host only
+// when [knownHost] says it is a domain of this server (never X-Forwarded-Host). Null: build no link.
+internal fun publicBase(call: ApplicationCall, knownHost: (String) -> Boolean): String? {
+    configuredPublicBase()?.let { return it }
     val proxied = call.request.local.remoteAddress.let { it == "127.0.0.1" || it == "::1" || it == "0:0:0:0:0:0:0:1" }
     val scheme = (if (proxied) call.request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim() else null)
         ?.takeIf { it == "https" || it == "http" } ?: call.request.local.scheme
-    val host = call.request.headers["Host"]?.trim()?.takeIf { it.isNotEmpty() && it.length <= 255 && it.none { char -> char.isWhitespace() || char == '/' || char == '@' || char == '\\' } }
-        ?: call.request.local.serverHost
-    return "$scheme://$host"
+    val host = call.request.headers["Host"]?.trim()?.lowercase()
+        ?.takeIf { it.isNotEmpty() && it.length <= 255 && Regex("[a-z0-9.-]+(:[0-9]{1,5})?").matches(it) } ?: return null
+    return if (knownHost(host.substringBefore(':'))) "$scheme://$host" else null
 }
+
+/** CORE_UPDATE_REQUIRE_APPROVED_COMMIT: on unless it says false (review item 7). */
+internal fun coreUpdateRequiresApprovedCommit(value: String?): Boolean = value?.trim()?.equals("false", ignoreCase = true) != true
+
+internal fun configuredPublicBase(): String? =
+    System.getenv("BMS_PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
 
 // IP del cliente; detras del proxy local se toma X-Real-IP.
 internal fun clientAddress(call: ApplicationCall): String {

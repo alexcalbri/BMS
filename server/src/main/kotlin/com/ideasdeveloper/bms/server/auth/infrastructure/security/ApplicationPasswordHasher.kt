@@ -33,13 +33,10 @@ object ApplicationPasswordHasher {
         return diff == 0
     }
 
-    // PBKDF2 iterations computed by this thread (tests prove every sign-in path does the same work).
-    internal val iterationsSpent: ThreadLocal<Long> = ThreadLocal.withInitial { 0L }
-
     private fun derive(password: String, salt: ByteArray, iterations: Int): ByteArray =
-        also { iterationsSpent.set(iterationsSpent.get() + iterations) }.let { SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
             .generateSecret(PBEKeySpec(password.toCharArray(), salt, iterations, KeyLengthBits))
-            .encoded }
+            .encoded
 }
 
 data class PasswordHash(

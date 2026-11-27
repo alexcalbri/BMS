@@ -11,6 +11,7 @@ import com.ideasdeveloper.bms.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.ApplicationSessionRepository
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.ApplicationUserRepository
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
+import com.ideasdeveloper.bms.server.auth.infrastructure.database.SwitchNeedsSecondFactorException
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.ApplicationPasswordHasher
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.bms.server.auth.twofactor.Totp
@@ -115,7 +116,8 @@ class TwoFactorPostgresTest {
                 listOf("V001__create_application_users", "V002__create_application_sessions", "V003__add_application_user_profile", "V004__add_application_user_code", "V006__add_application_user_language")
                     .forEach { db.run(migration("database/core/migrations/$it.sql")) }
                 listOf("V001__create_business_owner", "V003__create_tenant_modules", "V004__create_application_permissions", "V005__create_application_user_credentials",
-                    "V006__create_extensions", "V008__account_reset_throttle", "V011__create_activity_log", "V012__create_two_factor")
+                    "V006__create_extensions", "V008__account_reset_throttle", "V011__create_activity_log", "V012__create_two_factor",
+                    "V013__create_two_factor_email_recovery", "V014__session_second_factor_mark")
                     .forEach { db.run(migration("database/tenant/migrations/$it.sql")) }
                 val owner = UUID.randomUUID()
                 db.run("INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES ('$owner', 'tf_${code}_owner', TRUE, 'Dueno $code', '$code@example.com')")
@@ -269,18 +271,39 @@ class TwoFactorPostgresTest {
         assertEquals("TWO_FACTOR_REQUIRED", required.code)
         assertEquals("INVALID_CODE", assertFailsWith<AccountException> { accounts.confirmPasswordReset("luis", "acme", "654321", "nueva-clave-segura-1", codes[1]) }.code)
         assertEquals("TWO_FACTOR_INVALID_CODE", assertFailsWith<AccountException> { accounts.confirmPasswordReset("luis", "acme", "123456", "nueva-clave-segura-1", "000004") }.code)
-        accounts.confirmPasswordReset("luis", "acme", "123456", "nueva-clave-segura-1", codes[1])
+        val events = mutableListOf<com.ideasdeveloper.bms.server.auth.application.CredentialsChanged>()
+        com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.subscribe("test") { events += it; 1 }
+        try {
+            accounts.confirmPasswordReset("luis", "acme", "123456", "nueva-clave-segura-1", codes[1])
+        } finally {
+            com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.unsubscribe("test")
+        }
+        // Review item 2: the account's agents are told to end (Agentes revokes their tokens).
+        assertEquals(listOf(com.ideasdeveloper.bms.server.auth.application.CredentialsChanged("acme", userId("bms_tf_acme", "luis"), "password_reset")), events)
         assertNotNull(challenge { login(db, "luis", "nueva-clave-segura-1", "acme") })
 
-        // Business-owner switcher: into an owner that has it on only from an owner that has it on.
+        // Switchers: into an account that uses two-step verification only from a session that PASSED a second step.
         val (betaSecret, _) = enrol(db, "tf_beta_owner", ownerPassword, "beta")
         assertNotNull(betaSecret)
+        // A server administrator without it: an owner without it is fine, one with it is refused.
+        val ana = login(db, "tf_ana", adminPassword, null)!!
+        assertNotNull(db.switchTo(null, ana.accessToken, "acme"))
+        assertFailsWith<SwitchNeedsSecondFactorException> { db.switchTo(null, login(db, "tf_ana", adminPassword, null)!!.accessToken, "beta") }
+        // The attack of the review: with only the origin password, enrol an own authenticator in that session and switch.
         val acmeOwner = login(db, "tf_acme_owner", ownerPassword, "acme")!!
-        assertNull(db.switchTo("acme", acmeOwner.accessToken, "beta"))
-        val (acmeSecret, _) = enrol(db, "tf_acme_owner", ownerPassword, "acme")
-        val acmeSigned = db.completeTwoFactor(challenge { login(db, "tf_acme_owner", ownerPassword, "acme") }.token, codeAt(acmeSecret), "10.0.0.1")
+        val service = TwoFactorAccountService(db)
+        val setup = service.setup(acmeOwner.accessToken, "acme", ownerPassword)
+        service.enable(acmeOwner.accessToken, "acme", codeAt(setup.secret, -1))
+        assertFailsWith<SwitchNeedsSecondFactorException> { db.switchTo("acme", acmeOwner.accessToken, "beta") }
+        // A session that passed the second step switches, and the new session keeps the mark (it can switch back).
+        val acmeSigned = db.completeTwoFactor(challenge { login(db, "tf_acme_owner", ownerPassword, "acme") }.token, codeAt(setup.secret), "10.0.0.1")
         val switched = db.switchTo("acme", acmeSigned.accessToken, "beta")
         assertEquals("tf_beta_owner", switched?.username)
+        assertEquals("tf_acme_owner", db.switchTo("beta", switched!!.accessToken, "acme")?.username)
+        // The administrator once signed in with a code enters too.
+        val (anaSecret, _) = enrol(db, "tf_ana", adminPassword, null)
+        val anaSigned = db.completeTwoFactor(challenge { login(db, "tf_ana", adminPassword, null) }.token, codeAt(anaSecret), "10.0.0.1")
+        assertEquals("tf_beta_owner", db.switchTo(null, anaSigned.accessToken, "beta")?.username)
     }
 
     @Test
@@ -340,11 +363,7 @@ class TwoFactorPostgresTest {
         if (url == null) return
         reset()
         val repository = ApplicationUserRepository(Database.connect(source("bms_tf_acme")))
-        fun work(block: () -> Unit): Long {
-            ApplicationPasswordHasher.iterationsSpent.set(0)
-            block()
-            return ApplicationPasswordHasher.iterationsSpent.get()
-        }
+        fun work(block: () -> Unit): Long = Pbkdf2Counter.measure(block)
         val expected = ApplicationPasswordHasher.Iterations.toLong()
         assertEquals(expected, work { repository.verifyApplicationPassword("nadie", userPassword) })
         assertEquals(expected, work { repository.verifyApplicationPassword("off", userPassword) })
@@ -353,5 +372,32 @@ class TwoFactorPostgresTest {
         // An unknown company spends a sign-in's work as well.
         val db = databases()
         assertEquals(expected, work { assertNull(login(db, "eva", userPassword, "nadie")) })
+    }
+
+    // Review item 2: turning it on ends the earlier access: other sessions, switcher company sessions, agents.
+    @Test
+    fun enablingEndsTheEarlierAccessOfAServerAccount() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        val ana = login(db, "tf_ana", adminPassword, null)!!
+        val other = login(db, "tf_ana", adminPassword, null)!!
+        val inAcme = db.switchTo(null, other.accessToken, "acme")!!
+        val events = mutableListOf<com.ideasdeveloper.bms.server.auth.application.CredentialsChanged>()
+        com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.subscribe("test") { events += it; 2 }
+        val response = try {
+            val service = TwoFactorAccountService(db)
+            val secret = service.setup(ana.accessToken, null, adminPassword).secret
+            service.enable(ana.accessToken, null, codeAt(secret, -1))
+        } finally {
+            com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.unsubscribe("test")
+        }
+        assertEquals(listOf(com.ideasdeveloper.bms.server.auth.application.CredentialsChanged(null, adminId, "two_factor_enabled")), events)
+        assertEquals(2, response.agentsDisconnected)
+        assertTrue(response.notice!!.isNotBlank())
+        // The current session stays; the other one and the company session it opened are closed.
+        assertNotNull(TwoFactorAccountService(db).status(ana.accessToken, null))
+        assertEquals("t", scalar(central, "SELECT revoked_at IS NOT NULL FROM application_sessions WHERE token_hash = '${SessionTokenGenerator().hash(other.accessToken)}'"))
+        assertEquals("t", scalar("bms_tf_acme", "SELECT revoked_at IS NOT NULL FROM application_sessions WHERE token_hash = '${SessionTokenGenerator().hash(inAcme.accessToken)}'"))
     }
 }

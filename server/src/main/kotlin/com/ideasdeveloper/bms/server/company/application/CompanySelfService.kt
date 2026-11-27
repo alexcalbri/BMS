@@ -93,6 +93,8 @@ class CompanySelfService(
     private val secrets: SecretBox? = null,
     // Server administrators with server.workspace also manage the server workspace (SERVER_ADMINS.md §3).
     private val serverActors: ServerActorResolver? = null,
+    // Quota, free-disk floor and uploads in progress of the company (STORAGE_QUOTA.md); imported backups count too.
+    private val storage: com.ideasdeveloper.bms.server.modules.StorageGuard? = null,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
     private val tokenGenerator = SessionTokenGenerator()
@@ -286,19 +288,12 @@ class CompanySelfService(
      * [BackupImportLimits.MaxEntries] entries and [BackupImportLimits.MaxUncompressedBytes]
      * uncompressed, so a ZIP bomb is refused without expanding it) before it takes its name.
      */
-    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, content: java.io.InputStream): CompanyBackupResponse {
+    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, content: java.io.InputStream, expectedBytes: Long? = null): CompanyBackupResponse {
         val context = authorizeBusinessOwner(companyCode, accessToken)
         validateBackupName(fileName)
         val directory = backupDirectory(context.companyCode).also { it.createDirectories() }
         val output = directory.resolve(fileName)
-        val partial = Files.createTempFile(directory, ".import-", ".part")
-        try {
-            Files.newOutputStream(partial).use { out -> BackupImportLimits.copyLimited(content, out) }
-            BackupImportLimits.validateZip(partial)
-            Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-        } finally {
-            Files.deleteIfExists(partial)
-        }
+        BackupImportLimits.importInto(directory, output, content, expectedBytes, context.companyCode, storage)
         backupRow(context, output, ActivityActions.Imported, "Importo la copia de seguridad ${output.name}.")
         return CompanyBackupResponse(
             fileName = output.name,
@@ -1240,17 +1235,62 @@ object BackupImportLimits {
     const val MaxEntries = 10_000
     const val MaxUncompressedBytes = 4L * 1024 * 1024 * 1024
 
+    // Backups a company keeps (generated and imported): at most this many and this much in total.
+    const val MaxStoredBackups = 20
+    const val MaxStoredBytes = 5L * 1024 * 1024 * 1024
+
+    /**
+     * Writes [content] as [output] in the company's backup [directory] (review item 3). Every check comes before
+     * anything is written: the number and total size of the backups the company keeps, its quota, the free-disk
+     * floor and its uploads in progress ([storage]); while streaming, each chunk is charged to the quota through
+     * the same counting stream and the size limits apply; the ZIP is checked before it takes its name.
+     */
+    fun importInto(directory: Path, output: Path, content: java.io.InputStream, expectedBytes: Long?, companyCode: String, storage: com.ideasdeveloper.bms.server.modules.StorageGuard?) {
+        val stored = Files.list(directory).use { files -> files.filter { it.fileName.toString().endsWith(".zip") && it != output }.toList() }
+        val storedBytes = stored.sumOf { runCatching { Files.size(it) }.getOrDefault(0L) }
+        if (stored.size >= MaxStoredBackups) throw CompanySelfException(tr("La empresa ya guarda {0} copias de seguridad; elimina alguna antes de importar otra.", MaxStoredBackups))
+        if (expectedBytes != null && storedBytes + expectedBytes > MaxStoredBytes) throw storedTooLarge()
+        val upload = try {
+            storage?.checkRoom(companyCode, expectedBytes)
+            storage?.begin(companyCode)
+        } catch (refused: com.ideasdeveloper.bms.server.modules.StorageQuotaException) {
+            throw CompanySelfException(refused.message.orEmpty())
+        }
+        try {
+            val partial = Files.createTempFile(directory, ".import-", ".part")
+            try {
+                val written = try {
+                    Files.newOutputStream(partial).use { out ->
+                        copyLimited(content, out, maxBytes = minOf(MaxBytes, MaxStoredBytes - storedBytes)) { bytes -> upload?.charge(bytes) }
+                    }
+                } catch (refused: com.ideasdeveloper.bms.server.modules.StorageQuotaException) {
+                    throw CompanySelfException(refused.message.orEmpty())
+                }
+                validateZip(partial)
+                Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                upload?.stored(written)
+            } finally {
+                Files.deleteIfExists(partial)
+            }
+        } finally {
+            upload?.close()
+        }
+    }
+
     fun tooLarge() = CompanySelfException(tr("El backup supera el maximo de {0} MB.", MaxBytes / (1024 * 1024)))
 
-    /** Copies at most [maxBytes]; one byte more and the import is refused. */
-    fun copyLimited(input: java.io.InputStream, output: java.io.OutputStream, maxBytes: Long = MaxBytes): Long {
+    fun storedTooLarge() = CompanySelfException(tr("Las copias de seguridad de la empresa superarian {0} GB; elimina alguna antes de importar otra.", MaxStoredBytes / (1024 * 1024 * 1024)))
+
+    /** Copies at most [maxBytes] (one byte more and the import is refused); each chunk goes through [charge] first. */
+    fun copyLimited(input: java.io.InputStream, output: java.io.OutputStream, maxBytes: Long = MaxBytes, charge: (Long) -> Unit = {}): Long {
         val buffer = ByteArray(64 * 1024)
         var total = 0L
         while (true) {
             val read = input.read(buffer)
             if (read < 0) return total
             total += read
-            if (total > maxBytes) throw tooLarge()
+            if (total > maxBytes) throw if (maxBytes < MaxBytes) storedTooLarge() else tooLarge()
+            charge(read.toLong())
             output.write(buffer, 0, read)
         }
     }
