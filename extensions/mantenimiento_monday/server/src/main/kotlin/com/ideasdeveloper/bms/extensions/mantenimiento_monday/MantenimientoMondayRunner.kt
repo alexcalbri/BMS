@@ -380,7 +380,7 @@ object MantenimientoMondayRunner {
      */
     private fun importerActivity(context: MantenimientoImportJobContext, job: MondayJob): ActivityActor {
         // The starter kept with the job (agent, server owner / administrator...) rebuilt exactly.
-        ActivityActor.restore(job.startedActor)?.let { return ActivityActor.import(it) }
+        ActivityActor.restoreImportOrNull(job.startedActor)?.let { return it }
         val creator = job.createdBy ?: return ActivityActor.import(null)
         val user = context.access.userAccess(context.tenant, context.companyCode, creator, serverOwner = false)?.permissions("mantenimiento")?.activityActor
             ?: ActivityActor.user(creator, "Usuario")

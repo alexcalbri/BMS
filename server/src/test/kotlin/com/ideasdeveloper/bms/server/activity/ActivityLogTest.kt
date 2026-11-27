@@ -35,16 +35,16 @@ class ActivityLogTest {
             ActivityActor.serverOwner(null, "Server Owner"),
             ActivityActor.groupAgent(ActivityActor.businessOwner(ana, "Dueno Acme"), ActivityActor.user(luis, "Luis Mora"), "Casa", "Claude"),
         )
-        actors.forEach { assertEquals(it, ActivityActor.restore(it.toStoredJson()), it.display) }
+        actors.forEach { assertEquals(ActivityActor.import(it), ActivityActor.restoreImportOrNull(it.toStoredJson()), it.display) }
         // An import restored from it reads exactly like the one started live.
         assertEquals("Importacion (Agente de Ana Ruiz)", ActivityActor.restoreImport(person.viaAgent("Claude").toStoredJson()).display)
         assertEquals("Importacion (Luis Mora (desde el servidor))", ActivityActor.restoreImport(actors[3].toStoredJson()).display)
         assertEquals(ActivityActor.import(actors[3]), ActivityActor.restoreImport(actors[3].toStoredJson()))
         // Nothing usable stored (old jobs): the fallback, or an anonymous import.
-        assertNull(ActivityActor.restore(null))
-        assertNull(ActivityActor.restore(""))
-        assertNull(ActivityActor.restore("not json"))
-        assertNull(ActivityActor.restore("""{"kind":"hacker","name":"x"}"""))
+        assertNull(ActivityActor.restoreImportOrNull(null))
+        assertNull(ActivityActor.restoreImportOrNull(""))
+        assertNull(ActivityActor.restoreImportOrNull("not json"))
+        assertNull(ActivityActor.restoreImportOrNull("""{"kind":"hacker","name":"x"}"""))
         assertEquals("Importacion", ActivityActor.restoreImport(null).display)
         assertEquals("Importacion (Ana Ruiz)", ActivityActor.restoreImport("[]") { person }.display)
         assertTrue(!person.toStoredJson().contains("password", ignoreCase = true))

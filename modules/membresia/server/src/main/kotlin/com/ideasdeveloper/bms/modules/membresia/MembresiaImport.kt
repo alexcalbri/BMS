@@ -553,7 +553,7 @@ object MembresiaImportApply {
      */
     fun importActor(tenant: Connection, startedBy: UUID?, stored: String? = null): ActivityActor {
         // The actor kept with the job when it started (an AI agent, a server owner...): rebuilt exactly; old jobs fall back to the user id.
-        ActivityActor.restore(stored)?.let { return ActivityActor.import(it) }
+        ActivityActor.restoreImportOrNull(stored)?.let { return it }
         if (startedBy == null) return ActivityActor.import(null)
         val name = tenant.prepareStatement("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?").use { query ->
             query.setObject(1, startedBy)

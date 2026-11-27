@@ -172,7 +172,7 @@ class MembresiaMondayActivityPostgresTest {
             db.run("DELETE FROM ext_membresia_monday__jobs")
             // The job is queued the way the screen does (it keeps the starter) and then applied by the minute job.
             val id = MembresiaMondayJobs.queueRead(db, "123", "Miembros", MondayMapping(), "Ana Ruiz", ana.userId, starter)
-            assertEquals(starter, ActivityActor.restore(MembresiaMondayJobs.find(db, id)!!.startedActor))
+            assertEquals(ActivityActor.import(starter), ActivityActor.restoreImportOrNull(MembresiaMondayJobs.find(db, id)!!.startedActor))
             db.run("DELETE FROM ext_membresia_monday__jobs WHERE id <> '$id'")
             val summary = MondaySummaryDto.encode(MondaySummaryDto(1, 2, listOf(MondayPlanDto("Coworking", "80.00", 30, 1)), listOf("Documento")))
             db.prepareStatement("UPDATE ext_membresia_monday__jobs SET status = 'applying', total = 1, summary = CAST(? AS jsonb) WHERE id = ?").use { st ->
