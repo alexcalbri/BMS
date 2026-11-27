@@ -782,6 +782,12 @@ with lines no BMS installer or updater ever wrote (a hand-made location, include
 file, and carries on; move the local lines to `/etc/nginx/bms.d/` and run it with `BMS_NGINX_REPLACE_SITE=yes` to
 apply the new site.
 
+- **Streamed answers of the AI assistant (Core 0.14.0, GLOBAL_AGENT.md):** `location /companies/me/assistant/` turns
+  response buffering off (`proxy_buffering off`, `proxy_cache off`; the backend also sends `X-Accel-Buffering: no`) and
+  waits up to 900 s between bytes (`proxy_read_timeout`, `proxy_send_timeout`), so the Server-Sent Events of a turn
+  reach the app frame by frame. A turn lasts at most 10 minutes and the backend sends a ping every 15 s. The CSP needs
+  no change (same-origin request). The assistant calls `api.anthropic.com` over HTTPS from the server: a firewall that
+  limits outgoing traffic must allow it once the server owner turns the assistant on.
 - **Request bodies:** 2 MB everywhere (`client_max_body_size 2m`), so nobody can fill memory or disk before signing in.
   Larger only on the authenticated upload routes found in the code: `POST /modules/<module>/ui/files` (module
   attachments of CRM, Compras, Tareas, Propietarios, Mantenimiento and any module with that route) without an Nginx

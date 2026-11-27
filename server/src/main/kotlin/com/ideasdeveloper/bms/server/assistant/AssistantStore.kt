@@ -1,0 +1,456 @@
+package com.ideasdeveloper.bms.server.assistant
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import java.sql.Connection
+import java.sql.ResultSet
+import java.sql.Timestamp
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
+import java.util.UUID
+
+data class AssistantConversation(
+    val id: UUID,
+    val userId: UUID,
+    val ownerKey: String,
+    val title: String,
+    val state: String,
+    val leaseUntil: Instant?,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+    val archivedAt: Instant?,
+) {
+    companion object {
+        const val Idle = "idle"
+        const val Running = "running"
+        const val Awaiting = "awaiting_confirmation"
+    }
+}
+
+data class AssistantStoredMessage(
+    val id: Long,
+    val role: String,
+    val content: JsonArray,
+    val createdAt: Instant,
+)
+
+/**
+ * One tool call of a paused turn. [needsConfirmation] calls wait for the user ([status] pending, then approved or
+ * rejected); the others already ran and keep their tool_result block in [result] (status done).
+ */
+data class AssistantPendingCall(
+    val id: UUID,
+    val conversationId: UUID,
+    val position: Int,
+    val toolUseId: String,
+    val toolName: String,
+    val arguments: JsonObject,
+    val label: String,
+    val moduleName: String,
+    val destructive: Boolean,
+    val summary: JsonArray,
+    val status: String,
+    val result: JsonObject?,
+    val expiresAt: Instant,
+) {
+    val needsConfirmation: Boolean get() = status != Done
+
+    companion object {
+        const val Pending = "pending"
+        const val Approved = "approved"
+        const val Rejected = "rejected"
+        const val Done = "done"
+    }
+}
+
+data class AssistantUsageRow(
+    val day: LocalDate,
+    val userId: UUID,
+    val keySource: String,
+    val requests: Long,
+    val usage: ModelUsage,
+    val countedTokens: Long,
+)
+
+/**
+ * Where the assistant keeps a company's conversations (tenant V017). Every read of a conversation is by its id AND
+ * its owner (user and owner key): a conversation of someone else is simply not found.
+ */
+interface AssistantStore {
+    fun createConversation(userId: UUID, ownerKey: String, title: String, now: Instant): AssistantConversation
+    fun conversation(id: UUID, userId: UUID, ownerKey: String): AssistantConversation?
+    fun conversations(userId: UUID, ownerKey: String, archived: Boolean, limit: Int, before: Instant?): List<AssistantConversation>
+    fun updateConversation(id: UUID, userId: UUID, ownerKey: String, title: String?, archived: Boolean?, now: Instant): AssistantConversation?
+    fun deleteConversation(id: UUID, userId: UUID, ownerKey: String): Boolean
+
+    /** Takes the conversation for one turn: idle (or a running turn whose lease ended) to running. */
+    fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): Boolean
+    fun setState(id: UUID, state: String, now: Instant)
+
+    fun messages(conversationId: UUID): List<AssistantStoredMessage>
+    fun messageCount(conversationId: UUID): Int
+    fun appendMessage(conversationId: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage
+
+    fun savePending(calls: List<AssistantPendingCall>)
+    fun pending(conversationId: UUID): List<AssistantPendingCall>
+    /** The call with its conversation, only when that conversation belongs to the owner. */
+    fun pendingCall(id: UUID, userId: UUID, ownerKey: String): AssistantPendingCall?
+    /** Records a decision of a call still pending; false when it was decided already. */
+    fun decide(id: UUID, status: String, now: Instant): Boolean
+    fun clearPending(conversationId: UUID)
+    /** Conversations with a pending call whose time is over. */
+    fun expiredConversations(now: Instant): List<UUID>
+
+    fun recordUsage(day: LocalDate, userId: UUID, keySource: String, usage: ModelUsage, requests: Long)
+    fun monthUsage(month: YearMonth, keySources: Set<String>): Long
+    fun usage(month: YearMonth): List<AssistantUsageRow>
+
+    /** Deletes the conversations not updated since [before]; usage rows older than [usageBefore]. */
+    fun purge(before: Instant, usageBefore: LocalDate): Int
+}
+
+/** [AssistantStore] on a company database; every call takes a pooled connection for itself. */
+class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore {
+    private fun <T> use(block: (Connection) -> T): T = connect().use(block)
+
+    private fun ResultSet.instant(column: String): Instant? = getTimestamp(column)?.toInstant()
+
+    private fun ResultSet.conversation() = AssistantConversation(
+        id = getObject("id", UUID::class.java),
+        userId = getObject("user_id", UUID::class.java),
+        ownerKey = getString("owner_key"),
+        title = getString("title"),
+        state = getString("state"),
+        leaseUntil = instant("lease_until"),
+        createdAt = instant("created_at")!!,
+        updatedAt = instant("updated_at")!!,
+        archivedAt = instant("archived_at"),
+    )
+
+    private val columns = "id, user_id, owner_key, title, state, lease_until, created_at, updated_at, archived_at"
+
+    override fun createConversation(userId: UUID, ownerKey: String, title: String, now: Instant): AssistantConversation = use { connection ->
+        connection.prepareStatement(
+            "INSERT INTO public.assistant_conversations (id, user_id, owner_key, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING $columns",
+        ).use { insert ->
+            insert.setObject(1, UUID.randomUUID())
+            insert.setObject(2, userId)
+            insert.setString(3, ownerKey)
+            insert.setString(4, title)
+            insert.setTimestamp(5, Timestamp.from(now))
+            insert.setTimestamp(6, Timestamp.from(now))
+            insert.executeQuery().use { rows -> rows.next(); rows.conversation() }
+        }
+    }
+
+    override fun conversation(id: UUID, userId: UUID, ownerKey: String): AssistantConversation? = use { connection ->
+        connection.prepareStatement("SELECT $columns FROM public.assistant_conversations WHERE id = ? AND user_id = ? AND owner_key = ?").use { query ->
+            query.setObject(1, id)
+            query.setObject(2, userId)
+            query.setString(3, ownerKey)
+            query.executeQuery().use { rows -> if (rows.next()) rows.conversation() else null }
+        }
+    }
+
+    override fun conversations(userId: UUID, ownerKey: String, archived: Boolean, limit: Int, before: Instant?): List<AssistantConversation> = use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT $columns FROM public.assistant_conversations
+            WHERE user_id = ? AND owner_key = ? AND (archived_at IS NOT NULL) = ? AND (?::timestamptz IS NULL OR updated_at < ?::timestamptz)
+            ORDER BY updated_at DESC, id LIMIT ?
+            """.trimIndent(),
+        ).use { query ->
+            query.setObject(1, userId)
+            query.setString(2, ownerKey)
+            query.setBoolean(3, archived)
+            val at = before?.let(Timestamp::from)
+            query.setTimestamp(4, at)
+            query.setTimestamp(5, at)
+            query.setInt(6, limit)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.conversation()) } }
+        }
+    }
+
+    override fun updateConversation(id: UUID, userId: UUID, ownerKey: String, title: String?, archived: Boolean?, now: Instant): AssistantConversation? = use { connection ->
+        connection.prepareStatement(
+            """
+            UPDATE public.assistant_conversations
+            SET title = COALESCE(?, title),
+                archived_at = CASE WHEN ?::boolean IS NULL THEN archived_at WHEN ?::boolean THEN COALESCE(archived_at, ?) ELSE NULL END,
+                updated_at = ?
+            WHERE id = ? AND user_id = ? AND owner_key = ?
+            RETURNING $columns
+            """.trimIndent(),
+        ).use { update ->
+            update.setString(1, title)
+            if (archived == null) update.setNull(2, java.sql.Types.BOOLEAN) else update.setBoolean(2, archived)
+            if (archived == null) update.setNull(3, java.sql.Types.BOOLEAN) else update.setBoolean(3, archived)
+            update.setTimestamp(4, Timestamp.from(now))
+            update.setTimestamp(5, Timestamp.from(now))
+            update.setObject(6, id)
+            update.setObject(7, userId)
+            update.setString(8, ownerKey)
+            update.executeQuery().use { rows -> if (rows.next()) rows.conversation() else null }
+        }
+    }
+
+    override fun deleteConversation(id: UUID, userId: UUID, ownerKey: String): Boolean = use { connection ->
+        connection.prepareStatement("DELETE FROM public.assistant_conversations WHERE id = ? AND user_id = ? AND owner_key = ?").use { delete ->
+            delete.setObject(1, id)
+            delete.setObject(2, userId)
+            delete.setString(3, ownerKey)
+            delete.executeUpdate() > 0
+        }
+    }
+
+    override fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): Boolean = use { connection ->
+        connection.prepareStatement(
+            """
+            UPDATE public.assistant_conversations SET state = 'running', lease_until = ?, updated_at = ?
+            WHERE id = ? AND (state = ? OR (state = 'running' AND lease_until < ?))
+            """.trimIndent(),
+        ).use { update ->
+            update.setTimestamp(1, Timestamp.from(leaseUntil))
+            update.setTimestamp(2, Timestamp.from(now))
+            update.setObject(3, id)
+            update.setString(4, fromState)
+            update.setTimestamp(5, Timestamp.from(now))
+            update.executeUpdate() > 0
+        }
+    }
+
+    override fun setState(id: UUID, state: String, now: Instant) {
+        use { connection ->
+            connection.prepareStatement("UPDATE public.assistant_conversations SET state = ?, lease_until = NULL, updated_at = ? WHERE id = ?").use { update ->
+                update.setString(1, state)
+                update.setTimestamp(2, Timestamp.from(now))
+                update.setObject(3, id)
+                update.executeUpdate()
+            }
+        }
+    }
+
+    override fun messages(conversationId: UUID): List<AssistantStoredMessage> = use { connection ->
+        connection.prepareStatement("SELECT id, role, content::text, created_at FROM public.assistant_messages WHERE conversation_id = ? ORDER BY id").use { query ->
+            query.setObject(1, conversationId)
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) add(AssistantStoredMessage(rows.getLong(1), rows.getString(2), Json.parseToJsonElement(rows.getString(3)).jsonArray, rows.instant("created_at")!!))
+                }
+            }
+        }
+    }
+
+    override fun messageCount(conversationId: UUID): Int = use { connection ->
+        connection.prepareStatement("SELECT count(*) FROM public.assistant_messages WHERE conversation_id = ? AND role <> 'notice'").use { query ->
+            query.setObject(1, conversationId)
+            query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
+        }
+    }
+
+    override fun appendMessage(conversationId: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage = use { connection ->
+        connection.prepareStatement(
+            """
+            INSERT INTO public.assistant_messages (conversation_id, role, content, model, stop_reason, input_tokens, output_tokens,
+                cache_read_input_tokens, cache_creation_input_tokens, created_at)
+            VALUES (?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?) RETURNING id
+            """.trimIndent(),
+        ).use { insert ->
+            insert.setObject(1, conversationId)
+            insert.setString(2, role)
+            insert.setString(3, content.toString())
+            insert.setString(4, model)
+            insert.setString(5, stopReason)
+            insert.setLong(6, usage?.inputTokens ?: 0)
+            insert.setLong(7, usage?.outputTokens ?: 0)
+            insert.setLong(8, usage?.cacheReadInputTokens ?: 0)
+            insert.setLong(9, usage?.cacheCreationInputTokens ?: 0)
+            insert.setTimestamp(10, Timestamp.from(now))
+            val id = insert.executeQuery().use { rows -> rows.next(); rows.getLong(1) }
+            connection.prepareStatement("UPDATE public.assistant_conversations SET updated_at = ? WHERE id = ?").use { update ->
+                update.setTimestamp(1, Timestamp.from(now))
+                update.setObject(2, conversationId)
+                update.executeUpdate()
+            }
+            AssistantStoredMessage(id, role, content, now)
+        }
+    }
+
+    override fun savePending(calls: List<AssistantPendingCall>) {
+        if (calls.isEmpty()) return
+        use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO public.assistant_pending_calls (id, conversation_id, position, tool_use_id, tool_name, arguments, label, module_name,
+                    destructive, summary, status, result, expires_at)
+                VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?)
+                """.trimIndent(),
+            ).use { insert ->
+                calls.forEach { call ->
+                    insert.setObject(1, call.id)
+                    insert.setObject(2, call.conversationId)
+                    insert.setInt(3, call.position)
+                    insert.setString(4, call.toolUseId)
+                    insert.setString(5, call.toolName)
+                    insert.setString(6, call.arguments.toString())
+                    insert.setString(7, call.label)
+                    insert.setString(8, call.moduleName)
+                    insert.setBoolean(9, call.destructive)
+                    insert.setString(10, call.summary.toString())
+                    insert.setString(11, call.status)
+                    insert.setString(12, call.result?.toString())
+                    insert.setTimestamp(13, Timestamp.from(call.expiresAt))
+                    insert.addBatch()
+                }
+                insert.executeBatch()
+            }
+        }
+    }
+
+    private val pendingColumns = "p.id, p.conversation_id, p.position, p.tool_use_id, p.tool_name, p.arguments::text, p.label, p.module_name, " +
+        "p.destructive, p.summary::text, p.status, p.result::text, p.expires_at"
+
+    private fun ResultSet.pendingCall() = AssistantPendingCall(
+        id = getObject(1, UUID::class.java),
+        conversationId = getObject(2, UUID::class.java),
+        position = getInt(3),
+        toolUseId = getString(4),
+        toolName = getString(5),
+        arguments = Json.parseToJsonElement(getString(6)).jsonObject,
+        label = getString(7),
+        moduleName = getString(8),
+        destructive = getBoolean(9),
+        summary = Json.parseToJsonElement(getString(10)).jsonArray,
+        status = getString(11),
+        result = getString(12)?.let { Json.parseToJsonElement(it).jsonObject },
+        expiresAt = getTimestamp(13).toInstant(),
+    )
+
+    override fun pending(conversationId: UUID): List<AssistantPendingCall> = use { connection ->
+        connection.prepareStatement("SELECT $pendingColumns FROM public.assistant_pending_calls p WHERE p.conversation_id = ? ORDER BY p.position").use { query ->
+            query.setObject(1, conversationId)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.pendingCall()) } }
+        }
+    }
+
+    override fun pendingCall(id: UUID, userId: UUID, ownerKey: String): AssistantPendingCall? = use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT $pendingColumns FROM public.assistant_pending_calls p
+            JOIN public.assistant_conversations c ON c.id = p.conversation_id
+            WHERE p.id = ? AND c.user_id = ? AND c.owner_key = ?
+            """.trimIndent(),
+        ).use { query ->
+            query.setObject(1, id)
+            query.setObject(2, userId)
+            query.setString(3, ownerKey)
+            query.executeQuery().use { rows -> if (rows.next()) rows.pendingCall() else null }
+        }
+    }
+
+    override fun decide(id: UUID, status: String, now: Instant): Boolean = use { connection ->
+        connection.prepareStatement("UPDATE public.assistant_pending_calls SET status = ?, decided_at = ? WHERE id = ? AND status = 'pending'").use { update ->
+            update.setString(1, status)
+            update.setTimestamp(2, Timestamp.from(now))
+            update.setObject(3, id)
+            update.executeUpdate() > 0
+        }
+    }
+
+    override fun clearPending(conversationId: UUID) {
+        use { connection ->
+            connection.prepareStatement("DELETE FROM public.assistant_pending_calls WHERE conversation_id = ?").use { delete ->
+                delete.setObject(1, conversationId)
+                delete.executeUpdate()
+            }
+        }
+    }
+
+    override fun expiredConversations(now: Instant): List<UUID> = use { connection ->
+        connection.prepareStatement("SELECT DISTINCT conversation_id FROM public.assistant_pending_calls WHERE status = 'pending' AND expires_at <= ?").use { query ->
+            query.setTimestamp(1, Timestamp.from(now))
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+        }
+    }
+
+    override fun recordUsage(day: LocalDate, userId: UUID, keySource: String, usage: ModelUsage, requests: Long) {
+        use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO public.assistant_usage (day, user_id, key_source, requests, input_tokens, output_tokens, cache_read_input_tokens,
+                    cache_creation_input_tokens, counted_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (day, user_id, key_source) DO UPDATE SET
+                    requests = assistant_usage.requests + EXCLUDED.requests,
+                    input_tokens = assistant_usage.input_tokens + EXCLUDED.input_tokens,
+                    output_tokens = assistant_usage.output_tokens + EXCLUDED.output_tokens,
+                    cache_read_input_tokens = assistant_usage.cache_read_input_tokens + EXCLUDED.cache_read_input_tokens,
+                    cache_creation_input_tokens = assistant_usage.cache_creation_input_tokens + EXCLUDED.cache_creation_input_tokens,
+                    counted_tokens = assistant_usage.counted_tokens + EXCLUDED.counted_tokens
+                """.trimIndent(),
+            ).use { upsert ->
+                upsert.setObject(1, day)
+                upsert.setObject(2, userId)
+                upsert.setString(3, keySource)
+                upsert.setLong(4, requests)
+                upsert.setLong(5, usage.inputTokens)
+                upsert.setLong(6, usage.outputTokens)
+                upsert.setLong(7, usage.cacheReadInputTokens)
+                upsert.setLong(8, usage.cacheCreationInputTokens)
+                upsert.setLong(9, usage.countedTokens)
+                upsert.executeUpdate()
+            }
+        }
+    }
+
+    override fun monthUsage(month: YearMonth, keySources: Set<String>): Long = use { connection ->
+        connection.prepareStatement(
+            "SELECT COALESCE(sum(counted_tokens), 0) FROM public.assistant_usage WHERE day >= ? AND day < ? AND key_source = ANY (?)",
+        ).use { query ->
+            query.setObject(1, month.atDay(1))
+            query.setObject(2, month.plusMonths(1).atDay(1))
+            query.setArray(3, connection.createArrayOf("text", keySources.toTypedArray()))
+            query.executeQuery().use { rows -> rows.next(); rows.getLong(1) }
+        }
+    }
+
+    override fun usage(month: YearMonth): List<AssistantUsageRow> = use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT day, user_id, key_source, requests, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, counted_tokens
+            FROM public.assistant_usage WHERE day >= ? AND day < ? ORDER BY day, user_id, key_source
+            """.trimIndent(),
+        ).use { query ->
+            query.setObject(1, month.atDay(1))
+            query.setObject(2, month.plusMonths(1).atDay(1))
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        add(
+                            AssistantUsageRow(
+                                rows.getObject(1, LocalDate::class.java), rows.getObject(2, UUID::class.java), rows.getString(3), rows.getLong(4),
+                                ModelUsage(rows.getLong(5), rows.getLong(6), rows.getLong(7), rows.getLong(8)), rows.getLong(9),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    override fun purge(before: Instant, usageBefore: LocalDate): Int = use { connection ->
+        val conversations = connection.prepareStatement("DELETE FROM public.assistant_conversations WHERE updated_at < ? AND state <> 'running'").use { delete ->
+            delete.setTimestamp(1, Timestamp.from(before))
+            delete.executeUpdate()
+        }
+        connection.prepareStatement("DELETE FROM public.assistant_usage WHERE day < ?").use { delete ->
+            delete.setObject(1, usageBefore)
+            delete.executeUpdate()
+        }
+        conversations
+    }
+}

@@ -1,0 +1,405 @@
+package com.ideasdeveloper.bms.server.assistant
+
+import com.ideasdeveloper.bms.AssistantCompanySettingsRequest
+import com.ideasdeveloper.bms.AssistantCompanySettingsResponse
+import com.ideasdeveloper.bms.AssistantCompanyUsageResponse
+import com.ideasdeveloper.bms.AssistantConversationDetailResponse
+import com.ideasdeveloper.bms.AssistantConversationListResponse
+import com.ideasdeveloper.bms.AssistantCreateConversationRequest
+import com.ideasdeveloper.bms.AssistantDayUsage
+import com.ideasdeveloper.bms.AssistantDecisionRequest
+import com.ideasdeveloper.bms.AssistantIds
+import com.ideasdeveloper.bms.AssistantSendMessageRequest
+import com.ideasdeveloper.bms.AssistantStatusResponse
+import com.ideasdeveloper.bms.AssistantUpdateConversationRequest
+import com.ideasdeveloper.bms.AssistantUserUsage
+import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
+import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.modules.ModuleAccessDecision
+import com.ideasdeveloper.bms.server.modules.ModuleAccessService
+import com.ideasdeveloper.bms.server.modules.UserSessionLookup
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.withCharset
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.request.receiveText
+import io.ktor.server.response.header
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondTextWriter
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.put
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import java.sql.Connection
+import java.sql.SQLException
+import java.time.Instant
+import java.time.YearMonth
+import java.time.format.DateTimeParseException
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+
+private val AssistantJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+// Request bodies of these routes are small JSON (a message is at most 20 000 characters).
+private const val MaxBodyChars = 100_000
+
+/** The JSON answer of a company request, or a refusal to send instead. */
+private sealed interface Answer {
+    data class Ok(val status: HttpStatusCode, val body: Any?) : Answer
+    data class Refused(val status: HttpStatusCode, val code: String, val message: String) : Answer
+}
+
+private fun refused(status: Int, code: String, message: String) = Answer.Refused(HttpStatusCode.fromValue(status), code, message)
+
+private fun ApplicationCall.sessionToken(): String =
+    (request.headers[HttpHeaders.Authorization]?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }?.substringAfter(' ')
+        ?: request.cookies[ModuleAccessService.TokenCookie]).orEmpty().trim()
+
+/**
+ * Company routes of the assistant (GLOBAL_AGENT.md, Contract): the session of the request decides the company and the
+ * user; nothing in a body or path can name another user. [service] is null in the route matrix test.
+ */
+fun Route.assistantRoutes(service: AssistantService?) {
+    val notFoundConversation = { refused(404, "CONVERSATION_NOT_FOUND", tr("Esa conversacion no existe.")) }
+
+    /** Validates the session, opens the company and runs [block] on an IO thread; answers JSON. */
+    suspend fun ApplicationCall.company(statusRoute: Boolean = false, block: (AssistantService, AssistantContext, Connection) -> Answer) {
+        response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val assistant = service ?: return respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("ASSISTANT_UNAVAILABLE", tr("El asistente no esta disponible en este servidor.")))
+        val answer = try {
+            withContext(Dispatchers.IO) { resolve(assistant, this@company, statusRoute, block) }
+        } catch (_: SQLException) {
+            refused(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
+        }
+        when (answer) {
+            is Answer.Ok -> if (answer.body == null) respond(answer.status, "") else respond(answer.status, answer.body)
+            is Answer.Refused -> respond(answer.status, CompanyErrorResponse(answer.code, answer.message))
+        }
+    }
+
+    get("/companies/me/assistant/status") {
+        call.company(statusRoute = true) { assistant, context, tenant -> Answer.Ok(HttpStatusCode.OK, assistant.status(assistant.availability(tenant, context), context)) }
+    }
+
+    get("/companies/me/assistant/conversations") {
+        val archived = call.request.queryParameters["archived"] == "true"
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 50
+        val before = call.request.queryParameters["before"]?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        call.company { assistant, context, _ ->
+            val rows = context.store.conversations(context.caller.userId, context.caller.ownerKey, archived, limit, before)
+            val engine = assistant.engine(context.store)
+            val listed = rows.map { conversation ->
+                if (engine.expireIfDue(conversation.id)) context.store.conversation(conversation.id, context.caller.userId, context.caller.ownerKey) ?: conversation else conversation
+            }
+            Answer.Ok(
+                HttpStatusCode.OK,
+                AssistantConversationListResponse(
+                    listed.map { AssistantView.conversation(it, if (it.state == AssistantConversation.Awaiting) context.store.pending(it.id).count { p -> p.status == AssistantPendingCall.Pending } else 0) },
+                    nextBefore = rows.takeIf { it.size == limit }?.lastOrNull()?.updatedAt?.toString(),
+                ),
+            )
+        }
+    }
+
+    post("/companies/me/assistant/conversations") {
+        val request = call.bodyAs<AssistantCreateConversationRequest>() ?: AssistantCreateConversationRequest()
+        call.company { assistant, context, tenant ->
+            val availability = assistant.availability(tenant, context)
+            if (!context.caller.businessOwner && !context.hasUsePermission) return@company refused(403, AssistantIds.ReasonPermissionRequired, tr("No tienes permiso para usar el asistente."))
+            if (!availability.visible) return@company refused(403, availability.unavailable?.reason ?: AssistantIds.ReasonCompanyDisabled, availability.unavailable?.message.orEmpty())
+            val conversation = context.store.createConversation(context.caller.userId, context.caller.ownerKey, request.title?.trim()?.take(80).orEmpty(), Instant.now())
+            Answer.Ok(HttpStatusCode.Created, AssistantView.conversation(conversation, 0))
+        }
+    }
+
+    get("/companies/me/assistant/conversations/{id}") {
+        val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        call.company { assistant, context, _ ->
+            id ?: return@company notFoundConversation()
+            assistant.engine(context.store).expireIfDue(id)
+            val conversation = context.store.conversation(id, context.caller.userId, context.caller.ownerKey) ?: return@company notFoundConversation()
+            val pending = context.store.pending(id)
+            val labels = assistant.access.mcpTools().associate { it.qualifiedName to "${it.moduleName}: ${it.tool.title}" }
+            Answer.Ok(
+                HttpStatusCode.OK,
+                AssistantConversationDetailResponse(
+                    AssistantView.conversation(conversation, pending.count { it.status == AssistantPendingCall.Pending }),
+                    AssistantView.items(context.store.messages(id), pending, labels),
+                    pending.filter { it.status == AssistantPendingCall.Pending }.map(AssistantView::confirmation),
+                ),
+            )
+        }
+    }
+
+    put("/companies/me/assistant/conversations/{id}") {
+        val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val request = call.bodyAs<AssistantUpdateConversationRequest>()
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
+        call.company { _, context, _ ->
+            id ?: return@company notFoundConversation()
+            val updated = context.store.updateConversation(id, context.caller.userId, context.caller.ownerKey, request.title?.trim()?.take(80), request.archived, Instant.now())
+                ?: return@company notFoundConversation()
+            Answer.Ok(HttpStatusCode.OK, AssistantView.conversation(updated, 0))
+        }
+    }
+
+    delete("/companies/me/assistant/conversations/{id}") {
+        val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        call.company { _, context, _ ->
+            id ?: return@company notFoundConversation()
+            val conversation = context.store.conversation(id, context.caller.userId, context.caller.ownerKey) ?: return@company notFoundConversation()
+            if (conversation.state == AssistantConversation.Running && (conversation.leaseUntil?.isAfter(Instant.now()) == true)) {
+                return@company refused(409, "CONVERSATION_BUSY", tr("El asistente todavia esta respondiendo en esta conversacion."))
+            }
+            if (!context.store.deleteConversation(id, context.caller.userId, context.caller.ownerKey)) return@company notFoundConversation()
+            Answer.Ok(HttpStatusCode.NoContent, null)
+        }
+    }
+
+    post("/companies/me/assistant/conversations/{id}/messages") {
+        val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val request = call.bodyAs<AssistantSendMessageRequest>()
+            ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("MESSAGE_INVALID", tr("Escribe un mensaje.")))
+        call.turn(service) { assistant, context, tenant ->
+            id ?: throw AssistantRefusal(404, "CONVERSATION_NOT_FOUND", tr("Esa conversacion no existe."))
+            val runtime = assistant.runtime(tenant, assistant.availability(tenant, context))
+            val engine = assistant.engine(context.store)
+            val conversation = engine.prepareMessage(context.caller, id, request.text)
+            val toolbox = assistant.toolbox(context);
+            { sink: AssistantSink -> engine.runMessage(context.caller, runtime, toolbox, conversation, request.text, sink) }
+        }
+    }
+
+    post("/companies/me/assistant/confirmations/{id}") {
+        val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val request = call.bodyAs<AssistantDecisionRequest>()
+        val approve = when (request?.decision) {
+            "approve" -> true
+            "reject" -> false
+            else -> return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("DECISION_INVALID", tr("La decision debe ser approve o reject.")))
+        }
+        call.turn(service) { assistant, context, tenant ->
+            id ?: throw AssistantRefusal(404, "CONFIRMATION_NOT_FOUND", tr("Esa confirmacion no existe."))
+            val availability = assistant.availability(tenant, context)
+            // Rejecting needs no model request when other calls still wait; approving always needs the assistant available.
+            val runtime = assistant.runtime(tenant, availability)
+            val engine = assistant.engine(context.store)
+            val decision = engine.prepareDecision(context.caller, id, approve)
+            val toolbox = assistant.toolbox(context);
+            { sink: AssistantSink -> engine.runDecision(context.caller, runtime, toolbox, decision, sink) }
+        }
+    }
+
+    get("/companies/me/assistant/settings") {
+        call.company { assistant, context, tenant ->
+            if (!context.caller.businessOwner) return@company refused(403, "BUSINESS_OWNER_REQUIRED", tr("Solo el dueno de la empresa configura el asistente."))
+            Answer.Ok(HttpStatusCode.OK, companySettings(assistant.availability(tenant, context)))
+        }
+    }
+
+    put("/companies/me/assistant/settings") {
+        val request = call.bodyAs<AssistantCompanySettingsRequest>()
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
+        call.company { assistant, context, tenant ->
+            if (!context.caller.businessOwner) return@company refused(403, "BUSINESS_OWNER_REQUIRED", tr("Solo el dueno de la empresa configura el asistente."))
+            try {
+                AssistantCompanyConfig.update(tenant, assistant.access.secrets, context.actor, request.enabled, request.acceptDisclosure, request.apiKey, request.removeApiKey)
+            } catch (invalid: AssistantSettingsException) {
+                return@company refused(invalid.status, invalid.code, invalid.message.orEmpty())
+            }
+            Answer.Ok(HttpStatusCode.OK, companySettings(assistant.availability(tenant, context)))
+        }
+    }
+
+    get("/companies/me/assistant/usage") {
+        val month = call.request.queryParameters["month"]
+        call.company { assistant, context, tenant ->
+            if (!context.caller.businessOwner) return@company refused(403, "BUSINESS_OWNER_REQUIRED", tr("Solo el dueno de la empresa ve el consumo del asistente."))
+            val period = month(month) ?: return@company refused(400, "MONTH_INVALID", tr("El mes debe tener el formato AAAA-MM."))
+            val availability = assistant.availability(tenant, context)
+            val rows = context.store.usage(period)
+            val names = names(tenant, rows.map { it.userId }.toSet())
+            val users = rows.groupBy { it.userId to it.keySource }.map { (key, list) ->
+                AssistantUserUsage(
+                    userId = key.first.toString(), name = names[key.first] ?: "Usuario", requests = list.sumOf { it.requests },
+                    inputTokens = list.sumOf { it.usage.inputTokens }, outputTokens = list.sumOf { it.usage.outputTokens },
+                    cacheReadInputTokens = list.sumOf { it.usage.cacheReadInputTokens }, cacheCreationInputTokens = list.sumOf { it.usage.cacheCreationInputTokens },
+                    countedTokens = list.sumOf { it.countedTokens }, keySource = key.second,
+                )
+            }.sortedByDescending { it.countedTokens }
+            val days = rows.groupBy { it.day }.map { (day, list) -> AssistantDayUsage(day.toString(), list.sumOf { it.countedTokens }, list.sumOf { it.requests }) }
+            Answer.Ok(
+                HttpStatusCode.OK,
+                AssistantCompanyUsageResponse(period.toString(), availability.monthlyLimit, rows.filter { it.keySource in availability.limitedSources }.sumOf { it.countedTokens }, users, days),
+            )
+        }
+    }
+}
+
+private fun companySettings(availability: AssistantAvailability) = AssistantCompanySettingsResponse(
+    enabled = availability.company.enabled,
+    serverEnabled = availability.server.enabled,
+    companyAllowed = availability.allowance.allowed,
+    ownKeySet = availability.company.ownKeySet,
+    ownKeyHint = availability.company.ownKeyHint,
+    serverKeySet = availability.server.keySet,
+    monthlyLimitTokens = availability.monthlyLimit,
+    limitAppliesToOwnKey = availability.server.limitOwnKeyCompanies,
+    model = availability.server.model,
+    retentionDays = availability.server.retentionDays,
+    disclosure = assistantDisclosure(),
+)
+
+internal fun month(value: String?): YearMonth? = if (value.isNullOrBlank()) YearMonth.now(java.time.ZoneOffset.UTC) else try {
+    YearMonth.parse(value)
+} catch (_: DateTimeParseException) {
+    null
+}
+
+private fun names(tenant: Connection, ids: Set<UUID>): Map<UUID, String> {
+    if (ids.isEmpty()) return emptyMap()
+    return tenant.prepareStatement("SELECT id, COALESCE(NULLIF(display_name, ''), postgres_role) FROM application_users WHERE id = ANY (?)").use { query ->
+        query.setArray(1, tenant.createArrayOf("uuid", ids.toTypedArray()))
+        query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getObject(1, UUID::class.java), rows.getString(2)) } }
+    }
+}
+
+private suspend inline fun <reified T> ApplicationCall.bodyAs(): T? {
+    val text = runCatching { receiveText() }.getOrNull() ?: return null
+    if (text.length > MaxBodyChars) return null
+    if (text.isBlank()) return null
+    return runCatching { AssistantJson.decodeFromString<T>(text) }.getOrNull()
+}
+
+private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRoute: Boolean, block: (AssistantService, AssistantContext, Connection) -> Answer): Answer {
+    val (companyCode, userId) = when (val lookup = assistant.access.userSession(call)) {
+        is UserSessionLookup.Denied -> return when (val decision = lookup.decision) {
+            is ModuleAccessDecision.Unauthorized -> Answer.Refused(HttpStatusCode.Unauthorized, decision.code, decision.message)
+            is ModuleAccessDecision.Forbidden -> Answer.Refused(HttpStatusCode.Forbidden, decision.code, decision.message)
+            ModuleAccessDecision.Allowed -> Answer.Refused(HttpStatusCode.Forbidden, "forbidden", "")
+        }
+        is UserSessionLookup.Granted -> lookup.companyCode to lookup.userId
+    }
+    val tenant = assistant.access.tenantConnectionForCompany(companyCode)
+        ?: return refused(403, "company_not_found", tr("La empresa no esta activa."))
+    return tenant.use { connection ->
+        val context = assistant.context(connection, companyCode, userId, call.sessionToken())
+            ?: return@use if (statusRoute) {
+                Answer.Ok(
+                    HttpStatusCode.OK,
+                    AssistantStatusResponse(
+                        visible = false, available = false, reason = AssistantIds.ReasonServerWorkspace,
+                        message = tr("El asistente no esta disponible en el espacio del servidor."), disclosure = assistantDisclosure(),
+                    ),
+                )
+            } else {
+                refused(403, AssistantIds.ReasonServerWorkspace, tr("El asistente no esta disponible en el espacio del servidor."))
+            }
+        block(assistant, context, connection)
+    }
+}
+
+/**
+ * A turn: everything that can be refused is checked first and answered as JSON; then the stream starts and the turn
+ * runs on an IO thread, its events going out as they come (Server-Sent Events, a ping every 15 s). Closing the
+ * connection cancels the turn. [prepare] returns the turn to run.
+ */
+private suspend fun ApplicationCall.turn(
+    service: AssistantService?,
+    prepare: (AssistantService, AssistantContext, Connection) -> ((AssistantSink) -> Unit),
+) {
+    response.headers.append(HttpHeaders.CacheControl, "no-store")
+    val assistant = service ?: return respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("ASSISTANT_UNAVAILABLE", tr("El asistente no esta disponible en este servidor.")))
+    var slot: String? = null
+    var run: ((AssistantSink) -> Unit)? = null
+    val answer = try {
+        withContext(Dispatchers.IO) {
+            resolve(assistant, this@turn, statusRoute = false) { _, context, tenant ->
+                val key = "${context.caller.companyCode}/${context.caller.userId}/${context.caller.ownerKey}"
+                if (!assistant.limits.allow(key)) return@resolve refused(429, "ASSISTANT_RATE_LIMITED", tr("Demasiadas solicitudes al asistente; espera un minuto."))
+                if (!assistant.limits.openStream(key)) return@resolve refused(429, "ASSISTANT_RATE_LIMITED", tr("Ya tienes otras respuestas del asistente en curso; espera a que terminen."))
+                try {
+                    run = prepare(assistant, context, tenant)
+                    slot = key
+                    Answer.Ok(HttpStatusCode.OK, null)
+                } catch (refusal: AssistantRefusal) {
+                    assistant.limits.release(key)
+                    refused(refusal.status, refusal.code, refusal.message.orEmpty())
+                } catch (failure: Throwable) {
+                    assistant.limits.release(key)
+                    throw failure
+                }
+            }
+        }
+    } catch (_: SQLException) {
+        refused(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
+    }
+    val turn = run
+    if (answer is Answer.Refused || turn == null) {
+        val refusal = answer as? Answer.Refused ?: refused(500, "INTERNAL", tr("No se pudo completar la respuesta."))
+        if (refusal.status == HttpStatusCode.TooManyRequests) response.header(HttpHeaders.RetryAfter, "60")
+        return respond(refusal.status, CompanyErrorResponse(refusal.code, refusal.message))
+    }
+    val language = I18n.language()
+    try {
+        stream(language, turn)
+    } finally {
+        slot?.let(assistant.limits::release)
+    }
+}
+
+/** Writes the events of [turn] as SSE frames. */
+internal suspend fun ApplicationCall.stream(language: String, turn: (AssistantSink) -> Unit) {
+    // Nginx must pass every frame at once (scripts/ubuntu/nginx-site.sh also turns buffering off for these routes).
+    response.header("X-Accel-Buffering", "no")
+    val frames = Channel<String>(capacity = 1024)
+    val closed = AtomicBoolean(false)
+    val sink = object : AssistantSink {
+        override fun event(name: String, data: JsonObject) {
+            if (!closed.get()) frames.trySendBlocking("event: $name\ndata: $data\n\n")
+        }
+        override val cancelled: Boolean get() = closed.get()
+    }
+    respondTextWriter(ContentType.Text.EventStream.withCharset(Charsets.UTF_8), HttpStatusCode.OK) {
+        coroutineScope {
+            launch(Dispatchers.IO + I18n.contextElement(language)) {
+                try {
+                    turn(sink)
+                } finally {
+                    frames.close()
+                }
+            }
+            try {
+                while (true) {
+                    val next = withTimeoutOrNull(PingMillis) { frames.receiveCatching() }
+                    if (next == null) {
+                        write(": ping\n\n")
+                        flush()
+                        continue
+                    }
+                    val frame = next.getOrNull() ?: break
+                    write(frame)
+                    flush()
+                }
+            } catch (failure: Throwable) {
+                // The client went away: the turn stops at its next check and gives the conversation back.
+                closed.set(true)
+                throw failure
+            }
+        }
+    }
+}
+
+private const val PingMillis = 15_000L

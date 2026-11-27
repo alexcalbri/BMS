@@ -5,7 +5,8 @@ Spec: `ACTIVITY_LOG.md`. Every snippet below compiles (`ActivityLogGuideExamples
 
 **1. The actor — never build a person by hand.**
 - Screen/route: `val permissions = call.requireModuleAccess(access, "crm") ?: return@post` → `permissions.activityActor`.
-- MCP tool: `call.activityActor` (already "Agente de <usuario>", switcher and owner group included).
+- MCP tool: `call.activityActor` (already "Agente de <usuario>", switcher and owner group included; "Asistente de
+  <usuario>" when the Core's in-app assistant runs the same tool, Core 0.14.0 — nothing to change in the module).
 - Your own actor class (`CrmActor`…): add `val activity: ActivityActor` and fill it from `permissions.activityActor`; keep the old `name` for your histories.
 - Importer: `ActivityActor.import(permissions.activityActor)`. Automation: `ActivityActor.automation(rule.name, startedBy = permissions.activityActor)`
   (`startedBy = null` when no person pressed a button). Job (`ModuleJob`): `ActivityActor.job("Recordatorios")`.

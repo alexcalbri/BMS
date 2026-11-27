@@ -1629,6 +1629,11 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("Two-step verification migration failed for company {}", companyCode, failure)
                     }
+                    try {
+                        applyAssistantMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Assistant migration failed for company {}", companyCode, failure)
+                    }
                     grantRuntimeDefaults(tenant)
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
@@ -1971,6 +1976,27 @@ class CompanyProvisioningService(
         applyLanguageMigrations(connection)
         applyActivityLogMigration(connection)
         applyTwoFactorMigration(connection)
+        applyAssistantMigration(connection)
+    }
+
+    /**
+     * The in-app assistant (tenant V017, GLOBAL_AGENT.md); also brought to existing companies at startup. The runtime
+     * role gets every DML right on its tables except the messages, which it only reads and appends (they go with their
+     * conversation, by cascade).
+     */
+    private fun applyAssistantMigration(connection: Connection) {
+        val relativePath = "database/tenant/migrations/V017__create_assistant.sql"
+        applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        listOf("assistant_settings", "assistant_conversations", "assistant_pending_calls", "assistant_usage").forEach { table ->
+            grantIfMissing(connection, config.runtimeUser, table, listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
+        }
+        grantIfMissing(connection, config.runtimeUser, "assistant_messages", listOf("SELECT", "INSERT"))
+        grantSequenceIfMissing(connection, config.runtimeUser, "assistant_messages", "assistant_messages_id_seq", listOf("USAGE", "SELECT"))
+        try {
+            revokeIfPresent(connection, config.runtimeUser, "assistant_messages", listOf("UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"))
+        } catch (failure: Exception) {
+            log.error("No se pudieron quitar al runtime {} los privilegios de mas sobre assistant_messages", config.runtimeUser, failure)
+        }
     }
 
     // Two-step verification of the company's users (tenant V012, TWO_FACTOR.md); also brought to existing companies at startup.
@@ -2343,7 +2369,7 @@ class CompanyProvisioningService(
      * The runtime role owns nothing and is a member of nothing (SELF_HOSTING.md, Roles de PostgreSQL): it reaches the
      * company's tables only through grants. Every table and view of schema public owned by the current role (the
      * server owner's) gets SELECT, INSERT, UPDATE, DELETE for it, schema_migrations SELECT, tenant_data_keys SELECT and
-     * INSERT, application_user_2fa_email_recovery SELECT, INSERT and UPDATE, and every sequence USAGE, SELECT; the activity log and its sequence keep the narrower grants of
+     * INSERT, application_user_2fa_email_recovery SELECT, INSERT and UPDATE, assistant_messages SELECT and INSERT, and every sequence USAGE, SELECT; the activity log and its sequence keep the narrower grants of
      * [applyActivityLogMigration]. Only missing
      * privileges are granted, so running it after every migration costs one catalog query. Never throws.
      */
@@ -2768,6 +2794,7 @@ private val RuntimeDefaultGrantsSql = """
             WHEN o.relname = 'schema_migrations' THEN p.privilege = 'SELECT'
             WHEN o.relname = 'tenant_data_keys' THEN p.privilege IN ('SELECT', 'INSERT')
             WHEN o.relname = 'application_user_2fa_email_recovery' THEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE')
+            WHEN o.relname = 'assistant_messages' THEN p.privilege IN ('SELECT', 'INSERT')
             ELSE p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
         END
     )

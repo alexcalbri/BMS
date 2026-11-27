@@ -218,8 +218,9 @@ reason code (`COMPANY_DISABLED`, `LIMIT_REACHED`...), `404 CONVERSATION_NOT_FOUN
 `POST /companies/me/assistant/confirmations/{id}` `{"decision": "approve" | "reject"}` → `200 text/event-stream`. The
 decision is recorded; when it was the last open call of that turn, the turn resumes on this same stream (approved calls
 run now, with the permissions the user has NOW; rejected ones get `is_error "El usuario no autorizo esta accion"`);
-otherwise the stream ends with `done {"reason": "waiting"}`. JSON refusals: `404 CONFIRMATION_NOT_FOUND`,
-`409 CONFIRMATION_DECIDED`, `410 CONFIRMATION_EXPIRED`, plus the rules above.
+otherwise the stream ends with `done {"reason": "waiting"}`. JSON refusals: `404 CONFIRMATION_NOT_FOUND` (also for a
+confirmation of someone else's conversation), `409 CONFIRMATION_DECIDED`, `410 CONFIRMATION_EXPIRED`, plus the rules
+above (a decision needs the assistant available: when it was turned off meanwhile, the call simply expires).
 
 `GET /companies/me/assistant/settings` (business owner) →
 ```json
@@ -257,7 +258,7 @@ its tokens still count) and the conversation goes back to `idle`.
 | `tool_finished` | `{"toolUseId": "..", "name": "..", "label": "..", "status": "ok" \| "error" \| "rejected" \| "expired" \| "not_run", "message": "optional short error"}` |
 | `confirmation_required` | `{"confirmationId": "uuid", "toolUseId": "..", "name": "..", "label": "Clientes: Crear cliente", "module": "Clientes", "destructive": false, "summary": [{"label": "Nombre del cliente.", "value": "Ana"}], "expiresAt": "ISO"}` |
 | `usage` | `{"inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3, "cacheCreationInputTokens": 4, "countedTokens": 5, "monthUsedTokens": 6, "monthlyLimitTokens": 7}` (after every model response) |
-| `notice` | `{"code": "REFUSAL" \| "MAX_TOKENS" \| "FALLBACK" \| "COMPACTED", "message": "..."}` |
+| `notice` | `{"code": "REFUSAL" \| "MAX_TOKENS" \| "FALLBACK" \| "COMPACTED", "message": "..."}` — on `REFUSAL` drop the text streamed since the last tool line (a declined answer is never stored) |
 | `error` | `{"code": "...", "message": "...", "retryable": true}` |
 | `done` | `{"reason": "end_turn" \| "awaiting_confirmation" \| "waiting" \| "max_tokens" \| "refusal" \| "error" \| "limit" \| "cancelled"}` |
 
@@ -286,7 +287,7 @@ again (no model call is made for it). A running turn holds a lease of 10 minutes
   to a company's own key only when `limitOwnKeyCompanies` is on (default off). Checked before every model request; a
   turn already running finishes its current request.
 - Per user: 10 requests (messages + confirmations) per minute, 1 stream per conversation, 2 streams at once.
-- Per turn: 25 tool calls, 40 model requests, 10 minutes.
+- Per stream (a turn resumed after a confirmation starts its own counts): 25 tool calls, 40 model requests, 10 minutes.
 - Message: 20 000 characters. History: server-side compaction (beta `compact-2026-01-12`, trigger 150 000 input
   tokens); a conversation over 400 stored messages answers `409 CONVERSATION_TOO_LONG`.
 
@@ -336,3 +337,47 @@ Every change is audited in `provisioning_audit_log` (`assistant.settings_changed
   per-company allowance/limit, usage.
 - Disclosure text (exact, translated): "Los datos que el asistente consulte se envian a Anthropic para generar la
   respuesta."
+
+## Implementation (server, Core 0.14.0)
+
+Where it lives: `server/.../server/assistant/` — `AssistantModel.kt` (the SDK behind `AssistantModelClient`,
+request builder `AnthropicRequests`, response reader `AnthropicResponses`, typed errors), `AssistantEngine.kt` (turn loop,
+pause/resume, expiry, system prompt), `AssistantTools.kt` (tool registry reuse, see "How the assistant gets its tools"),
+`AssistantStore.kt` (tenant V017), `AssistantSettings.kt` (server_settings and tenant settings, sealed keys, audit),
+`AssistantService.kt` (caller, availability, runtime, per-user limits, daily upkeep), `AssistantRoutes.kt` /
+`AssistantServerRoutes.kt` (HTTP + SSE), `AssistantView.kt` (what the app sees). Contract types:
+`core/.../Assistant.kt`.
+
+Claude API (official Java SDK `com.anthropic:anthropic-java:3.14.0`, names checked with `javap` on that jar):
+beta Messages endpoint (`client.beta().messages().createStreaming`) because the refusal fallback, thinking block binding
+and compaction are beta parameters there; model from the allowlist (default `claude-opus-5-5`); `thinking: adaptive`
+with `block_binding.prefix_mismatch_behavior: drop_block` (beta `thinking-binding-controls-2026-08-01`: the tool list
+follows the user's live permissions, so a prefix may legitimately change; the API then drops the old thinking blocks
+instead of failing); `output_config.effort` explicit (default `medium`); `max_tokens` 32000; `tool_choice: auto` only
+when there are tools; no sampling parameters, no budget, no prefill; `fallbacks: "default"` (beta
+`server-side-fallback-2026-07-01`) except for `claude-haiku-5-5`, which has no fallback model; compaction
+`compact_20260112` at 150 000 input tokens (beta `compact-2026-01-12`) except for Haiku; cache breakpoint on the system
+block (tools + system) plus top-level automatic caching for the conversation; the date goes in each user turn
+(`<contexto_bms>` text block, hidden from the app). Every `stop_reason` is handled (`refusal` first, `max_tokens`,
+`tool_use`, `pause_turn`/`compaction` continue, anything else ends). The response is stored as `BetaMessage.toParam()`
+(thinking with signature, tool_use...), minus the blocks before a `fallback` block that the docs say not to echo. A
+manual loop rather than the SDK's tool runner: the pause for confirmation must survive the HTTP request, which the
+runner cannot do. One SDK client per API key (by its hash), the key passed explicitly, never `fromEnv()`; timeout 10 min,
+2 retries; errors classified by HTTP status only (the exception text is never logged or shown).
+
+Database: tenant `V017__create_assistant.sql` (applied to new companies with the Core migrations, to existing ones by
+the startup catch-up and by `update.sh`, which applies every tenant migration from V006 on). Grants: the runtime role gets
+SELECT, INSERT, UPDATE, DELETE on `assistant_settings`, `assistant_conversations`, `assistant_pending_calls`,
+`assistant_usage`, and only SELECT, INSERT on `assistant_messages` (+ USAGE, SELECT on its sequence): messages go only
+with their conversation (cascade, run as the table owner). The same rule is in `grantRuntimeDefaults`, `update.sh`
+and `db-roles.sh`. No control migration: the server settings are `server_settings` keys (runtime already has DML there).
+
+Settings and environment: nothing new in `server.env`. The server key is set from the app (sealed with BMS_MASTER_KEY;
+without it no key can be stored and the status says `SECRETS_UNAVAILABLE`). The server needs outgoing HTTPS to
+`api.anthropic.com` once the assistant is on.
+
+Not verified against the real API (no call was made, no real key used anywhere): the beta parameters' acceptance per
+model (block binding and compaction on Sonnet/Haiku 5.5, `fallbacks: "default"` on Sonnet 5.5), the exact streaming of
+fallback/compaction blocks, prompt-cache hit rates (`cache_read_input_tokens` is recorded per response and in the usage
+screens, to be checked on a real server), and SSE through a real Nginx (the generated config is checked by `nginx -t`
+in `scripts/ubuntu/tests`).

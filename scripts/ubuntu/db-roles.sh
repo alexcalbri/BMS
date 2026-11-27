@@ -158,6 +158,7 @@ WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND c.relname NOT IN ('activity_log', 'activity_log_chain')
   AND NOT (c.relname = 'tenant_data_keys' AND p.privilege IN ('UPDATE', 'DELETE'))
   AND NOT (c.relname = 'application_user_2fa_email_recovery' AND p.privilege = 'DELETE')
+  AND NOT (c.relname = 'assistant_messages' AND p.privilege IN ('UPDATE', 'DELETE'))
   AND pg_catalog.has_table_privilege(:'runtime', c.oid, p.privilege)
   AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(c.relacl) a
                   WHERE a.grantee = :'runtime_oid'::oid AND a.privilege_type = p.privilege)

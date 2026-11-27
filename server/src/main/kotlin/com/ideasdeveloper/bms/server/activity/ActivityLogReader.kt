@@ -240,7 +240,7 @@ object ActivityLogReader {
                         val module = rows.getString(11)
                         val action = rows.getString(15)
                         // Who it was, rebuilt from the structured columns: the stored display is never shown.
-                        val who = ActivityDisplay.of(rows.getString(3), rows.getString(5), rows.getString(7), rows.getString(8), rows.getString(10))
+                        val who = ActivityDisplay.of(rows.getString(3), rows.getString(5), rows.getString(7), rows.getString(8), rows.getString(10), rows.getString(18))
                         add(
                             ActivityLogRow(
                                 id = rows.getLong(1),
@@ -265,6 +265,7 @@ object ActivityLogReader {
                                 changes = changes(rows.getString(17)),
                                 origin = rows.getString(18),
                                 viaAgent = who.viaAgent,
+                                viaAssistant = who.viaAssistant,
                                 fromServer = who.fromServer,
                                 actorKindLabel = who.kindLabel,
                             ),

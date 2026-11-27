@@ -619,6 +619,11 @@ GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user
 -- Activity log (tenant V011, ACTIVITY_LOG.md): append-only, the runtime user only reads and appends.
 GRANT SELECT, INSERT ON activity_log, activity_log_chain TO :"db_user";
 GRANT USAGE ON SEQUENCE activity_log_id_seq TO :"db_user";
+-- In-app assistant (tenant V017, GLOBAL_AGENT.md): its messages are only read and appended by the runtime user.
+GRANT SELECT, INSERT, UPDATE, DELETE ON assistant_settings, assistant_conversations, assistant_pending_calls, assistant_usage TO :"db_user";
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON assistant_messages FROM :"db_user";
+GRANT SELECT, INSERT ON assistant_messages TO :"db_user";
+GRANT USAGE, SELECT ON SEQUENCE assistant_messages_id_seq TO :"db_user";
 SQL
     done <<< "$tenants"
     # shellcheck disable=SC2034

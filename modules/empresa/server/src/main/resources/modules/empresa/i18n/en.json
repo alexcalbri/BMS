@@ -1,6 +1,8 @@
 {
   "Administracion de empresas, identidad y configuracion de cada empresa.": "Company administration, identity and settings of each company.",
   "Empresa": "Company",
+  "Permite usar el asistente de IA de la app. El asistente solo puede hacer lo que el usuario tiene permitido y pide confirmacion antes de cambiar datos. Lo que consulte se envia a Anthropic.": "Lets the user use the app's AI assistant. The assistant can only do what the user is allowed to do and asks for confirmation before changing data. What it looks up is sent to Anthropic.",
   "Permite ver quien hizo cada cambio en la empresa (usuario, modulo, registro y fecha) y exportarlo.": "Lets the user see who made each change in the company (user, module, record and date) and export it.",
+  "Usar el asistente de IA": "Use the AI assistant",
   "Ver el registro de actividad": "View the activity log"
 }

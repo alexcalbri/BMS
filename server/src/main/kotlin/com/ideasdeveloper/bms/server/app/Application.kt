@@ -2,6 +2,8 @@ package com.ideasdeveloper.bms.server.app
 
 import com.ideasdeveloper.bms.server.admins.ServerAudit
 import com.ideasdeveloper.bms.server.activity.companyActivityRoutes
+import com.ideasdeveloper.bms.server.assistant.assistantRoutes
+import com.ideasdeveloper.bms.server.assistant.assistantServerRoutes
 import com.ideasdeveloper.bms.server.admins.serverAdminRoutes
 import com.ideasdeveloper.bms.sayHello
 import com.ideasdeveloper.bms.server.auth.api.authRoutes
@@ -501,6 +503,30 @@ fun Application.module() {
         storage = storageGuard,
         twoFactorResets = twoFactorResets,
     ).also { companySelfServiceRef = it }
+    // The in-app assistant (GLOBAL_AGENT.md): Anthropic SDK clients per API key (never from the environment), the
+    // server's settings in server_settings and a daily job (expired confirmations, retention).
+    val assistantModels = com.ideasdeveloper.bms.server.assistant.AnthropicModelClients()
+    val assistantService = com.ideasdeveloper.bms.server.assistant.AssistantService(
+        access = moduleAccessService,
+        serverConfig = com.ideasdeveloper.bms.server.assistant.AssistantServerConfig(DatabaseFactory.getDataSource(), secretBox),
+        secrets = secretBox,
+        models = assistantModels,
+    )
+    val assistantJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "assistant-upkeep").apply { isDaemon = true } }
+    assistantJob.scheduleWithFixedDelay({
+        try {
+            migrationsDone.await()
+            moduleAccessService.activeCompanies().filter { it != com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code }.forEach { code ->
+                try {
+                    assistantService.daily(code)
+                } catch (failure: Exception) {
+                    log.warn("Assistant upkeep failed for company {}: {}", code, failure.javaClass.name)
+                }
+            }
+        } catch (failure: Throwable) {
+            log.error("Assistant upkeep job failed to run", failure)
+        }
+    }, 30, 24 * 60, java.util.concurrent.TimeUnit.MINUTES)
     // Hourly: every company's chain verified and anchored in provisioning_audit_log, after the startup catch-up.
     val integrityJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "activity-integrity").apply { isDaemon = true } }
     integrityJob.scheduleWithFixedDelay({
@@ -513,6 +539,8 @@ fun Application.module() {
     }, 10, 60, java.util.concurrent.TimeUnit.MINUTES)
     monitor.subscribe(ApplicationStopped) {
         integrityJob.shutdownNow()
+        assistantJob.shutdownNow()
+        assistantModels.close()
         emailRecoveryJob.shutdownNow()
         moduleJobs.stop()
         moduleAccessService.close()
@@ -615,6 +643,9 @@ fun Application.module() {
             storageRoutes(serverActors, StorageAdmin(DatabaseFactory.getDataSource(), storageQuotas, storageGuard, companyFilesRoot))
             // The company's own activity log (ACTIVITY_LOG.md §3).
             companyActivityRoutes(moduleAccessService, activityModuleName)
+            // The in-app assistant (GLOBAL_AGENT.md): company routes (SSE turns) and the server's settings.
+            assistantRoutes(assistantService)
+            assistantServerRoutes(serverActors, com.ideasdeveloper.bms.server.assistant.AssistantServerAdmin(DatabaseFactory.getDataSource(), assistantService))
         }
         // Centro de notificaciones del Core: la campana de la app lee y marca las del usuario.
         rateLimit(RateLimitName("public")) {

@@ -32,6 +32,12 @@ check 'HSTS por HTTPS' grep -q Strict-Transport-Security <<< "$https_site"
 check 'sin HSTS ni Alt-Svc por HTTP' bash -c '! grep -qE "Strict-Transport-Security|Alt-Svc" <<< "$1"' _ "$http_site"
 check 'CSP con wasm' grep -q "script-src 'self' 'wasm-unsafe-eval'" <<< "$https_site"
 check 'limites por direccion' grep -q 'limit_req zone=bms_auth' <<< "$https_site"
+# The assistant's streamed answers (SSE) go out frame by frame, with a long wait between bytes, and only there.
+assistant_block=$(sed -n '/location \/companies\/me\/assistant\/ {/,/^    }/p' <<< "$https_site")
+check 'asistente: ubicacion propia' grep -q 'proxy_pass http://127.0.0.1:8080;' <<< "$assistant_block"
+check 'asistente: sin buffer de respuesta' grep -q 'proxy_buffering off;' <<< "$assistant_block"
+check 'asistente: espera larga' grep -q 'proxy_read_timeout 900s;' <<< "$assistant_block"
+equals 'sin buffer solo en el asistente' 1 "$(grep -c 'proxy_buffering off;' <<< "$https_site")"
 
 # nginx -t on the generated files (paths moved into the work directory).
 if command -v nginx >/dev/null 2>&1; then
