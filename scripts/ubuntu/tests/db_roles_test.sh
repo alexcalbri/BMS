@@ -56,6 +56,7 @@ INSERT INTO server_owners (user_id) VALUES ('11111111-1111-1111-1111-11111111111
 GRANT USAGE ON SCHEMA public TO $RUNTIME;
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies, application_users TO $RUNTIME;
 GRANT SELECT, INSERT ON provisioning_audit_log TO $RUNTIME;
+GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_data_keys TO $RUNTIME;
 INSERT INTO companies (id, code, name, database_name, owner_group) VALUES
     (gen_random_uuid(), 'seca_tnew', 'Nueva', '$NEW', gen_random_uuid()),
     (gen_random_uuid(), 'seca_told', 'Vieja', '$OLD', gen_random_uuid()),
@@ -69,7 +70,7 @@ SQL
 tenant_tables() {
     for file in database/core/migrations/V001__create_application_users database/core/migrations/V002__create_application_sessions \
         database/tenant/migrations/V001__create_business_owner database/tenant/migrations/V003__create_tenant_modules \
-        database/tenant/migrations/V009__outbound; do
+        database/tenant/migrations/V006__create_extensions database/tenant/migrations/V009__outbound; do
         strip_tx "$REPO/$file.sql"
     done
     cat <<'SQL'
@@ -147,6 +148,8 @@ equals 'empresa vieja: secuencia de outbound' t "$(sql "$OLD" "SELECT has_sequen
 equals 'filas conservadas' '5 6' "$(sql "$NEW" 'SELECT count(*) FROM activity_log') $(sql "$OLD" 'SELECT count(*) FROM activity_log')"
 equals 'filas selladas' '5 6' "$(sql "$NEW" 'SELECT count(*) FROM activity_log_chain') $(sql "$OLD" 'SELECT count(*) FROM activity_log_chain')"
 equals 'la base ajena no se toca' 'postgres f' "$(sql postgres "SELECT pg_get_userbyid(datdba), COALESCE(datacl::text, '') LIKE '%$PROVISIONER%' FROM pg_database WHERE datname = '$FOREIGN'" | tr '|' ' ')"
+equals 'empresa nueva: la llave de datos solo se lee y se crea' 'INSERT,SELECT' "$(sql "$NEW" "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = '$RUNTIME' AND table_name = 'tenant_data_keys'")"
+equals 'base central: la llave de datos (V017) solo se lee y se crea' 'INSERT,SELECT' "$(sql "$CONTROL" "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = '$RUNTIME' AND table_name = 'tenant_data_keys'")"
 equals 'auditoria del servidor: solo SELECT, INSERT' 'INSERT,SELECT' "$(sql "$CONTROL" "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = '$RUNTIME' AND table_name = 'provisioning_audit_log'")"
 equals 'empresas que update.sh migra' "$NEW $OWNER|$OLD $OWNER" "$(bms_tenant_databases "$CONTROL" 2>/dev/null | paste -sd '|')"
 

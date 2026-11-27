@@ -4,7 +4,8 @@
 #   runtime role (DB_USER, e.g. bms_app)   the long-lived application connections. A plain login role: no
 #                                          membership in any other role, no CREATEDB/CREATEROLE, owns nothing;
 #                                          only the grants it needs (DML on ordinary tables; SELECT, INSERT on the
-#                                          activity log and its chain, USAGE on its sequence).
+#                                          activity log and its chain and on tenant_data_keys, USAGE on the log's
+#                                          sequence).
 #   server owner role (e.g. server_owner)  the server owner's login (their password). CREATEDB CREATEROLE; owns
 #                                          every company database and every object in it.
 #   provisioning role (DB_PROVISIONING_USER, e.g. bms_provisioner)
@@ -134,6 +135,7 @@ CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) AS p (privile
 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND (c.relkind <> 'm' OR p.privilege = 'SELECT')
   AND c.relname NOT IN ('activity_log', 'activity_log_chain')
+  AND NOT (c.relname = 'tenant_data_keys' AND p.privilege IN ('UPDATE', 'DELETE'))
   AND pg_catalog.has_table_privilege(:'runtime', c.oid, p.privilege)
   AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(c.relacl) a
                   WHERE a.grantee = :'runtime_oid'::oid AND a.privilege_type = p.privilege)
@@ -214,6 +216,13 @@ WHERE c.relnamespace = 'public'::pg_catalog.regnamespace AND c.relname = 'activi
   AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(c.relacl) a
                   WHERE a.grantee = :'runtime_oid'::oid AND a.privilege_type = 'USAGE')
 \gexec
+-- 4. The company's data key (tenant V006) is only read and created by the runtime role: replacing or deleting it
+-- would make every sealed secret unreadable.
+SELECT pg_catalog.format('REVOKE %s ON TABLE public.tenant_data_keys FROM %I', a.privilege_type, :'runtime')
+FROM pg_catalog.pg_class c, pg_catalog.aclexplode(c.relacl) a
+WHERE c.oid = pg_catalog.to_regclass('public.tenant_data_keys')
+  AND a.grantee = :'runtime_oid'::oid AND a.privilege_type NOT IN ('SELECT', 'INSERT')
+\gexec
 COMMIT;
 SQL
 }
@@ -253,7 +262,7 @@ SQL
     done <<< "$tenants"
 
     # Control database: everything there belongs to the superuser; the runtime keeps its explicit grants, and the
-    # server audit stays SELECT, INSERT for it.
+    # server audit and the data key of control V017 stay SELECT, INSERT for it.
     bms_pg_super "$control_db" -q -v runtime="$runtime" <<'SQL' || return 1
 BEGIN;
 SET LOCAL search_path = pg_catalog, pg_temp;
@@ -262,13 +271,14 @@ SELECT pg_catalog.format('GRANT %s ON TABLE public.%I TO %I', p.privilege, c.rel
 FROM pg_catalog.pg_class c CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) AS p (privilege)
 WHERE c.relnamespace = 'public'::pg_catalog.regnamespace AND c.relkind IN ('r', 'p', 'v')
   AND c.relname <> 'provisioning_audit_log'
+  AND NOT (c.relname = 'tenant_data_keys' AND p.privilege IN ('UPDATE', 'DELETE'))
   AND pg_catalog.has_table_privilege(:'runtime', c.oid, p.privilege)
   AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(c.relacl) a
                   WHERE a.grantee = :'runtime_oid'::oid AND a.privilege_type = p.privilege)
 \gexec
-SELECT pg_catalog.format('REVOKE %s ON TABLE public.provisioning_audit_log FROM %I', a.privilege_type, :'runtime')
+SELECT pg_catalog.format('REVOKE %s ON TABLE public.%I FROM %I', a.privilege_type, c.relname, :'runtime')
 FROM pg_catalog.pg_class c, pg_catalog.aclexplode(c.relacl) a
-WHERE c.oid = pg_catalog.to_regclass('public.provisioning_audit_log')
+WHERE c.oid IN (pg_catalog.to_regclass('public.provisioning_audit_log'), pg_catalog.to_regclass('public.tenant_data_keys'))
   AND a.grantee = :'runtime_oid'::oid AND a.privilege_type NOT IN ('SELECT', 'INSERT')
 \gexec
 COMMIT;

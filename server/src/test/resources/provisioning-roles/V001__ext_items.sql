@@ -1,0 +1,3 @@
+BEGIN;
+CREATE TABLE ext_secatest__items (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL);
+COMMIT;

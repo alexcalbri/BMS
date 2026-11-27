@@ -424,6 +424,7 @@ apply_control_migrations() {
         database/core/migrations/V005__create_notifications.sql \
         database/core/migrations/V006__add_application_user_language.sql \
         database/control/migrations/V015__create_server_admins.sql \
+        database/control/migrations/V017__create_two_factor.sql \
         database/tenant/migrations/V004__create_application_permissions.sql \
         database/tenant/migrations/V005__create_application_user_credentials.sql \
         database/tenant/migrations/V006__create_extensions.sql \
@@ -432,6 +433,7 @@ apply_control_migrations() {
         database/tenant/migrations/V009__outbound.sql \
         database/tenant/migrations/V010__create_text_translations.sql \
         database/tenant/migrations/V011__create_activity_log.sql \
+        database/tenant/migrations/V012__create_two_factor.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do
@@ -479,6 +481,11 @@ SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.co
 \if :has_commit_pin
 GRANT INSERT (target_version, from_version, requested_by, target_commit) ON core_update_requests TO :"db_user";
 \endif
+-- Two-step verification of the server owner and administrators (control V017, TWO_FACTOR.md). The data key that seals
+-- their secrets is only read and created by the runtime role, never replaced or deleted.
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON tenant_data_keys FROM :"db_user";
+GRANT SELECT, INSERT ON tenant_data_keys TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
 SQL
     cd /
 }
@@ -508,12 +515,15 @@ apply_tenant_migrations() {
         apply_migration "$tenant_db" tenant database/tenant/migrations/V009__outbound.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V010__create_text_translations.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V011__create_activity_log.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V012__create_two_factor.sql
         migration_psql "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$DB_USER" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_user";
 GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO :"db_user";
+-- The company's data key (tenant V006) is only read and created by the runtime role, never replaced or deleted.
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON tenant_data_keys FROM :"db_user";
 GRANT SELECT, INSERT ON tenant_data_keys TO :"db_user";
 GRANT SELECT, INSERT, UPDATE ON tenant_extensions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_extension_settings, tenant_extension_objects TO :"db_user";
@@ -522,6 +532,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON account_reset_throttle TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON outbound_events, outbound_links, integration_connections TO :"db_user";
 GRANT USAGE, SELECT ON SEQUENCE outbound_events_id_seq TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
+-- Two-step verification of the company's users (tenant V012, TWO_FACTOR.md).
+GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
 -- Activity log (tenant V011, ACTIVITY_LOG.md): append-only, the runtime user only reads and appends.
 GRANT SELECT, INSERT ON activity_log, activity_log_chain TO :"db_user";
 GRANT USAGE ON SEQUENCE activity_log_id_seq TO :"db_user";

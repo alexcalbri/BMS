@@ -122,6 +122,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V014__add_company_default_language.sql
     database/control/migrations/V015__create_server_admins.sql
     database/control/migrations/V016__core_update_commit_pin.sql
+    database/control/migrations/V017__create_two_factor.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -757,6 +758,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V013__create_comp
 apply_migration "$DB_NAME" control database/control/migrations/V014__add_company_default_language.sql
 apply_migration "$DB_NAME" control database/control/migrations/V015__create_server_admins.sql
 apply_migration "$DB_NAME" control database/control/migrations/V016__core_update_commit_pin.sql
+apply_migration "$DB_NAME" control database/control/migrations/V017__create_two_factor.sql
 # The server owner's role owns the company databases and creates them and their business owner roles. The runtime
 # role is NOT a member of it; the provisioning login may SET ROLE to it (and to the runtime role), never inherits.
 printf '%s' "$SERVER_PASSWORD" | bms_role_set_password "$SERVER_OWNER" 'INHERIT NOSUPERUSER CREATEDB CREATEROLE' ||
@@ -797,6 +799,10 @@ GRANT USAGE ON SEQUENCE core_update_requests_id_seq TO :"db_user";
 GRANT SELECT, INSERT, UPDATE ON server_extensions, extension_operations, extension_operation_targets TO :"db_user";
 GRANT SELECT, INSERT ON extension_unsigned_authorizations TO :"db_user";
 GRANT USAGE ON SEQUENCE extension_unsigned_authorizations_id_seq, extension_operations_id_seq TO :"db_user";
+-- Two-step verification of the server owner and administrators (control V017, TWO_FACTOR.md): the data key that seals
+-- their secrets is only read and created (never replaced or deleted) by the runtime role.
+GRANT SELECT, INSERT ON tenant_data_keys TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
 COMMIT;
 SQL
 bms_check_role_layout "$DB_NAME" "$DB_USER" "$PROVISIONER" || die 'La organizacion de roles de PostgreSQL no quedo como se esperaba.'

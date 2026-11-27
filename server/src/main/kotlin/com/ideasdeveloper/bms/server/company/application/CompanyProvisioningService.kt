@@ -2037,6 +2037,12 @@ class CompanyProvisioningService(
         val relativePath = "database/tenant/migrations/V006__create_extensions.sql"
         applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         grantIfMissing(connection, config.runtimeUser, "tenant_data_keys", listOf("SELECT", "INSERT"))
+        // The data key is only read and created: replacing or deleting it would make every sealed secret unreadable.
+        try {
+            revokeIfPresent(connection, config.runtimeUser, "tenant_data_keys", listOf("UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"))
+        } catch (failure: Exception) {
+            log.error("No se pudieron quitar al runtime {} los privilegios de mas sobre tenant_data_keys", config.runtimeUser, failure)
+        }
         grantIfMissing(connection, config.runtimeUser, "tenant_extensions", listOf("SELECT", "INSERT", "UPDATE"))
         listOf("tenant_extension_settings", "tenant_extension_objects").forEach { table ->
             grantIfMissing(connection, config.runtimeUser, table, listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
@@ -2314,8 +2320,9 @@ class CompanyProvisioningService(
     /**
      * The runtime role owns nothing and is a member of nothing (SELF_HOSTING.md, Roles de PostgreSQL): it reaches the
      * company's tables only through grants. Every table and view of schema public owned by the current role (the
-     * server owner's) gets SELECT, INSERT, UPDATE, DELETE for it, schema_migrations SELECT, and every sequence USAGE,
-     * SELECT; the activity log and its sequence keep the narrower grants of [applyActivityLogMigration]. Only missing
+     * server owner's) gets SELECT, INSERT, UPDATE, DELETE for it, schema_migrations SELECT, tenant_data_keys SELECT and
+     * INSERT, and every sequence USAGE, SELECT; the activity log and its sequence keep the narrower grants of
+     * [applyActivityLogMigration]. Only missing
      * privileges are granted, so running it after every migration costs one catalog query. Never throws.
      */
     private fun grantRuntimeDefaults(connection: Connection) {
@@ -2699,6 +2706,7 @@ private val RuntimeDefaultGrantsSql = """
         WHERE CASE
             WHEN o.relkind = 'S' THEN p.privilege IN ('USAGE', 'SELECT')
             WHEN o.relname = 'schema_migrations' THEN p.privilege = 'SELECT'
+            WHEN o.relname = 'tenant_data_keys' THEN p.privilege IN ('SELECT', 'INSERT')
             ELSE p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
         END
     )

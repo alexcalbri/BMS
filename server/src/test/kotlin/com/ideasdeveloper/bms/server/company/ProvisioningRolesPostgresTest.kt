@@ -106,14 +106,18 @@ class ProvisioningRolesPostgresTest {
         return LoginDatabases(data, Database.connect(data), urlOf(central).substringBefore("?"), "[]", runtimeRole, "runtime-pass", prefix, 3600).also { opened += it }
     }
 
-    private fun provisioning(databases: LoginDatabases, integrity: ActivityIntegrityService) = CompanyProvisioningService(
+    private fun provisioning(
+        databases: LoginDatabases,
+        integrity: ActivityIntegrityService,
+        registry: ModuleRegistry = ModuleRegistry(listOf(com.ideasdeveloper.bms.modules.clientes.ClientesServerModule)),
+    ) = CompanyProvisioningService(
         central = runtimeSource(central),
         config = CompanyProvisioningConfig(
             urlOf("postgres").substringBefore("?"), runtimeRole, "runtime-pass", prefix, root.path,
             provisioningUser = provisioner, provisioningPassword = "provisioner-pass",
         ),
         loginDatabases = databases,
-        moduleRegistry = ModuleRegistry(listOf(com.ideasdeveloper.bms.modules.clientes.ClientesServerModule)),
+        moduleRegistry = registry,
         remoteModuleCatalog = RemoteModuleCatalog(),
         defaultCatalogUrl = "",
         modulePackagesRoot = java.nio.file.Files.createTempDirectory("seca-modules"),
@@ -146,10 +150,17 @@ class ProvisioningRolesPostgresTest {
                 scalar(db, """
                     SELECT count(*) FROM pg_class c, (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) p (privilege)
                     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
-                      AND c.relname NOT IN ('activity_log', 'activity_log_chain', 'schema_migrations')
+                      AND c.relname NOT IN ('activity_log', 'activity_log_chain', 'schema_migrations', 'tenant_data_keys')
                       AND NOT has_table_privilege(c.oid, p.privilege)
                 """.trimIndent()),
             )
+            // The company's data key is only read and created (replacing or deleting it loses every sealed secret).
+            assertEquals("INSERT,SELECT", scalar(db, "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = current_user AND table_name = 'tenant_data_keys'"))
+            listOf("UPDATE tenant_data_keys SET key_version = key_version", "DELETE FROM tenant_data_keys")
+                .forEach { sql -> assertFailsWith<SQLException>(sql) { db.run(sql) } }
+            // Two-step verification of the company's users (tenant V012).
+            db.run("DELETE FROM application_user_recovery_codes WHERE FALSE")
+            db.run("UPDATE application_user_two_factor SET failed_attempts = 0 WHERE FALSE")
             assertEquals("0", scalar(db, "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'S' AND NOT CASE WHEN relkind = 'S' THEN has_sequence_privilege(oid, 'USAGE') ELSE TRUE END"))
             assertTrue(scalar(db, "SELECT count(*) FROM schema_migrations")!!.toInt() > 5)
         }
@@ -193,5 +204,65 @@ class ProvisioningRolesPostgresTest {
             assertFailsWith<SQLException> { db.run("SET ROLE $owner") }
             assertFailsWith<SQLException> { db.run("DELETE FROM provisioning_audit_log") }
         }
+    }
+
+    /**
+     * Module and extension migrations when the runtime role owns nothing: enabling an optional module, an extension's
+     * migrations and the startup catch-up (tenant V012) all run through the provisioning login as the owner's role, so
+     * every new table belongs to the owner and the runtime role only gets grants. A table an older update.sh left to
+     * postgres does not stop the catch-up (update.sh moves those to the owner; the Core cannot).
+     */
+    @Test
+    fun moduleAndExtensionMigrationsRunAsTheOwnerThroughTheProvisioningLogin() {
+        if (url == null) return
+        reset()
+        val databases = loginDatabases()
+        val integrity = ActivityIntegrityService(runtimeSource(central), { database -> runtime(database) })
+        val registry = ModuleRegistry(
+            listOf(
+                com.ideasdeveloper.bms.modules.clientes.ClientesServerModule,
+                com.ideasdeveloper.bms.modules.crm.CrmServerModule,
+                com.ideasdeveloper.bms.modules.tareas.TareasServerModule,
+            ),
+            installedModuleIds = setOf("clientes", "crm", "tareas"),
+        )
+        val provisioning = provisioning(databases, integrity, registry)
+        val actor = AuditActor.owner(owner, ownerId)
+        provisioning.createCompany(
+            CreateCompanyRequest("seca_mod", "Modulos", "seca_dueno_mod", "clave-del-dueno-123", "Dueno", "dueno@mod.example"), owner, actor,
+        )
+        val database = "bms_seca_mod"
+        provisioning.setModuleEnabled("seca_mod", "tareas", true, owner, actor)
+        provisioning.setModuleEnabled("seca_mod", "crm", true, owner, actor)
+        // An extension package carries its migrations as resources of its own class loader (here, a test resource).
+        val extension = object : com.ideasdeveloper.bms.server.extensions.ServerExtension {
+            override val manifest = com.ideasdeveloper.bms.extensions.wordpress.CrmWordPressExtension.manifest
+            override val migrationPaths = listOf("provisioning-roles/V001__ext_items.sql")
+            override val runtimeTables = listOf("ext_secatest__items")
+        }
+        provisioning.applyExtensionMigrations("seca_mod", extension)
+        assertTrue(scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'tareas'")!!.toInt() > 0)
+        assertTrue(scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'crm'")!!.toInt() > 0)
+        assertEquals("1", scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'ext:wordpress'"))
+        assertRuntimeIsPlain(database)
+        runtime(database).use { db ->
+            db.run("SELECT count(*) FROM tareas_tasks")
+            db.run("INSERT INTO ext_secatest__items (name) VALUES ('uno')")
+            db.run("DELETE FROM crm_leads WHERE FALSE")
+            listOf("ALTER TABLE tareas_tasks ADD COLUMN intrusa INT", "DROP TABLE crm_leads", "TRUNCATE tareas_tasks", "DROP TABLE ext_secatest__items")
+                .forEach { sql -> assertFailsWith<SQLException>(sql) { db.run(sql) } }
+        }
+
+        // Startup catch-up on a company that lacks tenant V012, with a table an older update.sh created as postgres.
+        superuser(database).use { db ->
+            db.run("DROP TABLE application_user_recovery_codes, application_user_two_factor")
+            db.run("DELETE FROM schema_migrations WHERE module = 'tenant' AND version = 'V012__create_two_factor'")
+            db.run("CREATE TABLE seca_de_postgres (id INT)")
+        }
+        provisioning.applyPendingModuleMigrations()
+        assertEquals(owner, scalar(database, "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'application_user_two_factor'"))
+        assertEquals("1", scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'tenant' AND version = 'V012__create_two_factor'"))
+        superuser(database).use { it.run("DROP TABLE seca_de_postgres") }
+        assertRuntimeIsPlain(database)
     }
 }
