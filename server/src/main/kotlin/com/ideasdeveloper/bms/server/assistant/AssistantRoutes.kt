@@ -430,16 +430,23 @@ internal suspend fun ApplicationCall.stream(
                             frames.close()
                         }
                     }
-                    while (true) {
-                        val next = withTimeoutOrNull(pingMillis) { frames.receiveCatching() }
-                        val text = when {
-                            next == null -> ": ping\n\n"
-                            else -> next.getOrNull() ?: break
+                    // A failed write must stop the turn BEFORE coroutineScope waits for its (blocking) child, so the flag is
+                    // set here, inside the scope, and not only in the outer catch that runs after the child has ended.
+                    try {
+                        while (true) {
+                            val next = withTimeoutOrNull(pingMillis) { frames.receiveCatching() }
+                            val text = when {
+                                next == null -> ": ping\n\n"
+                                else -> next.getOrNull() ?: break
+                            }
+                            withTimeout(writeTimeout) {
+                                writeStringUtf8(text)
+                                flush()
+                            }
                         }
-                        withTimeout(writeTimeout) {
-                            writeStringUtf8(text)
-                            flush()
-                        }
+                    } finally {
+                        closed.set(true)
+                        frames.cancel()
                     }
                 }
             } catch (failure: Throwable) {
