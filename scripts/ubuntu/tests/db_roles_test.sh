@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # literal text searched in update.sh and SQL run by psql
 # update.sh's move to the new PostgreSQL role layout (db-roles.sh) on a server as older versions left it: the runtime
 # role a member of the server owner's role, one company created by the server (owner's tables), one whose tables an
 # older update.sh created as postgres, and rows in companies that must be ignored. Then the company migrations as the
@@ -11,13 +12,14 @@ CONTROL=bms_seca_tctl
 NEW=bms_seca_tnew
 OLD=bms_seca_told
 FOREIGN=bms_seca_tforeign
+FULL=bms_seca_tfull
 OWNER=seca_t_owner
 RUNTIME=seca_t_rt
 PROVISIONER=seca_t_prov
 
 cleanup() {
     local database role
-    for database in $CONTROL $NEW $OLD $FOREIGN; do
+    for database in $CONTROL $NEW $OLD $FOREIGN $FULL; do
         bms_pg_super postgres -c "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1
     done
     for role in $PROVISIONER $RUNTIME $OWNER; do
@@ -173,6 +175,36 @@ equals 'la tabla nueva es del dueno, creada en public con el search_path fijo' "
 equals 'search_path de la migracion' public "$(sql "$OLD" 'SELECT path FROM seca_prueba')"
 equals 'una tabla que antes era de postgres se puede alterar' 1 "$(sql "$OLD" "SELECT count(*) FROM information_schema.columns WHERE table_name = 'business_owner' AND column_name = 'seca_columna'")"
 equals 'historia de migraciones' 1 "$(sql "$OLD" "SELECT count(*) FROM schema_migrations WHERE module = 'seca'")"
+
+# --- update.sh's own grant blocks (its control and company SQL, read from update.sh) with the runtime role owning
+# nothing: every migration of a company as the owner through the provisioning login, then the grants, then what the
+# runtime role can do on the two-step verification tables (control V017/V018, tenant V012/V013).
+update_sql() { sed -n "/$1/,/^SQL\$/p" "$SCRIPTS/update.sh" | sed '1d;$d'; }
+bms_pg_super postgres -c "CREATE DATABASE $FULL OWNER $OWNER" >/dev/null || fail 'base completa'
+bms_pg_super postgres -c "GRANT CONNECT ON DATABASE $FULL TO $PROVISIONER, $RUNTIME" >/dev/null
+for file in "$REPO"/database/core/migrations/V*.sql; do apply_migration "$FULL" core "$file" >/dev/null || fail "core $file"; done
+for file in "$REPO"/database/tenant/migrations/V*.sql; do apply_migration "$FULL" tenant "$file" >/dev/null || fail "tenant $file"; done
+for file in "$REPO"/modules/clientes/migrations/V*.sql; do apply_migration "$FULL" clientes "$file" >/dev/null || fail "clientes $file"; done
+tenant_grants() {
+    { printf 'GRANT USAGE ON SCHEMA public TO "%s";\n' "$RUNTIME"; update_sql 'migration_psql "\$tenant_db"'; } |
+        migration_psql "$FULL" -q -v ON_ERROR_STOP=1 -v db_user="$RUNTIME" >/dev/null
+}
+check 'update.sh: permisos de la empresa como el dueno, por el login de aprovisionamiento' tenant_grants
+update_sql 'migration_psql "\$CONTROL_DB"' | bms_pg_super "$CONTROL" -v db_user="$RUNTIME" -v provisioner="$PROVISIONER" >/dev/null || fail 'update.sh: permisos de la base central'
+grants() { sql "$1" "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = '$RUNTIME' AND table_name = '$2'"; }
+for database in $CONTROL $FULL; do
+    equals "$database: llave de datos" 'INSERT,SELECT' "$(grants "$database" tenant_data_keys)"
+    equals "$database: verificacion en dos pasos" 'DELETE,INSERT,SELECT,UPDATE|DELETE,INSERT,SELECT,UPDATE' "$(grants "$database" application_user_two_factor)|$(grants "$database" application_user_recovery_codes)"
+    equals "$database: recuperacion por correo" 'INSERT,SELECT,UPDATE' "$(grants "$database" application_user_2fa_email_recovery)"
+    check "$database: el runtime usa las tablas y no borra la recuperacion por correo" bash -c '
+        run() { psql -X -q -v ON_ERROR_STOP=1 -h "$1" -p "$2" -U "$3" -d "$4" -c "$5" >/dev/null 2>&1; }
+        run "$@" "INSERT INTO tenant_data_keys (id, wrapped_key) VALUES (1, '"'"'x'"'"') ON CONFLICT DO NOTHING" &&
+        run "$@" "UPDATE application_user_2fa_email_recovery SET status = status WHERE FALSE" &&
+        run "$@" "DELETE FROM application_user_recovery_codes WHERE FALSE" &&
+        ! run "$@" "DELETE FROM application_user_2fa_email_recovery" &&
+        ! run "$@" "UPDATE tenant_data_keys SET key_version = 2"' _ "$PG_HOST" "$PG_PORT" "$RUNTIME" "$database"
+done
+equals 'empresa completa: todo es del dueno' 0 "$(sql "$FULL" "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relowner <> '$OWNER'::regrole")"
 MIGRATION_ROLE=''
 rm -rf -- "$MIGRATION_DIR"
 

@@ -150,7 +150,7 @@ class ProvisioningRolesPostgresTest {
                 scalar(db, """
                     SELECT count(*) FROM pg_class c, (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) p (privilege)
                     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
-                      AND c.relname NOT IN ('activity_log', 'activity_log_chain', 'schema_migrations', 'tenant_data_keys')
+                      AND c.relname NOT IN ('activity_log', 'activity_log_chain', 'schema_migrations', 'tenant_data_keys', 'application_user_2fa_email_recovery')
                       AND NOT has_table_privilege(c.oid, p.privilege)
                 """.trimIndent()),
             )
@@ -161,6 +161,9 @@ class ProvisioningRolesPostgresTest {
             // Two-step verification of the company's users (tenant V012).
             db.run("DELETE FROM application_user_recovery_codes WHERE FALSE")
             db.run("UPDATE application_user_two_factor SET failed_attempts = 0 WHERE FALSE")
+            // Delayed recovery by email (tenant V013): started, updated, never deleted by the runtime.
+            assertEquals("INSERT,SELECT,UPDATE", scalar(db, "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = current_user AND table_name = 'application_user_2fa_email_recovery'"))
+            assertFailsWith<SQLException> { db.run("DELETE FROM application_user_2fa_email_recovery") }
             assertEquals("0", scalar(db, "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'S' AND NOT CASE WHEN relkind = 'S' THEN has_sequence_privilege(oid, 'USAGE') ELSE TRUE END"))
             assertTrue(scalar(db, "SELECT count(*) FROM schema_migrations")!!.toInt() > 5)
         }
@@ -255,13 +258,14 @@ class ProvisioningRolesPostgresTest {
 
         // Startup catch-up on a company that lacks tenant V012, with a table an older update.sh created as postgres.
         superuser(database).use { db ->
-            db.run("DROP TABLE application_user_recovery_codes, application_user_two_factor")
-            db.run("DELETE FROM schema_migrations WHERE module = 'tenant' AND version = 'V012__create_two_factor'")
+            db.run("DROP TABLE application_user_recovery_codes, application_user_two_factor, application_user_2fa_email_recovery")
+            db.run("DELETE FROM schema_migrations WHERE module = 'tenant' AND version IN ('V012__create_two_factor', 'V013__create_two_factor_email_recovery')")
             db.run("CREATE TABLE seca_de_postgres (id INT)")
         }
         provisioning.applyPendingModuleMigrations()
         assertEquals(owner, scalar(database, "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'application_user_two_factor'"))
-        assertEquals("1", scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'tenant' AND version = 'V012__create_two_factor'"))
+        assertEquals(owner, scalar(database, "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'application_user_2fa_email_recovery'"))
+        assertEquals("2", scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'tenant' AND version IN ('V012__create_two_factor', 'V013__create_two_factor_email_recovery')"))
         superuser(database).use { it.run("DROP TABLE seca_de_postgres") }
         assertRuntimeIsPlain(database)
     }

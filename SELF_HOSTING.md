@@ -87,6 +87,16 @@ no retention purge. Server sign-ins and failures go to `provisioning_audit_log`.
 See "Activity log integrity" in §14 and `ACTIVITY_LOG.md` §9 for what this does
 and does not guarantee.
 
+Since Core 0.13.0 (security hardening): optional **two-step verification**
+(TOTP, recovery codes and a delayed recovery by email; control migrations
+`V017`/`V018` applied by `update.sh`, tenant `V012`/`V013` applied to every
+company by `update.sh` and by the server at startup), a **storage quota** per
+company with a free-disk floor (STORAGE_QUOTA.md), pinned and optionally signed
+Core updates and packages (SIGNING.md), and the PostgreSQL role layout of §5
+(the service's role owns nothing; a separate provisioning login migrates). The
+service role only reads and creates `tenant_data_keys`, and never deletes rows
+of `application_user_2fa_email_recovery`.
+
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
 authentication for that account. This verifies login and the backend is wired
@@ -475,6 +485,13 @@ Document verified variables in a table here as they are implemented:
 | `MODULE_SIGNATURE_ENFORCED` | No | Not set (default): `true` when a package key is installed in `/usr/local/lib/bms/package-keys/` (SIGNING.md), else `false`. `false`: optional modules may be installed by the server owner without an Ed25519 signature, with a warning in the log (dev/staging); a server administrator always gets the enforced gate. `true` (recommended in production): an unsigned module is rejected unless the server owner authorizes its tree hash with `POST /server/modules/{id}/authorize-unsigned`, same as extensions. Restart `bms` after changing it. |
 | `MODULE_PACKAGES_ROOT` | No | Server-side directory where downloaded module packages are stored; defaults to `build/server-modules`. |
 | `VERSION_CATALOG_URL` | No | URL of the remote JSON version catalog used by `/version`. Official URL: `https://raw.githubusercontent.com/alexcalbri/BMS/master/version.json`. |
+| `DB_PROVISIONING_USER`, `DB_PROVISIONING_PASSWORD` | Yes (installer and `update.sh` write them) | Login used only to create, migrate, duplicate and delete companies, on short-lived connections that `SET ROLE` to the server owner's role (section 5, Roles de PostgreSQL). Must differ from `DB_USER`; the password is at least 16 printable ASCII characters without `:` or `\`. Without it (development, tests) provisioning connects as `DB_USER`. |
+| `MAX_REQUEST_BODY_BYTES` | No | Core's default limit of a request body, behind Nginx's 2 MB; `4194304` (4 MB). Upload routes keep their own limits (module files: quota and per-module maximum; backup import 512 MB; extension ZIP 50 MB) and `POST /modules/crm/ui/import` allows 25 MB (`RequestBodyLimits.kt`); `scripts/ubuntu/nginx-site.sh` gives each of them at least as much. |
+| `COMPANY_FILES_MIN_FREE_BYTES` | No | Free-disk floor of `COMPANY_FILES_ROOT`: uploads are refused (507 `STORAGE_DISK_FULL`) under it; `2147483648` (2 GiB). STORAGE_QUOTA.md. |
+| `COMPANY_FILES_MAX_CONCURRENT_UPLOADS` | No | Uploads in progress at the same time per company (429 `STORAGE_BUSY` above it); `4`. The storage quota per company is set by the server owner in the app (default 100 GiB). |
+| `BMS_PUBLIC_BASE_URL` | No (installer and `update.sh` write it) | Public origin (`https://bms.example.com`, no path) used for links in emails (cancel link of the delayed two-step recovery, TWO_FACTOR.md §7) and for the OAuth metadata of Agentes. Written from the domain of the BMS Nginx site when absent; without it the request's validated `Host` is used. Change it if the public name changes. |
+| `BMS_BUILD_USER` | No | Read by `update.sh` only: the user that compiles the release (default `bms-build`, separate from the service user). `bms` goes back to compiling as the service user, only as a way out (section 15). |
+| `BMS_SYSCALL_FILTER` | No | Read by `update.sh` only: `true` adds `SystemCallFilter=@system-service` to `bms.service` (opt-in; section 16). |
 
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURITY` | No | Server-wide SMTP for password reset codes ("¿Olvidaste tu contraseña?" in the login; without it users cannot recover their password by email) and for modules that send email (hotspot codes). `SMTP_SECURITY` is `starttls` (default), `ssl` or `none`. Empty `SMTP_HOST` disables it; companies can still use their own SMTP. |
 | `PUBLIC_SCHEME`, `ACME_EMAIL` | No | Read only by the root helper `bms-domains-sync`, which publishes module domains (hotspot portals) in Nginx with Let's Encrypt (`https`) or plain HTTP (`http`). |

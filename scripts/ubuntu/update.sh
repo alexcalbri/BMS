@@ -299,12 +299,15 @@ configure_server_env() {
     else
         append_config_value PUBLIC_SCHEME http
     fi
-    # Base publica fija para los metadatos OAuth de agentes; evita confiar en la cabecera Host del cliente.
-    if [[ -f $NGINX_SITE ]]; then
-        local public_scheme public_domain
-        public_scheme=$(config_value PUBLIC_SCHEME)
-        public_domain=$(awk '/server_name/{print $2; exit}' "$NGINX_SITE" | tr -d ';')
-        [[ -n $public_domain ]] && append_config_value BMS_PUBLIC_BASE_URL "${public_scheme}://${public_domain}"
+    # Base publica fija de los enlaces en correos (cancelar la recuperacion por correo, TWO_FACTOR.md) y de los metadatos
+    # OAuth de agentes; evita confiar en la cabecera Host del cliente. Se toma del sitio de Nginx de BMS (dominio validado).
+    if [[ -f $NGINX_SITE ]] && ! config_has_key BMS_PUBLIC_BASE_URL; then
+        local site_scheme site_domain
+        if read -r site_scheme site_domain _ < <(bms_nginx_site_params "$NGINX_SITE"); then
+            append_config_value BMS_PUBLIC_BASE_URL "${site_scheme}://${site_domain}"
+        else
+            warn "no se pudo leer el dominio de $NGINX_SITE; BMS_PUBLIC_BASE_URL queda sin definir (los enlaces usan el Host validado)."
+        fi
     fi
     append_config_value ACME_EMAIL ''
     append_config_value SMTP_HOST ''
@@ -425,6 +428,7 @@ apply_control_migrations() {
         database/core/migrations/V006__add_application_user_language.sql \
         database/control/migrations/V015__create_server_admins.sql \
         database/control/migrations/V017__create_two_factor.sql \
+        database/control/migrations/V018__create_two_factor_email_recovery.sql \
         database/tenant/migrations/V004__create_application_permissions.sql \
         database/tenant/migrations/V005__create_application_user_credentials.sql \
         database/tenant/migrations/V006__create_extensions.sql \
@@ -434,6 +438,7 @@ apply_control_migrations() {
         database/tenant/migrations/V010__create_text_translations.sql \
         database/tenant/migrations/V011__create_activity_log.sql \
         database/tenant/migrations/V012__create_two_factor.sql \
+        database/tenant/migrations/V013__create_two_factor_email_recovery.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do
@@ -486,6 +491,9 @@ GRANT INSERT (target_version, from_version, requested_by, target_commit) ON core
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON tenant_data_keys FROM :"db_user";
 GRANT SELECT, INSERT ON tenant_data_keys TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
+-- Delayed recovery by email (control V018): the record of every process, never deleted by the runtime role.
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON application_user_2fa_email_recovery FROM :"db_user";
+GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user";
 SQL
     cd /
 }
@@ -516,6 +524,7 @@ apply_tenant_migrations() {
         apply_migration "$tenant_db" tenant database/tenant/migrations/V010__create_text_translations.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V011__create_activity_log.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V012__create_two_factor.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V013__create_two_factor_email_recovery.sql
         migration_psql "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$DB_USER" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
@@ -532,8 +541,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON account_reset_throttle TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON outbound_events, outbound_links, integration_connections TO :"db_user";
 GRANT USAGE, SELECT ON SEQUENCE outbound_events_id_seq TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
--- Two-step verification of the company's users (tenant V012, TWO_FACTOR.md).
+-- Two-step verification of the company's users (tenant V012, TWO_FACTOR.md) and its delayed recovery by email
+-- (tenant V013, never deleted by the runtime role).
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON application_user_2fa_email_recovery FROM :"db_user";
+GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user";
 -- Activity log (tenant V011, ACTIVITY_LOG.md): append-only, the runtime user only reads and appends.
 GRANT SELECT, INSERT ON activity_log, activity_log_chain TO :"db_user";
 GRANT USAGE ON SEQUENCE activity_log_id_seq TO :"db_user";

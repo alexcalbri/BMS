@@ -162,7 +162,7 @@ mailbox gets a warning with a cancel link at once, and only **7 days later** a o
 second step, signs in once and turns two-step verification off (the person must enrol again). Every account type
 that can have two-step verification can use it. It needs the server's SMTP (`mail.*` settings); without it the
 option is not offered (`"email_recovery"` missing from `methods`, `emailRecovery.available` false). Feature
-detection: the field `emailRecovery` in `GET /auth/two-factor` (Core version set by the lead, 0.14.0 expected).
+detection: the field `emailRecovery` in `GET /auth/two-factor` (Core 0.13.0, the same release as the rest of this file).
 
 ### 7.1 Start — `POST /auth/login/two-factor/email-recovery {challengeToken}`
 

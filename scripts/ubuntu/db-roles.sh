@@ -136,6 +136,7 @@ WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND (c.relkind <> 'm' OR p.privilege = 'SELECT')
   AND c.relname NOT IN ('activity_log', 'activity_log_chain')
   AND NOT (c.relname = 'tenant_data_keys' AND p.privilege IN ('UPDATE', 'DELETE'))
+  AND NOT (c.relname = 'application_user_2fa_email_recovery' AND p.privilege = 'DELETE')
   AND pg_catalog.has_table_privilege(:'runtime', c.oid, p.privilege)
   AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(c.relacl) a
                   WHERE a.grantee = :'runtime_oid'::oid AND a.privilege_type = p.privilege)
@@ -272,6 +273,7 @@ FROM pg_catalog.pg_class c CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE')
 WHERE c.relnamespace = 'public'::pg_catalog.regnamespace AND c.relkind IN ('r', 'p', 'v')
   AND c.relname <> 'provisioning_audit_log'
   AND NOT (c.relname = 'tenant_data_keys' AND p.privilege IN ('UPDATE', 'DELETE'))
+  AND NOT (c.relname = 'application_user_2fa_email_recovery' AND p.privilege = 'DELETE')
   AND pg_catalog.has_table_privilege(:'runtime', c.oid, p.privilege)
   AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(c.relacl) a
                   WHERE a.grantee = :'runtime_oid'::oid AND a.privilege_type = p.privilege)

@@ -1982,6 +1982,12 @@ class CompanyProvisioningService(
         val emailRecovery = "database/tenant/migrations/V013__create_two_factor_email_recovery.sql"
         applyMigration(connection, "tenant", emailRecovery, Files.readString(Path.of(config.migrationsRoot).resolve(emailRecovery)))
         grantIfMissing(connection, config.runtimeUser, "application_user_2fa_email_recovery", listOf("SELECT", "INSERT", "UPDATE"))
+        // The processes are the record of every recovery: the runtime never deletes them.
+        try {
+            revokeIfPresent(connection, config.runtimeUser, "application_user_2fa_email_recovery", listOf("DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"))
+        } catch (failure: Exception) {
+            log.error("No se pudieron quitar al runtime {} los privilegios de mas sobre application_user_2fa_email_recovery", config.runtimeUser, failure)
+        }
     }
 
     /**
@@ -2325,7 +2331,7 @@ class CompanyProvisioningService(
      * The runtime role owns nothing and is a member of nothing (SELF_HOSTING.md, Roles de PostgreSQL): it reaches the
      * company's tables only through grants. Every table and view of schema public owned by the current role (the
      * server owner's) gets SELECT, INSERT, UPDATE, DELETE for it, schema_migrations SELECT, tenant_data_keys SELECT and
-     * INSERT, and every sequence USAGE, SELECT; the activity log and its sequence keep the narrower grants of
+     * INSERT, application_user_2fa_email_recovery SELECT, INSERT and UPDATE, and every sequence USAGE, SELECT; the activity log and its sequence keep the narrower grants of
      * [applyActivityLogMigration]. Only missing
      * privileges are granted, so running it after every migration costs one catalog query. Never throws.
      */
@@ -2711,6 +2717,7 @@ private val RuntimeDefaultGrantsSql = """
             WHEN o.relkind = 'S' THEN p.privilege IN ('USAGE', 'SELECT')
             WHEN o.relname = 'schema_migrations' THEN p.privilege = 'SELECT'
             WHEN o.relname = 'tenant_data_keys' THEN p.privilege IN ('SELECT', 'INSERT')
+            WHEN o.relname = 'application_user_2fa_email_recovery' THEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE')
             ELSE p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
         END
     )

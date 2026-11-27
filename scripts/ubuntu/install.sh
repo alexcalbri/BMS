@@ -123,6 +123,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V015__create_server_admins.sql
     database/control/migrations/V016__core_update_commit_pin.sql
     database/control/migrations/V017__create_two_factor.sql
+    database/control/migrations/V018__create_two_factor_email_recovery.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -759,6 +760,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V014__add_company
 apply_migration "$DB_NAME" control database/control/migrations/V015__create_server_admins.sql
 apply_migration "$DB_NAME" control database/control/migrations/V016__core_update_commit_pin.sql
 apply_migration "$DB_NAME" control database/control/migrations/V017__create_two_factor.sql
+apply_migration "$DB_NAME" control database/control/migrations/V018__create_two_factor_email_recovery.sql
 # The server owner's role owns the company databases and creates them and their business owner roles. The runtime
 # role is NOT a member of it; the provisioning login may SET ROLE to it (and to the runtime role), never inherits.
 printf '%s' "$SERVER_PASSWORD" | bms_role_set_password "$SERVER_OWNER" 'INHERIT NOSUPERUSER CREATEDB CREATEROLE' ||
@@ -803,6 +805,8 @@ GRANT USAGE ON SEQUENCE extension_unsigned_authorizations_id_seq, extension_oper
 -- their secrets is only read and created (never replaced or deleted) by the runtime role.
 GRANT SELECT, INSERT ON tenant_data_keys TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
+-- Delayed recovery by email (control V018): the record of every process, never deleted by the runtime role.
+GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user";
 COMMIT;
 SQL
 bms_check_role_layout "$DB_NAME" "$DB_USER" "$PROVISIONER" || die 'La organizacion de roles de PostgreSQL no quedo como se esperaba.'
