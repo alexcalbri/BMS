@@ -751,6 +751,18 @@ class ModuleAccessService(
      * Validates the session and company of a request that belongs to the Core, not to a module (the
      * notification center): who the user is, with no module permission involved.
      */
+    /** Who really opened the company session [accessToken] of [companyCode] (switchers), or null for the account's own session. */
+    fun sessionOpener(companyCode: String, accessToken: String): com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener? =
+        loginDatabases.sessionOpener(companyCode, accessToken)
+
+    /** The person behind the session of [permissions] (switchers), or null for the account's own session or an agent. */
+    fun sessionOpener(permissions: ModulePermissions): com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener? =
+        permissions.accessToken.takeIf { it.isNotBlank() }?.let { loginDatabases.sessionOpener(permissions.companyCode, it) }
+
+    /** Whether [opener] could still enter [companyCode] as the switcher allows it (re-checked on every use of what it opened). */
+    fun openerMayEnter(companyCode: String, opener: com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener): Boolean =
+        loginDatabases.openerMayEnter(companyCode, opener)
+
     /** Whether the call carries a valid session: a company one (X-Company-Code) or a server one (none). */
     fun hasSession(call: ApplicationCall): Boolean {
         val token = accessToken(call) ?: return false

@@ -375,7 +375,9 @@ class AccountService(
     }
 
     /** Sets the new password when the code is right and still valid, and closes the user's sessions. */
-    fun confirmPasswordReset(username: String, companyCode: String?, code: String, newPassword: String, twoFactorCode: String? = null) {
+    /** Returns whether every AI agent of the account could be disconnected (false: they must be revoked by hand). */
+    fun confirmPasswordReset(username: String, companyCode: String?, code: String, newPassword: String, twoFactorCode: String? = null): Boolean {
+        var agentsDisconnected = true
         val invalid = AccountException("INVALID_CODE", tr("El codigo no es valido o ya vencio. Pide uno nuevo."))
         val name = username.trim()
         if (!identifierPattern.matches(name) || (companyCode != null && !identifierPattern.matches(companyCode))) throw invalid
@@ -431,7 +433,10 @@ class AccountService(
                 runCatching { loginDatabases.revokeCompanySessionsOpenedBy(account.id) }
                     .onFailure { log.error("Company sessions of {} could not be revoked after a password reset", account.username, it) }
             }
-            AccountSecurityEvents.credentialsChanged(CredentialsChanged(companyCode, account.id, CredentialsChanged.PasswordReset))
+            val event = CredentialsChanged(companyCode, account.id, CredentialsChanged.PasswordReset)
+            val agents = AccountSecurityEvents.credentialsChanged(event)
+            recordGrantsNotEnded(central, event, account.username, agents)
+            agentsDisconnected = agents.complete
             if (companyCode == null) serverOwnerRecovered(connection, account)
             if (recovery != null && companyCode == null) {
                 val kind = if (isServerOwner(connection, account.id)) com.ideasdeveloper.bms.server.admins.AuditActor.ServerOwnerKind else com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind
@@ -456,6 +461,7 @@ class AccountService(
                 )
             }
         }
+        return agentsDisconnected
     }
 
     /**

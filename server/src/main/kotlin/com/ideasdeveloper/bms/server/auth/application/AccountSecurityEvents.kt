@@ -39,13 +39,48 @@ object AccountSecurityEvents {
         listeners.remove(moduleId)
     }
 
-    /** Tells every subscriber; returns the grants they ended. Never throws. */
-    fun credentialsChanged(event: CredentialsChanged): Int = listeners.entries.sumOf { (moduleId, listener) ->
-        try {
-            listener.credentialsChanged(event)
-        } catch (failure: Throwable) {
-            log.error("Module {} could not end the grants of user {} after {}", moduleId, event.userId, event.reason, failure)
-            0
+    /**
+     * Tells every subscriber, retrying once a subscriber that fails. Never throws: the outcome says how many
+     * grants ended and which modules could not end theirs (the caller must say so and flag it for attention).
+     */
+    fun credentialsChanged(event: CredentialsChanged): CredentialsChangeOutcome {
+        var ended = 0
+        val failed = mutableListOf<String>()
+        listeners.forEach { (moduleId, listener) ->
+            val result = runCatching { listener.credentialsChanged(event) }
+                .recoverCatching { first ->
+                    log.warn("Module {} failed to end the grants of user {} after {}; retrying once", moduleId, event.userId, event.reason, first)
+                    listener.credentialsChanged(event)
+                }
+            result.onSuccess { ended += it }.onFailure { failure ->
+                log.error("Module {} could not end the grants of user {} after {}", moduleId, event.userId, event.reason, failure)
+                failed += moduleId
+            }
         }
+        return CredentialsChangeOutcome(ended, failed)
     }
+}
+
+/**
+ * A subscriber could not end its grants (after the retry): a server audit row flagged for attention, so the owner
+ * revokes those agents by hand. [companyCode] null: a server account. Never throws (it is logged).
+ */
+fun recordGrantsNotEnded(central: javax.sql.DataSource, event: CredentialsChanged, login: String, outcome: CredentialsChangeOutcome) {
+    if (outcome.complete) return
+    runCatching {
+        central.connection.use { connection ->
+            com.ideasdeveloper.bms.server.company.application.ProvisioningAudit.insert(
+                connection, com.ideasdeveloper.bms.server.admins.AuditActor.system(), "security.agents_not_disconnected", event.companyCode, null,
+                com.ideasdeveloper.bms.server.company.application.auditDetails(
+                    "attention" to true, "account" to login, "userId" to event.userId.toString(), "reason" to event.reason,
+                    "modules" to outcome.failedModules.joinToString(","),
+                ),
+            )
+        }
+    }.onFailure { LoggerFactory.getLogger(AccountSecurityEvents::class.java).error("The failure to end the grants of {} could not be audited", login, it) }
+}
+
+/** What [AccountSecurityEvents.credentialsChanged] achieved: [failedModules] could not end their grants. */
+data class CredentialsChangeOutcome(val ended: Int, val failedModules: List<String>) {
+    val complete: Boolean get() = failedModules.isEmpty()
 }

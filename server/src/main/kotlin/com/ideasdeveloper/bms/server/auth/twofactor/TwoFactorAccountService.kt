@@ -44,6 +44,8 @@ data class RecoveryCodesResponse(
     // Enabling ended the earlier access (TWO_FACTOR.md §3): other sessions, AI agents (they must be reconnected).
     val agentsDisconnected: Int? = null,
     val notice: String? = null,
+    // Some agents could not be disconnected (the owner sees it in the server audit): revoke them by hand.
+    val agentsDisconnectFailed: Boolean = false,
 )
 
 /**
@@ -123,10 +125,13 @@ class TwoFactorAccountService(
             runCatching { loginDatabases.revokeCompanySessionsOpenedBy(account.userId) }
                 .onFailure { org.slf4j.LoggerFactory.getLogger(TwoFactorAccountService::class.java).error("Company sessions of {} could not be revoked", account.username, it) }
         }
-        val agents = com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.credentialsChanged(
-            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged(account.companyCode, account.userId, com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorEnabled),
-        )
-        return RecoveryCodesResponse(codes, agents, tr("Se cerraron tus otras sesiones y se desconectaron tus agentes de IA: vuelve a conectarlos."))
+        val event = com.ideasdeveloper.bms.server.auth.application.CredentialsChanged(account.companyCode, account.userId, com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorEnabled)
+        val agents = com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.credentialsChanged(event)
+        if (!agents.complete) {
+            com.ideasdeveloper.bms.server.auth.application.recordGrantsNotEnded(loginDatabases.centralSource, event, account.username, agents)
+            return RecoveryCodesResponse(codes, agents.ended, tr("Se cerraron tus otras sesiones, pero no se pudieron desconectar tus agentes de IA: revocalos a mano en Agentes IA."), agentsDisconnectFailed = true)
+        }
+        return RecoveryCodesResponse(codes, agents.ended, tr("Se cerraron tus otras sesiones y se desconectaron tus agentes de IA: vuelve a conectarlos."))
     }
 
     fun regenerate(token: String, companyCode: String?, currentPassword: String?, code: String): RecoveryCodesResponse {

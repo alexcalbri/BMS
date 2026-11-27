@@ -225,6 +225,48 @@ class LoginDatabases(
         return challenge to scope
     }
 
+    /**
+     * Who is really behind the company session [token] of [companyCode] (for agents connected from it): the server
+     * person of a switcher session, the owner of another company of the group for a business-owner switch, or
+     * null when it is the account's own session.
+     */
+    fun sessionOpener(companyCode: String, token: String): SessionOpener? {
+        openerOf(tokens.hash(token), companyCode)?.let { return SessionOpener(SessionOpener.Server, it, null) }
+        val scope = activeDatabase(companyCode)?.let { tenantScope(it) } ?: return null
+        return scope.switchOrigin(token)?.let { (company, user) -> SessionOpener(SessionOpener.Company, user, company) }
+    }
+
+    /**
+     * Whether [opener] could still enter [companyCode] the way it did (the rule the switcher enforces): a server
+     * owner; an active administrator with server.companies.enter and the company (and its owner group) in scope; or
+     * the still active business owner of a company that is active and in the same owner group.
+     */
+    fun openerMayEnter(companyCode: String, opener: SessionOpener): Boolean = when (opener.kind) {
+        SessionOpener.Server -> when (val who = serverSwitcher(opener.userId)) {
+            is Switcher.ServerOwner -> true
+            is Switcher.ServerAdmin -> who.mayEnter(companyCode)
+            else -> false
+        }
+        SessionOpener.Company -> {
+            val origin = opener.companyCode ?: return false
+            val sameGroup = central.connection.use { connection ->
+                connection.prepareStatement(
+                    """
+                    SELECT origin.database_name FROM companies origin JOIN companies target ON target.owner_group = origin.owner_group
+                    WHERE origin.code = ? AND target.code = ? AND origin.is_active AND target.is_active
+                      AND NOT origin.is_server_workspace AND NOT target.is_server_workspace
+                    """.trimIndent()
+                ).use { query ->
+                    query.setString(1, origin); query.setString(2, companyCode)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            }
+            val owner = sameGroup?.let { tenantScope(it) }?.businessOwner()?.takeIf { it.isActive }
+            owner != null && java.util.UUID.fromString(owner.id.toString()) == opener.userId
+        }
+        else -> false
+    }
+
     /** Drops a challenge that will not be used (a caller that cannot ask for the code now). */
     fun finishTwoFactor(challengeToken: String) = challenges.finish(challengeToken)
 
@@ -324,7 +366,7 @@ class LoginDatabases(
             }
         } ?: return null
         val origin = tenantScope(databases.second) ?: return null
-        origin.ownerBySession(token) ?: return null
+        val originOwner = origin.ownerBySession(token) ?: return null
         // A session descended from a switcher session is itself a switcher session: the opener is
         // re-checked (for both companies, owner group included) and the new session is tracked too,
         // so it is re-checked on every use and revoked with its opener.
@@ -351,6 +393,9 @@ class LoginDatabases(
             if (target.twoFactorEnabled(targetOwner) && !passed) throw SwitchNeedsSecondFactorException()
             return target.respond(targetOwner, toCode)?.also { opened ->
                 if (passed) target.markSecondFactor(opened.accessToken)
+                // Who is really behind the new session: the first owner of the chain of switches (agents opened from it).
+                val first = origin.switchOrigin(token) ?: (fromCode to java.util.UUID.fromString(originOwner.id.toString()))
+                target.recordSwitchOrigin(opened.accessToken, first.first, first.second)
                 target.recordEntry(opened, null, null, "Entro a la empresa desde la empresa $fromCode del mismo dueno.")
             }
         }
@@ -746,6 +791,38 @@ class LoginDatabases(
             }
         } catch (failure: java.sql.SQLException) {
             if (failure.sqlState == "42703") false else throw failure
+        }
+
+        /** The (company, user) that opened [token] with the business-owner switcher, or null (or before tenant V015). */
+        fun switchOrigin(token: String): Pair<String, java.util.UUID>? = try {
+            source.connection.use { connection ->
+                connection.prepareStatement("SELECT switched_from_company, switched_from_user FROM application_sessions WHERE token_hash = ?").use { query ->
+                    query.setString(1, tokens.hash(token))
+                    query.executeQuery().use { rows ->
+                        if (!rows.next()) null else {
+                            val company = rows.getString(1)
+                            val user = rows.getObject(2, java.util.UUID::class.java)
+                            if (company != null && user != null) company to user else null
+                        }
+                    }
+                }
+            }
+        } catch (failure: java.sql.SQLException) {
+            if (failure.sqlState == "42703") null else throw failure
+        }
+
+        fun recordSwitchOrigin(token: String, company: String, userId: java.util.UUID) {
+            try {
+                source.connection.use { connection ->
+                    connection.prepareStatement("UPDATE application_sessions SET switched_from_company = ?, switched_from_user = ? WHERE token_hash = ?").use { update ->
+                        update.setString(1, company); update.setObject(2, userId); update.setString(3, tokens.hash(token))
+                        update.executeUpdate()
+                    }
+                }
+            } catch (failure: java.sql.SQLException) {
+                if (failure.sqlState != "42703") throw failure
+                logger.warn("Sessions have no switched_from_company yet (tenant V015 pending): the switch origin is not recorded")
+            }
         }
 
         /** Marks [token] as having passed a second step; without the column (before the migration) it is not marked. */
@@ -1203,6 +1280,14 @@ class LoginDatabases(
 }
 
 const val ServerNameSetting = "server.name"
+
+/** Who really opened a session: [Server] (central user [userId]) or [Company] (owner [userId] of [companyCode]). */
+data class SessionOpener(val kind: String, val userId: java.util.UUID, val companyCode: String?) {
+    companion object {
+        const val Server = "server"
+        const val Company = "company"
+    }
+}
 
 /** A switch into an account that uses two-step verification from a session that did not pass a second step. */
 class SwitchNeedsSecondFactorException : Exception(

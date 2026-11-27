@@ -117,7 +117,7 @@ class TwoFactorPostgresTest {
                     .forEach { db.run(migration("database/core/migrations/$it.sql")) }
                 listOf("V001__create_business_owner", "V003__create_tenant_modules", "V004__create_application_permissions", "V005__create_application_user_credentials",
                     "V006__create_extensions", "V008__account_reset_throttle", "V011__create_activity_log", "V012__create_two_factor",
-                    "V013__create_two_factor_email_recovery", "V014__session_second_factor_mark")
+                    "V013__create_two_factor_email_recovery", "V014__session_second_factor_mark", "V015__session_switch_origin")
                     .forEach { db.run(migration("database/tenant/migrations/$it.sql")) }
                 val owner = UUID.randomUUID()
                 db.run("INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES ('$owner', 'tf_${code}_owner', TRUE, 'Dueno $code', '$code@example.com')")
@@ -150,7 +150,12 @@ class TwoFactorPostgresTest {
     private fun login(db: LoginDatabases, user: String, password: String, company: String?, address: String = "10.0.0.1"): LoginSuccessResponse? =
         db.service.login(LoginCredentials(user, password, company, address))
 
-    private fun codeAt(secret: String, offset: Long = 0) = Totp.code(Totp.decodeBase32(secret), Totp.step(Instant.now().epochSecond) + offset)
+    // A code of the previous step is only accepted while the step does not change before it is checked: wait out the
+    // last seconds of a step first (otherwise the test fails now and then at a 30 s boundary).
+    private fun codeAt(secret: String, offset: Long = 0): String {
+        if (offset < 0) awaitStepMargin()
+        return Totp.code(Totp.decodeBase32(secret), Totp.step(Instant.now().epochSecond) + offset)
+    }
 
     // Enrols [user] through the account routes' service and returns (secret, recovery codes).
     private fun enrol(db: LoginDatabases, user: String, password: String, company: String?): Pair<String, List<String>> {
@@ -400,4 +405,62 @@ class TwoFactorPostgresTest {
         assertEquals("t", scalar(central, "SELECT revoked_at IS NOT NULL FROM application_sessions WHERE token_hash = '${SessionTokenGenerator().hash(other.accessToken)}'"))
         assertEquals("t", scalar("bms_tf_acme", "SELECT revoked_at IS NOT NULL FROM application_sessions WHERE token_hash = '${SessionTokenGenerator().hash(inAcme.accessToken)}'"))
     }
+
+    // Final verification item 1 (Core part): who is behind a switcher session, and the per-use rule for what it opened.
+    @Test
+    fun theOpenerOfASwitcherSessionIsKnownAndReChecked() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        // Business-owner switcher: the beta session is really acme's owner.
+        val acme = login(db, "tf_acme_owner", ownerPassword, "acme")!!
+        assertNull(db.sessionOpener("acme", acme.accessToken))
+        val inBeta = db.switchTo("acme", acme.accessToken, "beta")!!
+        val acmeOwnerId = userId("bms_tf_acme", "tf_acme_owner")
+        assertEquals(com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener("company", acmeOwnerId, "acme"), db.sessionOpener("beta", inBeta.accessToken))
+        // Kept along a chain of switches: back in acme the person is still acme's owner.
+        val back = db.switchTo("beta", inBeta.accessToken, "acme")!!
+        assertEquals("acme", db.sessionOpener("acme", back.accessToken)?.companyCode)
+        val opener = db.sessionOpener("beta", inBeta.accessToken)!!
+        assertTrue(db.openerMayEnter("beta", opener))
+        // Out of the owner group: no longer.
+        connect(central).use { it.run("UPDATE companies SET owner_group = gen_random_uuid() WHERE code = 'beta'") }
+        assertFalse(db.openerMayEnter("beta", opener))
+
+        // Server switcher: the administrator is the opener while she keeps server.companies.enter.
+        val ana = login(db, "tf_ana", adminPassword, null)!!
+        val viaServer = db.switchTo(null, ana.accessToken, "acme")!!
+        val server = db.sessionOpener("acme", viaServer.accessToken)!!
+        assertEquals(com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener("server", adminId, null), server)
+        assertTrue(db.openerMayEnter("acme", server))
+        connect(central).use { it.run("DELETE FROM server_admin_permissions WHERE user_id = '$adminId' AND permission = 'server.companies.enter'") }
+        assertFalse(db.openerMayEnter("acme", server))
+    }
+
+    // Final verification item 2: a failing subscriber is retried once, the notice says it and the audit flags it.
+    @Test
+    fun aFailingAgentsHookIsRetriedAndReportedTruthfully() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        val session = login(db, "luis", userPassword, "acme")!!
+        var calls = 0
+        com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.subscribe("test") { calls++; error("agent store down") }
+        val response = try {
+            val service = TwoFactorAccountService(db)
+            val secret = service.setup(session.accessToken, "acme", userPassword).secret
+            service.enable(session.accessToken, "acme", codeAt(secret, -1))
+        } finally {
+            com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.unsubscribe("test")
+        }
+        assertEquals(2, calls)
+        assertTrue(response.agentsDisconnectFailed)
+        assertTrue(response.notice!!.contains("no se pudieron", ignoreCase = true), response.notice)
+        val audit = scalar(central, "SELECT details::text FROM provisioning_audit_log WHERE action = 'security.agents_not_disconnected' AND company_code = 'acme'")!!
+        assertTrue(audit.contains("\"attention\": true") && audit.contains("test"), audit)
+    }
+}
+
+internal fun awaitStepMargin() {
+    while (Instant.now().epochSecond % Totp.PeriodSeconds >= Totp.PeriodSeconds - 4) Thread.sleep(200)
 }

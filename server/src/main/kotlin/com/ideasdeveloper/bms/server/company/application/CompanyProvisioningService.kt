@@ -679,8 +679,7 @@ class CompanyProvisioningService(
             admin.createStatement().use { statement ->
                 if (tenantDatabaseExists) {
                     statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(company.databaseName)} FROM PUBLIC")
-                    terminateSessions(statement, company.databaseName)
-                    statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(company.databaseName)}")
+                    dropDatabaseForced(statement, company.databaseName)
                     tenantDatabaseDropped = true
                 }
                 // Without its database nobody can reach these files any more.
@@ -1990,6 +1989,9 @@ class CompanyProvisioningService(
         // already holds its rights on both tables.
         val secondFactorMark = "database/tenant/migrations/V014__session_second_factor_mark.sql"
         applyMigration(connection, "tenant", secondFactorMark, Files.readString(Path.of(config.migrationsRoot).resolve(secondFactorMark)))
+        // Who is behind a business-owner switch session (tenant V015), for the agents opened from it.
+        val switchOrigin = "database/tenant/migrations/V015__session_switch_origin.sql"
+        applyMigration(connection, "tenant", switchOrigin, Files.readString(Path.of(config.migrationsRoot).resolve(switchOrigin)))
     }
 
     /**
@@ -2643,6 +2645,23 @@ class CompanyProvisioningService(
      * "permission denied to terminate process". So each pass only ends what the current role may end, and the runtime
      * role's sessions are ended as the runtime role (the provisioning login may SET ROLE to it), then the role is set back.
      */
+    /**
+     * Drops [database] as the role that owns it (the provisioning connection's role). WITH (FORCE) (PostgreSQL 13+)
+     * ends every connection still on it in the same command, so a pool that reconnects between ending its sessions and
+     * the drop cannot make the deletion fail. When FORCE is refused (a session the owner may not end, or an older
+     * server), the sessions are ended as before (as the owner and as the runtime role) and the database is dropped.
+     */
+    private fun dropDatabaseForced(statement: java.sql.Statement, database: String) {
+        try {
+            statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(database)} WITH (FORCE)")
+            return
+        } catch (failure: java.sql.SQLException) {
+            log.warn("DROP DATABASE {} WITH (FORCE) was refused ({}); ending its sessions first", database, failure.sqlState)
+        }
+        terminateSessions(statement, database)
+        statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(database)}")
+    }
+
     private fun terminateSessions(statement: java.sql.Statement, database: String) {
         val sql = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${quoteLiteral(database)} " +
             "AND pid <> pg_backend_pid() AND usesysid IS NOT NULL AND pg_has_role(current_user, usesysid, 'USAGE')"

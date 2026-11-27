@@ -236,3 +236,16 @@ permission checks do not change with the language.
   must be connected again. Server accounts' agents (server workspace) are revoked the same way.
 - The sign-ins waiting for their code keep at most one entry per user and client address, expired entries are dropped on
   every sign-in, and at most 1000 wait at the same time (past that the page asks to try again in a few minutes).
+
+## 0.7.2
+
+- Each connection records who really opened it (migration V006): the account itself, the server owner or administrator
+  behind a switcher session, or the owner of another company of the group behind the business-owner switcher. When
+  that person turns on two-step verification or resets the password, their connections are revoked in every active
+  company and the server workspace, as well as the account's own ones. A connection opened through a switcher stops
+  working (checked on every use, cached 30 s) as soon as that person could no longer enter the company the same way.
+- Connections made before 0.7.2 have no recorded origin: they keep working and show "origen desconocido". They cannot
+  be told apart reliably afterwards (token creation was not in the activity log, and matching switcher sessions by
+  time would blame the business owner for what the server person did, or the other way round), so the business owner
+  or the server owner should review them and revoke the ones nobody recognises.
+- Needs Core with tenant migration V015 (switch origin of sessions).

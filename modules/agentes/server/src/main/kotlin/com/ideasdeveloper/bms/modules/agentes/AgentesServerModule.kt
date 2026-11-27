@@ -76,6 +76,7 @@ object AgentesServerModule : ServerModule {
         "modules/agentes/migrations/V003__refresh_history.sql",
         "modules/agentes/migrations/V004__group_scope.sql",
         "modules/agentes/migrations/V005__server_admin_agents.sql",
+        "modules/agentes/migrations/V006__token_opener.sql",
     )
 
     override val runtimeTables = listOf("agent_tokens", "agent_activity", "agent_refresh_history", "agent_group_activity")
@@ -88,7 +89,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.7.1",
+        version = "0.7.2",
         minCoreVersion = "0.13.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -166,6 +167,8 @@ object AgentesServerModule : ServerModule {
                     context.tenant, context.permissions.companyCode, context.owner,
                     request.name, request.allowedModules, request.readOnly, request.expiresAt,
                     groupScope = request.groupScope && context.permissions.businessOwner && !context.owner.serverOwner,
+                    // Who is really behind this session (switchers): the connection follows that person's credentials.
+                    opener = context.opener,
                 )
                 AgentesScreens.created(context, token, value)
             }
@@ -225,6 +228,9 @@ object AgentesServerModule : ServerModule {
     }
 
     private class AgentSession(val token: AgentToken, val access: UserModuleAccess)
+
+    // Re-check of switcher openers per use, cached a few seconds (busy agents call many times a minute).
+    private val openerChecks = OpenerChecks()
 
     /**
      * The protocol of a server administrator's agent (ACTIVITY_LOG.md §7), or null when [value] is not
@@ -307,6 +313,8 @@ object AgentesServerModule : ServerModule {
         // Companies that never enabled the module have no token tables.
         if (!AgentTokens.moduleEnabled(tenant)) return null
         val token = AgentTokens.resolve(tenant, value)?.takeIf { !it.serverAdmin } ?: return null
+        // A connection opened through a switcher session works only while that person may still enter the company.
+        if (token.openedThroughSwitcher && !openerChecks.allowed(token, companyCode) { access.openerMayEnter(companyCode, it) }) return null
         val userAccess = access.userAccess(tenant, companyCode, token.userId, token.serverOwner) ?: return null
         val own = userAccess.permissions(AgentesModule.id) ?: return null
         if (!own.has(AgentesScreens.Connect)) return null
@@ -525,7 +533,8 @@ object AgentesServerModule : ServerModule {
                     val owner = owner(tenant, permissions, access)
                     val userAccess = access.userAccess(tenant, permissions.companyCode, owner.userId, owner.serverOwner)
                     val userTools = userAccess?.let { user -> access.mcpTools().filter(user::mayUse) }.orEmpty()
-                    block(AgentesScreens.Context(tenant, permissions, owner, userTools, endpoint))
+                    val opener = TokenOpener.of(runCatching { access.sessionOpener(permissions) }.getOrNull())
+                    block(AgentesScreens.Context(tenant, permissions, owner, userTools, endpoint, opener))
                 }
             }
             respondText(UiJson.encodeToString(UiScreen.serializer(), localizedPayload(screen)), ContentType.Application.Json)
@@ -553,4 +562,23 @@ data class AgentesErrorResponse(val code: String, val message: String)
 
 class AgentesServerModuleProvider : ServerModuleProvider {
     override fun create(): ServerModule = AgentesServerModule
+}
+
+/** Per-use re-check of the person behind a switcher-opened connection, cached [ttlMillis] per token and company. */
+class OpenerChecks(private val ttlMillis: Long = 30_000, private val clock: () -> Long = System::currentTimeMillis) {
+    private class Entry(val allowed: Boolean, val at: Long)
+    private val entries = java.util.concurrent.ConcurrentHashMap<String, Entry>()
+
+    fun allowed(token: AgentToken, companyCode: String, check: (com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener) -> Boolean): Boolean {
+        val user = token.openerUser ?: return false
+        val kind = if (token.openerKind == TokenOpener.Server) com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Server
+            else com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Company
+        val key = "${token.id}/$companyCode"
+        val now = clock()
+        entries[key]?.takeIf { now - it.at < ttlMillis }?.let { return it.allowed }
+        if (entries.size > 10_000) entries.entries.removeIf { now - it.value.at >= ttlMillis }
+        val allowed = runCatching { check(com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener(kind, user, token.openerCompany)) }.getOrDefault(false)
+        entries[key] = Entry(allowed, now)
+        return allowed
+    }
 }

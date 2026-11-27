@@ -205,9 +205,32 @@ class ProvisioningRolesPostgresTest {
         // A runtime session still on the database (a pool, or one closed a moment ago) does not stop the deletion: the
         // owner's role may not end it, so it is ended as the runtime role.
         val stillOpen = runtime("bms_${tag}_copia")
-        provisioning.deleteInactiveCompany("${tag}_copia", owner, actor)
+        // A connection of another login (a reporting tool) that the owner's role is no member of: ending sessions one by
+        // one skips it, DROP DATABASE ... WITH (FORCE) ends it (the owner holds pg_signal_backend for that).
+        superuser("postgres").use { admin ->
+            admin.run("DROP ROLE IF EXISTS ${tag}_visor")
+            admin.run("CREATE ROLE ${tag}_visor LOGIN PASSWORD 'visor-pass'")
+            admin.run("GRANT CONNECT ON DATABASE bms_${tag}_copia TO ${tag}_visor")
+            admin.run("GRANT pg_signal_backend TO $owner")
+        }
+        val foreign = DriverManager.getConnection(urlOf("bms_${tag}_copia").substringBefore("?") + "?user=${tag}_visor&password=visor-pass")
+        // And a pool that keeps reconnecting while the company is deleted.
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val pool = Thread {
+            while (!stop.get()) runCatching { runtime("bms_${tag}_copia").use { it.run("SELECT pg_sleep(0.02)") } }
+        }.apply { isDaemon = true; start() }
+        Thread.sleep(200)
+        try {
+            provisioning.deleteInactiveCompany("${tag}_copia", owner, actor)
+        } finally {
+            stop.set(true)
+            pool.join(5_000)
+        }
         assertFailsWith<SQLException> { stillOpen.run("SELECT 1") }
+        assertFailsWith<SQLException> { foreign.run("SELECT 1") }
         runCatching { stillOpen.close() }
+        runCatching { foreign.close() }
+        superuser("postgres").use { it.run("DROP ROLE IF EXISTS ${tag}_visor"); it.run("REVOKE pg_signal_backend FROM $owner") }
         assertEquals("0", scalar("postgres", "SELECT count(*) FROM pg_database WHERE datname = 'bms_${tag}_copia'"))
         // The pool's role still cannot create anything at server level.
         runtime(central).use { db ->

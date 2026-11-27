@@ -145,6 +145,7 @@ class TwoFactorEmailRecoveryPostgresTest {
         val session = db.service.login(LoginCredentials(user, pass, code, "10.0.0.1"))!!
         val service = TwoFactorAccountService(db)
         val secret = service.setup(session.accessToken, code, pass).secret
+        awaitStepMargin()
         service.enable(session.accessToken, code, Totp.code(Totp.decodeBase32(secret), Totp.step(Instant.now().epochSecond) - 1))
         return secret
     }

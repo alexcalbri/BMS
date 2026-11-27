@@ -72,6 +72,8 @@ object AgentesScreens {
         val owner: AgentOwner,
         val userTools: List<RegisteredMcpTool>,
         val endpoint: String,
+        // Who is really behind the session (switchers); stored on the connections created from this screen.
+        val opener: TokenOpener = TokenOpener.Own,
     ) {
         val canManage get() = permissions.has(Manage)
 
@@ -225,6 +227,7 @@ object AgentesScreens {
                 UiListItem(tr("Acceso"), trailing = if (token.readOnly) tr("Solo lectura") else tr("Lectura y escritura")),
                 UiListItem(tr("Empresas"), trailing = if (token.groupScope) tr("Esta y las demas de su grupo") else tr("Solo esta empresa")),
                 UiListItem(tr("Conexion"), trailing = if (token.oauthClient != null) tr("OAuth (el token se renueva solo)") else tr("Token {0}...{1}...", AgentTokens.Prefix, token.hint)),
+                UiListItem(tr("Origen"), trailing = originLabel(token)),
                 UiListItem(tr("Creado"), trailing = format(token.createdAt)),
                 UiListItem(tr("Vence"), trailing = token.expiresAt?.let(::format) ?: tr("Nunca")),
                 UiListItem(tr("Ultimo uso"), trailing = token.lastUsedAt?.let(::format) ?: tr("Sin uso")),
@@ -258,6 +261,14 @@ object AgentesScreens {
         return frame(context, if (context.owns(token)) "mine" else "team", token.name, notice, body)
     }
 
+    // Who connected it: older connections (before 0.7.2) cannot be told and say so.
+    private fun originLabel(token: AgentToken): String = when (token.openerKind) {
+        TokenOpener.Self -> tr("El propio usuario")
+        TokenOpener.Server -> tr("Desde el servidor (selector de empresas)")
+        TokenOpener.Company -> tr("Desde la empresa {0} (mismo dueno)", token.openerCompany.orEmpty())
+        else -> tr("Origen desconocido (conectado antes de la version 0.7.2)")
+    }
+
     private fun tokenList(tokens: List<AgentToken>, showUser: Boolean, emptyText: String) = UiList(
         tokens.map { token ->
             val scope = listOf(
@@ -265,6 +276,7 @@ object AgentesScreens {
                 if (token.readOnly) tr("solo lectura") else tr("lectura y escritura"),
                 if (token.groupScope) tr("empresas del grupo") else null,
                 if (token.oauthClient != null) "OAuth" else tr("token"),
+                if (token.openerKind == null) tr("origen desconocido") else null,
                 tr("ultimo uso: {0}", token.lastUsedAt?.let(::format) ?: tr("nunca")),
             ).filterNotNull().joinToString(" · ")
             UiListItem(
