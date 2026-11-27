@@ -89,7 +89,7 @@ and does not guarantee.
 
 Since Core 0.13.0 (security hardening): optional **two-step verification**
 (TOTP, recovery codes and a delayed recovery by email; control migrations
-`V017`-`V019` applied by `update.sh`, tenant `V012`-`V014` applied to every
+`V017`-`V019` applied by `update.sh`, tenant `V012`-`V015` applied to every
 company by `update.sh` and by the server at startup), a **storage quota** per
 company with a free-disk floor (STORAGE_QUOTA.md), pinned and optionally signed
 Core updates and packages (SIGNING.md), and the PostgreSQL role layout of §5

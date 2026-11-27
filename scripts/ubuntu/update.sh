@@ -508,6 +508,7 @@ apply_control_migrations() {
         database/tenant/migrations/V012__create_two_factor.sql \
         database/tenant/migrations/V013__create_two_factor_email_recovery.sql \
         database/tenant/migrations/V014__session_second_factor_mark.sql \
+        database/tenant/migrations/V015__session_switch_origin.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do
