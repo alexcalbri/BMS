@@ -44,6 +44,8 @@ import com.ideasdeveloper.bms.app.features.serveradmin.data.ServerAdminApi
 import com.ideasdeveloper.bms.app.features.serveradmin.data.use
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.AuditLogScreen
 import com.ideasdeveloper.bms.app.features.activitylog.ui.ActivityLogScreen
+import com.ideasdeveloper.bms.app.features.assistant.ui.AssistantScreen
+import com.ideasdeveloper.bms.app.features.assistant.ui.AssistantServerScreen
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ForcedPasswordChangeScreen
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ServerAdminsScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.LoginScreen
@@ -301,6 +303,27 @@ fun App(initialServerUrl: String = "") {
                                 onLogout = ::requestLogout,
                                 onReturnToDashboard = ::openDashboard,
                             )
+                        } else if (moduleId == "server-assistant" && currentSession.can(ServerPermission.AssistantManage)) {
+                            AssistantServerScreen(
+                                serverUrl = clientConfiguration?.serverUrl,
+                                session = currentSession,
+                                onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                                onLogout = ::requestLogout,
+                                onReturnToDashboard = ::openDashboard,
+                            )
+                        } else if (moduleId == "assistant") {
+                            // Chat del asistente: solo sesiones de empresa; el servidor decide con 403/404 si no esta disponible.
+                            if (currentSession.isServerLevel || currentSession?.companyCode == null) {
+                                ReturnToDashboardEffect(onReturn = ::openDashboard)
+                            } else {
+                                AssistantScreen(
+                                    serverUrl = clientConfiguration?.serverUrl,
+                                    session = currentSession,
+                                    onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                                    onLogout = ::requestLogout,
+                                    onReturnToDashboard = ::openDashboard,
+                                )
+                            }
                         } else if (moduleId == "company-activity") {
                             // Registro de actividad de la empresa: solo sesiones de empresa; el servidor decide con 403 si no hay permiso.
                             if (currentSession.isServerLevel || currentSession?.companyCode == null) {
@@ -478,7 +501,7 @@ fun App(initialServerUrl: String = "") {
 }
 
 // Pantallas nativas del servidor: solo existen para sesiones del nivel servidor y segun sus permisos.
-private val ServerOnlyScreens = setOf("server-modules", "server-staff", "server-logs", "server-update", "server-admins", "server-audit")
+private val ServerOnlyScreens = setOf("server-modules", "server-staff", "server-logs", "server-update", "server-admins", "server-audit", "server-assistant")
 
 @Composable
 // Regresa al dashboard en cuanto se muestra; sustituye a una pantalla a la que la sesion ya no tiene acceso.
@@ -496,6 +519,8 @@ private fun String.toModuleTitle(): String = when (this) {
     "server-admins" -> tr("Administradores del servidor")
     "server-audit" -> tr("Registro de auditoria")
     "company-activity" -> tr("Registro de actividad")
+    "assistant" -> tr("Asistente")
+    "server-assistant" -> tr("Asistente del servidor")
     "clientes" -> tr("Clientes")
     else -> replace("-", " ")
         .replace("_", " ")

@@ -5,6 +5,7 @@ import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.bms.app.core.layout.ContentWidth
 import com.ideasdeveloper.bms.app.core.layout.contentWidth
+import com.ideasdeveloper.bms.app.features.assistant.ui.AssistantCompanySettingsSection
 import com.ideasdeveloper.bms.app.features.extensions.data.ExtensionTarget
 import com.ideasdeveloper.bms.app.features.extensions.ui.ExtensionsScreen
 import com.ideasdeveloper.bms.app.features.shell.ui.CollapsibleSection
@@ -421,6 +422,13 @@ fun CompanyManagementScreen(
                         serverUrl = serverUrl,
                         accessToken = session?.accessToken,
                         companyCode = session?.companyCode,
+                        primaryColor = primaryCompose,
+                    )
+
+                    // Asistente global: activacion, clave propia, permiso de los usuarios y uso (no aparece en servidores sin el).
+                    AssistantCompanySettingsSection(
+                        serverUrl = serverUrl,
+                        session = session,
                         primaryColor = primaryCompose,
                     )
                     }

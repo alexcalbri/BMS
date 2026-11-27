@@ -15,6 +15,7 @@ private fun buildEnglishStrings(): Map<String, String> {
     map.putAll(englishPart5())
     map.putAll(englishPart6())
     map.putAll(englishSecurityPart())
+    map.putAll(englishAssistantPart())
     return map
 }
 
