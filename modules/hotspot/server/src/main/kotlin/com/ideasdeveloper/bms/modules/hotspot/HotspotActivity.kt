@@ -42,6 +42,7 @@ object HotspotActivity {
         "txKbps" to "Velocidad de subida (kbps)",
         "reconnectMinutes" to "Tiempo para reconectar (minutos)",
         "codeTtlMinutes" to "Vigencia del codigo (minutos)",
+        "newCustomersPerHour" to "Clientes nuevos por hora (maximo)",
         "emailSubject" to "Asunto del correo",
         "crmAccessEnabled" to "Acceso por CRM",
         "crmStageId" to "Etapa del CRM que permite el acceso",
@@ -126,11 +127,12 @@ object HotspotActivity {
     ).use { query -> query.executeQuery().use { it.next() } }
 
     /**
-     * The guest entered the code emailed to the customer's address: the email is verified now, whatever state it had (a
-     * customer that already was verified stays so and nothing is written). Returns true when the state changed. The change is
-     * recorded as made by the portal; the code is never logged.
+     * The guest entered the code emailed to [email]: the customer is verified now, whatever state it had (one that already was
+     * verified stays so and nothing is written) — but only while the customer's current address is still [email] (case and spaces
+     * aside): if staff changed it after the code was sent, the code proves nothing about the new address. Returns true when the
+     * state changed. The change is recorded as made by the portal; the code is never logged.
      */
-    fun verifyGuestEmail(connection: Connection, customerId: UUID, now: java.time.Instant = java.time.Instant.now()): Boolean {
+    fun verifyGuestEmail(connection: Connection, customerId: UUID, email: String, now: java.time.Instant = java.time.Instant.now()): Boolean {
         if (!supportsEmailStatus(connection)) return false
         return transaction(connection) {
             val (name, before) = connection.prepareStatement("SELECT display_name, email_status FROM customers WHERE id = ? FOR UPDATE").use { query ->
@@ -138,11 +140,15 @@ object HotspotActivity {
                 query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else return@transaction false }
             }
             if (before == "verified") return@transaction false
-            connection.prepareStatement("UPDATE customers SET email_status = 'verified', email_verified_at = ? WHERE id = ?").use { update ->
+            val updated = connection.prepareStatement(
+                "UPDATE customers SET email_status = 'verified', email_verified_at = ? WHERE id = ? AND lower(btrim(primary_email)) = lower(btrim(?)) AND email_status IS DISTINCT FROM 'verified'"
+            ).use { update ->
                 update.setTimestamp(1, java.sql.Timestamp.from(now))
                 update.setObject(2, customerId)
+                update.setString(3, email)
                 update.executeUpdate()
             }
+            if (updated != 1) return@transaction false
             record(
                 connection, PortalActor, "customer", customerId.toString(), name, ActivityActions.Updated, "Verifico el correo del cliente $name con el codigo del portal WiFi.",
                 listOf(ActivityChange("emailStatus", "Estado del correo", if (before == "unverified") "sin verificar" else "sin estado", "verificado")),
@@ -195,6 +201,7 @@ object HotspotActivity {
         "txKbps" to settings.txKbps,
         "reconnectMinutes" to settings.reconnectMinutes,
         "codeTtlMinutes" to settings.codeTtlMinutes,
+        "newCustomersPerHour" to settings.newCustomersPerHour,
         "emailSubject" to settings.emailSubject,
         "crmAccessEnabled" to settings.crmAccessEnabled,
         "crmStageId" to settings.crmStageId,

@@ -681,6 +681,8 @@ object HotspotScreens {
         UiField("reconnectMinutes", tr("Tiempo para reconectar (minutos)"), "number", required = true,
             help = tr("Un correo no puede volver a conectarse hasta que pase este tiempo desde su ultimo acceso. 0 = sin espera.")),
         UiField("codeTtlMinutes", tr("Vigencia del codigo (minutos)"), "number", required = true),
+        UiField("newCustomersPerHour", tr("Clientes nuevos por hora (maximo)"), "number", required = true,
+            help = tr("Freno contra abusos: cuantas direcciones nuevas puede registrar el formulario por hora en toda la empresa. Los clientes que ya existen no cuentan.")),
         UiField("dataLimitMb", tr("Limite de datos (MB, 0 = sin limite)"), "number"),
         UiField("rxKbps", tr("Descarga (kbps, 0 = sin limite)"), "number"),
         UiField("txKbps", tr("Subida (kbps, 0 = sin limite)"), "number"),

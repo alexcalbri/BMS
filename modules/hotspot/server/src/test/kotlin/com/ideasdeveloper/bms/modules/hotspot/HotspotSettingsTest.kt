@@ -26,6 +26,15 @@ class HotspotSettingsTest {
     private fun values(vararg pairs: Pair<String, String>) = JsonObject(pairs.associate { it.first to JsonPrimitive(it.second) })
 
     @Test
+    fun theCeilingOfNewCustomersHasAGenerousDefaultAndIsBounded() {
+        assertEquals(300, defaults.newCustomersPerHour)
+        assertEquals(500, HotspotSettingsRepository.merge(defaults, values("newCustomersPerHour" to "500")).newCustomersPerHour)
+        listOf("0", "9", "100001", "muchos").forEach { value ->
+            kotlin.test.assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("newCustomersPerHour" to value)) }
+        }
+    }
+
+    @Test
     fun blankSecretsKeepStoredValues() {
         val merged = HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to ""))
         assertEquals("secret", merged.unifiApiKey)

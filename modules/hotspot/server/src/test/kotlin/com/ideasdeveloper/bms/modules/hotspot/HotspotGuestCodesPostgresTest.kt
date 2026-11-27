@@ -18,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -111,14 +112,14 @@ class HotspotGuestCodesPostgresTest {
         val customerId = UUID.fromString(scalar(db, "SELECT customer_id FROM hotspot_registrations WHERE id = (SELECT registration_id FROM hotspot_codes WHERE id = '$codeId')")!!)
         assertEquals("unverified", emailStatus(db, customerId))
         assertEquals("customer", scalar(db, "SELECT entity_type FROM activity_log WHERE entity_id = '$customerId' ORDER BY occurred_at LIMIT 1"))
-        assertTrue(HotspotActivity.verifyGuestEmail(db, customerId))
+        assertTrue(HotspotActivity.verifyGuestEmail(db, customerId, "ana@example.com"))
         assertEquals("verified", emailStatus(db, customerId))
         assertNotNull(scalar(db, "SELECT email_verified_at FROM customers WHERE id = '$customerId'"))
         // The log says who and what changed, from "sin verificar" to "verificado", and never a code.
         val row = scalar(db, "SELECT summary || ' ' || changes::text || ' ' || actor_name FROM activity_log WHERE entity_id = '$customerId' AND action = 'updated'")!!
         assertTrue(row.contains("sin verificar") && row.contains("verificado") && row.contains("Portal WiFi"), row)
         // Entering the code again changes nothing and writes nothing more.
-        assertFalse(HotspotActivity.verifyGuestEmail(db, customerId))
+        assertFalse(HotspotActivity.verifyGuestEmail(db, customerId, "ana@example.com"))
         assertEquals("1", scalar(db, "SELECT count(*) FROM activity_log WHERE entity_id = '$customerId' AND action = 'updated'"))
     }
 
@@ -132,8 +133,8 @@ class HotspotGuestCodesPostgresTest {
         assertEquals("verified", emailStatus(db, verified))
         assertEquals(null, emailStatus(db, unknown))
         // The code is entered: unknown becomes verified, verified stays (and is not written again).
-        assertTrue(HotspotActivity.verifyGuestEmail(db, unknown))
-        assertFalse(HotspotActivity.verifyGuestEmail(db, verified))
+        assertTrue(HotspotActivity.verifyGuestEmail(db, unknown, "u@example.com"))
+        assertFalse(HotspotActivity.verifyGuestEmail(db, verified, "v@example.com"))
         assertEquals("verified", emailStatus(db, unknown))
     }
 
@@ -226,18 +227,78 @@ class HotspotGuestCodesPostgresTest {
     }
 
     @Test
-    fun aLiveCodeIsShownInsteadOfSendingAnother() {
+    fun aLiveCodeIsKnownOnlyAsYesOrNoAndTheCodeIsFoundFromTheAddress() {
         val db = open() ?: return
         val email = "ana@example.com"
         val now = Instant.now()
         val codeId = requestCode(db, email, mac(1))
-        // Just sent: shown again (any device). Older than the resend interval and not used: a new one may be sent.
-        assertEquals(codeId, HotspotGuestCodes.liveCode(db, email.uppercase(), now)?.id)
-        assertNull(HotspotGuestCodes.liveCode(db, email, now.plusSeconds(120)))
+        // Just sent: live. Older than the resend interval and not used: a new one may be sent.
+        assertTrue(HotspotGuestCodes.hasLiveCode(db, email.uppercase(), now))
+        assertFalse(HotspotGuestCodes.hasLiveCode(db, email, now.plusSeconds(120)))
         // While its session runs it stays live (a second device enters it); when it ends it is not.
         activate(db, codeId, mac(1), 60, now)
-        assertEquals(HotspotGuestCodes.LiveCode(codeId, true), HotspotGuestCodes.liveCode(db, email, now.plus(Duration.ofMinutes(30))))
-        assertNull(HotspotGuestCodes.liveCode(db, email, now.plus(Duration.ofMinutes(61))))
+        assertTrue(HotspotGuestCodes.hasLiveCode(db, email, now.plus(Duration.ofMinutes(30))))
+        assertFalse(HotspotGuestCodes.hasLiveCode(db, email, now.plus(Duration.ofMinutes(61))))
+        // The code is looked up among the codes of THAT address only: another address has none of them.
+        assertEquals(listOf(codeId), HotspotGuestCodes.candidates(db, "ANA@example.com").map { it.id })
+        assertEquals(emptyList(), HotspotGuestCodes.candidates(db, "otra@example.com").map { it.id })
+        val second = requestCode(db, email, mac(2), now.plusSeconds(3600))
+        assertEquals(setOf(codeId, second), HotspotGuestCodes.candidates(db, email).map { it.id }.toSet())
+    }
+
+    @Test
+    fun wrongCodesAreCountedPerAddressAndOriginNeverPerCodeOrDevice() {
+        val db = open() ?: return
+        val now = Instant.now()
+        val attacker = HotspotGuestCodes.ipGroup("203.0.113.9")
+        val guest = HotspotGuestCodes.ipGroup("198.51.100.4")
+        repeat(HotspotGuestCodes.MaxWrongPerAddressAndOrigin) { HotspotGuestCodes.recordWrongCode(db, attacker, "ana@example.com", now) }
+        // The attacker is out of tries for that address...
+        assertTrue(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "ANA@example.com", now))
+        // ...but the guest (another origin) still has all of hers, and the attacker still has tries for another address.
+        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, guest, "ana@example.com", now))
+        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "otra@example.com", now))
+        // An origin that sprays many addresses hits its own ceiling, and only its own.
+        repeat(HotspotGuestCodes.MaxWrongPerOrigin) { HotspotGuestCodes.recordWrongCode(db, attacker, "x$it@example.com", now) }
+        assertTrue(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "otra@example.com", now))
+        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, guest, "otra@example.com", now))
+        // The window passes.
+        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "ana@example.com", now.plus(Duration.ofMinutes(31))))
+    }
+
+    @Test
+    fun ipv6IsGroupedByItsSlash64AndTheCeilingsCountOnlyWhatTheyShould() {
+        assertEquals(HotspotGuestCodes.ipGroup("2001:db8:1:2::1"), HotspotGuestCodes.ipGroup("2001:db8:1:2:ffff:ffff:ffff:ffff"))
+        assertNotEquals(HotspotGuestCodes.ipGroup("2001:db8:1:2::1"), HotspotGuestCodes.ipGroup("2001:db8:1:3::1"))
+        assertEquals("203.0.113.9", HotspotGuestCodes.ipGroup("203.0.113.9"))
+        val db = open() ?: return
+        val hour = Duration.ofHours(1).toMillis()
+        val now = System.currentTimeMillis()
+        // Two addresses of the same /64 share one counter; the company ceiling ("*") is its own.
+        val a = HotspotGuestCodes.ipGroup("2001:db8:1:2::1")
+        val b = HotspotGuestCodes.ipGroup("2001:db8:1:2::2")
+        repeat(3) { assertFalse(HotspotGuestCodes.hitLimit(db, a, "customer", 3, hour, now)) }
+        assertTrue(HotspotGuestCodes.hitLimit(db, b, "customer", 3, hour, now))
+        repeat(3) { assertFalse(HotspotGuestCodes.hitLimit(db, "*", "new_customers", 3, hour, now)) }
+        assertTrue(HotspotGuestCodes.hitLimit(db, "*", "new_customers", 3, hour, now))
+        // Next hour: free again. The notice to staff is "once per hour": the second try of the same hour is refused.
+        assertFalse(HotspotGuestCodes.hitLimit(db, "*", "new_customers", 3, hour, now + hour))
+        assertFalse(HotspotGuestCodes.hitLimit(db, "*", "ceiling_notice", 1, hour, now))
+        assertTrue(HotspotGuestCodes.hitLimit(db, "*", "ceiling_notice", 1, hour, now))
+    }
+
+    @Test
+    fun theEmailIsVerifiedOnlyWhileTheCustomerStillHasTheAddressTheCodeWentTo() {
+        val db = open() ?: return
+        val codeId = requestCode(db, "ana@example.com", mac(1))
+        val customerId = UUID.fromString(scalar(db, "SELECT customer_id FROM hotspot_registrations WHERE id = (SELECT registration_id FROM hotspot_codes WHERE id = '$codeId')")!!)
+        // Staff changed the customer's address after the code was sent: the code proves nothing about the new one.
+        db.createStatement().use { it.execute("UPDATE customers SET primary_email = 'nueva@example.com' WHERE id = '$customerId'") }
+        assertFalse(HotspotActivity.verifyGuestEmail(db, customerId, "ana@example.com"))
+        assertEquals(null, emailStatus(db, customerId))
+        // The address the code went to, still the customer's (case and spaces aside): verified.
+        assertTrue(HotspotActivity.verifyGuestEmail(db, customerId, " NUEVA@example.com "))
+        assertEquals("verified", emailStatus(db, customerId))
     }
 
     @Test

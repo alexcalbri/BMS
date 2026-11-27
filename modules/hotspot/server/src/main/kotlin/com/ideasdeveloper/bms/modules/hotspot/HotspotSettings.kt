@@ -38,6 +38,8 @@ data class HotspotSettings(
     val crmScheduleMode: String,
     val crmCheckIntervalMinutes: Int,
     val crmCheckTime: LocalTime,
+    // Ceiling of NEW customers the public form creates per hour in the whole company (an abuse brake, generous on purpose).
+    val newCustomersPerHour: Int = DefaultNewCustomersPerHour,
     // Colors set in Hotspot > Diseno; a missing one uses the company's.
     val portalColors: PortalColors = PortalColors(),
     // Colors the portal uses (own, else the company's, else BMS's), set by the portal for each request.
@@ -52,6 +54,8 @@ data class HotspotSettings(
     val unifiConfigured: Boolean
         get() = !unifiConsoleId.isNullOrBlank() && !unifiSiteId.isNullOrBlank() && !unifiApiKey.isNullOrBlank()
 }
+
+const val DefaultNewCustomersPerHour = 300
 
 object HotspotSettingsRepository {
     private val domainPattern = Regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$")
@@ -129,6 +133,7 @@ object HotspotSettingsRepository {
                 runCatching { LocalTime.parse(text("crmCheckTime").orEmpty()) }.getOrNull()
                     ?: throw HotspotValidationException(tr("La hora de revision debe tener el formato HH:mm."))
             } else current.crmCheckTime,
+            newCustomersPerHour = number("newCustomersPerHour", current.newCustomersPerHour, 10..100000, msg("El maximo de clientes nuevos por hora")),
             portalColors = current.portalColors,
         )
         if (merged.crmAccessEnabled && merged.crmStageId == null) {
@@ -169,7 +174,7 @@ object HotspotSettingsRepository {
                 access_minutes = ?, data_limit_mb = ?, rx_kbps = ?, tx_kbps = ?, reconnect_minutes = ?,
                 code_ttl_minutes = ?, email_subject = ?,
                 crm_access_enabled = ?, crm_stage_id = ?, crm_schedule_mode = ?, crm_check_interval_minutes = ?,
-                crm_check_time = ?,
+                crm_check_time = ?, new_customers_per_hour = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
             """.trimIndent()
@@ -181,7 +186,7 @@ object HotspotSettingsRepository {
                 settings.accessMinutes, settings.dataLimitMb, settings.rxKbps, settings.txKbps, settings.reconnectMinutes,
                 settings.codeTtlMinutes, settings.emailSubject,
                 settings.crmAccessEnabled, settings.crmStageId, settings.crmScheduleMode, settings.crmCheckIntervalMinutes,
-                settings.crmCheckTime,
+                settings.crmCheckTime, settings.newCustomersPerHour,
             ).forEachIndexed { index, value -> update.setObject(index + 1, value) }
             update.executeUpdate()
         }
@@ -212,6 +217,7 @@ object HotspotSettingsRepository {
             "txKbps" to settings.txKbps.toString(),
             "reconnectMinutes" to settings.reconnectMinutes.toString(),
             "codeTtlMinutes" to settings.codeTtlMinutes.toString(),
+            "newCustomersPerHour" to settings.newCustomersPerHour.toString(),
             "mailSource" to if (sendingAvailable) tr("SMTP de la empresa (o del servidor): listo") else tr("Sin SMTP: configura el correo de la empresa"),
             "emailSubject" to settings.emailSubject,
             "networkName" to settings.networkName,
@@ -259,6 +265,7 @@ object HotspotSettingsRepository {
         crmScheduleMode = getString("crm_schedule_mode"),
         crmCheckIntervalMinutes = getInt("crm_check_interval_minutes"),
         crmCheckTime = getObject("crm_check_time", java.time.LocalTime::class.java),
+        newCustomersPerHour = getInt("new_customers_per_hour"),
         portalColors = PortalColors(
             primary = getString("portal_primary_color")?.trim(),
             secondary = getString("portal_secondary_color")?.trim(),

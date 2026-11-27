@@ -96,7 +96,7 @@ object HotspotPortalPages {
         )
     }
 
-    fun code(settings: HotspotSettings, pendingId: String, email: String, continueUrl: String, error: String? = null, guest: GuestContext? = null): String = page(
+    fun code(settings: HotspotSettings, email: String, continueUrl: String, error: String? = null, guest: GuestContext? = null): String = page(
         settings,
         header = "<h1>${esc(settings.portalTitle)}</h1>",
         body = """
@@ -106,7 +106,7 @@ object HotspotPortalPages {
               ${error?.let { "<div class=\"error\">${esc(it)}</div>" }.orEmpty()}
               <label for="code">${tr("Codigo")}</label>
               <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required class="code">
-              <input type="hidden" name="pending" value="${esc(pendingId)}">
+              <input type="hidden" name="email" value="${esc(email)}">
               <input type="hidden" name="url" value="${esc(continueUrl)}">
               ${guest?.let { "<input type=\"hidden\" name=\"id\" value=\"${esc(it.mac)}\"><input type=\"hidden\" name=\"ap\" value=\"${esc(it.apMac)}\"><input type=\"hidden\" name=\"ssid\" value=\"${esc(it.ssid)}\">" }.orEmpty()}
               <button type="submit" data-busy="${esc(tr("Conectando..."))}">${tr("Conectarme al WiFi")}</button>

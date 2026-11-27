@@ -19,9 +19,15 @@ CREATE TABLE hotspot_code_devices (
     UNIQUE (code_id, mac)
 );
 
--- New customers the form creates per origin address, in one-hour windows.
+-- More counters of the shared throttle table: new customers created by the form (per origin address and for the whole company),
+-- the notice to staff when the company ceiling is reached, and wrong codes (per origin address and per address + origin).
 ALTER TABLE hotspot_ip_throttle DROP CONSTRAINT IF EXISTS hotspot_ip_throttle_action_check;
-ALTER TABLE hotspot_ip_throttle ADD CONSTRAINT hotspot_ip_throttle_action_check CHECK (action IN ('register', 'code', 'customer'));
+ALTER TABLE hotspot_ip_throttle ADD CONSTRAINT hotspot_ip_throttle_action_check
+    CHECK (action IN ('register', 'code', 'customer', 'new_customers', 'ceiling_notice', 'verify_fail', 'verify_fail_addr'));
+
+-- Ceiling of NEW customers the public form creates per hour in the whole company (an abuse brake).
+ALTER TABLE hotspot_settings
+    ADD COLUMN new_customers_per_hour INTEGER NOT NULL DEFAULT 300 CHECK (new_customers_per_hour BETWEEN 10 AND 100000);
 
 -- Codes sent in the last hour by device and by destination address (limits of the form).
 CREATE INDEX IF NOT EXISTS hotspot_registrations_mac_created_idx ON hotspot_registrations (mac, created_at);
