@@ -2,8 +2,8 @@
 
 Optional per account for every kind of user: server owner, server administrators, business owners and company
 users. The server owner can make it mandatory for server administrators. App screens build on this file; servers
-older than this Core do not have these routes (check `isCoreAtLeast(coreVersion, 0, 13, 0)` — the lead sets the
-final Core number; until then treat a `404` on `GET /auth/two-factor` as "not supported").
+older than this Core (0.13.0) do not have these routes (check `isCoreAtLeast(coreVersion, 0, 13, 0)`; a `404` on
+`GET /auth/two-factor` also means "not supported").
 
 All bodies are JSON. Errors are always `{code, message}` (`message` translated to the request language). Every
 answer carries `Cache-Control: no-store`.
