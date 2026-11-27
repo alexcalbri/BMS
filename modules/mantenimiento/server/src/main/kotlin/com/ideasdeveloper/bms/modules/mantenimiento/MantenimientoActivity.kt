@@ -15,7 +15,7 @@ internal object MantenimientoActivity {
     const val ModuleId = "mantenimiento"
 
     val OrderLabels = mapOf(
-        "title" to "Titulo", "description" to "Descripcion", "property" to "Propiedad", "asset" to "Activo", "priority" to "Prioridad",
+        "kind" to "Tipo", "status" to "Estado", "title" to "Titulo", "description" to "Descripcion", "property" to "Propiedad", "asset" to "Activo", "priority" to "Prioridad",
         "dueDate" to "Fecha limite", "assignee" to "Responsable", "department" to "Departamento", "quoteAmount" to "Monto cotizado",
         "quoteCurrency" to "Moneda de la cotizacion", "quotedBy" to "Cotizado por", "costAmount" to "Costo real",
         "costCurrency" to "Moneda del costo", "resolution" to "Resolucion",
@@ -60,6 +60,13 @@ internal object MantenimientoActivity {
         "title" to text(title), "description" to text(description), "property" to text(property), "asset" to text(asset),
         "frequency" to frequency, "intervalDays" to intervalDays, "leadDays" to leadDays, "priority" to priority, "nextDue" to nextDue,
         "checklist" to text(checklist.joinToString(" · ")),
+    )
+
+    /** Campos de un plan tal como se muestran, para comparar (diff) o registrar (created). */
+    fun planValues(plan: Plan, checklist: List<String>): Map<String, Any?> = planValues(
+        title = plan.title, description = plan.description, property = plan.propertyName, asset = plan.assetName,
+        frequency = plan.frequency.label, intervalDays = plan.intervalDays, leadDays = plan.leadDays,
+        priority = plan.priority.label, nextDue = plan.nextDue, checklist = checklist,
     )
 
     /** Texto vacio = ausente: el mismo valor a ambos lados de una comparacion. */

@@ -22,6 +22,8 @@ object MantenimientoTareasSync {
     private val log = LoggerFactory.getLogger(MantenimientoTareasSync::class.java)
 
     const val ListBoardsTool = "tareas_list_boards"
+    /** Como figura en el registro de actividad de Tareas la publicacion de las ordenes (no la hizo una persona al momento). */
+    const val PublisherAutomation = "Publicacion de mantenimiento en Tareas"
     const val CreateTaskTool = "tareas_create_task"
     const val UpdateTaskTool = "tareas_update_task"
     const val BatchSize = 50
@@ -207,9 +209,9 @@ object MantenimientoTareasSync {
         arguments: JsonObject,
         assigneeRef: String?,
     ): MantenimientoBridge.BridgeResult {
-        val first = MantenimientoBridge.call(access, tenant, companyCode, publisher, false, tool, arguments)
+        val first = MantenimientoBridge.call(access, tenant, companyCode, publisher, false, tool, arguments, PublisherAutomation)
         if (first is MantenimientoBridge.BridgeResult.Ok || assigneeRef == null) return first
         if (first is MantenimientoBridge.BridgeResult.Unavailable && first.absent) return first
-        return MantenimientoBridge.call(access, tenant, companyCode, publisher, false, tool, JsonObject(arguments - "assignees"))
+        return MantenimientoBridge.call(access, tenant, companyCode, publisher, false, tool, JsonObject(arguments - "assignees"), PublisherAutomation)
     }
 }

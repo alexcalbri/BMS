@@ -226,16 +226,25 @@ object MantenimientoRepository {
         }
     }
 
-    /** La propiedad activa con ese nombre (sin mayúsculas); si no existe, se crea. Para importaciones. */
-    fun findOrCreateProperty(tenant: Connection, name: String): UUID {
+    /**
+     * La propiedad activa con ese nombre (sin mayúsculas); si no existe, se crea y queda en el registro de actividad a nombre de
+     * [activity] (en la transacción de quien llama). Para importaciones.
+     */
+    fun findOrCreateProperty(tenant: Connection, name: String, activity: ActivityActor): UUID {
         val clean = name.trim().take(MaxPropertyName).trim()
         if (clean.isEmpty()) fail(tr("El nombre de la propiedad es obligatorio."))
         fun existing() = tenant.query("SELECT id FROM mantenimiento_properties WHERE lower(name) = lower(?) AND NOT archived", listOf(clean)) { it.uuid("id") ?: NilId }.firstOrNull()
         return existing() ?: run {
-            tenant.update(
+            val newId = UUID.randomUUID()
+            val inserted = tenant.update(
                 "INSERT INTO mantenimiento_properties (id, name, position) VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM mantenimiento_properties)) ON CONFLICT DO NOTHING",
-                listOf(UUID.randomUUID(), clean),
+                listOf(newId, clean),
             )
+            // Solo si lo creo esta fila (otra importacion pudo adelantarse).
+            if (inserted > 0) {
+                MantenimientoActivity.write(tenant, activity, "propiedad", newId.toString(), clean, ActivityActions.Created, "Importo la propiedad $clean.",
+                    ActivityChanges.created(mapOf("name" to clean), MantenimientoActivity.PropertyLabels))
+            }
             existing() ?: fail(tr("No se pudo crear la propiedad."))
         }
     }
@@ -302,7 +311,7 @@ object MantenimientoRepository {
         tenant.update("UPDATE mantenimiento_assets SET archived = ?, updated_at = now() WHERE id = ?", listOf(archived, id)) > 0
 
     /** El activo activo con ese nombre en esa propiedad (sin mayúsculas); si no existe, se crea. Para importaciones. */
-    fun findOrCreateAsset(tenant: Connection, propertyId: UUID?, name: String): UUID {
+    fun findOrCreateAsset(tenant: Connection, propertyId: UUID?, name: String, activity: ActivityActor): UUID {
         val clean = name.trim().take(AssetInput.MaxName).trim()
         if (clean.isEmpty()) fail(tr("El nombre del activo es obligatorio."))
         fun existing() = tenant.query(
@@ -312,7 +321,14 @@ object MantenimientoRepository {
         ) { it.uuid("id") ?: NilId }.firstOrNull()
         return existing() ?: run {
             // El índice único (propiedad, nombre) evita duplicados si dos importaciones corren a la vez: se relee lo que ganó.
-            tenant.update("INSERT INTO mantenimiento_assets (id, property_id, name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", listOf(UUID.randomUUID(), propertyId, clean))
+            val newId = UUID.randomUUID()
+            val inserted = tenant.update("INSERT INTO mantenimiento_assets (id, property_id, name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", listOf(newId, propertyId, clean))
+            // Solo si lo creo esta fila (otra importacion pudo adelantarse); la fila del registro va en la misma transaccion.
+            if (inserted > 0) {
+                val propertyName = propertyId?.let { getProperty(tenant, it)?.name }
+                MantenimientoActivity.write(tenant, activity, "activo", newId.toString(), clean, ActivityActions.Created, "Importo el activo $clean.",
+                    ActivityChanges.created(MantenimientoActivity.assetValues(clean, propertyName, "", "", ""), MantenimientoActivity.AssetLabels))
+            }
             existing() ?: fail(tr("No se pudo crear el activo."))
         }
     }
@@ -518,9 +534,14 @@ object MantenimientoRepository {
             )
             val job = ActivityActor.job("Plan preventivo")
             insertNote(tenant, id, "system", "Generada por el plan preventivo.", MantenimientoActor(null, "Plan preventivo", job))
+            val generated = getOrder(tenant, id)
             MantenimientoActivity.write(tenant, job, "orden", id.toString(), current.title, ActivityActions.Created,
                 "Genero la orden ${MantenimientoActivity.folio(created)} desde el plan ${current.title}.",
-                ActivityChanges.created(mapOf("title" to MantenimientoActivity.text(current.title), "dueDate" to due, "priority" to current.priority.label), MantenimientoActivity.OrderLabels))
+                ActivityChanges.created(
+                    generated?.let { orderValues(tenant, it) }
+                        ?: mapOf("title" to MantenimientoActivity.text(current.title), "dueDate" to due, "priority" to current.priority.label),
+                    MantenimientoActivity.OrderLabels,
+                ))
             markSync(tenant, id)
         }
         // La fecha siguiente se calcula siempre: si la orden de esa fecha ya existía, el plan no debe quedarse atascado en ella.
@@ -808,7 +829,8 @@ object MantenimientoRepository {
     }
 
     /** Campos de una orden tal como se muestran: para comparar (diff) o registrar (created). Los textos vacios no cuentan. */
-    private fun orderValues(tenant: Connection, order: Order): Map<String, Any?> = mapOf(
+    internal fun orderValues(tenant: Connection, order: Order): Map<String, Any?> = mapOf(
+        "kind" to order.kind.label, "status" to order.status.label,
         "title" to MantenimientoActivity.text(order.title), "description" to MantenimientoActivity.text(order.description),
         "property" to MantenimientoActivity.text(order.propertyName), "asset" to MantenimientoActivity.text(order.assetName),
         "priority" to order.priority.label, "dueDate" to order.dueDate,
@@ -1357,10 +1379,20 @@ object MantenimientoRepository {
     }
 
     /** Guarda la solicitud creada y libera la reserva. */
-    fun savePurchase(tenant: Connection, orderId: UUID, requestId: UUID, folio: String): Boolean = tenant.update(
-        "UPDATE mantenimiento_orders SET purchase_request_id = ?, purchase_folio = ?, purchase_linking_at = NULL WHERE id = ?",
-        listOf(requestId, folio.take(40), orderId),
-    ) > 0
+    fun savePurchase(tenant: Connection, orderId: UUID, requestId: UUID, folio: String, activity: ActivityActor): Boolean = transaction(tenant) {
+        val saved = tenant.update(
+            "UPDATE mantenimiento_orders SET purchase_request_id = ?, purchase_folio = ?, purchase_linking_at = NULL WHERE id = ?",
+            listOf(requestId, folio.take(40), orderId),
+        ) > 0
+        if (saved) {
+            getOrder(tenant, orderId)?.let { order ->
+                MantenimientoActivity.write(tenant, activity, "orden", orderId.toString(), order.title, ActivityActions.Updated,
+                    "Enlazo la solicitud de compra ${folio.take(40)} a la orden ${MantenimientoActivity.folio(order.number)}.",
+                    listOf(ActivityChange("purchase", "Solicitud de compra", null, folio.take(40))))
+            }
+        }
+        saved
+    }
 
     /** Libera la reserva (también cuando la solicitud falló). */
     fun releasePurchase(tenant: Connection, orderId: UUID) {

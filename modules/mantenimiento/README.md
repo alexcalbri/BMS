@@ -214,7 +214,7 @@ queda "no disponible" y no rompe nada.
 
 ## Registro de actividad (0.3.0, needs Core 0.12.0)
 
-Cada alta, edicion (con diferencias), nota, responsable, estado, lista de comprobacion, adjunto, propiedad, activo, plan preventivo y ajuste queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP; las ordenes de un plan figuran como tarea programada "Plan preventivo"). Las notas de la orden siguen igual.
+Cada alta, edicion (con diferencias), nota, responsable, estado, lista de comprobacion, adjunto, propiedad, activo, plan preventivo y ajuste queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP; las ordenes de un plan figuran como tarea programada "Plan preventivo"). Las notas de la orden siguen igual. La fila va en la misma transaccion que el cambio. Enlazar la solicitud de compra a la orden tambien queda. La importacion deja una fila por propiedad, activo, plan, orden (con sus datos clave y, al repetir, lo que cambio) y adjunto; los elementos de lista y las notas importados no llevan fila aparte: la fila de su orden o plan dice cuantos fueron.
 
 ## Languages (0.2.0, needs Core 0.10.0)
 
