@@ -24,10 +24,12 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.withCharset
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.application
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondTextWriter
+import io.ktor.server.response.respondBytesWriter
+import io.ktor.utils.io.writeStringUtf8
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -35,10 +37,10 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -119,6 +121,11 @@ fun Route.assistantRoutes(service: AssistantService?) {
             val availability = assistant.availability(tenant, context)
             if (!context.caller.businessOwner && !context.hasUsePermission) return@company refused(403, AssistantIds.ReasonPermissionRequired, tr("No tienes permiso para usar el asistente."))
             if (!availability.visible) return@company refused(403, availability.unavailable?.reason ?: AssistantIds.ReasonCompanyDisabled, availability.unavailable?.message.orEmpty())
+            val key = "${context.caller.companyCode}/${context.caller.userId}/${context.caller.ownerKey}"
+            if (!assistant.limits.allowNewConversation(key)) return@company refused(429, "ASSISTANT_RATE_LIMITED", tr("Demasiadas conversaciones nuevas; espera un minuto."))
+            if (context.store.conversationCount(context.caller.userId, context.caller.ownerKey) >= AssistantService.MaxConversationsPerUser) {
+                return@company refused(409, "TOO_MANY_CONVERSATIONS", tr("Tienes demasiadas conversaciones guardadas; borra algunas para empezar otra."))
+            }
             val conversation = context.store.createConversation(context.caller.userId, context.caller.ownerKey, request.title?.trim()?.take(80).orEmpty(), Instant.now())
             Answer.Ok(HttpStatusCode.Created, AssistantView.conversation(conversation, 0))
         }
@@ -128,6 +135,8 @@ fun Route.assistantRoutes(service: AssistantService?) {
         val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         call.company { assistant, context, _ ->
             id ?: return@company notFoundConversation()
+            // Only the owner's conversation is touched (expiry included).
+            context.store.conversation(id, context.caller.userId, context.caller.ownerKey) ?: return@company notFoundConversation()
             assistant.engine(context.store).expireIfDue(id)
             val conversation = context.store.conversation(id, context.caller.userId, context.caller.ownerKey) ?: return@company notFoundConversation()
             val pending = context.store.pending(id)
@@ -176,9 +185,9 @@ fun Route.assistantRoutes(service: AssistantService?) {
             id ?: throw AssistantRefusal(404, "CONVERSATION_NOT_FOUND", tr("Esa conversacion no existe."))
             val runtime = assistant.runtime(tenant, assistant.availability(tenant, context))
             val engine = assistant.engine(context.store)
-            val conversation = engine.prepareMessage(context.caller, id, request.text)
+            val turn = engine.prepareMessage(context.caller, id, request.text)
             val toolbox = assistant.toolbox(context);
-            { sink: AssistantSink -> engine.runMessage(context.caller, runtime, toolbox, conversation, request.text, sink) }
+            { sink: AssistantSink -> engine.runMessage(context.caller, runtime, toolbox, turn, request.text, sink) }
         }
     }
 
@@ -295,7 +304,11 @@ private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRo
     val tenant = assistant.access.tenantConnectionForCompany(companyCode)
         ?: return refused(403, "company_not_found", tr("La empresa no esta activa."))
     return tenant.use { connection ->
-        val context = assistant.context(connection, companyCode, userId, call.sessionToken())
+        val context = try {
+            assistant.context(connection, companyCode, userId, call.sessionToken())
+        } catch (refusal: AssistantRefusal) {
+            return@use refused(refusal.status, refusal.code, refusal.message.orEmpty())
+        }
             ?: return@use if (statusRoute) {
                 Answer.Ok(
                     HttpStatusCode.OK,
@@ -313,8 +326,8 @@ private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRo
 
 /**
  * A turn: everything that can be refused is checked first and answered as JSON; then the stream starts and the turn
- * runs on an IO thread, its events going out as they come (Server-Sent Events, a ping every 15 s). Closing the
- * connection cancels the turn. [prepare] returns the turn to run.
+ * runs on the assistant's own threads, its events going out as they come (Server-Sent Events, a ping every 15 s).
+ * Closing the connection, or a client too slow to read, cancels the turn. [prepare] returns the turn to run.
  */
 private suspend fun ApplicationCall.turn(
     service: AssistantService?,
@@ -322,23 +335,23 @@ private suspend fun ApplicationCall.turn(
 ) {
     response.headers.append(HttpHeaders.CacheControl, "no-store")
     val assistant = service ?: return respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("ASSISTANT_UNAVAILABLE", tr("El asistente no esta disponible en este servidor.")))
-    var slot: String? = null
+    var slot: Pair<String, String>? = null
     var run: ((AssistantSink) -> Unit)? = null
     val answer = try {
         withContext(Dispatchers.IO) {
             resolve(assistant, this@turn, statusRoute = false) { _, context, tenant ->
-                val key = "${context.caller.companyCode}/${context.caller.userId}/${context.caller.ownerKey}"
-                if (!assistant.limits.allow(key)) return@resolve refused(429, "ASSISTANT_RATE_LIMITED", tr("Demasiadas solicitudes al asistente; espera un minuto."))
-                if (!assistant.limits.openStream(key)) return@resolve refused(429, "ASSISTANT_RATE_LIMITED", tr("Ya tienes otras respuestas del asistente en curso; espera a que terminen."))
+                val user = "${context.caller.companyCode}/${context.caller.userId}/${context.caller.ownerKey}"
+                if (!assistant.limits.allow(user)) return@resolve refused(429, "ASSISTANT_RATE_LIMITED", tr("Demasiadas solicitudes al asistente; espera un minuto."))
+                assistant.limits.openStream(user, context.caller.companyCode)?.let { return@resolve refused(it.status, it.code, it.message.orEmpty()) }
                 try {
                     run = prepare(assistant, context, tenant)
-                    slot = key
+                    slot = user to context.caller.companyCode
                     Answer.Ok(HttpStatusCode.OK, null)
                 } catch (refusal: AssistantRefusal) {
-                    assistant.limits.release(key)
+                    assistant.limits.release(user, context.caller.companyCode)
                     refused(refusal.status, refusal.code, refusal.message.orEmpty())
                 } catch (failure: Throwable) {
-                    assistant.limits.release(key)
+                    assistant.limits.release(user, context.caller.companyCode)
                     throw failure
                 }
             }
@@ -348,58 +361,109 @@ private suspend fun ApplicationCall.turn(
     }
     val turn = run
     if (answer is Answer.Refused || turn == null) {
+        slot?.let { (user, company) -> assistant.limits.release(user, company) }
         val refusal = answer as? Answer.Refused ?: refused(500, "INTERNAL", tr("No se pudo completar la respuesta."))
-        if (refusal.status == HttpStatusCode.TooManyRequests) response.header(HttpHeaders.RetryAfter, "60")
+        if (refusal.status == HttpStatusCode.TooManyRequests || refusal.status == HttpStatusCode.ServiceUnavailable) response.header(HttpHeaders.RetryAfter, "60")
         return respond(refusal.status, CompanyErrorResponse(refusal.code, refusal.message))
     }
     val language = I18n.language()
-    try {
-        stream(language, turn)
-    } finally {
-        slot?.let(assistant.limits::release)
-    }
+    // The slot goes back when the stream really ends (the engine may write it after stream() returns).
+    stream(language, assistant.dispatcher, onEnd = { slot?.let { (user, company) -> assistant.limits.release(user, company) } }, turn = turn)
 }
 
-/** Writes the events of [turn] as SSE frames. */
-internal suspend fun ApplicationCall.stream(language: String, turn: (AssistantSink) -> Unit) {
+/**
+ * Writes the events of [turn] as SSE frames. Nothing ever blocks on the client: the turn hands frames to a bounded
+ * buffer without waiting (a full buffer means the client does not read: the turn is cancelled), and each write waits
+ * at most [writeTimeout]. When the client goes away the buffer is closed and the turn stops at its next check.
+ *
+ * The engine may run the writer after this function returns, so the end of the stream is reported through [onEnd],
+ * called exactly once: when the writer is done AND the turn has ended (it gave its conversation back), when responding
+ * fails before the writer runs, or at the latest after [watchdogMillis] (a writer the engine never started).
+ */
+internal suspend fun ApplicationCall.stream(
+    language: String,
+    dispatcher: kotlinx.coroutines.CoroutineDispatcher,
+    writeTimeout: Long = WriteTimeoutMillis,
+    pingMillis: Long = PingMillis,
+    watchdogMillis: Long = WatchdogMillis,
+    onEnd: () -> Unit = {},
+    turn: (AssistantSink) -> Unit,
+) {
     // Nginx must pass every frame at once (scripts/ubuntu/nginx-site.sh also turns buffering off for these routes).
     response.header("X-Accel-Buffering", "no")
-    val frames = Channel<String>(capacity = 1024)
+    val frames = Channel<String>(capacity = FrameBuffer)
     val closed = AtomicBoolean(false)
+    val ended = AtomicBoolean(false)
+    var watchdog: kotlinx.coroutines.Job? = null
+    fun end() {
+        if (ended.compareAndSet(false, true)) {
+            watchdog?.cancel()
+            onEnd()
+        }
+    }
     val sink = object : AssistantSink {
         override fun event(name: String, data: JsonObject) {
-            if (!closed.get()) frames.trySendBlocking("event: $name\ndata: $data\n\n")
+            if (closed.get()) return
+            // Never wait for the client: when it does not keep up, the turn stops.
+            if (!frames.trySend("event: $name\ndata: $data\n\n").isSuccess) {
+                closed.set(true)
+                frames.close()
+            }
         }
         override val cancelled: Boolean get() = closed.get()
     }
-    respondTextWriter(ContentType.Text.EventStream.withCharset(Charsets.UTF_8), HttpStatusCode.OK) {
-        coroutineScope {
-            launch(Dispatchers.IO + I18n.contextElement(language)) {
-                try {
-                    turn(sink)
-                } finally {
-                    frames.close()
-                }
-            }
+    watchdog = application.launch {
+        kotlinx.coroutines.delay(watchdogMillis)
+        closed.set(true)
+        frames.cancel()
+        end()
+    }
+    try {
+        respondBytesWriter(ContentType.Text.EventStream.withCharset(Charsets.UTF_8), HttpStatusCode.OK) {
+            var job: kotlinx.coroutines.Job? = null
             try {
-                while (true) {
-                    val next = withTimeoutOrNull(PingMillis) { frames.receiveCatching() }
-                    if (next == null) {
-                        write(": ping\n\n")
-                        flush()
-                        continue
+                coroutineScope {
+                    job = launch(dispatcher + I18n.contextElement(language)) {
+                        try {
+                            turn(sink)
+                        } finally {
+                            frames.close()
+                        }
                     }
-                    val frame = next.getOrNull() ?: break
-                    write(frame)
-                    flush()
+                    while (true) {
+                        val next = withTimeoutOrNull(pingMillis) { frames.receiveCatching() }
+                        val text = when {
+                            next == null -> ": ping\n\n"
+                            else -> next.getOrNull() ?: break
+                        }
+                        withTimeout(writeTimeout) {
+                            writeStringUtf8(text)
+                            flush()
+                        }
+                    }
                 }
             } catch (failure: Throwable) {
-                // The client went away: the turn stops at its next check and gives the conversation back.
+                // The client went away or stopped reading: the turn stops at its next check and gives the conversation back.
                 closed.set(true)
+                frames.cancel()
                 throw failure
+            } finally {
+                closed.set(true)
+                frames.cancel()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { job?.join() }
+                end()
             }
         }
+    } catch (failure: Throwable) {
+        closed.set(true)
+        frames.cancel()
+        end()
+        throw failure
     }
 }
 
 private const val PingMillis = 15_000L
+private const val WriteTimeoutMillis = 30_000L
+private const val FrameBuffer = 1024
+// Longer than any turn can last (10 min) plus one model request (about 8 min).
+private const val WatchdogMillis = 30L * 60_000

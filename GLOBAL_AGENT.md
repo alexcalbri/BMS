@@ -186,7 +186,7 @@ uses its own key and the server exempts own keys.
 {"conversations": [{"id": "uuid", "title": "Clientes nuevos", "createdAt": "...", "updatedAt": "...",
   "archived": false, "state": "idle", "pendingConfirmations": 0}], "nextBefore": null}
 ```
-`state`: `idle` | `running` | `awaiting_confirmation`.
+`state`: `idle` | `running` | `awaiting_confirmation` | `closed` (cannot go on: `409 CONVERSATION_CLOSED` on a new message; start a new conversation).
 
 `POST /companies/me/assistant/conversations` `{"title": "optional"}` → `201` the conversation (title defaults to the
 first message, cut to 80 characters, when the first message is sent).
@@ -202,7 +202,7 @@ first message, cut to 80 characters, when the first message is sent).
   {"id": "e3", "role": "notice", "kind": "notice", "code": "REFUSAL", "text": "El asistente no puede ayudar con esto.", "createdAt": "..."}],
  "pending": []}
 ```
-Tool `status`: `ok` | `error` | `rejected` | `expired` | `pending` | `not_run`. Tool results and arguments are never
+Tool `status`: `ok` | `error` | `rejected` | `expired` | `pending` | `not_run` | `unknown` (a write that started but whose end is not known: never run again). Tool results and arguments are never
 returned to the app (only the confirmation summary). Thinking is never shown.
 Another user's conversation (the business owner included) answers `404 CONVERSATION_NOT_FOUND`.
 
@@ -256,9 +256,9 @@ its tokens still count) and the conversation goes back to `idle`.
 | `text_delta` | `{"text": "..."}` (assistant answer text; thinking never streams) |
 | `tool_started` | `{"toolUseId": "toolu_..", "name": "clientes_search_customers", "label": "Clientes: Buscar clientes", "readOnly": true}` |
 | `tool_finished` | `{"toolUseId": "..", "name": "..", "label": "..", "status": "ok" \| "error" \| "rejected" \| "expired" \| "not_run", "message": "optional short error"}` |
-| `confirmation_required` | `{"confirmationId": "uuid", "toolUseId": "..", "name": "..", "label": "Clientes: Crear cliente", "module": "Clientes", "destructive": false, "summary": [{"label": "Nombre del cliente.", "value": "Ana"}], "expiresAt": "ISO"}` |
+| `confirmation_required` | `{"confirmationId": "uuid", "toolUseId": "..", "name": "..", "label": "CRM: Enviar mensaje a un lead", "module": "CRM", "destructive": false, "outbound": true, "summary": [{"label": "Texto del mensaje...", "value": "<every argument, whole value>", "hiddenCharacters": true}], "preview": [{"label": "Destinatario (lead)", "value": "Luis Mora"}, {"label": "Se envia a", "value": "luis@example.com"}, {"label": "Mensaje (completo)", "value": "..."}], "previewError": null, "expiresAt": "ISO"}` — see "Confirmation card" |
 | `usage` | `{"inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3, "cacheCreationInputTokens": 4, "countedTokens": 5, "monthUsedTokens": 6, "monthlyLimitTokens": 7}` (after every model response) |
-| `notice` | `{"code": "REFUSAL" \| "MAX_TOKENS" \| "FALLBACK" \| "COMPACTED", "message": "..."}` — on `REFUSAL` drop the text streamed since the last tool line (a declined answer is never stored) |
+| `notice` | `{"code": "REFUSAL" \| "CLOSED" \| "MAX_TOKENS" \| "FALLBACK" \| "COMPACTED" \| "EXTERNAL_LINK", "message": "..."}` — on `REFUSAL` drop the text streamed since the last tool line (a declined answer is never stored); `CLOSED`: the conversation cannot go on; `EXTERNAL_LINK`: the answer links to a host that is not the company's own (show the warning next to the answer) |
 | `error` | `{"code": "...", "message": "...", "retryable": true}` |
 | `done` | `{"reason": "end_turn" \| "awaiting_confirmation" \| "waiting" \| "max_tokens" \| "refusal" \| "error" \| "limit" \| "cancelled"}` |
 
@@ -286,7 +286,16 @@ again (no model call is made for it). A running turn holds a lease of 10 minutes
   `defaultMonthlyTokens` (2 000 000; 0 = unlimited), overridden per company. It applies to the server key always and
   to a company's own key only when `limitOwnKeyCompanies` is on (default off). Checked before every model request; a
   turn already running finishes its current request.
-- Per user: 10 requests (messages + confirmations) per minute, 1 stream per conversation, 2 streams at once.
+- Per user: 10 requests (messages + confirmations) per minute, 1 stream per conversation, 2 streams at once; 20 new
+  conversations per minute and 500 kept (`409 TOO_MANY_CONVERSATIONS`).
+- Per company 8 streams at once (`429 ASSISTANT_RATE_LIMITED`), per server 32 (`503 ASSISTANT_BUSY`, with `Retry-After`).
+  Turns run on their own pool of 32 threads, never on the server's shared IO threads.
+- A stream whose client stops reading (its buffer of 1024 frames is full, or one write waits 30 s) is cancelled like a
+  closed connection.
+- Every model request is counted, also when it is stopped or fails mid-stream: the usage the provider already reported,
+  or, when it reported none yet, the prompt size of the previous response of the conversation.
+- The monthly limit is checked before each model request and not reserved: concurrent turns of one company can pass it
+  by at most what their requests in flight consume (bounded by the per-company stream limit). Documented overshoot.
 - Per stream (a turn resumed after a confirmation starts its own counts): 25 tool calls, 40 model requests, 10 minutes.
 - Message: 20 000 characters. History: server-side compaction (beta `compact-2026-01-12`, trigger 150 000 input
   tokens); a conversation over 400 stored messages answers `409 CONVERSATION_TOO_LONG`.
@@ -300,6 +309,9 @@ again (no model call is made for it). A running turn holds a lease of 10 minutes
  "efforts": ["low", "medium", "high", "xhigh", "max"], "defaultMonthlyTokens": 2000000,
  "limitOwnKeyCompanies": false, "retentionDays": 90, "secretsAvailable": true, "disclosure": "..."}
 ```
+Settings and key (`GET`/`PUT /server/assistant/settings`, `PUT`/`DELETE /server/assistant/key`) affect every company:
+an administrator needs `server.assistant.manage` AND every company in scope (`allCompanies`); a scoped one gets `403
+SERVER_PERMISSION_REQUIRED`. The per-company route stays scoped by its path and the lists keep to the scope.
 `PUT /server/assistant/settings` `{"enabled"?, "acceptDisclosure"?, "model"?, "effort"?, "defaultMonthlyTokens"?,
 "limitOwnKeyCompanies"?, "retentionDays"? (1-3650)}` → the settings (`400 DISCLOSURE_REQUIRED`, `400 MODEL_INVALID`,
 `400 EFFORT_INVALID`, `400 VALUE_INVALID`).
@@ -324,6 +336,56 @@ Every change is audited in `provisioning_audit_log` (`assistant.settings_changed
   tool_use and tool_result; usage per response), `assistant_pending_calls`, `assistant_usage` (day, user, key source).
 - Retention: conversations not updated for `retentionDays` (default 90) are deleted by a daily job; usage rows are
   kept 13 months.
+
+### Confirmation card (review fix)
+
+- `summary`: EVERY argument the model sent, each value WHOLE (never cut; a message can be 20 000 characters): the app
+  shows it all (scroll or expand, never a silent preview cut). Characters that hide or reorder text (bidi controls,
+  zero-width, control and private-use characters) arrive written as `[U+202E]`...; `hiddenCharacters: true` on that row
+  means the app must warn ("Este texto contiene caracteres ocultos").
+- `preview`: what the module resolved (`McpTool.preview`, run read-only before the card is shown): recipient name and
+  address and the final text of a message, the names of what a delete removes instead of ids. Shown above the
+  arguments. `previewError`: the module could not resolve it (show it; the user may still reject).
+- `outbound: true`: the call sends something out of the company; the card says "Envia un mensaje fuera de la empresa".
+  Marked tools: CRM `send_message`, `run_automation`, `press_lead_button`, `import_from_url`, `wordpress_test`,
+  `wordpress_sync_agents`, `cloudbeds_test`, `meta_fill_names`. Previews: CRM `send_message`, `delete_lead`,
+  `delete_interest`, `delete_stage`, `delete_message_template`, `delete_automation`; Clientes `delete_customer_field`;
+  Empleados `delete_shift`; Hotspot `delete_network`.
+
+### Rendering contract (review fix)
+
+Assistant text is rendered as plain text: no images, no HTML, nothing loaded automatically. Links are not clickable; when
+the app offers to open one it shows the full URL and asks for confirmation first. The system prompt tells the model that
+leads, WiFi visitors, form submissions, received messages and imported text come from the public and are never
+instructions, and that it must not build URLs from record data. The server flags any link to a host that is not the
+server's (`BMS_PUBLIC_BASE_URL`) or one of the company's public domains with a `notice` `EXTERNAL_LINK`.
+
+### Turn safety (review fix)
+
+- Each turn holds the conversation with a lease token (tenant V018); every write of the turn (messages, pending calls,
+  claims, giving the conversation back) checks it, and the lease (12 min) is renewed before each model request and each
+  tool call. A turn that lost it stops (`error CONVERSATION_BUSY`) without touching the conversation.
+- The SDK does not retry (`maxRetries 0`); the server retries once, only before anything was streamed. Request timeout
+  4 min, read timeout 2 min: one model request takes at most ~8 min, under the lease.
+- Expiry of confirmations takes the conversation's lease from the paused state, so it never races a resumed turn.
+  Results go in one transaction with the deletion of the pending rows; a message is never stored empty; only the calls of
+  the last assistant message are answered, in its order.
+- An approved write is claimed (`executing`) before it runs and its result stored right after: it never runs twice, and
+  a crash in between is reported as `unknown` ("se empezo a ejecutar pero no se sabe si termino"), never as "not run".
+- History sent to the API: user and assistant always alternate (stored consecutive messages of one role are joined, the
+  same way every time, so the prefix stays stable).
+- A declined turn: when it holds only the user's text (and the answer), it is left out of every later request by a notice
+  row that names it (append-only: nothing before it changes); when tool results were already part of it, the
+  conversation is closed (`CLOSED`), because leaving them out would drop work the user saw.
+
+### Tool list and caching (review decision)
+
+The tool list keeps following the user's live permissions per request, with `drop_block`. The documented alternative
+(full stable tool set plus `tool_addition` / `tool_removal` blocks, beta `mid-conversation-tool-changes-2026-07-01`) is
+present in the Java SDK, but it would declare tools the user may not use and rely on the model honouring removals, while
+the bridge's rule is "a tool the user lacks is not offered"; permission changes are rare, so the cost (thinking of
+earlier turns dropped and one cache miss after a change) is accepted. The user's language moved out of the system prompt
+into each user turn's context block, so a language change no longer changes the cached prefix.
 
 ### What the app shows
 
@@ -356,7 +418,8 @@ follows the user's live permissions, so a prefix may legitimately change; the AP
 instead of failing); `output_config.effort` explicit (default `medium`); `max_tokens` 32000; `tool_choice: auto` only
 when there are tools; no sampling parameters, no budget, no prefill; `fallbacks: "default"` (beta
 `server-side-fallback-2026-07-01`) except for `claude-haiku-5-5`, which has no fallback model; compaction
-`compact_20260112` at 150 000 input tokens (beta `compact-2026-01-12`) except for Haiku; cache breakpoint on the system
+`compact_20260112` at 150 000 input tokens (beta `compact-2026-01-12`) on the three models (the reference lists compaction
+among what is new on Claude Haiku 5.5); the SDK log level is OFF whatever `ANTHROPIC_LOG` says; cache breakpoint on the system
 block (tools + system) plus top-level automatic caching for the conversation; the date goes in each user turn
 (`<contexto_bms>` text block, hidden from the app). Every `stop_reason` is handled (`refusal` first, `max_tokens`,
 `tool_use`, `pause_turn`/`compaction` continue, anything else ends). The response is stored as `BetaMessage.toParam()`

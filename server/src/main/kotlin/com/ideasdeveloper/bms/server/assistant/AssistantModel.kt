@@ -34,7 +34,6 @@ import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
 import java.time.Duration
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The Claude API behind a small interface, so the turn engine and its tests never need the network (GLOBAL_AGENT.md,
@@ -59,10 +58,18 @@ interface ModelStreamListener {
 }
 
 /** A failed model request, already classified; [message] is for people and never carries the key or the request. */
-class AssistantModelException(val code: String, val retryable: Boolean, message: String) : Exception(message)
+class AssistantModelException(
+    val code: String,
+    val retryable: Boolean,
+    message: String,
+    // What the provider already reported for this request (message_start / message_delta), to be billed.
+    val usage: ModelUsage? = null,
+) : Exception(message) {
+    fun withUsage(usage: ModelUsage?) = AssistantModelException(code, retryable, message.orEmpty(), usage)
+}
 
-/** The user closed the stream while the model was answering. */
-class AssistantCancelledException : Exception("cancelled")
+/** The user closed the stream while the model was answering; [usage] is what the provider reported so far (or null). */
+class AssistantCancelledException(val usage: ModelUsage? = null) : Exception("cancelled")
 
 /** One tool as the model sees it. */
 class ModelTool(val name: String, val description: String, val inputSchema: JsonObject)
@@ -120,8 +127,9 @@ object AssistantModels {
     // which has no fallback model.
     fun fallbacks(model: String): Boolean = model != "claude-haiku-5-5"
 
-    // Server-side compaction (beta compact-2026-01-12): documented for the Opus and Sonnet lines.
-    fun compaction(model: String): Boolean = model != "claude-haiku-5-5"
+    // Server-side compaction (beta compact-2026-01-12): documented for the three models of the allowlist (the reference
+    // lists threshold and on-demand compaction among what is new on Claude Haiku 5.5).
+    fun compaction(model: String): Boolean = allowed(model)
 }
 
 /** Builds the SDK request: the only place that decides the request shape. */
@@ -234,47 +242,154 @@ object AnthropicResponses {
     fun blockType(block: kotlinx.serialization.json.JsonElement): String? = ((block as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
 }
 
-/** The SDK clients, one per API key (kept by the key's hash, never by the key itself). */
-class AnthropicModelClients(
-    private val timeout: Duration = Duration.ofMinutes(10),
-    private val maxRetries: Int = 2,
-) : AssistantModelClients {
-    private val clients = ConcurrentHashMap<String, AnthropicClient>()
+/**
+ * A small LRU cache of clients that never closes one in use: a client evicted while a request runs on it is closed when
+ * that request ends. [max] keys are kept; past that, the least recently used idle ones are closed.
+ */
+class ClientCache<T>(private val max: Int, private val closer: (T) -> Unit) {
+    private class Entry<T>(val client: T) {
+        var inFlight = 0
+        var lastUsed = 0L
+        var evicted = false
+    }
+
+    private val entries = LinkedHashMap<String, Entry<T>>()
+    private var tick = 0L
+
+    fun <R> use(key: String, create: () -> T, block: (T) -> R): R {
+        val entry = synchronized(this) {
+            val found = entries.getOrPut(key) { Entry(create()) }
+            found.inFlight++
+            found.lastUsed = ++tick
+            evictIdle()
+            found
+        }
+        try {
+            return block(entry.client)
+        } finally {
+            val close = synchronized(this) {
+                entry.inFlight--
+                val evictedWhileBusy = entry.evicted && entry.inFlight == 0
+                // Over the limit because every client was busy: the idle ones go now (closed by evictIdle).
+                if (!entry.evicted) evictIdle()
+                evictedWhileBusy
+            }
+            if (close) runCatching { closer(entry.client) }
+        }
+    }
+
+    // Caller holds the lock.
+    private fun evictIdle() {
+        if (entries.size <= max) return
+        entries.entries.sortedBy { it.value.lastUsed }.forEach { (key, entry) ->
+            if (entries.size <= max) return
+            if (entry.inFlight == 0) {
+                entries.remove(key)
+                entry.evicted = true
+                runCatching { closer(entry.client) }
+            }
+        }
+    }
+
+    val size: Int get() = synchronized(this) { entries.size }
+
+    /** Closes every idle client and marks the busy ones to close when their request ends. */
+    fun close() {
+        val idle = synchronized(this) {
+            entries.values.forEach { it.evicted = true }
+            val list = entries.values.filter { it.inFlight == 0 }
+            entries.clear()
+            list
+        }
+        idle.forEach { runCatching { closer(it.client) } }
+    }
+}
+
+/**
+ * The SDK clients, one per API key (kept by the key's hash, never by the key itself). The SDK does no retries of its own
+ * (maxRetries 0): [AnthropicModelClient] retries once, only before anything was streamed, so one model request lasts at
+ * most 2 x [RequestTimeout] plus the pause, well under the turn's lease (AssistantTurnLimits.lease).
+ */
+class AnthropicModelClients(maxClients: Int = 50) : AssistantModelClients {
+    private val cache = ClientCache<AnthropicClient>(maxClients) { it.close() }
+
+    private fun build(apiKey: String): AnthropicClient = AnthropicOkHttpClient.builder()
+        .apiKey(apiKey)
+        .timeout(com.anthropic.core.Timeout.builder().connect(Duration.ofSeconds(15)).read(ReadTimeout).write(Duration.ofSeconds(30)).request(RequestTimeout).build())
+        .maxRetries(0)
+        // Never log requests or responses, whatever ANTHROPIC_LOG says in the environment: they carry the company's data.
+        .logLevel(com.anthropic.core.LogLevel.OFF)
+        .build()
 
     override fun forKey(apiKey: String): AssistantModelClient {
         val id = sha256(apiKey)
-        // Keys are few (the server's and the companies' own): past that, start again rather than grow.
-        if (clients.size > 200) close()
-        val client = clients.computeIfAbsent(id) {
-            AnthropicOkHttpClient.builder()
-                .apiKey(apiKey)
-                .timeout(timeout)
-                .maxRetries(maxRetries)
-                .build()
+        return object : AssistantModelClient {
+            override fun send(params: MessageCreateParams, listener: ModelStreamListener): BetaMessage =
+                cache.use(id, { build(apiKey) }) { client -> AnthropicModelClient(client).send(params, listener) }
         }
-        return AnthropicModelClient(client)
     }
 
-    /** Closes every client (the server stops, or the cache starts again). */
-    fun close() {
-        val all = clients.values.toList()
-        clients.clear()
-        all.forEach { runCatching { it.close() } }
-    }
+    fun close() = cache.close()
 
     private fun sha256(value: String): String =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    companion object {
+        val RequestTimeout: Duration = Duration.ofMinutes(4)
+        val ReadTimeout: Duration = Duration.ofMinutes(2)
+    }
 }
 
-class AnthropicModelClient(private val client: AnthropicClient) : AssistantModelClient {
+/** One request on the SDK client: streams, keeps the usage reported so far, retries once before any content. */
+class AnthropicModelClient(private val client: AnthropicClient, private val retryPause: Duration = Duration.ofSeconds(2)) : AssistantModelClient {
     private val log = LoggerFactory.getLogger(AnthropicModelClient::class.java)
 
     override fun send(params: MessageCreateParams, listener: ModelStreamListener): BetaMessage {
+        var attempt = 0
+        while (true) {
+            attempt++
+            val progress = StreamProgress()
+            try {
+                return once(params, listener, progress)
+            } catch (failure: AssistantModelException) {
+                if (failure.retryable && attempt < 2 && !progress.started && !listener.cancelled) {
+                    Thread.sleep(retryPause.toMillis())
+                    continue
+                }
+                throw failure.withUsage(progress.usage)
+            }
+        }
+    }
+
+    /** What one attempt received: the usage of message_start, then of each message_delta. */
+    class StreamProgress {
+        var started = false
+        var usage: ModelUsage? = null
+
+        fun onEvent(event: com.anthropic.models.beta.messages.BetaRawMessageStreamEvent) {
+            started = true
+            event.messageStart().ifPresent { start ->
+                val usage = start.message().usage()
+                this.usage = ModelUsage(usage.inputTokens(), usage.outputTokens(), usage.cacheReadInputTokens().orElse(0L), usage.cacheCreationInputTokens().orElse(0L))
+            }
+            event.messageDelta().ifPresent { delta ->
+                val usage = delta.usage()
+                val before = this.usage ?: ModelUsage()
+                this.usage = ModelUsage(
+                    usage.inputTokens().orElse(before.inputTokens), usage.outputTokens(),
+                    usage.cacheReadInputTokens().orElse(before.cacheReadInputTokens), usage.cacheCreationInputTokens().orElse(before.cacheCreationInputTokens),
+                )
+            }
+        }
+    }
+
+    private fun once(params: MessageCreateParams, listener: ModelStreamListener, progress: StreamProgress): BetaMessage {
         val accumulator = BetaMessageAccumulator.create()
         try {
             client.beta().messages().createStreaming(params).use { stream ->
                 for (event in stream) {
-                    if (listener.cancelled) throw AssistantCancelledException()
+                    progress.onEvent(event)
+                    if (listener.cancelled) throw AssistantCancelledException(progress.usage)
                     accumulator.accumulate(event)
                     event.contentBlockDelta().flatMap { it.delta().text() }.ifPresent { listener.text(it.text()) }
                 }
@@ -287,6 +402,7 @@ class AnthropicModelClient(private val client: AnthropicClient) : AssistantModel
             throw AnthropicErrors.classify(failure.statusCode())
         } catch (failure: AnthropicIoException) {
             log.warn("Assistant model request failed: {}", failure.javaClass.simpleName)
+            if (listener.cancelled) throw AssistantCancelledException(progress.usage)
             throw AnthropicErrors.unavailable()
         }
         return accumulator.message()

@@ -17,6 +17,7 @@ import java.time.ZoneOffset
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.asCoroutineDispatcher
 
 /** Why the assistant is not available, with the text the app shows. */
 class AssistantUnavailable(val reason: String, val message: String)
@@ -45,19 +46,25 @@ class AssistantContext(
 }
 
 /**
- * Per user: requests per minute and streams at once (GLOBAL_AGENT.md, Contract, "Limits"). In memory: a restart
- * forgets it, which only ever lets a few more requests through.
+ * Requests and streams (GLOBAL_AGENT.md, Contract, "Limits"): per user requests per minute and new conversations per
+ * minute; streams at once per user, per company and on the whole server. In memory: a restart forgets the windows,
+ * which only ever lets a few more requests through; streams in progress end with the process.
  */
 class AssistantUserLimits(
     private val perMinute: Int = 10,
     private val streamsPerUser: Int = 2,
+    private val streamsPerCompany: Int = 8,
+    val streamsOnServer: Int = 32,
+    private val conversationsPerMinute: Int = 20,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private class Window(var start: Long, var count: Int)
     private val windows = ConcurrentHashMap<String, Window>()
-    private val streams = ConcurrentHashMap<String, AtomicInteger>()
+    private val users = ConcurrentHashMap<String, AtomicInteger>()
+    private val companies = ConcurrentHashMap<String, AtomicInteger>()
+    private val server = AtomicInteger()
 
-    fun allow(key: String): Boolean {
+    private fun window(key: String, max: Int): Boolean {
         val now = clock()
         if (windows.size > 20_000) windows.entries.removeIf { now - it.value.start >= 60_000 }
         val window = windows.computeIfAbsent(key) { Window(now, 0) }
@@ -67,22 +74,47 @@ class AssistantUserLimits(
                 window.count = 0
             }
             window.count++
-            return window.count <= perMinute
+            return window.count <= max
         }
     }
 
-    /** Takes a stream slot; false when the user already has [streamsPerUser] open. Give it back with [release]. */
-    fun openStream(key: String): Boolean {
-        val count = streams.computeIfAbsent(key) { AtomicInteger() }
-        if (count.incrementAndGet() > streamsPerUser) {
-            count.decrementAndGet()
-            return false
+    fun allow(key: String): Boolean = window(key, perMinute)
+
+    fun allowNewConversation(key: String): Boolean = window("new/$key", conversationsPerMinute)
+
+    /** Why a stream cannot open now (a refusal to answer before streaming), or null when its slot was taken. */
+    fun openStream(user: String, company: String): AssistantRefusal? {
+        if (!take(server, streamsOnServer)) {
+            return AssistantRefusal(503, "ASSISTANT_BUSY", tr("El asistente esta atendiendo demasiadas conversaciones en este servidor; intenta de nuevo en un momento."))
         }
-        return true
+        val companyCount = companies.computeIfAbsent(company) { AtomicInteger() }
+        if (!take(companyCount, streamsPerCompany)) {
+            server.decrementAndGet()
+            return AssistantRefusal(429, "ASSISTANT_RATE_LIMITED", tr("La empresa tiene demasiadas respuestas del asistente en curso; espera a que terminen."))
+        }
+        val userCount = users.computeIfAbsent(user) { AtomicInteger() }
+        if (!take(userCount, streamsPerUser)) {
+            companyCount.decrementAndGet()
+            server.decrementAndGet()
+            return AssistantRefusal(429, "ASSISTANT_RATE_LIMITED", tr("Ya tienes otras respuestas del asistente en curso; espera a que terminen."))
+        }
+        return null
     }
 
-    fun release(key: String) {
-        streams[key]?.let { if (it.decrementAndGet() <= 0) streams.remove(key, it) }
+    fun release(user: String, company: String) {
+        users[user]?.let { if (it.decrementAndGet() <= 0) users.remove(user, it) }
+        companies[company]?.let { if (it.decrementAndGet() <= 0) companies.remove(company, it) }
+        server.decrementAndGet()
+    }
+
+    val openStreams: Int get() = server.get()
+
+    private fun take(counter: AtomicInteger, max: Int): Boolean {
+        while (true) {
+            val current = counter.get()
+            if (current >= max) return false
+            if (counter.compareAndSet(current, current + 1)) return true
+        }
     }
 }
 
@@ -98,8 +130,20 @@ class AssistantService(
     val limits: AssistantUserLimits = AssistantUserLimits(),
     private val clock: () -> Instant = Instant::now,
     private val turnLimits: AssistantTurnLimits = AssistantTurnLimits(),
+    // Host names of the server itself (BMS_PUBLIC_BASE_URL): links there are not foreign.
+    private val serverHosts: Set<String> = emptySet(),
 ) {
     private val log = LoggerFactory.getLogger(AssistantService::class.java)
+
+    /**
+     * Where turns run: a pool of its own, as large as the server-wide stream limit, so a busy assistant never takes the
+     * threads of the rest of the server (Dispatchers.IO) and never waits for them.
+     */
+    val dispatcher: kotlinx.coroutines.CoroutineDispatcher = java.util.concurrent.Executors.newFixedThreadPool(limits.streamsOnServer) { task ->
+        Thread(task, "assistant-turn").apply { isDaemon = true }
+    }.asCoroutineDispatcher()
+
+    fun close() = (dispatcher as kotlinx.coroutines.ExecutorCoroutineDispatcher).close()
 
     fun store(companyCode: String): AssistantStore = JdbcAssistantStore {
         access.tenantConnectionForCompany(companyCode) ?: throw java.sql.SQLException("company not available", "08001")
@@ -113,8 +157,17 @@ class AssistantService(
      */
     fun context(tenant: Connection, companyCode: String, userId: UUID, token: String): AssistantContext? {
         if (companyCode.equals(ServerWorkspace.Code, ignoreCase = true)) return null
+        // Who is behind the session decides whose conversations it sees: when that cannot be read, nothing is shown
+        // (never the account's own conversations by default).
+        val opener = token.takeIf { it.isNotEmpty() }?.let {
+            try {
+                access.sessionOpener(companyCode, it)
+            } catch (failure: Exception) {
+                log.warn("Assistant could not read the opener of a session in company {}: {}", companyCode, failure.javaClass.name)
+                throw AssistantRefusal(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
+            }
+        }
         val user = access.userAccess(tenant, companyCode, userId, serverOwner = false) ?: return null
-        val opener = token.takeIf { it.isNotEmpty() }?.let { runCatching { access.sessionOpener(companyCode, it) }.getOrNull() }
         val person = access.tenantUserActor(tenant, userId, user.businessOwner)
         val company = access.companyOf(tenant)
         val caller = AssistantCaller(
@@ -125,9 +178,21 @@ class AssistantService(
             displayName = person.name,
             language = I18n.language(),
             businessOwner = user.businessOwner,
+            ownHosts = serverHosts + ownDomains(companyCode),
         )
         val permitted = user.permissions(EmpresaModuleId)?.has(AssistantIds.UsePermission) == true
         return AssistantContext(caller, permitted, { access.sessionActor(companyCode, token, userId, user.businessOwner) }, store(companyCode))
+    }
+
+    private fun ownDomains(companyCode: String): Set<String> = try {
+        access.centralConnection().use { central ->
+            central.prepareStatement("SELECT domain FROM public_domains WHERE company_code = ?").use { query ->
+                query.setString(1, companyCode)
+                query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1).lowercase()) } }
+            }
+        }
+    } catch (_: java.sql.SQLException) {
+        emptySet()
     }
 
     /** Which conversations a session sees: the account's own, or those of the person behind a switcher session. */
@@ -211,8 +276,11 @@ class AssistantService(
      * The daily job of one company: expired confirmations answered, conversations past the retention deleted, usage
      * rows older than 13 months deleted.
      */
-    fun daily(companyCode: String) {
-        val store = store(companyCode)
+    fun daily(companyCode: String, databaseName: String? = null) {
+        // Suspended (inactive) companies too: their database is reached by its name.
+        val store = if (databaseName == null) store(companyCode) else JdbcAssistantStore {
+            access.tenantConnectionForDatabase(databaseName) ?: throw java.sql.SQLException("company not available", "08001")
+        }
         val expired = engine(store).expireAll()
         val retention = serverConfig.read().retentionDays
         val now = clock()
@@ -222,5 +290,7 @@ class AssistantService(
 
     companion object {
         const val EmpresaModuleId = "empresa"
+        // Conversations a person may keep (archived included); past it, delete some first.
+        const val MaxConversationsPerUser = 500
     }
 }

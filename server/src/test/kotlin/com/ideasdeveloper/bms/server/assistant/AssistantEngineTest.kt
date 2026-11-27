@@ -212,10 +212,27 @@ class AssistantEngineTest {
         assertEquals(listOf("user", "notice"), store.messages(id).map { it.role })
         // Usage is still counted.
         assertEquals(1, store.usageRows.values.single().requests)
-        // The next message works (the two user turns are sent one after the other).
+        // The declined turn is left out of later requests (append-only: a notice names it), so it cannot poison the
+        // conversation, and the next request never has two user turns in a row.
         models.add(Scripted.message("end_turn", Scripted.text("ok")))
         send(models, FakeToolbox(search), "otra cosa", id = id)
-        assertEquals(listOf("user", "user"), models.body(1)["messages"]!!.jsonArray.map { it.jsonObject.string("role") })
+        val replayed = models.body(1)["messages"]!!.jsonArray
+        assertEquals(listOf("user"), replayed.map { it.jsonObject.string("role") })
+        assertFalse(replayed.toString().contains("algo"))
+        assertTrue(replayed.toString().contains("otra cosa"))
+    }
+
+    @Test
+    fun aRefusalAfterToolResultsClosesTheConversation() {
+        val models = FakeModelClients(
+            Scripted.message("tool_use", Scripted.toolUse("toolu_1", "clientes_search_customers")),
+            Scripted.message("refusal"),
+        )
+        val (id, sink) = send(models, FakeToolbox(search), "busca")
+        assertEquals("refusal", sink.done())
+        assertEquals(listOf("REFUSAL", "CLOSED"), sink.all("notice").map { it.string("code") })
+        assertEquals(AssistantConversation.Closed, store.conversations[id]!!.state)
+        assertEquals("CONVERSATION_CLOSED", assertFailsWith<AssistantRefusal> { engine(models).prepareMessage(ana, id, "sigue") }.code)
     }
 
     @Test
@@ -334,7 +351,7 @@ class AssistantEngineTest {
         engine.prepareMessage(ana, id, "uno")
         assertEquals("CONVERSATION_BUSY", assertFailsWith<AssistantRefusal> { engine.prepareMessage(ana, id, "dos") }.code)
         // A crashed turn frees the conversation when its lease ends.
-        now = now.plus(Duration.ofMinutes(11))
+        now = now.plus(Duration.ofMinutes(13))
         engine.prepareMessage(ana, id, "tres")
         val other = conversation().id
         assertEquals(413, assertFailsWith<AssistantRefusal> { engine.prepareMessage(ana, other, "x".repeat(20_001)) }.status)

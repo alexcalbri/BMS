@@ -511,6 +511,7 @@ apply_control_migrations() {
         database/tenant/migrations/V015__session_switch_origin.sql \
         database/tenant/migrations/V016__two_factor_replace.sql \
         database/tenant/migrations/V017__create_assistant.sql \
+        database/tenant/migrations/V018__assistant_turn_safety.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do

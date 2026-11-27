@@ -29,11 +29,36 @@ class AssistantLimitsTest {
         assertTrue(limits.allow("acme/leo"))
         now += 60_000
         assertTrue(limits.allow("acme/ana"))
-        assertTrue(limits.openStream("acme/ana"))
-        assertTrue(limits.openStream("acme/ana"))
-        assertFalse(limits.openStream("acme/ana"))
-        limits.release("acme/ana")
-        assertTrue(limits.openStream("acme/ana"))
+        assertNull(limits.openStream("acme/ana", "acme"))
+        assertNull(limits.openStream("acme/ana", "acme"))
+        assertEquals("ASSISTANT_RATE_LIMITED", limits.openStream("acme/ana", "acme")?.code)
+        limits.release("acme/ana", "acme")
+        assertNull(limits.openStream("acme/ana", "acme"))
+    }
+
+    @Test
+    fun streamsHaveACapPerCompanyAndOnTheWholeServer() {
+        val limits = AssistantUserLimits(streamsPerUser = 5, streamsPerCompany = 2, streamsOnServer = 3)
+        assertNull(limits.openStream("acme/1", "acme"))
+        assertNull(limits.openStream("acme/2", "acme"))
+        assertEquals(429, limits.openStream("acme/3", "acme")!!.status)
+        assertNull(limits.openStream("otra/1", "otra"))
+        val full = limits.openStream("otra/2", "otra")!!
+        assertEquals(503 to "ASSISTANT_BUSY", full.status to full.code)
+        assertEquals(3, limits.openStreams)
+        limits.release("acme/1", "acme")
+        assertNull(limits.openStream("otra/2", "otra"))
+        // New conversations have their own rate.
+        val creating = AssistantUserLimits(conversationsPerMinute = 2)
+        assertTrue(creating.allowNewConversation("u") && creating.allowNewConversation("u"))
+        assertFalse(creating.allowNewConversation("u"))
+    }
+
+    @Test
+    fun anUnreadableSessionOpenerNeverFallsBackToTheAccountsOwnConversations() {
+        val untouched = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(Connection::class.java)) { _, _, _ -> error("not used") } as Connection
+        val refusal = kotlin.test.assertFailsWith<AssistantRefusal> { service.context(untouched, "acme", UUID.randomUUID(), "a".repeat(43)) }
+        assertEquals(503, refusal.status)
     }
 
     @Test

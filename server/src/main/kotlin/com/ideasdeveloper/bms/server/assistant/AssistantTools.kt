@@ -30,9 +30,14 @@ class AssistantTool(
     val inputSchema: JsonObject,
     val readOnly: Boolean,
     val destructive: Boolean,
+    // Sends something out of the company (McpTool.outbound).
+    val outbound: Boolean = false,
 ) {
     val label: String get() = "$moduleName: $title"
 }
+
+/** What the module resolved for the confirmation card ([McpTool.preview]): rows, or why it could not. */
+class AssistantPreview(val rows: JsonArray, val error: String? = null)
 
 /** What running a tool gave: its output for the model, or an error message it can act on. */
 class AssistantToolResult(val ok: Boolean, val text: String)
@@ -49,6 +54,9 @@ interface AssistantToolbox {
     fun instructions(): List<Pair<String, String>>
 
     fun execute(name: String, arguments: JsonObject): AssistantToolResult
+
+    /** The tool's own preview of the call (read only, the user's permissions now); empty rows when it has none. */
+    fun preview(name: String, arguments: JsonObject): AssistantPreview = AssistantPreview(JsonArray(emptyList()))
 }
 
 object AssistantTools {
@@ -76,6 +84,7 @@ object AssistantTools {
         inputSchema = registered.tool.inputSchema,
         readOnly = registered.tool.readOnly,
         destructive = registered.tool.destructive,
+        outbound = registered.tool.outbound,
     )
 
     /** The tool output as tool_result text, cut to [MaxResultChars]. */
@@ -85,25 +94,59 @@ object AssistantTools {
     }
 
     /**
-     * What the confirmation card shows: one row per argument, labelled with the schema's description of that argument
-     * (as the module wrote it) and the value as text, both cut.
+     * What the confirmation card shows: one row per argument, every argument and its whole value (never cut), labelled
+     * with the schema's description of that argument (as the module wrote it). Characters that can hide or reorder
+     * text (bidi controls, zero-width and other format or control characters) are shown as [U+XXXX] and the row is
+     * flagged.
      */
     fun summary(tool: AssistantTool?, arguments: JsonObject): JsonArray {
         val properties = tool?.inputSchema?.get("properties") as? JsonObject
         return JsonArray(
-            arguments.entries.take(30).map { (key, value) ->
+            arguments.entries.map { (key, value) ->
                 val description = ((properties?.get(key) as? JsonObject)?.get("description") as? JsonPrimitive)?.contentOrNull
                 val shown = when (value) {
                     is JsonNull -> "-"
                     is JsonPrimitive -> value.content
                     else -> value.toString()
                 }
-                buildJsonObject {
-                    put("label", (description?.takeIf { it.isNotBlank() } ?: key).take(160))
-                    put("value", if (shown.length <= 300) shown else shown.take(299) + "…")
-                }
+                row(description?.takeIf { it.isNotBlank() } ?: key, shown)
             },
         )
+    }
+
+    /** A card row with [visible] applied to both texts. */
+    fun row(label: String, value: String): JsonObject {
+        val (cleanLabel, labelHidden) = visible(label)
+        val (cleanValue, valueHidden) = visible(value)
+        return buildJsonObject {
+            put("label", cleanLabel)
+            put("value", cleanValue)
+            if (labelHidden || valueHidden) put("hiddenCharacters", true)
+        }
+    }
+
+    /** [text] with every invisible or reordering character written as [U+XXXX] (newlines and tabs kept); true when any. */
+    fun visible(text: String): Pair<String, Boolean> {
+        var found = false
+        val out = StringBuilder(text.length)
+        var index = 0
+        while (index < text.length) {
+            val code = text.codePointAt(index)
+            val type = Character.getType(code)
+            val hidden = code != '\n'.code && code != '\t'.code && (
+                type == Character.FORMAT.toInt() || type == Character.CONTROL.toInt() ||
+                    type == Character.LINE_SEPARATOR.toInt() || type == Character.PARAGRAPH_SEPARATOR.toInt() ||
+                    type == Character.UNASSIGNED.toInt() || type == Character.PRIVATE_USE.toInt() || code == 0x115F || code == 0x1160 || code == 0x3164
+                )
+            if (hidden) {
+                found = true
+                out.append("[U+").append(String.format("%04X", code)).append(']')
+            } else {
+                out.appendCodePoint(code)
+            }
+            index += Character.charCount(code)
+        }
+        return out.toString() to found
     }
 }
 
@@ -151,4 +194,28 @@ class ModuleAssistantToolbox(
             AssistantToolResult(false, "No se pudo completar la operacion.")
         }
     } ?: AssistantToolResult(false, "No se pudo abrir la empresa.")
+
+    override fun preview(name: String, arguments: JsonObject): AssistantPreview = tenant { connection ->
+        val user = user(connection) ?: return@tenant AssistantPreview(JsonArray(emptyList()))
+        val registered = access.moduleMcp().filter { it.moduleId != ServerMcpModuleId }.flatMap { it.tools }.firstOrNull { it.qualifiedName == name }
+        val preview = registered?.tool?.preview ?: return@tenant AssistantPreview(JsonArray(emptyList()))
+        val permissions = user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) }
+            ?: return@tenant AssistantPreview(JsonArray(emptyList()))
+        val call = McpToolCall(arguments, permissions.withActivityActor(actor().viaAssistant()), connection, access, ActivityActor.AssistantAgentName, registered.moduleId)
+        // Read only, whatever the module does: the preview runs before the user decided.
+        val autoCommit = connection.autoCommit
+        try {
+            connection.autoCommit = false
+            connection.createStatement().use { it.execute("SET TRANSACTION READ ONLY") }
+            AssistantPreview(JsonArray(preview(call).map { AssistantTools.row(it.label, it.value) }))
+        } catch (failure: McpToolException) {
+            AssistantPreview(JsonArray(emptyList()), failure.message.orEmpty())
+        } catch (failure: Exception) {
+            log.error("Assistant preview {} failed in company {}: {}", name, companyCode, failure.javaClass.name)
+            AssistantPreview(JsonArray(emptyList()), "No se pudo preparar la vista previa.")
+        } finally {
+            runCatching { connection.rollback() }
+            runCatching { connection.autoCommit = autoCommit }
+        }
+    } ?: AssistantPreview(JsonArray(emptyList()), "No se pudo abrir la empresa.")
 }

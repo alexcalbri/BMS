@@ -167,7 +167,8 @@ class AssistantRequestTest {
         val summary = AssistantTools.summary(tool, buildJsonObject { put("nombre", "Ana"); put("otro", "x".repeat(400)) })
         assertEquals("Nombre del cliente.", summary[0].jsonObject.string("label"))
         assertEquals("otro", summary[1].jsonObject.string("label"))
-        assertEquals(300, summary[1].jsonObject.string("value")!!.length)
+        // Never cut (the card must show what will really be done).
+        assertEquals(400, summary[1].jsonObject.string("value")!!.length)
     }
 
     private fun dummyConnection(): java.sql.Connection = java.lang.reflect.Proxy.newProxyInstance(

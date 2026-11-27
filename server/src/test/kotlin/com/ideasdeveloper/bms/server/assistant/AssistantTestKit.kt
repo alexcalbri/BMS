@@ -56,6 +56,9 @@ object Scripted {
     }
 }
 
+/** A step that streams [text] and then fails with [failure] (a cancellation or an error carrying the usage so far). */
+class Partial(val failure: Exception, val text: String? = null)
+
 /** Answers each request with the next scripted step (a message or an exception) and keeps every request it got. */
 class FakeModelClients(vararg steps: Any) : AssistantModelClients {
     private val script = ArrayDeque(steps.toList())
@@ -71,6 +74,10 @@ class FakeModelClients(vararg steps: Any) : AssistantModelClients {
                 requests += params
                 val step = script.removeFirstOrNull() ?: error("the model was called more times than scripted")
                 if (step is Exception) throw step
+                if (step is Partial) {
+                    step.text?.let { listener.text(it) }
+                    throw step.failure
+                }
                 val message = step as BetaMessage
                 message.content().forEach { block -> block.text().ifPresent { listener.text(it.text()) } }
                 if (listener.cancelled) throw AssistantCancelledException()
@@ -87,8 +94,12 @@ class FakeToolbox(vararg tools: AssistantTool) : AssistantToolbox {
     var available = tools.toMutableList()
     val handlers = mutableMapOf<String, (JsonObject) -> AssistantToolResult>()
     val executed = mutableListOf<Pair<String, JsonObject>>()
+    val previews = mutableMapOf<String, (JsonObject) -> AssistantPreview>()
 
     override fun tools(): List<AssistantTool> = available.sortedBy { it.name }
+
+    override fun preview(name: String, arguments: JsonObject): AssistantPreview =
+        previews[name]?.invoke(arguments) ?: AssistantPreview(JsonArray(emptyList()))
 
     override fun instructions(): List<Pair<String, String>> = available.map { it.moduleName }.distinct().map { it to "Guia de $it." }
 
@@ -100,7 +111,7 @@ class FakeToolbox(vararg tools: AssistantTool) : AssistantToolbox {
     }
 
     companion object {
-        fun tool(name: String, readOnly: Boolean, destructive: Boolean = false) = AssistantTool(
+        fun tool(name: String, readOnly: Boolean, destructive: Boolean = false, outbound: Boolean = false) = AssistantTool(
             name = name, moduleId = name.substringBefore('_'), moduleName = name.substringBefore('_').replaceFirstChar { it.uppercase() },
             title = name.substringAfter('_'), description = "Hace $name.",
             inputSchema = buildJsonObject {
@@ -108,7 +119,7 @@ class FakeToolbox(vararg tools: AssistantTool) : AssistantToolbox {
                 put("properties", buildJsonObject { put("nombre", buildJsonObject { put("type", "string"); put("description", "Nombre del cliente.") }) })
                 put("additionalProperties", false)
             },
-            readOnly = readOnly, destructive = destructive,
+            readOnly = readOnly, destructive = destructive, outbound = outbound,
         )
     }
 }
@@ -130,13 +141,22 @@ class RecordingSink(private val cancelAfter: Int = Int.MAX_VALUE) : AssistantSin
 
 fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 
-/** The store in memory, with the same owner rule as the JDBC one. */
+/** The store in memory, with the same owner and lease rules as the JDBC one. */
 class MemoryAssistantStore : AssistantStore {
     val conversations = linkedMapOf<UUID, AssistantConversation>()
+    val tokens = mutableMapOf<UUID, UUID>()
     val messages = mutableListOf<Pair<UUID, AssistantStoredMessage>>()
     val pendingCalls = linkedMapOf<UUID, AssistantPendingCall>()
     val usageRows = mutableMapOf<Triple<LocalDate, UUID, String>, AssistantUsageRow>()
+    val usages = mutableMapOf<Long, ModelUsage>()
     private var nextId = 1L
+    // Test hook: runs before every lease-checked write (to simulate another request taking the conversation).
+    var beforeWrite: () -> Unit = {}
+
+    @Synchronized private fun holds(id: UUID, token: UUID) {
+        beforeWrite()
+        if (tokens[id] != token || conversations[id]?.state != AssistantConversation.Running) throw AssistantLeaseLostException()
+    }
 
     override fun createConversation(userId: UUID, ownerKey: String, title: String, now: Instant) =
         AssistantConversation(UUID.randomUUID(), userId, ownerKey, title, AssistantConversation.Idle, null, now, now, null).also { conversations[it.id] = it }
@@ -145,6 +165,8 @@ class MemoryAssistantStore : AssistantStore {
 
     override fun conversations(userId: UUID, ownerKey: String, archived: Boolean, limit: Int, before: Instant?) =
         conversations.values.filter { it.userId == userId && it.ownerKey == ownerKey && (it.archivedAt != null) == archived }.take(limit)
+
+    override fun conversationCount(userId: UUID, ownerKey: String) = conversations.values.count { it.userId == userId && it.ownerKey == ownerKey }
 
     override fun updateConversation(id: UUID, userId: UUID, ownerKey: String, title: String?, archived: Boolean?, now: Instant): AssistantConversation? {
         val current = conversation(id, userId, ownerKey) ?: return null
@@ -161,40 +183,83 @@ class MemoryAssistantStore : AssistantStore {
         return true
     }
 
-    override fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): Boolean {
-        val current = conversations[id] ?: return false
+    @Synchronized override fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): UUID? {
+        val current = conversations[id] ?: return null
         val free = current.state == fromState || (current.state == AssistantConversation.Running && current.leaseUntil?.isBefore(now) == true)
-        if (!free) return false
+        if (!free) return null
+        val token = UUID.randomUUID()
         conversations[id] = current.copy(state = AssistantConversation.Running, leaseUntil = leaseUntil)
+        tokens[id] = token
+        return token
+    }
+
+    @Synchronized override fun renew(id: UUID, token: UUID, leaseUntil: Instant): Boolean {
+        if (tokens[id] != token || conversations[id]?.state != AssistantConversation.Running) return false
+        conversations[id] = conversations[id]!!.copy(leaseUntil = leaseUntil)
         return true
     }
 
-    override fun setState(id: UUID, state: String, now: Instant) {
-        conversations[id]?.let { conversations[id] = it.copy(state = state, leaseUntil = null, updatedAt = now) }
+    @Synchronized override fun release(id: UUID, token: UUID, state: String, now: Instant): Boolean {
+        if (tokens[id] != token || conversations[id]?.state != AssistantConversation.Running) return false
+        conversations[id] = conversations[id]!!.copy(state = state, leaseUntil = null, updatedAt = now)
+        tokens.remove(id)
+        return true
     }
 
     override fun messages(conversationId: UUID) = messages.filter { it.first == conversationId }.map { it.second }
 
     override fun messageCount(conversationId: UUID) = messages(conversationId).count { it.role != Roles.Notice }
 
-    override fun appendMessage(conversationId: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant) =
-        AssistantStoredMessage(nextId++, role, content, now).also { messages += conversationId to it }
+    private fun insert(conversationId: UUID, role: String, content: JsonArray, usage: ModelUsage?, now: Instant): AssistantStoredMessage {
+        require(content.isNotEmpty()) { "empty message content" }
+        return AssistantStoredMessage(nextId++, role, content, now).also { message ->
+            messages += conversationId to message
+            usage?.let { usages[message.id] = it }
+        }
+    }
 
-    override fun savePending(calls: List<AssistantPendingCall>) = calls.forEach { pendingCalls[it.id] = it }
+    override fun appendMessage(conversationId: UUID, token: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage {
+        holds(conversationId, token)
+        return insert(conversationId, role, content, usage, now)
+    }
+
+    override fun lastPromptTokens(conversationId: UUID): Long =
+        messages(conversationId).lastOrNull { it.role == Roles.Assistant }?.let { usages[it.id] }?.let { it.inputTokens + it.cacheReadInputTokens + it.cacheCreationInputTokens } ?: 0
+
+    override fun savePending(token: UUID, calls: List<AssistantPendingCall>) {
+        if (calls.isEmpty()) return
+        holds(calls.first().conversationId, token)
+        pendingCalls.values.removeIf { it.conversationId == calls.first().conversationId }
+        calls.forEach { pendingCalls[it.id] = it }
+    }
 
     override fun pending(conversationId: UUID) = pendingCalls.values.filter { it.conversationId == conversationId }.sortedBy { it.position }
 
     override fun pendingCall(id: UUID, userId: UUID, ownerKey: String) =
         pendingCalls[id]?.takeIf { conversations[it.conversationId]?.let { c -> c.userId == userId && c.ownerKey == ownerKey } == true }
 
-    override fun decide(id: UUID, status: String, now: Instant): Boolean {
-        val call = pendingCalls[id]?.takeIf { it.status == AssistantPendingCall.Pending } ?: return false
+    @Synchronized override fun decide(id: UUID, status: String, now: Instant): Boolean {
+        val call = pendingCalls[id]?.takeIf { it.status == AssistantPendingCall.Pending && it.expiresAt.isAfter(now) } ?: return false
         pendingCalls[id] = call.copy(status = status)
         return true
     }
 
-    override fun clearPending(conversationId: UUID) {
+    @Synchronized override fun claim(callId: UUID, conversationId: UUID, token: UUID): Boolean {
+        holds(conversationId, token)
+        val call = pendingCalls[callId]?.takeIf { it.status == AssistantPendingCall.Approved } ?: return false
+        pendingCalls[callId] = call.copy(status = AssistantPendingCall.Executing)
+        return true
+    }
+
+    @Synchronized override fun finish(callId: UUID, conversationId: UUID, token: UUID, result: kotlinx.serialization.json.JsonObject) {
+        pendingCalls[callId]?.takeIf { it.status == AssistantPendingCall.Executing }?.let { pendingCalls[callId] = it.copy(status = AssistantPendingCall.Done, result = result) }
+    }
+
+    @Synchronized override fun completePending(conversationId: UUID, token: UUID, content: JsonArray, now: Instant): AssistantStoredMessage? {
+        holds(conversationId, token)
+        val message = if (content.isEmpty()) null else insert(conversationId, Roles.User, content, null, now)
         pendingCalls.values.removeIf { it.conversationId == conversationId }
+        return message
     }
 
     override fun expiredConversations(now: Instant) =

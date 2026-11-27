@@ -37,6 +37,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
@@ -301,7 +302,9 @@ class AssistantPostgresTest {
             assertEquals(HttpStatusCode.OK, turn.status)
             assertTrue(turn.headers[HttpHeaders.ContentType]!!.startsWith("text/event-stream"))
             assertEquals("no", turn.headers["X-Accel-Buffering"])
-            val first = events(turn.bodyAsText())
+            val firstBody = turn.bodyAsText()
+            val first = events(firstBody)
+            assertTrue(first.isNotEmpty(), "empty stream: '$firstBody'")
             assertEquals("turn_started", first.first().first)
             assertEquals("awaiting_confirmation", first.last().second.text("reason"))
             val card = first.single { it.first == "confirmation_required" }.second
@@ -381,16 +384,36 @@ class AssistantPostgresTest {
         val owner = UUID.fromString(scalar(company, "SELECT id FROM application_users WHERE postgres_role = 'dueno_acme'"))
         val now = Instant.now()
         val mine = store.createConversation(eva, "self", "", now)
-        store.appendMessage(mine.id, Roles.User, jsonArrayOf(Scripted.text("hola")), null, null, null, now)
+        // Writes of a turn need its lease.
+        assertTrue(runCatching { store.appendMessage(mine.id, UUID.randomUUID(), Roles.User, jsonArrayOf(Scripted.text("hola")), null, null, null, now) }.exceptionOrNull() is AssistantLeaseLostException)
+        val first = store.startTurn(mine.id, AssistantConversation.Idle, now.plusSeconds(600), now)!!
+        store.appendMessage(mine.id, first, Roles.User, jsonArrayOf(Scripted.text("hola")), null, null, null, now)
+        assertTrue(runCatching { store.appendMessage(mine.id, first, Roles.User, JsonArray(emptyList()), null, null, null, now) }.isFailure)
+        assertTrue(store.release(mine.id, first, AssistantConversation.Idle, now))
         assertEquals(null, store.conversation(mine.id, owner, "self"))
         assertEquals(null, store.conversation(mine.id, eva, "server:x"))
         assertEquals(1, store.messages(mine.id).size)
         assertFalse(store.deleteConversation(mine.id, owner, "self"))
         // Taking a turn is exclusive.
-        assertTrue(store.startTurn(mine.id, AssistantConversation.Idle, now.plusSeconds(600), now))
-        assertFalse(store.startTurn(mine.id, AssistantConversation.Idle, now.plusSeconds(600), now))
-        assertTrue(store.startTurn(mine.id, AssistantConversation.Idle, now.plusSeconds(1200), now.plusSeconds(601)))
-        store.setState(mine.id, AssistantConversation.Idle, now)
+        val taken = store.startTurn(mine.id, AssistantConversation.Idle, now.plusSeconds(600), now)!!
+        assertEquals(null, store.startTurn(mine.id, AssistantConversation.Idle, now.plusSeconds(600), now))
+        assertTrue(store.renew(mine.id, taken, now.plusSeconds(700)))
+        val next = store.startTurn(mine.id, AssistantConversation.Idle, now.plusSeconds(1500), now.plusSeconds(701))!!
+        // The old turn can neither renew, write nor release over the new one.
+        assertFalse(store.renew(mine.id, taken, now.plusSeconds(2000)))
+        assertFalse(store.release(mine.id, taken, AssistantConversation.Idle, now))
+        assertTrue(runCatching { store.appendMessage(mine.id, taken, Roles.User, jsonArrayOf(Scripted.text("x")), null, null, null, now) }.exceptionOrNull() is AssistantLeaseLostException)
+        // A claimed call is never claimed twice; its result stays.
+        val call = AssistantPendingCall(UUID.randomUUID(), mine.id, 0, "toolu_1", "demo_add_note", JsonObject(emptyMap()), "Demo", "Demo", false, JsonArray(emptyList()), AssistantPendingCall.Pending, null, now.plusSeconds(3600))
+        store.savePending(next, listOf(call))
+        assertTrue(store.decide(call.id, AssistantPendingCall.Approved, now))
+        assertTrue(store.claim(call.id, mine.id, next))
+        assertFalse(store.claim(call.id, mine.id, next))
+        store.finish(call.id, mine.id, next, AssistantEngine.toolResult("toolu_1", true, "ok"))
+        assertEquals(AssistantPendingCall.Done, store.pending(mine.id).single().status)
+        assertEquals(null, store.completePending(mine.id, next, JsonArray(emptyList()), now))
+        assertTrue(store.pending(mine.id).isEmpty())
+        assertTrue(store.release(mine.id, next, AssistantConversation.Idle, now))
         // Messages cannot be edited by the runtime role.
         val refused = runCatching { runtime().use { it.run("UPDATE assistant_messages SET content = '[]'") } }.exceptionOrNull()
         assertTrue(refused is java.sql.SQLException && refused.sqlState == "42501", "$refused")

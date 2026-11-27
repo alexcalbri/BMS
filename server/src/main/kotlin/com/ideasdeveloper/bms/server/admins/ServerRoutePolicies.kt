@@ -34,6 +34,8 @@ sealed interface RoutePolicy {
         val permission: ServerPermission,
         val company: CompanyFrom = CompanyFrom.None,
         val workspace: ServerPermission? = null,
+        // The route changes something of every company: an administrator needs the permission AND every company in scope.
+        val allCompanies: Boolean = false,
     ) : RoutePolicy
 }
 
@@ -138,10 +140,11 @@ object ServerRoutePolicies {
         put("POST /server/admins/{id}/two-factor/disable", owner)
         // The in-app assistant (GLOBAL_AGENT.md): settings and key of the server, per-company allowance (scoped by the
         // company of the path) and usage (the lists keep to the administrator's scope).
-        put("GET /server/assistant/settings", needs(ServerPermission.AssistantManage))
-        put("PUT /server/assistant/settings", needs(ServerPermission.AssistantManage))
-        put("PUT /server/assistant/key", needs(ServerPermission.AssistantManage))
-        put("DELETE /server/assistant/key", needs(ServerPermission.AssistantManage))
+        // Settings and the key apply to every company: only an administrator with every company in scope (or the owner).
+        put("GET /server/assistant/settings", RoutePolicy.Requires(ServerPermission.AssistantManage, allCompanies = true))
+        put("PUT /server/assistant/settings", RoutePolicy.Requires(ServerPermission.AssistantManage, allCompanies = true))
+        put("PUT /server/assistant/key", RoutePolicy.Requires(ServerPermission.AssistantManage, allCompanies = true))
+        put("DELETE /server/assistant/key", RoutePolicy.Requires(ServerPermission.AssistantManage, allCompanies = true))
         put("GET /server/assistant/companies", needs(ServerPermission.AssistantManage))
         put("PUT /server/assistant/companies/{code}", scoped(ServerPermission.AssistantManage))
         put("GET /server/assistant/usage", needs(ServerPermission.AssistantManage))
@@ -205,6 +208,10 @@ fun ApplicationCall.checkServerGate(lookup: ServerActorLookup, policy: RoutePoli
                     CompanyFrom.None -> null
                     CompanyFrom.Path -> parameters["code"].orEmpty().trim()
                     CompanyFrom.Header -> request.headers["X-Company-Code"].orEmpty().trim()
+                }
+                if (policy.allCompanies && !actor.isOwner && actor.companyScope != null) {
+                    actor.require(policy.permission)
+                    throw ServerPermissionException(policy.permission, null, tr("Solo un administrador con todas las empresas en su alcance puede hacerlo."))
                 }
                 when {
                     company == null -> actor.require(policy.permission)

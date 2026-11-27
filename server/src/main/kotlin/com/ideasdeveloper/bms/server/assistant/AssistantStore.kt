@@ -28,6 +28,8 @@ data class AssistantConversation(
         const val Idle = "idle"
         const val Running = "running"
         const val Awaiting = "awaiting_confirmation"
+        // The conversation cannot go on (see AssistantEngine, refusal after tool results).
+        const val Closed = "closed"
     }
 }
 
@@ -39,8 +41,9 @@ data class AssistantStoredMessage(
 )
 
 /**
- * One tool call of a paused turn. [needsConfirmation] calls wait for the user ([status] pending, then approved or
- * rejected); the others already ran and keep their tool_result block in [result] (status done).
+ * One tool call of a paused turn, in the order of its model response. Calls that ran already keep their tool_result
+ * block in [result] (status done). The others wait for the user (pending), are decided (approved, rejected), or are
+ * being run right now by the turn that claimed them (executing): a call is claimed once and never run twice.
  */
 data class AssistantPendingCall(
     val id: UUID,
@@ -56,13 +59,15 @@ data class AssistantPendingCall(
     val status: String,
     val result: JsonObject?,
     val expiresAt: Instant,
+    val preview: JsonArray = JsonArray(emptyList()),
+    val previewError: String? = null,
+    val outbound: Boolean = false,
 ) {
-    val needsConfirmation: Boolean get() = status != Done
-
     companion object {
         const val Pending = "pending"
         const val Approved = "approved"
         const val Rejected = "rejected"
+        const val Executing = "executing"
         const val Done = "done"
     }
 }
@@ -76,32 +81,51 @@ data class AssistantUsageRow(
     val countedTokens: Long,
 )
 
+/** The turn no longer holds the conversation (its lease ended and another request took it): it must stop writing. */
+class AssistantLeaseLostException : Exception("lease lost")
+
 /**
- * Where the assistant keeps a company's conversations (tenant V017). Every read of a conversation is by its id AND
- * its owner (user and owner key): a conversation of someone else is simply not found.
+ * Where the assistant keeps a company's conversations (tenant V017, V018). Every read of a conversation is by its id
+ * AND its owner (user and owner key). Every write of a turn names the turn's lease token and is refused with
+ * [AssistantLeaseLostException] when another turn holds the conversation.
  */
 interface AssistantStore {
     fun createConversation(userId: UUID, ownerKey: String, title: String, now: Instant): AssistantConversation
     fun conversation(id: UUID, userId: UUID, ownerKey: String): AssistantConversation?
     fun conversations(userId: UUID, ownerKey: String, archived: Boolean, limit: Int, before: Instant?): List<AssistantConversation>
+    fun conversationCount(userId: UUID, ownerKey: String): Int
     fun updateConversation(id: UUID, userId: UUID, ownerKey: String, title: String?, archived: Boolean?, now: Instant): AssistantConversation?
     fun deleteConversation(id: UUID, userId: UUID, ownerKey: String): Boolean
 
-    /** Takes the conversation for one turn: idle (or a running turn whose lease ended) to running. */
-    fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): Boolean
-    fun setState(id: UUID, state: String, now: Instant)
+    /** Takes the conversation for one turn ([fromState], or a running turn whose lease ended): its token, or null. */
+    fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): UUID?
+    /** Extends the lease of the turn [token]; false when that turn no longer holds the conversation. */
+    fun renew(id: UUID, token: UUID, leaseUntil: Instant): Boolean
+    /** Gives the conversation back in [state], only if the turn [token] still holds it. */
+    fun release(id: UUID, token: UUID, state: String, now: Instant): Boolean
 
     fun messages(conversationId: UUID): List<AssistantStoredMessage>
     fun messageCount(conversationId: UUID): Int
-    fun appendMessage(conversationId: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage
+    /** Appends a message for the turn [token]; [content] must not be empty. */
+    fun appendMessage(conversationId: UUID, token: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage
+    /** Prompt size (input + cache) of the last stored model response: the estimate of a request stopped before any usage. */
+    fun lastPromptTokens(conversationId: UUID): Long
 
-    fun savePending(calls: List<AssistantPendingCall>)
+    fun savePending(token: UUID, calls: List<AssistantPendingCall>)
     fun pending(conversationId: UUID): List<AssistantPendingCall>
-    /** The call with its conversation, only when that conversation belongs to the owner. */
+    /** The call, only when its conversation belongs to the owner. */
     fun pendingCall(id: UUID, userId: UUID, ownerKey: String): AssistantPendingCall?
-    /** Records a decision of a call still pending; false when it was decided already. */
+    /** Records a decision of a call still pending and not expired at [now]; false otherwise. */
     fun decide(id: UUID, status: String, now: Instant): Boolean
-    fun clearPending(conversationId: UUID)
+    /** Claims an approved call for the turn [token] (approved to executing); false when it was claimed already. */
+    fun claim(callId: UUID, conversationId: UUID, token: UUID): Boolean
+    /** Stores the result of a claimed call (executing to done) for the turn [token]. */
+    fun finish(callId: UUID, conversationId: UUID, token: UUID, result: JsonObject)
+    /**
+     * In one transaction for the turn [token]: appends [content] as a user message (when not empty) and deletes the
+     * conversation's pending calls.
+     */
+    fun completePending(conversationId: UUID, token: UUID, content: JsonArray, now: Instant): AssistantStoredMessage?
     /** Conversations with a pending call whose time is over. */
     fun expiredConversations(now: Instant): List<UUID>
 
@@ -116,6 +140,30 @@ interface AssistantStore {
 /** [AssistantStore] on a company database; every call takes a pooled connection for itself. */
 class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore {
     private fun <T> use(block: (Connection) -> T): T = connect().use(block)
+
+    private fun <T> transaction(block: (Connection) -> T): T = connect().use { connection ->
+        connection.autoCommit = false
+        try {
+            block(connection).also { connection.commit() }
+        } catch (failure: Throwable) {
+            runCatching { connection.rollback() }
+            throw failure
+        } finally {
+            runCatching { connection.autoCommit = true }
+        }
+    }
+
+    /** Locks the conversation row and checks the turn still holds it (inside a transaction). */
+    private fun holds(connection: Connection, conversationId: UUID, token: UUID) {
+        val held = connection.prepareStatement(
+            "SELECT 1 FROM public.assistant_conversations WHERE id = ? AND lease_token = ? AND state = 'running' FOR UPDATE",
+        ).use { query ->
+            query.setObject(1, conversationId)
+            query.setObject(2, token)
+            query.executeQuery().use { it.next() }
+        }
+        if (!held) throw AssistantLeaseLostException()
+    }
 
     private fun ResultSet.instant(column: String): Instant? = getTimestamp(column)?.toInstant()
 
@@ -175,6 +223,14 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
         }
     }
 
+    override fun conversationCount(userId: UUID, ownerKey: String): Int = use { connection ->
+        connection.prepareStatement("SELECT count(*) FROM public.assistant_conversations WHERE user_id = ? AND owner_key = ?").use { query ->
+            query.setObject(1, userId)
+            query.setString(2, ownerKey)
+            query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
+        }
+    }
+
     override fun updateConversation(id: UUID, userId: UUID, ownerKey: String, title: String?, archived: Boolean?, now: Instant): AssistantConversation? = use { connection ->
         connection.prepareStatement(
             """
@@ -207,30 +263,42 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
         }
     }
 
-    override fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): Boolean = use { connection ->
+    override fun startTurn(id: UUID, fromState: String, leaseUntil: Instant, now: Instant): UUID? = use { connection ->
+        val token = UUID.randomUUID()
         connection.prepareStatement(
             """
-            UPDATE public.assistant_conversations SET state = 'running', lease_until = ?, updated_at = ?
+            UPDATE public.assistant_conversations SET state = 'running', lease_until = ?, lease_token = ?, updated_at = ?
             WHERE id = ? AND (state = ? OR (state = 'running' AND lease_until < ?))
             """.trimIndent(),
         ).use { update ->
             update.setTimestamp(1, Timestamp.from(leaseUntil))
-            update.setTimestamp(2, Timestamp.from(now))
-            update.setObject(3, id)
-            update.setString(4, fromState)
-            update.setTimestamp(5, Timestamp.from(now))
+            update.setObject(2, token)
+            update.setTimestamp(3, Timestamp.from(now))
+            update.setObject(4, id)
+            update.setString(5, fromState)
+            update.setTimestamp(6, Timestamp.from(now))
+            if (update.executeUpdate() > 0) token else null
+        }
+    }
+
+    override fun renew(id: UUID, token: UUID, leaseUntil: Instant): Boolean = use { connection ->
+        connection.prepareStatement("UPDATE public.assistant_conversations SET lease_until = ? WHERE id = ? AND lease_token = ? AND state = 'running'").use { update ->
+            update.setTimestamp(1, Timestamp.from(leaseUntil))
+            update.setObject(2, id)
+            update.setObject(3, token)
             update.executeUpdate() > 0
         }
     }
 
-    override fun setState(id: UUID, state: String, now: Instant) {
-        use { connection ->
-            connection.prepareStatement("UPDATE public.assistant_conversations SET state = ?, lease_until = NULL, updated_at = ? WHERE id = ?").use { update ->
-                update.setString(1, state)
-                update.setTimestamp(2, Timestamp.from(now))
-                update.setObject(3, id)
-                update.executeUpdate()
-            }
+    override fun release(id: UUID, token: UUID, state: String, now: Instant): Boolean = use { connection ->
+        connection.prepareStatement(
+            "UPDATE public.assistant_conversations SET state = ?, lease_until = NULL, lease_token = NULL, updated_at = ? WHERE id = ? AND lease_token = ? AND state = 'running'",
+        ).use { update ->
+            update.setString(1, state)
+            update.setTimestamp(2, Timestamp.from(now))
+            update.setObject(3, id)
+            update.setObject(4, token)
+            update.executeUpdate() > 0
         }
     }
 
@@ -252,8 +320,9 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
         }
     }
 
-    override fun appendMessage(conversationId: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage = use { connection ->
-        connection.prepareStatement(
+    private fun insertMessage(connection: Connection, conversationId: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage {
+        require(content.isNotEmpty()) { "empty message content" }
+        val id = connection.prepareStatement(
             """
             INSERT INTO public.assistant_messages (conversation_id, role, content, model, stop_reason, input_tokens, output_tokens,
                 cache_read_input_tokens, cache_creation_input_tokens, created_at)
@@ -270,24 +339,48 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
             insert.setLong(8, usage?.cacheReadInputTokens ?: 0)
             insert.setLong(9, usage?.cacheCreationInputTokens ?: 0)
             insert.setTimestamp(10, Timestamp.from(now))
-            val id = insert.executeQuery().use { rows -> rows.next(); rows.getLong(1) }
-            connection.prepareStatement("UPDATE public.assistant_conversations SET updated_at = ? WHERE id = ?").use { update ->
-                update.setTimestamp(1, Timestamp.from(now))
-                update.setObject(2, conversationId)
-                update.executeUpdate()
-            }
-            AssistantStoredMessage(id, role, content, now)
+            insert.executeQuery().use { rows -> rows.next(); rows.getLong(1) }
+        }
+        connection.prepareStatement("UPDATE public.assistant_conversations SET updated_at = ? WHERE id = ?").use { update ->
+            update.setTimestamp(1, Timestamp.from(now))
+            update.setObject(2, conversationId)
+            update.executeUpdate()
+        }
+        return AssistantStoredMessage(id, role, content, now)
+    }
+
+    override fun appendMessage(conversationId: UUID, token: UUID, role: String, content: JsonArray, model: String?, stopReason: String?, usage: ModelUsage?, now: Instant): AssistantStoredMessage =
+        transaction { connection ->
+            holds(connection, conversationId, token)
+            insertMessage(connection, conversationId, role, content, model, stopReason, usage, now)
+        }
+
+    override fun lastPromptTokens(conversationId: UUID): Long = use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT input_tokens + cache_read_input_tokens + cache_creation_input_tokens FROM public.assistant_messages
+            WHERE conversation_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1
+            """.trimIndent(),
+        ).use { query ->
+            query.setObject(1, conversationId)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else 0L }
         }
     }
 
-    override fun savePending(calls: List<AssistantPendingCall>) {
+    override fun savePending(token: UUID, calls: List<AssistantPendingCall>) {
         if (calls.isEmpty()) return
-        use { connection ->
+        transaction { connection ->
+            holds(connection, calls.first().conversationId, token)
+            // Rows of an earlier response never survive into this one.
+            connection.prepareStatement("DELETE FROM public.assistant_pending_calls WHERE conversation_id = ?").use { delete ->
+                delete.setObject(1, calls.first().conversationId)
+                delete.executeUpdate()
+            }
             connection.prepareStatement(
                 """
                 INSERT INTO public.assistant_pending_calls (id, conversation_id, position, tool_use_id, tool_name, arguments, label, module_name,
-                    destructive, summary, status, result, expires_at)
-                VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?)
+                    destructive, summary, status, result, expires_at, preview, preview_error, outbound)
+                VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?, ?)
                 """.trimIndent(),
             ).use { insert ->
                 calls.forEach { call ->
@@ -304,6 +397,9 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
                     insert.setString(11, call.status)
                     insert.setString(12, call.result?.toString())
                     insert.setTimestamp(13, Timestamp.from(call.expiresAt))
+                    insert.setString(14, call.preview.toString())
+                    insert.setString(15, call.previewError)
+                    insert.setBoolean(16, call.outbound)
                     insert.addBatch()
                 }
                 insert.executeBatch()
@@ -312,7 +408,7 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
     }
 
     private val pendingColumns = "p.id, p.conversation_id, p.position, p.tool_use_id, p.tool_name, p.arguments::text, p.label, p.module_name, " +
-        "p.destructive, p.summary::text, p.status, p.result::text, p.expires_at"
+        "p.destructive, p.summary::text, p.status, p.result::text, p.expires_at, p.preview::text, p.preview_error, p.outbound"
 
     private fun ResultSet.pendingCall() = AssistantPendingCall(
         id = getObject(1, UUID::class.java),
@@ -328,6 +424,9 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
         status = getString(11),
         result = getString(12)?.let { Json.parseToJsonElement(it).jsonObject },
         expiresAt = getTimestamp(13).toInstant(),
+        preview = Json.parseToJsonElement(getString(14)).jsonArray,
+        previewError = getString(15),
+        outbound = getBoolean(16),
     )
 
     override fun pending(conversationId: UUID): List<AssistantPendingCall> = use { connection ->
@@ -353,21 +452,42 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
     }
 
     override fun decide(id: UUID, status: String, now: Instant): Boolean = use { connection ->
-        connection.prepareStatement("UPDATE public.assistant_pending_calls SET status = ?, decided_at = ? WHERE id = ? AND status = 'pending'").use { update ->
+        connection.prepareStatement("UPDATE public.assistant_pending_calls SET status = ?, decided_at = ? WHERE id = ? AND status = 'pending' AND expires_at > ?").use { update ->
             update.setString(1, status)
             update.setTimestamp(2, Timestamp.from(now))
             update.setObject(3, id)
+            update.setTimestamp(4, Timestamp.from(now))
             update.executeUpdate() > 0
         }
     }
 
-    override fun clearPending(conversationId: UUID) {
+    override fun claim(callId: UUID, conversationId: UUID, token: UUID): Boolean = transaction { connection ->
+        holds(connection, conversationId, token)
+        connection.prepareStatement("UPDATE public.assistant_pending_calls SET status = 'executing' WHERE id = ? AND status = 'approved'").use { update ->
+            update.setObject(1, callId)
+            update.executeUpdate() > 0
+        }
+    }
+
+    override fun finish(callId: UUID, conversationId: UUID, token: UUID, result: JsonObject) {
+        // The result is kept even when the lease was lost meanwhile: it says truthfully what happened.
         use { connection ->
-            connection.prepareStatement("DELETE FROM public.assistant_pending_calls WHERE conversation_id = ?").use { delete ->
-                delete.setObject(1, conversationId)
-                delete.executeUpdate()
+            connection.prepareStatement("UPDATE public.assistant_pending_calls SET status = 'done', result = CAST(? AS jsonb) WHERE id = ? AND status = 'executing'").use { update ->
+                update.setString(1, result.toString())
+                update.setObject(2, callId)
+                update.executeUpdate()
             }
         }
+    }
+
+    override fun completePending(conversationId: UUID, token: UUID, content: JsonArray, now: Instant): AssistantStoredMessage? = transaction { connection ->
+        holds(connection, conversationId, token)
+        val message = if (content.isEmpty()) null else insertMessage(connection, conversationId, Roles.User, content, null, null, null, now)
+        connection.prepareStatement("DELETE FROM public.assistant_pending_calls WHERE conversation_id = ?").use { delete ->
+            delete.setObject(1, conversationId)
+            delete.executeUpdate()
+        }
+        message
     }
 
     override fun expiredConversations(now: Instant): List<UUID> = use { connection ->

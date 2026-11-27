@@ -95,7 +95,7 @@ data class AssistantToolView(
     val toolUseId: String,
     val name: String,
     val label: String,
-    // ok | error | rejected | expired | pending | not_run
+    // ok | error | rejected | expired | pending | not_run | unknown
     val status: String,
 )
 
@@ -112,8 +112,12 @@ data class AssistantItem(
     val createdAt: String,
 )
 
+/**
+ * One row of a confirmation card, shown in full (never cut). [hiddenCharacters]: the label or value had characters that
+ * hide or reorder text (bidi, zero-width, control); they are written as [U+XXXX] and the app must say so.
+ */
 @Serializable
-data class AssistantSummaryRow(val label: String, val value: String)
+data class AssistantSummaryRow(val label: String, val value: String, val hiddenCharacters: Boolean = false)
 
 /** An open confirmation: the `confirmation_required` event and the `pending` list of a conversation. */
 @Serializable
@@ -124,8 +128,15 @@ data class AssistantConfirmation(
     val label: String,
     val module: String,
     val destructive: Boolean,
+    // Every argument as the model sent it, in full.
     val summary: List<AssistantSummaryRow>,
     val expiresAt: String,
+    // The call sends something out of the company (an email, a WhatsApp message...): "envia un mensaje fuera de la empresa".
+    val outbound: Boolean = false,
+    // What the module resolved: the recipient's name and address, the final text, the record's name instead of its id.
+    val preview: List<AssistantSummaryRow> = emptyList(),
+    // Why the module could not resolve the preview (the call may still be approved or rejected).
+    val previewError: String? = null,
 )
 
 @Serializable

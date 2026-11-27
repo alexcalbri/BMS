@@ -1990,6 +1990,9 @@ class CompanyProvisioningService(
         listOf("assistant_settings", "assistant_conversations", "assistant_pending_calls", "assistant_usage").forEach { table ->
             grantIfMissing(connection, config.runtimeUser, table, listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
         }
+        // Lease tokens, closed conversations and the confirmation preview (tenant V018); no new grants.
+        val safety = "database/tenant/migrations/V018__assistant_turn_safety.sql"
+        applyMigration(connection, "tenant", safety, Files.readString(Path.of(config.migrationsRoot).resolve(safety)))
         grantIfMissing(connection, config.runtimeUser, "assistant_messages", listOf("SELECT", "INSERT"))
         grantSequenceIfMissing(connection, config.runtimeUser, "assistant_messages", "assistant_messages_id_seq", listOf("USAGE", "SELECT"))
         try {

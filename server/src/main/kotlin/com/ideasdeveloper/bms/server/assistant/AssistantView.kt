@@ -32,12 +32,17 @@ object AssistantView {
         label = call.label,
         module = call.moduleName,
         destructive = call.destructive,
-        summary = call.summary.mapNotNull { row ->
-            val obj = row as? JsonObject ?: return@mapNotNull null
-            AssistantSummaryRow(text(obj, "label").orEmpty(), text(obj, "value").orEmpty())
-        },
+        summary = rows(call.summary),
         expiresAt = call.expiresAt.toString(),
+        outbound = call.outbound,
+        preview = rows(call.preview),
+        previewError = call.previewError,
     )
+
+    private fun rows(array: kotlinx.serialization.json.JsonArray) = array.mapNotNull { row ->
+        val obj = row as? JsonObject ?: return@mapNotNull null
+        AssistantSummaryRow(text(obj, "label").orEmpty(), text(obj, "value").orEmpty(), (obj["hiddenCharacters"] as? JsonPrimitive)?.booleanOrNull == true)
+    }
 
     fun items(messages: List<AssistantStoredMessage>, pending: List<AssistantPendingCall>, labels: Map<String, String>): List<AssistantItem> {
         // Outcome of each tool call, from the tool_result blocks that answered it.
@@ -53,12 +58,13 @@ object AssistantView {
                     !error -> "ok"
                     content == AssistantEngine.Rejected -> "rejected"
                     content == AssistantEngine.Expired -> "expired"
+                    content == AssistantEngine.UnknownOutcome -> "unknown"
                     content == AssistantEngine.NotRun || content == AssistantEngine.TooManyTools -> "not_run"
                     else -> "error"
                 }
             }
         }
-        val waiting = pending.filter { it.status == AssistantPendingCall.Pending || it.status == AssistantPendingCall.Approved }.map { it.toolUseId }.toSet()
+        val waiting = pending.filter { it.status != AssistantPendingCall.Done && it.status != AssistantPendingCall.Rejected }.map { it.toolUseId }.toSet()
         return messages.flatMap { message ->
             val at = message.createdAt.toString()
             message.content.mapIndexedNotNull { index, block ->

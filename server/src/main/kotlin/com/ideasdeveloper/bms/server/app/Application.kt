@@ -511,14 +511,21 @@ fun Application.module() {
         serverConfig = com.ideasdeveloper.bms.server.assistant.AssistantServerConfig(DatabaseFactory.getDataSource(), secretBox),
         secrets = secretBox,
         models = assistantModels,
+        serverHosts = setOfNotNull(configuredPublicBase()?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }),
     )
     val assistantJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "assistant-upkeep").apply { isDaemon = true } }
     assistantJob.scheduleWithFixedDelay({
         try {
             migrationsDone.await()
-            moduleAccessService.activeCompanies().filter { it != com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code }.forEach { code ->
+            // Every company, suspended ones included (retention still applies to them).
+            val companies = DatabaseFactory.getDataSource().connection.use { connection ->
+                connection.prepareStatement("SELECT code, database_name FROM companies WHERE NOT is_server_workspace ORDER BY code").use { query ->
+                    query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
+                }
+            }
+            companies.forEach { (code, database) ->
                 try {
-                    assistantService.daily(code)
+                    assistantService.daily(code, database)
                 } catch (failure: Exception) {
                     log.warn("Assistant upkeep failed for company {}: {}", code, failure.javaClass.name)
                 }
@@ -541,6 +548,7 @@ fun Application.module() {
         integrityJob.shutdownNow()
         assistantJob.shutdownNow()
         assistantModels.close()
+        assistantService.close()
         emailRecoveryJob.shutdownNow()
         moduleJobs.stop()
         moduleAccessService.close()
