@@ -1033,3 +1033,9 @@ block log, the queue of outbound notices, the one-time Meta connection links and
   make the parser allocate a row of that width.
 - Attachments are served with the stored type only if it is on a short safe list (`CrmDownloads`); anything else (HTML, SVG...)
   is `application/octet-stream`, always as an attachment and with `X-Content-Type-Options: nosniff`.
+
+## Company storage quota (0.32.0, needs Core 0.13.0)
+
+- `POST /files` checks the company's storage (`ModuleFiles.checkRoom`, STORAGE_QUOTA.md) before reading the body and answers
+  `413 STORAGE_QUOTA_EXCEEDED`, `507 STORAGE_DISK_FULL` or `429 STORAGE_BUSY` with `{code, message}`. When a limit is reached
+  while the file arrives, the upload stops, no file is left and the answer is the same. The per-file maximum does not change.

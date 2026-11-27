@@ -224,3 +224,9 @@ Spanish (source) and English: the code writes `tr("Texto en espanol")` and the E
 history and notes already stored, the job and import logs, the MCP tools (names, descriptions and results) and the values the app
 sends back (`op`, ids, filter and option values such as "Todos", "Sin activo" or the status and priority labels) are not translated.
 Notices to staff are written in each recipient's language.
+
+## Espacio de almacenamiento de la empresa (0.4.0, necesita Core 0.13.0)
+
+- `POST /files` consulta el espacio de la empresa (`ModuleFiles.checkRoom`, STORAGE_QUOTA.md) antes de leer el cuerpo y responde
+  `413 STORAGE_QUOTA_EXCEEDED`, `507 STORAGE_DISK_FULL` o `429 STORAGE_BUSY` con `{code, message}`. Si el limite se alcanza
+  mientras llega el archivo, la subida se corta, no queda archivo y la respuesta es la misma. El maximo por archivo no cambia.

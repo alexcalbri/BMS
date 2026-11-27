@@ -13,6 +13,7 @@ import com.ideasdeveloper.bms.server.modules.ServerModule
 import com.ideasdeveloper.bms.server.modules.ServerModuleProvider
 import com.ideasdeveloper.bms.server.modules.SettingsTable
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
+import com.ideasdeveloper.bms.server.modules.StorageQuotaException
 import com.ideasdeveloper.bms.ui.ModuleUiEntry
 import com.ideasdeveloper.bms.ui.UiFileRef
 import com.ideasdeveloper.bms.ui.UiJson
@@ -84,8 +85,8 @@ object ComprasServerModule : ServerModule {
         id = ComprasModule.id,
         displayName = ComprasModule.displayName,
         description = "Solicitudes de compra con cotizaciones opcionales, aprobadores con limite de monto, adjuntos de respaldo y totales por departamento, mes y moneda.",
-        version = "0.4.0",
-        minCoreVersion = "0.12.0",
+        version = "0.5.0",
+        minCoreVersion = "0.13.0",
         minAppVersion = "0.5.0",
         permissions = listOf(
             ModulePermissionDefinition(ComprasModule.View, "Ver compras", "Permite entrar a Compras y ver sus propias solicitudes."),
@@ -169,6 +170,13 @@ object ComprasServerModule : ServerModule {
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ComprasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
+                // Espacio de almacenamiento de la empresa (STORAGE_QUOTA.md): se rechaza antes de leer el cuerpo.
+                val files = access.files(companyCode, ComprasModule.id)
+                try {
+                    files.checkRoom(length)
+                } catch (refused: StorageQuotaException) {
+                    return@post call.respond(HttpStatusCode.fromValue(refused.httpStatus), ComprasErrorResponse(refused.code, refused.message.orEmpty()))
+                }
                 // El cuerpo va directo al almacen de archivos: nunca se carga entero en memoria.
                 val body = call.receiveChannel().toInputStream()
                 val result = withContext(Dispatchers.IO) {
@@ -176,7 +184,7 @@ object ComprasServerModule : ServerModule {
                         // No se traga la cancelacion de la corrutina ni los Error: solo los fallos de la subida.
                         try {
                             val actor = actorOf(tenant, access, permissions)
-                            Result.success(ComprasAttachments.upload(tenant, access.files(companyCode, ComprasModule.id), actor, name, path, contentType, body))
+                            Result.success(ComprasAttachments.upload(tenant, files, actor, name, path, contentType, body))
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (failure: Exception) {
@@ -189,6 +197,9 @@ object ComprasServerModule : ServerModule {
                     onFailure = { failure ->
                         if (failure is ComprasValidationException) {
                             call.respond(HttpStatusCode.BadRequest, ComprasErrorResponse("invalid_file", failure.message.orEmpty()))
+                        } else if (failure is StorageQuotaException) {
+                            // Espacio, piso de disco libre o subidas en curso alcanzados mientras llegaba el cuerpo: no queda archivo.
+                            call.respond(HttpStatusCode.fromValue(failure.httpStatus), ComprasErrorResponse(failure.code, failure.message.orEmpty()))
                         } else {
                             log.warn("No se pudo guardar un archivo de compras.", failure)
                             call.respond(HttpStatusCode.InternalServerError, ComprasErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))

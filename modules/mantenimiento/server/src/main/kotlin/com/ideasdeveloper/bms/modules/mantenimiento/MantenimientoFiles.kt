@@ -3,6 +3,7 @@ package com.ideasdeveloper.bms.modules.mantenimiento
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
+import com.ideasdeveloper.bms.server.modules.StorageQuotaException
 import com.ideasdeveloper.bms.ui.UiFileRef
 import com.ideasdeveloper.bms.ui.UiJson
 import io.ktor.http.ContentDisposition
@@ -77,6 +78,12 @@ object MantenimientoFiles {
                 ?: return@post call.respond(HttpStatusCode.BadRequest, MantenimientoErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
             // El cuerpo va directo al almacenamiento de archivos, sin conexión a la base abierta; después, una transacción corta registra la fila.
             val files = access.files(companyCode, MantenimientoModule.id)
+            // Espacio de almacenamiento de la empresa (STORAGE_QUOTA.md): se rechaza antes de leer el cuerpo.
+            try {
+                files.checkRoom(length)
+            } catch (refused: StorageQuotaException) {
+                return@post call.respond(HttpStatusCode.fromValue(refused.httpStatus), MantenimientoErrorResponse(refused.code, refused.message.orEmpty()))
+            }
             val result = withContext(Dispatchers.IO) {
                 try {
                     // Conexión corta para el tope de pendientes, antes de escribir nada en el almacenamiento.
@@ -109,6 +116,9 @@ object MantenimientoFiles {
                 onFailure = { failure ->
                     if (failure is MantenimientoValidationException) {
                         call.respond(HttpStatusCode.BadRequest, MantenimientoErrorResponse("invalid_file", failure.message.orEmpty()))
+                    } else if (failure is StorageQuotaException) {
+                        // Espacio, piso de disco libre o subidas en curso alcanzados mientras llegaba el cuerpo: no queda archivo.
+                        call.respond(HttpStatusCode.fromValue(failure.httpStatus), MantenimientoErrorResponse(failure.code, failure.message.orEmpty()))
                     } else {
                         log.warn("No se pudo guardar un archivo de mantenimiento ({}).", failure.javaClass.simpleName)
                         call.respond(HttpStatusCode.InternalServerError, MantenimientoErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))
