@@ -58,6 +58,7 @@ object AgentOAuth {
     private const val KeySetting = "agentes.oauth.signing_key"
     private val store = OAuthStore()
     private val signInLimiter = AgentRateLimiter(perMinute = 10)
+    private val signInFlow = AgentSignInFlow()
     private val clientLimiter = AgentRateLimiter(perMinute = 30)
 
     @Volatile
@@ -257,18 +258,14 @@ object AgentOAuth {
         val form = readBoundedForm() ?: return tooLarge()
         when (form["step"]) {
             "signin" -> signIn(access, form)
+            "code" -> secondStep(access, form)
             "consent", "cancel" -> consent(access, form)
             else -> respondPage(HttpStatusCode.BadRequest, OAuthPages.error(tr("Solicitud invalida.")))
         }
     }
 
     private suspend fun ApplicationCall.signIn(access: ModuleAccessService, form: Parameters) {
-        val key = withContext(Dispatchers.IO) { signingKey(access) }
-        val request = when (val validation = validate(key, form)) {
-            is Validation.Page -> return respondPage(HttpStatusCode.BadRequest, OAuthPages.error(validation.message))
-            is Validation.Redirect -> return respondRedirect(validation.url)
-            is Validation.Valid -> validation.request
-        }
+        val request = validRequest(access, form) ?: return
         val company = form["company"].orEmpty().trim().lowercase()
         fun again(message: String) = OAuthPages.signIn(request, form, message, company)
         if (!signInLimiter.allow(clientIp())) return respondPage(HttpStatusCode.TooManyRequests, again(tr("Demasiados intentos. Espera un minuto.")))
@@ -276,20 +273,62 @@ object AgentOAuth {
         val password = form["password"].orEmpty()
         if (username.isEmpty() || password.isEmpty()) return respondPage(HttpStatusCode.OK, again(tr("Escribe tu usuario y contrasena.")))
         if (company.isNotEmpty() && !Regex("[a-z][a-z0-9_]{0,62}").matches(company)) return respondPage(HttpStatusCode.OK, again(tr("El codigo de empresa no es valido.")))
-
-        val result = withContext(Dispatchers.IO) {
-            // Without a company: the server owner, or an administrator holding server.audit.view for an audit-only agent.
-            val user = access.verifyCredentials(company.ifEmpty { null }, username, password, allowAuditAdmin = company.isEmpty())
-                ?: return@withContext SignInResult.Rejected(tr("Usuario, contrasena o empresa incorrectos."))
-            val tools = eligibility(access, user) ?: return@withContext SignInResult.Rejected(tr("Tu usuario no puede conectar agentes en esta empresa: el modulo Agentes IA debe estar activo y necesitas el permiso \"Conectar agentes IA\"."),
-            )
-            SignInResult.Accepted(user, tools)
+        val step = withContext(Dispatchers.IO) {
+            signInFlow.password(company.ifEmpty { null }, username, password, origin(request), agentSignIn(access))
         }
-        when (result) {
-            is SignInResult.Rejected -> respondPage(HttpStatusCode.OK, again(result.message))
-            is SignInResult.Accepted -> {
-                val ticket = store.newTicket(OAuthTicket(request, result.user))
-                respondPage(HttpStatusCode.OK, OAuthPages.consent(ticket, request, result.user, result.tools, error = null))
+        respondStep(access, request, form, company, step)
+    }
+
+    // The second page: the authenticator or recovery code of an account with two-step verification on.
+    private suspend fun ApplicationCall.secondStep(access: ModuleAccessService, form: Parameters) {
+        val request = validRequest(access, form) ?: return
+        val company = form["company"].orEmpty().trim().lowercase()
+        val pending = form["pending"].orEmpty()
+        if (!signInLimiter.allow(clientIp())) {
+            return respondPage(HttpStatusCode.TooManyRequests, OAuthPages.twoFactor(request, form, pending, tr("Demasiados intentos. Espera un minuto.")))
+        }
+        val step = withContext(Dispatchers.IO) {
+            signInFlow.code(pending, form["code"].orEmpty(), origin(request), agentSignIn(access))
+        }
+        respondStep(access, request, form, company, step)
+    }
+
+    // Core checks the password (and the code) every time, with the client address of this request.
+    private fun ApplicationCall.agentSignIn(access: ModuleAccessService) = AgentSignInFlow.SignIn { company, username, password, code ->
+        // Without a company: the server owner, or an administrator holding server.audit.view for an audit-only agent.
+        access.signInForAgent(this, company, username, password, code, allowAuditAdmin = company == null)
+    }
+
+    private fun ApplicationCall.origin(request: OAuthRequest) = AgentSignInFlow.Origin(request.client.id, request.redirectUri, clientIp())
+
+    // The OAuth parameters of the form, or null once the rejection was answered.
+    private suspend fun ApplicationCall.validRequest(access: ModuleAccessService, form: Parameters): OAuthRequest? {
+        val key = withContext(Dispatchers.IO) { signingKey(access) }
+        return when (val validation = validate(key, form)) {
+            is Validation.Page -> null.also { respondPage(HttpStatusCode.BadRequest, OAuthPages.error(validation.message)) }
+            is Validation.Redirect -> null.also { respondRedirect(validation.url) }
+            is Validation.Valid -> validation.request
+        }
+    }
+
+    private suspend fun ApplicationCall.respondStep(access: ModuleAccessService, request: OAuthRequest, form: Parameters, company: String, step: AgentSignInFlow.Step) {
+        when (step) {
+            is AgentSignInFlow.Step.Again -> respondPage(HttpStatusCode.OK, OAuthPages.signIn(request, form, step.error, company))
+            is AgentSignInFlow.Step.AskCode -> respondPage(HttpStatusCode.OK, OAuthPages.twoFactor(request, form, step.pending, step.error))
+            is AgentSignInFlow.Step.Accepted -> {
+                val result = withContext(Dispatchers.IO) {
+                    val tools = eligibility(access, step.user) ?: return@withContext SignInResult.Rejected(
+                        tr("Tu usuario no puede conectar agentes en esta empresa: el modulo Agentes IA debe estar activo y necesitas el permiso \"Conectar agentes IA\"."),
+                    )
+                    SignInResult.Accepted(step.user, tools)
+                }
+                when (result) {
+                    is SignInResult.Rejected -> respondPage(HttpStatusCode.OK, OAuthPages.signIn(request, form, result.message, company))
+                    is SignInResult.Accepted -> {
+                        val ticket = store.newTicket(OAuthTicket(request, result.user))
+                        respondPage(HttpStatusCode.OK, OAuthPages.consent(ticket, request, result.user, result.tools, error = null))
+                    }
+                }
             }
         }
     }

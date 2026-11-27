@@ -315,6 +315,19 @@ class ModuleAccessService(
         return verifiedFrom(session, companyCode, allowAuditAdmin)?.let { AgentSignIn.Verified(it) } ?: AgentSignIn.Rejected
     }
 
+    /**
+     * [signInForAgent] for the request [call]: its client address (X-Real-IP behind the local Nginx, the same rule
+     * as the app's sign-in) is recorded with the sign-in, keys the per-login throttle and binds the second step.
+     */
+    fun signInForAgent(
+        call: ApplicationCall,
+        companyCode: String?,
+        username: String,
+        password: String,
+        twoFactorCode: String?,
+        allowAuditAdmin: Boolean = false,
+    ): AgentSignIn = signInForAgent(companyCode, username, password, twoFactorCode, com.ideasdeveloper.bms.server.app.clientAddress(call), allowAuditAdmin)
+
     private fun verifiedFrom(session: LoginSuccessResponse, companyCode: String?, allowAuditAdmin: Boolean): VerifiedUser? {
         val serverOwner = session.scope == "server"
         // Server administrators never act here with server rights: no agent or module does. The one

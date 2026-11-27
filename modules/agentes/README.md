@@ -223,3 +223,8 @@ permission checks do not change with the language.
   control characters. The `redirect_uri` of an authorization must match one of the client's registered URIs exactly, and errors are only
   ever redirected to such a URI. Clients already registered keep working (the registration is carried in the signed client id and is
   not changed); only a registration holding a URI that is not valid today stops being accepted.
+- Sign-in of the OAuth page with two-step verification (Core 0.13.0, TWO_FACTOR.md): an account that has it on gets a second page
+  that asks for the authenticator code or a recovery code; the agent is only authorized after Core accepted the password and the
+  code together. The second page never contains the password (it stays in the server's memory for at most 5 minutes, bound to the
+  OAuth client, its redirect URI and the client address) and ends after 5 wrong codes; Core's per-account code limit applies too.
+  The client address of the browser is recorded with the sign-in. Requires Core 0.13.0 (`minCoreVersion`).
