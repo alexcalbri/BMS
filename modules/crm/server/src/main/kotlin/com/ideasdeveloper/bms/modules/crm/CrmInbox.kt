@@ -368,6 +368,25 @@ object CrmInbox {
             query.executeQuery().use { it.next() }
         }
 
+    private val ReplyPrefix = Regex("^\\s*(re|rv|fwd?|fw|rf)(\\[\\d+])?\\s*:", RegexOption.IGNORE_CASE)
+
+    /**
+     * The subject as the activity log may keep it: only what staff chose (a template) or typed for a new conversation.
+     * A reply's subject comes from the customer ("Re: ...", or the very subject of a message in the thread), so only its length is kept.
+     */
+    private fun loggedSubject(tenant: Connection, leadId: UUID, subject: String, fromTemplate: Boolean): String {
+        if (fromTemplate) return subject
+        val trimmed = subject.trim()
+        val fromThread = ReplyPrefix.containsMatchIn(trimmed) || tenant.prepareStatement(
+            "SELECT 1 FROM crm_messages WHERE lead_id = ? AND direction = 'in' AND LOWER(TRIM(subject)) = LOWER(?) LIMIT 1"
+        ).use { query ->
+            query.setObject(1, leadId)
+            query.setString(2, trimmed)
+            query.executeQuery().use { it.next() }
+        }
+        return if (fromThread) "Asunto (${trimmed.length} caracteres)" else subject
+    }
+
     fun addMessage(
         tenant: Connection,
         leadId: UUID,
@@ -417,7 +436,7 @@ object CrmInbox {
                 ActivityChange("channel", "Canal", null, via),
                 template?.let { ActivityChange("template", "Plantilla", null, it) },
                 to?.takeIf { it.isNotBlank() }?.let { ActivityChange("to", "Destinatario", null, it) },
-                subject.takeIf { it.isNotBlank() && direction != "in" }?.let { ActivityChange("subject", "Asunto", null, it) },
+                subject.takeIf { it.isNotBlank() && direction != "in" }?.let { ActivityChange("subject", "Asunto", null, loggedSubject(tenant, leadId, subject, template != null)) },
                 ActivityChange("status", "Estado", null, status),
                 error.takeIf { it.isNotBlank() }?.let { ActivityChange("error", "Error", null, it) },
             )

@@ -447,14 +447,18 @@ object CrmImport {
 
     enum class Outcome(val status: String) { Created("created"), Updated("updated"), Skipped("skipped"), Conflict("conflict") }
 
-    /** The person who created the job: the one the import runs for ("Importacion (Ana Ruiz)"); null when nobody (server owner, source without user). */
-    fun startedBy(tenant: Connection, jobId: UUID): ActivityActor? {
-        // The actor kept when the job started (an AI agent, a server owner or administrator...): rebuilt exactly.
-        tenant.prepareStatement("SELECT started_actor FROM crm_import_jobs WHERE id = ?").use { query ->
+    /** The activity actor of the rows an import writes: the import started by whoever created the job ("Importacion (Ana Ruiz)"). */
+    fun activityOf(tenant: Connection, jobId: UUID): ActivityActor {
+        // The actor kept when the job started (an AI agent, a server owner or administrator...): rebuilt exactly, always as an import.
+        val stored = tenant.prepareStatement("SELECT started_actor FROM crm_import_jobs WHERE id = ?").use { query ->
             query.setObject(1, jobId)
-            query.executeQuery().use { rows -> if (rows.next()) ActivityActor.restore(rows.getString(1)) else null }
-        }?.let { return it }
-        // Jobs from before the column kept only the user id.
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+        return ActivityActor.restoreImport(stored) { creator(tenant, jobId) }
+    }
+
+    /** Jobs from before the column kept only the user id: the person who created the job; null when nobody (server owner, source without user). */
+    private fun creator(tenant: Connection, jobId: UUID): ActivityActor? {
         val user = tenant.prepareStatement(
             """
             SELECT j.created_by, COALESCE(NULLIF(u.display_name, ''), u.postgres_role), EXISTS (SELECT 1 FROM business_owner o WHERE o.user_id = u.id)
@@ -466,9 +470,6 @@ object CrmImport {
         } ?: return null
         return if (user.third) ActivityActor.businessOwner(user.first, user.second) else ActivityActor.user(user.first, user.second)
     }
-
-    /** The activity actor of the rows an import writes: the import started by [startedBy]. */
-    fun activityOf(tenant: Connection, jobId: UUID): ActivityActor = ActivityActor.import(startedBy(tenant, jobId))
 
     /** The lead imported with that key (import_key), if any. */
     fun leadByKey(tenant: Connection, key: String): UUID? =

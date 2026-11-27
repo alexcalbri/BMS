@@ -59,15 +59,32 @@ class CrmMessagePrivacyPostgresTest {
     }
 
     @Test
-    fun anInboundSubjectIsNotStoredButAnOutboundOneIs() {
+    fun anInboundSubjectIsNotStoredButAStaffTypedOutboundOneIs() {
         val db = fresh() ?: return
         val id = (CrmInbox.receive(db, CrmInbound(channel = "email", name = "Luis", email = "luis@example.com", message = "x", messageId = "e1")) as CrmIntakeResult.Created).leadId
         CrmInbox.addMessage(db, id, "in", "email", "Asunto privado del cliente", "cuerpo", "e2", "received", "", null, "Luis", CrmInbox.inboundActor("email"))
-        CrmInbox.addMessage(db, id, "out", "email", "Re: su consulta", "respuesta secreta", "e3", "sent", "", person.userId, "Ana Ruiz", person)
+        CrmInbox.addMessage(db, id, "out", "email", "Nuevo asunto de la finca", "respuesta secreta", "e3", "sent", "", person.userId, "Ana Ruiz", person)
         val log = everything(db)
         assertFalse(log.contains("Asunto privado del cliente"), log)
         assertFalse(log.contains("respuesta secreta"), log)
-        assertTrue(log.contains("Re: su consulta"), log)
+        assertTrue(log.contains("Nuevo asunto de la finca"), log)
+    }
+
+    @Test
+    fun aReplySubjectIsLoggedOnlyAsItsLengthButStaffSubjectsAreKept() {
+        val db = fresh() ?: return
+        val id = (CrmInbox.receive(db, CrmInbound(channel = "email", name = "Luis", email = "luis@example.com", message = "x", messageId = "e1")) as CrmIntakeResult.Created).leadId
+        CrmInbox.addMessage(db, id, "in", "email", "Duda del cliente sobre la boda", "cuerpo", "e2", "received", "", null, "Luis", CrmInbox.inboundActor("email"))
+        CrmInbox.addMessage(db, id, "out", "email", "RE: Duda del cliente sobre la boda", "r1", "e3", "sent", "", person.userId, "Ana Ruiz", person)
+        CrmInbox.addMessage(db, id, "out", "email", "Duda del cliente sobre la boda", "r2", "e4", "sent", "", person.userId, "Ana Ruiz", person)
+        CrmInbox.addMessage(db, id, "out", "email", "Bienvenido a la finca", "n1", "e5", "sent", "", person.userId, "Ana Ruiz", person)
+        CrmInbox.addMessage(db, id, "out", "email", "Re: algo del huesped", "t1", "e6", "sent", "", person.userId, "Ana Ruiz", person, template = "Bienvenida", to = "luis@example.com")
+        val log = everything(db)
+        assertFalse(log.contains("Duda del cliente sobre la boda"), log)
+        assertTrue(log.contains("Asunto (34 caracteres)"), log)
+        assertTrue(log.contains("Asunto (30 caracteres)"), log)
+        assertTrue(log.contains("Bienvenido a la finca"), log)
+        assertTrue(log.contains("Re: algo del huesped"), log)
     }
 
     @Test
