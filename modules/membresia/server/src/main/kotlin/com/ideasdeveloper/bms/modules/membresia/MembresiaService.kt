@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -46,11 +47,12 @@ object MembresiaService {
         input: MembershipInput,
         newCustomer: NewCustomerInput?,
         author: String,
+        actor: ActivityActor,
         today: LocalDate,
     ): Membership {
         val plan = MembresiaRepository.plan(tenant, input.planId) ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
         // Una sola transaccion: valida, busca o crea el cliente y rechaza solapes; nada se crea antes de validar.
-        val (membership, customerCreated) = MembresiaRepository.createMembershipWithCustomer(tenant, input, newCustomer, plan, today, author)
+        val (membership, customerCreated) = MembresiaRepository.createMembershipWithCustomer(tenant, input, newCustomer, plan, today, author, actor)
         // Ya hizo commit: ahora si se avisa a Clientes.
         if (customerCreated) access.customerChanged(tenant, membership.customerId)
         MembresiaHotspot.syncPass(tenant, membership, MembresiaRepository.planWifi(tenant, membership.planId))
@@ -58,42 +60,42 @@ object MembresiaService {
     }
 
     /** Renueva; null si la membresia no existe o su cliente no es visible (sin historial ni hotspot). */
-    fun renew(tenant: Connection, membershipId: UUID, input: RenewalInput, author: String, today: LocalDate): Membership? {
-        val membership = MembresiaRepository.renew(tenant, membershipId, input, today, author) ?: return null
+    fun renew(tenant: Connection, membershipId: UUID, input: RenewalInput, author: String, actor: ActivityActor, today: LocalDate): Membership? {
+        val membership = MembresiaRepository.renew(tenant, membershipId, input, today, author, actor) ?: return null
         MembresiaHotspot.syncPass(tenant, membership, MembresiaRepository.planWifi(tenant, membership.planId))
         return membership
     }
 
     /** Edita la membresia (null si no existe) y vuelve a sincronizar el pase por si cambio el fin. */
-    fun edit(tenant: Connection, membershipId: UUID, edit: MembershipEdit, today: LocalDate): Membership? {
-        val membership = MembresiaRepository.edit(tenant, membershipId, edit, today) ?: return null
+    fun edit(tenant: Connection, membershipId: UUID, edit: MembershipEdit, actor: ActivityActor, today: LocalDate): Membership? {
+        val membership = MembresiaRepository.edit(tenant, membershipId, edit, today, actor) ?: return null
         MembresiaHotspot.syncPass(tenant, membership, MembresiaRepository.planWifi(tenant, membership.planId))
         return membership
     }
 
     /** Cancela (null si no existe o ya estaba cancelada) y quita el pase WiFi. */
-    fun cancel(tenant: Connection, membershipId: UUID, reason: String): Membership? {
-        val membership = MembresiaRepository.cancel(tenant, membershipId, reason) ?: return null
+    fun cancel(tenant: Connection, membershipId: UUID, reason: String, actor: ActivityActor): Membership? {
+        val membership = MembresiaRepository.cancel(tenant, membershipId, reason, actor) ?: return null
         MembresiaHotspot.removePass(tenant, membership.id)
         return membership
     }
 
     /** Registra la visita de hoy del cliente en su membresia actual (la vigente, o si no la mas reciente). */
-    fun checkIn(tenant: Connection, customerId: UUID, override: Boolean, author: String, today: LocalDate, note: String = ""): CheckInOutcome {
+    fun checkIn(tenant: Connection, customerId: UUID, override: Boolean, author: String, actor: ActivityActor, today: LocalDate, note: String = ""): CheckInOutcome {
         val expiringDays = MembresiaRepository.settings(tenant).expiringDays
         val detail = MembresiaRepository.member(tenant, customerId, today, expiringDays) ?: return CheckInOutcome.NoMember
         val current = detail.summary.current ?: return CheckInOutcome.NoMembership
-        val result = MembresiaRepository.recordMemberVisit(tenant, current.id, today, override, author, note)
+        val result = MembresiaRepository.recordMemberVisit(tenant, current.id, today, override, author, actor, note)
         val updated = if (result is VisitResult.Recorded) MembresiaRepository.membership(tenant, current.id) ?: current else current
         return CheckInOutcome.Done(updated, result)
     }
 
     /** Descuenta un pase de invitado de la membresia actual del cliente. */
-    fun guestPass(tenant: Connection, customerId: UUID, guestName: String, author: String, today: LocalDate): GuestPassOutcome {
+    fun guestPass(tenant: Connection, customerId: UUID, guestName: String, author: String, actor: ActivityActor, today: LocalDate): GuestPassOutcome {
         val expiringDays = MembresiaRepository.settings(tenant).expiringDays
         val detail = MembresiaRepository.member(tenant, customerId, today, expiringDays) ?: return GuestPassOutcome.NoMember
         val current = detail.summary.current ?: return GuestPassOutcome.NoMembership
-        val result = MembresiaRepository.useGuestPass(tenant, current.id, guestName, today, author)
+        val result = MembresiaRepository.useGuestPass(tenant, current.id, guestName, today, author, actor)
         val updated = if (result is GuestPassResult.Recorded) MembresiaRepository.membership(tenant, current.id) ?: current else current
         return GuestPassOutcome.Done(updated, result)
     }
