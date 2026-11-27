@@ -33,39 +33,60 @@ SET search_path = pg_catalog, pg_temp;
 SELECT DISTINCT r.rolname FROM public.server_owners o
 JOIN public.application_users u ON u.id = o.user_id
 JOIN pg_catalog.pg_roles r ON r.rolname = u.postgres_role
-WHERE NOT r.rolsuper ORDER BY 1;
+WHERE NOT r.rolsuper AND r.rolname !~ '^pg_' ORDER BY 1;
 SQL
 }
 
-# Company databases that update.sh may migrate, as "<database> <owner role>" lines: the names registered in
-# companies.database_name (which the application can write) are only accepted when they match bms_<name>, are not
-# the control database, exist, are not templates, and belong to a server owner's role. Anything else is reported on
-# stderr and left alone.
-bms_tenant_databases() {
-    local control_db=$1 owners listed name owner
+# Every database registered in companies.database_name (which the application can write), classified, one line each:
+#   ok <database> <owner role>   matches bms_<code>, is not the control database, exists, is not a template and
+#                                belongs to a server owner's role: update.sh may migrate it
+#   missing <database>           registered but does not exist (nothing there to break)
+#   reject <database> <reason>   exists but fails a rule: update.sh must not touch it, and must not change the roles
+#                                either (the company would lose its access)
+bms_classify_tenant_databases() {
+    local control_db=$1 owners listed name owner exists
     owners=$(bms_server_owner_roles "$control_db") || return 1
     listed=$(bms_pg_super "$control_db" -At -c 'SELECT database_name FROM public.companies ORDER BY code') || return 1
     while IFS= read -r name; do
         [[ -n $name ]] || continue
-        if [[ ! $name =~ $BMS_TENANT_DB_PATTERN || $name == "$control_db" ]]; then
-            printf 'AVISO: se omite la base "%s": no es un nombre de base de empresa (bms_<codigo>).\n' "$name" >&2
+        exists=$(bms_pg_super postgres -At -v name="$name" <<'SQL'
+SELECT count(*) FROM pg_catalog.pg_database WHERE datname = :'name';
+SQL
+) || return 1
+        if [[ $exists == 0 ]]; then
+            printf 'missing %s\n' "$name"
             continue
         fi
-        owner=$(bms_pg_super "$control_db" -At -v name="$name" <<'SQL'
-SET search_path = pg_catalog, pg_temp;
+        if [[ ! $name =~ $BMS_TENANT_DB_PATTERN || $name == "$control_db" ]]; then
+            printf 'reject %s no es un nombre de base de empresa (bms_<codigo>) o es la base central\n' "$name"
+            continue
+        fi
+        owner=$(bms_pg_super postgres -At -v name="$name" <<'SQL'
 SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database WHERE datname = :'name' AND NOT datistemplate;
 SQL
 ) || return 1
         if [[ -z $owner ]]; then
-            printf 'AVISO: se omite la base "%s": no existe.\n' "$name" >&2
-            continue
+            printf 'reject %s es una plantilla\n' "$name"
+        elif ! grep -Fxq -- "$owner" <<< "$owners"; then
+            printf 'reject %s pertenece a %s, que no es el rol de un server owner\n' "$name" "$owner"
+        else
+            printf 'ok %s %s\n' "$name" "$owner"
         fi
-        if ! grep -Fxq -- "$owner" <<< "$owners"; then
-            printf 'AVISO: se omite la base "%s": pertenece a %s, que no es el rol de un server owner.\n' "$name" "$owner" >&2
-            continue
-        fi
-        printf '%s %s\n' "$name" "$owner"
     done <<< "$listed"
+}
+
+# Company databases that update.sh may migrate, as "<database> <owner role>" lines (the "ok" ones above). The others
+# are reported on stderr and left alone.
+bms_tenant_databases() {
+    local control_db=$1 lines kind name rest
+    lines=$(bms_classify_tenant_databases "$control_db") || return 1
+    while read -r kind name rest; do
+        case $kind in
+            ok) printf '%s %s\n' "$name" "$rest" ;;
+            missing) printf 'AVISO: se omite la base "%s": no existe.\n' "$name" >&2 ;;
+            reject) printf 'AVISO: se omite la base "%s": %s.\n' "$name" "$rest" >&2 ;;
+        esac
+    done <<< "$lines"
 }
 
 # SCRAM-SHA-256 verifier of the password read from stdin (never an argument). Printable ASCII avoids SASLprep.
@@ -239,7 +260,18 @@ bms_migrate_role_layout() {
     [[ $runtime != "$provisioner" ]] || { printf 'ERROR: el rol de aprovisionamiento debe ser otro que el del runtime.\n' >&2; return 1; }
     owners=$(bms_server_owner_roles "$control_db") || return 1
     [[ -n $owners ]] || { printf 'ERROR: no hay ningun rol de server owner en %s.\n' "$control_db" >&2; return 1; }
-    tenants=$(bms_tenant_databases "$control_db") || return 1
+    # Everything is decided before anything changes: a registered database that exists but would be left out keeps
+    # working only through the runtime role's membership, so the move stops here, with nothing changed.
+    local classified rejected
+    classified=$(bms_classify_tenant_databases "$control_db") || return 1
+    rejected=$(awk '$1 == "reject" { $1 = ""; sub(/^ /, ""); print " - " $0 }' <<< "$classified")
+    if [[ -n $rejected ]]; then
+        printf 'ERROR: estas bases registradas en companies existen pero no cumplen las reglas; no se cambio ningun rol:\n%s\n' "$rejected" >&2
+        printf 'Corrige su nombre o su dueno (ALTER DATABASE ... OWNER TO <rol del server owner>) o quita la fila de companies, y vuelve a ejecutar update.sh.\n' >&2
+        return 1
+    fi
+    awk '$1 == "missing" { print "AVISO: se omite la base \"" $2 "\": no existe." }' <<< "$classified" >&2
+    tenants=$(awk '$1 == "ok" { print $2, $3 }' <<< "$classified")
 
     # The provisioning role: SET membership in the owners' roles and in the runtime role, CONNECT where it works.
     printf 'ALTER ROLE "%s" %s;\n' "$provisioner" "$BMS_PROVISIONER_ATTRIBUTES" | bms_pg_super postgres -q || return 1
@@ -300,7 +332,52 @@ WHERE m.roleid = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :'role')
 SQL
     done <<< "$owners"
     printf 'ALTER ROLE "%s" %s;\n' "$runtime" "$BMS_RUNTIME_ATTRIBUTES" | bms_pg_super postgres -q || return 1
-    bms_check_role_layout "$control_db" "$runtime" "$provisioner"
+    bms_check_role_layout "$control_db" "$runtime" "$provisioner" || return 1
+    bms_verify_role_access "$control_db" "$runtime" "$provisioner" "$tenants"
+}
+
+# After the move, proof that the service keeps working: as the runtime role (SET ROLE from the superuser, so every
+# privilege check is the runtime role's) it can connect to and read application_users in the control database and in
+# every company database, and the activity log in each company; the provisioning login can SET ROLE to each
+# database's owner — with a real connection when the caller defines bms_pg_as_provisioner <database> (update.sh, with
+# the password), otherwise by the catalog. Prints every failure and fails when there is any.
+bms_verify_role_access() {
+    local control_db=$1 runtime=$2 provisioner=$3 tenants=$4 database owner failures=0 result
+    while read -r database owner; do
+        [[ -n $database ]] || continue
+        result=$(bms_pg_super "$database" -At -v runtime="$runtime" -v db="$database" -v tenant="$([[ -n $owner ]] && echo 1 || echo 0)" 2>&1 <<'SQL'
+SET search_path = pg_catalog, pg_temp;
+SELECT pg_catalog.has_database_privilege(:'runtime', :'db', 'CONNECT') AS can_connect \gset
+\if :can_connect
+\else
+SELECT 1 / 0 AS sin_connect;
+\endif
+SET ROLE :"runtime";
+SELECT count(*) >= 0 FROM public.application_users;
+\if :tenant
+SELECT count(*) >= 0 FROM (SELECT 1 FROM public.activity_log LIMIT 1) AS l;
+SELECT count(*) >= 0 FROM (SELECT 1 FROM public.activity_log_chain LIMIT 1) AS c;
+\endif
+RESET ROLE;
+SQL
+) || { printf 'ERROR: el rol %s no puede leer %s: %s\n' "$runtime" "$database" "${result//$'\n'/ }" >&2; failures=$((failures + 1)); }
+        [[ -n $owner ]] || continue
+        if declare -F bms_pg_as_provisioner >/dev/null; then
+            result=$(printf 'SET ROLE "%s";\nSELECT current_user;\n' "$owner" | bms_pg_as_provisioner "$database" -At 2>&1 | tail -n 1) || result=''
+        else
+            result=$(bms_pg_super postgres -At -v member="$provisioner" -v owner="$owner" -v db="$database" 2>&1 <<'SQL'
+SELECT CASE WHEN pg_catalog.pg_has_role(:'member', :'owner', 'SET')
+             AND pg_catalog.has_database_privilege(:'member', :'db', 'CONNECT') THEN :'owner' END;
+SQL
+) || result=''
+        fi
+        if [[ $result != "$owner" ]]; then
+            printf 'ERROR: el login de aprovisionamiento %s no puede conectarse a %s y actuar como %s.\n' "$provisioner" "$database" "$owner" >&2
+            failures=$((failures + 1))
+        fi
+    done <<< "$control_db
+$tenants"
+    (( failures == 0 ))
 }
 
 # Fails (with the reason) unless the runtime role holds no membership and no ownership-like attribute.
