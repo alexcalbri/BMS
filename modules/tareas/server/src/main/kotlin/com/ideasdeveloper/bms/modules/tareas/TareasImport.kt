@@ -7,12 +7,12 @@ import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
+import com.ideasdeveloper.bms.server.modules.JobBackoff
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.ui.UiNode
-import org.slf4j.LoggerFactory
 import java.io.InputStream
 import java.sql.Connection
 import java.sql.PreparedStatement
@@ -24,6 +24,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import org.slf4j.LoggerFactory
 
 /**
  * A place data can be imported from (for example Monday). Extensions of the module implement it: Tareas lists the active
@@ -102,16 +103,10 @@ object TareasImportSources {
             val remaining = budget.minus(Duration.between(started, Instant.now()))
             if (remaining.isNegative || remaining.isZero) return processed
             val share = remaining.dividedBy((sources.size - index).toLong())
-            processed += try {
+            // A source that keeps failing (e.g. a migration not applied) waits longer each time and is logged once (JobBackoff).
+            processed += JobBackoff.imports.run(log, "tareas/${context.companyCode}/${source.sourceId}", "Falló la importación de ${source.sourceId} en ${context.companyCode}") {
                 source.runPending(context, share)
-            } catch (stop: InterruptedException) {
-                throw stop
-            } catch (stop: java.util.concurrent.CancellationException) {
-                throw stop
-            } catch (failure: Exception) {
-                log.warn("Falló la importación de {} ({}).", source.sourceId, failure.javaClass.simpleName)
-                0
-            }
+            } ?: 0
         }
         return processed
     }

@@ -1,0 +1,3 @@
+BEGIN;
+CREATE TABLE ext_secasync__jobs (id BIGSERIAL PRIMARY KEY, status TEXT NOT NULL DEFAULT 'reading');
+COMMIT;

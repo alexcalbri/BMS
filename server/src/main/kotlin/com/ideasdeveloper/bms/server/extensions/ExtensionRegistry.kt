@@ -56,9 +56,13 @@ class ExtensionRegistry(extensions: List<ServerExtension>) {
     fun installRoutes(route: Route, access: ModuleAccessService, storage: ExtensionStorage) {
         val gate = ExtensionGate(
             moduleInstalled = access::isInstalled,
+            // An enabled row whose schema is at another version than the loaded code counts as incompatible (EXTENSIONS.md,
+            // Updating a package): the code of a version never runs against a company whose migrations are behind.
             stateOf = { company, extensionId, moduleId ->
                 access.tenantConnectionForCompany(company)?.use { tenant ->
-                    ExtensionTenantState(storage.status(tenant, extensionId), moduleEnabled(tenant, moduleId))
+                    val loaded = byId[extensionId]?.manifest?.version
+                    val status = if (loaded != null) storage.activeStatus(tenant, extensionId, loaded) else storage.status(tenant, extensionId)
+                    ExtensionTenantState(status, moduleEnabled(tenant, moduleId))
                 }
             },
             // The two reads a known company costs, on the central database (B6: same timing for an unknown one).
@@ -187,7 +191,7 @@ class ExtensionAccessImpl(
     override fun enabledTenant(companyCode: String): Connection? {
         val tenant = modules.tenantConnectionForWebhook(companyCode, manifest.module) ?: return null
         return try {
-            if (storage.status(tenant, manifest.id) == ExtensionStatus.Enabled) {
+            if (storage.activeStatus(tenant, manifest.id, manifest.version) == ExtensionStatus.Enabled) {
                 tenant
             } else {
                 tenant.close()
@@ -202,7 +206,7 @@ class ExtensionAccessImpl(
     override fun settings(tenant: Connection): ExtensionSettings = storage.settings(tenant, manifest.id)
 
     override fun enabledCompanies(): List<String> = modules.companiesWithModule(manifest.module).filter { company ->
-        runCatching { modules.tenantConnectionForCompany(company)?.use { storage.status(it, manifest.id) } }.getOrNull() == ExtensionStatus.Enabled
+        runCatching { modules.tenantConnectionForCompany(company)?.use { storage.activeStatus(it, manifest.id, manifest.version) } }.getOrNull() == ExtensionStatus.Enabled
     }
 
     override fun recordObject(tenant: Connection, kind: String, objectRef: String, optionId: String?) =

@@ -42,6 +42,8 @@ data class ExtensionSummary(
     val compatible: Boolean,
     val settings: List<ExtensionSettingView> = emptyList(),
     val missingRequired: List<String> = emptyList(),
+    /** Why the extension is suspended in this company (its migrations for this version failed), or null. */
+    val problem: String? = null,
 )
 
 @Serializable

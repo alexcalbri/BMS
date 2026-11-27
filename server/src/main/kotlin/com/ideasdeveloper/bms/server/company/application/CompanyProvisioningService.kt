@@ -1148,6 +1148,7 @@ class CompanyProvisioningService(
             )
             tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
                 applyModuleMigrations(tenant, definition)
+                failedModuleMigrations.remove("${definition.id}/$normalizedCompanyCode")
                 tenant.autoCommit = false
                 try {
                     tenant.prepareStatement(
@@ -1570,6 +1571,12 @@ class CompanyProvisioningService(
      * version loaded after an installation or update applies its new migrations to the companies
      * that already had the module. Applied migrations are skipped (schema_migrations).
      */
+    // "module/company" pairs whose module migrations failed in the last startup catch-up.
+    private val failedModuleMigrations = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Whether the startup catch-up could not apply [moduleId]'s migrations in [companyCode] (its code would run on an old schema). */
+    fun moduleMigrationFailed(moduleId: String, companyCode: String): Boolean = "$moduleId/$companyCode" in failedModuleMigrations
+
     fun applyPendingModuleMigrations() {
         val provisioningRole = firstServerOwnerRole() ?: run {
             log.warn("No server owner found; pending module migrations were not applied.")
@@ -1638,7 +1645,10 @@ class CompanyProvisioningService(
                         .forEach { definition ->
                             try {
                                 applyModuleMigrations(tenant, definition)
+                                failedModuleMigrations.remove("${definition.id}/$companyCode")
                             } catch (failure: Exception) {
+                                // Its jobs do not run in this company (ModuleJobScheduler) until a later catch-up applies them.
+                                failedModuleMigrations.add("${definition.id}/$companyCode")
                                 log.error("Migrations of module {} failed for company {}", definition.id, companyCode, failure)
                                 installStates[definition.id] = ModuleInstallState(InstallStatus.Attention) {
                                     tr("Una migracion fallo en la empresa {0}: {1}", companyCode, failure.message)
@@ -2065,6 +2075,9 @@ class CompanyProvisioningService(
         } catch (failure: Exception) {
             log.error("No se pudieron quitar al runtime {} los privilegios de mas sobre tenant_data_keys", config.runtimeUser, failure)
         }
+        // Schema state of each extension in the company (tenant V017): the error and previous status of a suspended one.
+        val schemaState = "database/tenant/migrations/V017__extension_schema_state.sql"
+        applyMigration(connection, "tenant", schemaState, Files.readString(Path.of(config.migrationsRoot).resolve(schemaState)))
         grantIfMissing(connection, config.runtimeUser, "tenant_extensions", listOf("SELECT", "INSERT", "UPDATE"))
         listOf("tenant_extension_settings", "tenant_extension_objects").forEach { table ->
             grantIfMissing(connection, config.runtimeUser, table, listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
