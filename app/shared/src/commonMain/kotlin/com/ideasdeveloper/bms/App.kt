@@ -48,6 +48,7 @@ import com.ideasdeveloper.bms.app.features.serveradmin.ui.ForcedPasswordChangeSc
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ServerAdminsScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.LoginScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.ProfileDialog
+import com.ideasdeveloper.bms.app.features.auth.ui.LastRecoveryCodeDialog
 import com.ideasdeveloper.bms.app.features.auth.ui.RecoveryCodeUsedDialog
 import com.ideasdeveloper.bms.app.features.auth.ui.TwoFactorNoticeDialog
 import com.ideasdeveloper.bms.app.features.auth.ui.TwoFactorSetupRequiredScreen
@@ -426,10 +427,12 @@ fun App(initialServerUrl: String = "") {
 
         // Aviso de que el segundo paso se hizo con un codigo de recuperacion (cuantos quedan).
         currentSession?.takeIf { it.recoveryCodeUsed }?.let { used ->
-            RecoveryCodeUsedDialog(
-                codesLeft = used.recoveryCodesLeft,
-                onDismiss = { SessionStore.update { it.copy(recoveryCodeUsed = false, recoveryCodesLeft = null) } },
-            )
+            val clear = { SessionStore.update { it.copy(recoveryCodeUsed = false, recoveryCodesLeft = null, lastRecoveryCodeUsed = false) } }
+            if (used.lastRecoveryCodeUsed || used.recoveryCodesLeft == 0) {
+                LastRecoveryCodeDialog(serverUrl = clientConfiguration?.serverUrl, session = used, onDismiss = { clear() })
+            } else {
+                RecoveryCodeUsedDialog(codesLeft = used.recoveryCodesLeft, onDismiss = { clear() })
+            }
         }
 
         // El servidor exige haber iniciado sesion con el codigo de dos pasos para cambiar de empresa o volver al servidor.

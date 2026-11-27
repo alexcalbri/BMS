@@ -43,6 +43,7 @@ data class ServerAdminResponse(
     val permissions: List<String> = emptyList(),
     val mustChangePassword: Boolean = false,
     val createdAt: JsonElement? = null,
+    val twoFactorEnabled: Boolean? = null,
 )
 
 @Serializable

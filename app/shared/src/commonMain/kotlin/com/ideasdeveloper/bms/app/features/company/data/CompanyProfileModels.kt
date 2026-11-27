@@ -85,6 +85,8 @@ data class CompanyUserResponse(
     val userCode: String = "",
     // The company's business owner: no permissions to choose and always active.
     val isBusinessOwner: Boolean = false,
+    // Verificacion en dos pasos activa (TWO_FACTOR.md 8.4); null cuando el servidor no la informa.
+    val twoFactorEnabled: Boolean? = null,
 )
 
 @Serializable

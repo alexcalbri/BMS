@@ -57,4 +57,6 @@ object ServerPermission {
     const val AuditView = "server.audit.view"
     const val Settings = "server.settings"
     const val Workspace = "server.workspace"
+    // Alto riesgo: desactiva la verificacion en dos pasos de usuarios de las empresas de su alcance. Titulo y riesgo vienen del catalogo del servidor.
+    const val UsersTwoFactorReset = "server.users.two_factor_reset"
 }

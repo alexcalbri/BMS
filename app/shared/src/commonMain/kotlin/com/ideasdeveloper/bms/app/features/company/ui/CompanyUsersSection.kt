@@ -54,8 +54,13 @@ fun CompanyUsersSection(
     companyCode: String?,
     primaryColor: Color,
     description: String,
+    // Muestra "Desactivar verificacion en dos pasos" en los usuarios que la tienen activa. [resetViaServer]: usa la ruta del
+    // servidor (dueno o administrador con permiso) en vez de la del business owner.
+    canResetTwoFactor: Boolean = false,
+    resetViaServer: Boolean = false,
 ) {
     val scope = rememberCoroutineScope()
+    var resettingUser by remember { mutableStateOf<CompanyUserResponse?>(null) }
     var users by remember { mutableStateOf<List<CompanyUserResponse>>(emptyList()) }
     var permissions by remember { mutableStateOf<List<CompanyPermissionResponse>>(emptyList()) }
     var newUsername by remember { mutableStateOf("") }
@@ -87,6 +92,34 @@ fun CompanyUsersSection(
         } finally {
             isLoading = false
         }
+    }
+
+    resettingUser?.let { target ->
+        TwoFactorResetDialog(
+            targetName = target.displayName?.takeIf { it.isNotBlank() } ?: target.username,
+            submit = { currentPassword ->
+                val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
+                val token = accessToken ?: throw CompanyException(tr("Inicia sesion de nuevo."))
+                val code = companyCode ?: throw CompanyException(tr("Configura el servidor."))
+                CompanyApi(activeServerUrl).use { api -> api.resetUserTwoFactor(token, code, target.userId, currentPassword, resetViaServer) }
+            },
+            onDone = { resultMessage ->
+                resettingUser = null
+                error = null
+                message = resultMessage
+                // Se actualiza la lista para ver el estado nuevo.
+                scope.launch {
+                    val activeServerUrl = serverUrl ?: return@launch
+                    val token = accessToken ?: return@launch
+                    val code = companyCode ?: return@launch
+                    try {
+                        users = CompanyApi(activeServerUrl).use { api -> api.companyUsers(token, code) }.users
+                    } catch (_: CompanyException) {
+                    }
+                }
+            },
+            onDismiss = { resettingUser = null },
+        )
     }
 
     // El encabezado y el alta quedan en un ancho de formulario; la lista de usuarios usa la cuadricula.
@@ -208,6 +241,12 @@ fun CompanyUsersSection(
             Text(user.email ?: tr("Sin correo: lo completa al iniciar sesion"), color = AppTheme.colors.muted)
             if (user.userCode.isNotBlank()) CopyableCode(label = tr("Codigo de usuario"), code = user.userCode)
             Text(if (user.isActive) tr("Activo") else tr("Inactivo"), color = AppTheme.colors.muted)
+            user.twoFactorEnabled?.let { enabled ->
+                Text(
+                    if (enabled) tr("Verificacion en dos pasos: activada") else tr("Verificacion en dos pasos: desactivada"),
+                    color = AppTheme.colors.muted,
+                )
+            }
             if (editingUserId == user.userId) {
                 UserEditForm(
                     user = user,
@@ -269,6 +308,19 @@ fun CompanyUsersSection(
                     },
                 ) {
                     Text(tr("Editar"))
+                }
+                // Quien perdio su autenticador y sus codigos; el business owner (uno mismo) no aparece aqui.
+                if (canResetTwoFactor && user.twoFactorEnabled == true && !user.isBusinessOwner) {
+                    OutlinedButton(
+                        enabled = !isLoading,
+                        onClick = {
+                            resettingUser = user
+                            error = null
+                            message = null
+                        },
+                    ) {
+                        Text(tr("Desactivar verificacion en dos pasos"), color = AppTheme.colors.danger)
+                    }
                 }
             }
         }

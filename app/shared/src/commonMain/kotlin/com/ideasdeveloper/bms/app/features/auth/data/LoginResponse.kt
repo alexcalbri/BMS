@@ -43,4 +43,6 @@ data class LoginResponse(
     val twoFactorDisabled: Boolean = false,
     // Una recuperacion por correo en curso se cancelo porque la persona entro con normalidad.
     val emailRecoveryCancelled: Boolean = false,
+    // Entro con el ultimo codigo de recuperacion: debe configurar un autenticador nuevo (TWO_FACTOR.md 9).
+    val lastRecoveryCodeUsed: Boolean = false,
 )

@@ -48,7 +48,7 @@ import com.ideasdeveloper.bms.app.features.auth.data.use
 import kotlinx.coroutines.launch
 
 // Cada flujo que abre la seccion en un dialogo.
-private enum class TwoFactorDialog { Enable, Regenerate, Disable }
+private enum class TwoFactorDialog { Enable, Replace, Regenerate, Disable }
 
 // Con tantos codigos de recuperacion o menos se avisa de que conviene generar otros.
 private const val FewRecoveryCodes = 3
@@ -171,6 +171,9 @@ fun TwoFactorSection(
                         Text(tr("Activar la verificacion en dos pasos"))
                     }
                 } else {
+                    OutlinedButton(onClick = { dialog = TwoFactorDialog.Replace }) {
+                        Text(tr("Cambiar de autenticador"))
+                    }
                     OutlinedButton(onClick = { dialog = TwoFactorDialog.Regenerate }) {
                         Text(tr("Generar codigos de recuperacion nuevos"))
                     }
@@ -196,6 +199,18 @@ fun TwoFactorSection(
                 dialog = null
                 reloadTick += 1
             },
+        )
+        TwoFactorDialog.Replace -> TwoFactorEnableDialog(
+            serverUrl = serverUrl,
+            session = session,
+            replace = true,
+            // La ventana la informa el servidor solo mientras vale: sesion abierta con un codigo de recuperacion.
+            windowOpen = status?.let { it.secondFactorMethod == "recovery_code" && it.replaceWindowUntil != null } == true,
+            onFinished = {
+                dialog = null
+                reloadTick += 1
+            },
+            onDismiss = { dialog = null },
         )
         TwoFactorDialog.Regenerate -> TwoFactorCodeDialog(
             title = tr("Generar codigos de recuperacion nuevos"),
@@ -242,9 +257,16 @@ private fun TwoFactorEnableDialog(
     session: LoginResponse,
     onFinished: () -> Unit,
     onDismiss: () -> Unit,
+    // Cambiar el autenticador de una cuenta que ya tiene la verificacion; [windowOpen]: no hace falta un codigo actual.
+    replace: Boolean = false,
+    windowOpen: Boolean = false,
 ) {
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
+    var oldCode by remember { mutableStateOf("") }
+    // El servidor pidio el codigo actual (TWO_FACTOR_CODE_REQUIRED) aunque se creyera abierta la ventana.
+    var codeRequired by remember { mutableStateOf(false) }
+    val needsOldCode = replace && (!windowOpen || codeRequired)
     var setup by remember { mutableStateOf<TwoFactorSetup?>(null) }
     var code by remember { mutableStateOf("") }
     var recoveryCodes by remember { mutableStateOf<List<String>?>(null) }
@@ -261,6 +283,7 @@ private fun TwoFactorEnableDialog(
             try {
                 AccountApi(url).use { block(it) }
             } catch (exception: LoginException) {
+                if (exception.code == "TWO_FACTOR_CODE_REQUIRED") codeRequired = true
                 error = exception.message
             } finally {
                 busy = false
@@ -274,7 +297,7 @@ private fun TwoFactorEnableDialog(
     AlertDialog(
         // Con los codigos a la vista no se cierra por accidente: ya no se pueden volver a leer.
         onDismissRequest = { if (!busy && codes == null) onDismiss() },
-        title = { Text(tr("Activar la verificacion en dos pasos")) },
+        title = { Text(if (replace) tr("Cambiar de autenticador") else tr("Activar la verificacion en dos pasos")) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -284,7 +307,11 @@ private fun TwoFactorEnableDialog(
                     RecoveryCodesContent(codes = codes, saved = saved, onSavedChange = { saved = it }, notice = enableNotice)
                 } else if (currentSetup == null) {
                     Text(
-                        tr("Necesitas una aplicacion de autenticacion (Google Authenticator, Microsoft Authenticator, Aegis, 1Password...). Primero confirma tu contrasena."),
+                        if (replace) {
+                            tr("Vas a registrar un autenticador nuevo. El actual sigue valiendo hasta que confirmes el nuevo; entonces se cerraran tus otras sesiones, se desconectaran tus agentes de IA y los codigos de recuperacion actuales dejaran de valer.")
+                        } else {
+                            tr("Necesitas una aplicacion de autenticacion (Google Authenticator, Microsoft Authenticator, Aegis, 1Password...). Primero confirma tu contrasena.")
+                        },
                         color = AppTheme.colors.muted,
                     )
                     OutlinedTextField(
@@ -297,6 +324,16 @@ private fun TwoFactorEnableDialog(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (needsOldCode) {
+                        OutlinedTextField(
+                            value = oldCode,
+                            onValueChange = { oldCode = it },
+                            label = { Text(tr("Codigo de tu aplicacion actual o de recuperacion")) },
+                            singleLine = true,
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 } else {
                     Text(
                         tr("1. En tu aplicacion de autenticacion agrega una cuenta nueva con el codigo QR, con esta clave o con el enlace otpauth."),
@@ -334,11 +371,16 @@ private fun TwoFactorEnableDialog(
                 TextButton(enabled = saved, onClick = onFinished) { Text(tr("Listo")) }
             } else if (currentSetup == null) {
                 TextButton(
-                    enabled = !busy && password.isNotEmpty(),
+                    enabled = !busy && password.isNotEmpty() && (!needsOldCode || oldCode.isNotBlank()),
                     onClick = {
                         perform { api ->
-                            setup = api.twoFactorSetup(session.accessToken, session.companyCode, password)
+                            setup = if (replace) {
+                                api.twoFactorReplaceSetup(session.accessToken, session.companyCode, password, oldCode.takeIf { needsOldCode })
+                            } else {
+                                api.twoFactorSetup(session.accessToken, session.companyCode, password)
+                            }
                             password = ""
+                            oldCode = ""
                         }
                     },
                 ) { Text(tr("Continuar")) }
@@ -347,7 +389,11 @@ private fun TwoFactorEnableDialog(
                     enabled = !busy && code.length == 6,
                     onClick = {
                         perform { api ->
-                            val enabled = api.twoFactorEnable(session.accessToken, session.companyCode, code)
+                            val enabled = if (replace) {
+                                api.twoFactorReplaceConfirm(session.accessToken, session.companyCode, code)
+                            } else {
+                                api.twoFactorEnable(session.accessToken, session.companyCode, code)
+                            }
                             enableNotice = enabled.notice?.takeIf { it.isNotBlank() }
                             recoveryCodes = enabled.recoveryCodes
                             code = ""
@@ -512,6 +558,57 @@ private fun CopyButton(label: String, value: String) {
         ) { Text(label) }
         if (copied) Text(tr("Copiado"), color = AppTheme.colors.success)
     }
+}
+
+/**
+ * Aviso tras entrar con el ULTIMO codigo de recuperacion: sin codigos ni, quiza, autenticador, conviene registrar uno nuevo
+ * ahora. La sesion puede hacerlo solo con la contrasena hasta [TwoFactorStatus.replaceWindowUntil]. Se puede cerrar y hacerlo
+ * despues desde Ajustes.
+ */
+@Composable
+fun LastRecoveryCodeDialog(serverUrl: String?, session: LoginResponse, onDismiss: () -> Unit) {
+    var status by remember(session.accessToken) { mutableStateOf<TwoFactorStatus?>(null) }
+    var replacing by remember { mutableStateOf(false) }
+
+    LaunchedEffect(serverUrl, session.accessToken, session.companyCode) {
+        val url = serverUrl ?: return@LaunchedEffect
+        try {
+            status = AccountApi(url).use { it.twoFactorStatus(session.accessToken, session.companyCode) }
+        } catch (_: LoginException) {
+            // Sin el limite de tiempo el aviso sigue sirviendo.
+        }
+    }
+
+    if (replacing) {
+        TwoFactorEnableDialog(
+            serverUrl = serverUrl,
+            session = session,
+            replace = true,
+            windowOpen = status?.let { it.secondFactorMethod == "recovery_code" && it.replaceWindowUntil != null } == true,
+            onFinished = {
+                replacing = false
+                onDismiss()
+            },
+            onDismiss = { replacing = false },
+        )
+        return
+    }
+    val until = status?.replaceWindowUntil
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("Usaste tu ultimo codigo de recuperacion")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(tr("Ya no te quedan codigos de recuperacion. Si pierdes tu aplicacion de autenticacion no podras entrar."))
+                Text(tr("Configura ahora un autenticador nuevo: te daremos 10 codigos de recuperacion nuevos."), color = AppTheme.colors.warning)
+                if (until != null) {
+                    Text(tr("Ahora basta tu contrasena; esta opcion vale hasta {0}. Despues tambien se pedira un codigo.", utcText(until)), color = AppTheme.colors.muted)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { replacing = true }) { Text(tr("Configurar un nuevo autenticador ahora")) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Mas tarde")) } },
+    )
 }
 
 /** Aviso tras entrar con un codigo de recuperacion: cuantos quedan y que conviene generar otros. */
