@@ -214,7 +214,7 @@ printf '%s Firma: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SIGNATURE_STATUS" >> 
 
 # Ya desplegado: no se vuelve a compilar ni a reiniciar.
 if [[ -f $DEPLOYED_FILE && $(cat "$DEPLOYED_FILE") == "$TARGET_COMMIT" ]]; then
-    finish_request done 'Ya estaba actualizado' || report_failure
+    finish_request 'done' 'Ya estaba actualizado' || report_failure
     prune_logs
     exit 0
 fi
@@ -236,7 +236,7 @@ BMS_TRUSTED_DIR=$MIRROR_DIR bash "$MIRROR_DIR/scripts/ubuntu/update.sh" \
 
 if (( UPDATE_STATUS == 0 )); then
     printf '%s\n' "$TARGET_COMMIT" > "$DEPLOYED_FILE"
-    finish_request done "Actualizado a $TARGET_VERSION" || report_failure
+    finish_request 'done' "Actualizado a $TARGET_VERSION" || report_failure
 else
     finish_request error 'Fallo la actualizacion; revisa el log' || report_failure
 fi
