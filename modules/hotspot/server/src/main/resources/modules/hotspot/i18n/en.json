@@ -300,6 +300,7 @@
   "Permite consultar la configuracion del portal WiFi.": "Allows viewing the WiFi portal settings.",
   "Permite descargar los registros en CSV.": "Allows downloading the records as CSV.",
   "Pie de pagina": "Footer",
+  "Por seguridad ese codigo ya no sirve. Vuelve a registrarte para recibir un codigo nuevo.": "For security that code no longer works. Register again to receive a new code.",
   "Portal cautivo": "Captive portal",
   "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.": "WiFi captive portal with access by form, customer code validated by CRM stage and revocable user code.",
   "Portal en configuracion": "Portal being set up",

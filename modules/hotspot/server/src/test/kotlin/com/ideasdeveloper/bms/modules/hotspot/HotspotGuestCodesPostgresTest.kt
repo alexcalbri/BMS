@@ -246,24 +246,106 @@ class HotspotGuestCodesPostgresTest {
         assertEquals(setOf(codeId, second), HotspotGuestCodes.candidates(db, email).map { it.id }.toSet())
     }
 
+    private fun reserve(db: Connection, origin: String, email: String, now: Instant = Instant.now()) = HotspotGuestCodes.reserveAttempt(db, origin, email, now)
+
     @Test
-    fun wrongCodesAreCountedPerAddressAndOriginNeverPerCodeOrDevice() {
+    fun anAbusiveGuestBehindTheVenueAddressDoesNotBlockTheOthers() {
         val db = open() ?: return
         val now = Instant.now()
-        val attacker = HotspotGuestCodes.ipGroup("203.0.113.9")
-        val guest = HotspotGuestCodes.ipGroup("198.51.100.4")
-        repeat(HotspotGuestCodes.MaxWrongPerAddressAndOrigin) { HotspotGuestCodes.recordWrongCode(db, attacker, "ana@example.com", now) }
-        // The attacker is out of tries for that address...
-        assertTrue(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "ANA@example.com", now))
-        // ...but the guest (another origin) still has all of hers, and the attacker still has tries for another address.
-        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, guest, "ana@example.com", now))
-        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "otra@example.com", now))
-        // An origin that sprays many addresses hits its own ceiling, and only its own.
-        repeat(HotspotGuestCodes.MaxWrongPerOrigin) { HotspotGuestCodes.recordWrongCode(db, attacker, "x$it@example.com", now) }
-        assertTrue(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "otra@example.com", now))
-        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, guest, "otra@example.com", now))
+        val venue = HotspotGuestCodes.ipGroup("203.0.113.9")
+        // One guest sends wrong codes for her own address: she is out after 8, in this venue address only for that address...
+        repeat(HotspotGuestCodes.MaxWrongPerAddressAndOrigin) { assertEquals(HotspotGuestCodes.Outcome.Allowed, reserve(db, venue, "abusiva@example.com", now).outcome) }
+        assertEquals(HotspotGuestCodes.Outcome.Blocked, reserve(db, venue, "abusiva@example.com", now).outcome)
+        // ...while 300 other guests of the same venue address each still have their tries.
+        repeat(300) { n ->
+            assertEquals(HotspotGuestCodes.Outcome.Allowed, reserve(db, venue, "huesped$n@example.com", now).outcome, "guest $n")
+        }
+        // Another origin with the same address of the abusive guest is not affected by what the venue did.
+        assertEquals(HotspotGuestCodes.Outcome.Allowed, reserve(db, HotspotGuestCodes.ipGroup("198.51.100.4"), "abusiva@example.com", now).outcome)
         // The window passes.
-        assertFalse(HotspotGuestCodes.tooManyWrongCodes(db, attacker, "ana@example.com", now.plus(Duration.ofMinutes(31))))
+        assertEquals(HotspotGuestCodes.Outcome.Allowed, reserve(db, venue, "abusiva@example.com", now.plus(Duration.ofMinutes(31))).outcome)
+    }
+
+    @Test
+    fun aRightCodeIsNotCountedAsAFailure() {
+        val db = open() ?: return
+        val now = Instant.now()
+        val origin = HotspotGuestCodes.ipGroup("203.0.113.9")
+        repeat(40) {
+            val reservation = reserve(db, origin, "ana@example.com", now)
+            assertEquals(HotspotGuestCodes.Outcome.Allowed, reservation.outcome, "attempt $it")
+            HotspotGuestCodes.refund(db, reservation)
+        }
+        assertEquals("0", scalar(db, "SELECT coalesce(sum(hits), 0) FROM hotspot_ip_throttle"))
+    }
+
+    @Test
+    fun parallelAttemptsCannotPassTheLimits() {
+        val db = open() ?: return
+        val now = Instant.now()
+        val origin = HotspotGuestCodes.ipGroup("203.0.113.9")
+        val workers = 24
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(workers)
+        val outcomes = try {
+            val futures = (1..workers).map {
+                pool.submit<HotspotGuestCodes.Outcome> {
+                    DriverManager.getConnection(urlOf(name)).use { own ->
+                        start.await()
+                        HotspotGuestCodes.reserveAttempt(own, origin, "ana@example.com", now).outcome
+                    }
+                }
+            }
+            start.countDown()
+            futures.map { it.get() }
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(HotspotGuestCodes.MaxWrongPerAddressAndOrigin, outcomes.count { it == HotspotGuestCodes.Outcome.Allowed }, outcomes.toString())
+        assertEquals(HotspotGuestCodes.MaxWrongPerAddressAndOrigin.toString(), scalar(db, "SELECT hits FROM hotspot_ip_throttle WHERE action = 'verify_fail_addr'"))
+    }
+
+    @Test
+    fun theCeilingOfAnAddressExpiresItsUnusedCodesAndAFreshCodeWorks() {
+        val db = open() ?: return
+        val email = "ana@example.com"
+        val now = Instant.now()
+        val running = requestCode(db, email, mac(1))
+        activate(db, running, mac(1), 60, now)
+        val unused = requestCode(db, email, mac(2))
+        assertEquals(setOf(running, unused), HotspotGuestCodes.candidates(db, email, now).map { it.id }.toSet())
+        // Guesses from many origins (each below its own limits) reach the 30 of the hour for the address.
+        repeat(HotspotGuestCodes.MaxWrongPerAddress) { n ->
+            assertEquals(HotspotGuestCodes.Outcome.Allowed, reserve(db, HotspotGuestCodes.ipGroup("2001:db8:$n::1"), email, now).outcome, "guess $n")
+        }
+        val over = reserve(db, HotspotGuestCodes.ipGroup("2001:db8:ffff::1"), email, now)
+        assertEquals(HotspotGuestCodes.Outcome.AddressCeiling, over.outcome)
+        HotspotGuestCodes.endGuessing(db, email, now)
+        // The unused code does not exist any more; the running session's one still does (the second device keeps working).
+        assertEquals(listOf(running), HotspotGuestCodes.candidates(db, email, now).map { it.id })
+        assertIs<Activation.Joined>(HotspotGuestCodes.activate(db, running, mac(3), 60, now.plusSeconds(60)) { null })
+        // Nobody is locked out: the guest asks for a new code and it can be entered, with a fresh count.
+        val fresh = requestCode(db, email, mac(4), now.plusSeconds(120))
+        assertTrue(fresh in HotspotGuestCodes.candidates(db, email, now.plusSeconds(120)).map { it.id })
+        assertEquals(HotspotGuestCodes.Outcome.Allowed, reserve(db, HotspotGuestCodes.ipGroup("198.51.100.4"), email, now.plusSeconds(120)).outcome)
+    }
+
+    @Test
+    fun aNewSendExpiresThePreviousUnusedCodeButNotTheRunningSession() {
+        val db = open() ?: return
+        val email = "ana@example.com"
+        val now = Instant.now()
+        val session = requestCode(db, email, mac(1))
+        assertIs<Activation.Started>(activate(db, session, mac(1), 60, now))
+        val first = requestCode(db, email, mac(1))
+        val second = requestCode(db, email, mac(1))
+        // Only the newest unused code and the running session's code can be entered.
+        assertEquals(setOf(session, second), HotspotGuestCodes.candidates(db, email, Instant.now().plusMillis(100)).map { it.id }.toSet())
+        assertIs<Activation.Expired>(activate(db, first, mac(2), 60, Instant.now().plusMillis(100)))
+        // The second device still connects with the running session's code, and ends with the first.
+        val joined = HotspotGuestCodes.activate(db, session, mac(2), 60, now.plusSeconds(600)) { error("no wait") }
+        assertIs<Activation.Joined>(joined)
+        assertEquals(50, joined.minutes)
     }
 
     @Test

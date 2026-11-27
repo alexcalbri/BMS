@@ -40,7 +40,7 @@ object HotspotGuestCodes {
     const val MaxDevices = 2
 
     /** New customers the form creates per origin address in an hour. */
-    const val MaxNewCustomersPerIpHour = 600
+    const val MaxNewCustomersPerIpHour = 2000
 
     /** Largest form the public portal reads (fields are short; the continue URL is cut at 500). */
     const val MaxFormBytes = 16 * 1024
@@ -70,65 +70,107 @@ object HotspotGuestCodes {
     class Candidate(val id: UUID, val hash: String)
 
     /**
-     * The newest codes of this address: the submitted code is looked up among them (never by an id the page carried), so
-     * whoever types an address cannot aim at a code, and a right code of a finished session still gets its own answer.
+     * The codes of this address that can still be entered: a running session, or an unused one that has not expired. The submitted
+     * code is looked up among them only (never by an id the page carried), so whoever types an address cannot aim at a code and
+     * a new send (which expires the unused ones before it) leaves at most one unused code plus the running session's.
      */
-    fun candidates(connection: Connection, email: String, limit: Int = 8): List<Candidate> = connection.prepareStatement(
+    fun candidates(connection: Connection, email: String, now: Instant = Instant.now(), limit: Int = 8): List<Candidate> = connection.prepareStatement(
         """
         SELECT codes.id, codes.code_hash
         FROM hotspot_codes codes
         JOIN hotspot_registrations registrations ON registrations.id = codes.registration_id
         WHERE lower(registrations.email) = lower(?)
+          AND (
+              (codes.activated_at IS NOT NULL AND codes.ends_at > ?)
+              OR (codes.activated_at IS NULL AND codes.used_at IS NULL AND codes.expires_at > ?)
+          )
         ORDER BY codes.created_at DESC
         LIMIT ?
         """.trimIndent()
     ).use { query ->
         query.setString(1, email)
-        query.setInt(2, limit)
+        query.setTimestamp(2, Timestamp.from(now))
+        query.setTimestamp(3, Timestamp.from(now))
+        query.setInt(4, limit)
         query.executeQuery().use { rows -> buildList { while (rows.next()) add(Candidate(rows.getObject(1, UUID::class.java), rows.getString(2))) } }
     }
 
-    // ---- Wrong codes: counted per origin address + email and per origin address, never per device or per code ----
+    /** Expires the codes of [email] that were never entered; the running session's code (already activated) keeps working. */
+    fun expireUnused(connection: Connection, email: String, now: Instant = Instant.now()): Int = connection.prepareStatement(
+        """
+        UPDATE hotspot_codes SET expires_at = LEAST(expires_at, ?)
+        WHERE activated_at IS NULL AND expires_at > ?
+          AND registration_id IN (SELECT id FROM hotspot_registrations WHERE lower(email) = lower(?))
+        """.trimIndent()
+    ).use { update ->
+        update.setTimestamp(1, Timestamp.from(now))
+        update.setTimestamp(2, Timestamp.from(now))
+        update.setString(3, email)
+        update.executeUpdate()
+    }
 
-    /** Wrong codes a (email, origin address) pair and an origin address may send per window. */
+    // ---- Wrong codes: reserved atomically BEFORE the code is compared; counted per (address, origin), per origin and per address ----
+    //
+    // Guests of a venue reach the server from one NAT address, so the origin cap is only a brake against a flood; the precise
+    // protection is per address: 8 wrong codes per origin and address in 15 minutes, and 30 per address in an hour whatever the
+    // origins (many IPv6 /64s). That last one does not lock the address: it expires its unused codes and starts over, so the guest
+    // asks for a new code (subject to the send limits) and whoever was guessing starts over against a different code.
+
     const val MaxWrongPerAddressAndOrigin = 8
-    const val MaxWrongPerOrigin = 60
+    const val MaxWrongPerOrigin = 1500
+    const val MaxWrongPerAddress = 30
     val FailureWindow: Duration = Duration.ofMinutes(15)
+    val AddressWindow: Duration = Duration.ofHours(1)
 
     /** Key of the pair in hotspot_ip_throttle (64 characters at most): the origin group and a digest of the address. */
     fun addressKey(origin: String, email: String): String =
         origin + "|" + java.security.MessageDigest.getInstance("SHA-256").digest(email.trim().lowercase().toByteArray()).joinToString("") { "%02x".format(it) }.take(24)
 
-    private fun windowStart(now: Instant) = Timestamp(now.toEpochMilli() - now.toEpochMilli() % FailureWindow.toMillis())
+    enum class Outcome { Allowed, Blocked, AddressCeiling }
 
-    fun failures(connection: Connection, key: String, action: String, now: Instant = Instant.now()): Int = connection.prepareStatement(
-        "SELECT hits FROM hotspot_ip_throttle WHERE ip_group = ? AND action = ? AND window_start = ?"
-    ).use { query ->
-        query.setString(1, key)
-        query.setString(2, action)
-        query.setTimestamp(3, windowStart(now))
-        query.executeQuery().use { if (it.next()) it.getInt(1) else 0 }
+    /** The attempt taken before comparing; [refund] gives it back when the code was right (a right code is not a failure). */
+    class Reservation(val outcome: Outcome, val taken: List<Triple<String, String, Long>>, val nowMillis: Long)
+
+    /**
+     * Reserves one attempt in the three counters, each one an atomic upsert (parallel requests cannot pass the limits). When one of
+     * them is out, the ones already taken are given back. [Outcome.AddressCeiling]: the address got its 30 wrong codes of the hour.
+     */
+    fun reserveAttempt(connection: Connection, origin: String, email: String, now: Instant = Instant.now()): Reservation {
+        val ms = now.toEpochMilli()
+        val taken = mutableListOf<Triple<String, String, Long>>()
+        val counters = listOf(
+            Triple(addressKey(origin, email), "verify_fail_addr", FailureWindow.toMillis()) to MaxWrongPerAddressAndOrigin,
+            Triple(origin, "verify_fail", FailureWindow.toMillis()) to MaxWrongPerOrigin,
+            Triple(addressKey("*", email), "verify_fail_all", AddressWindow.toMillis()) to MaxWrongPerAddress,
+        )
+        for ((counter, max) in counters) {
+            if (hitLimit(connection, counter.first, counter.second, max, counter.third, ms)) {
+                taken.forEach { refundOne(connection, it, ms) }
+                return Reservation(if (counter.second == "verify_fail_all") Outcome.AddressCeiling else Outcome.Blocked, emptyList(), ms)
+            }
+            taken += counter
+        }
+        return Reservation(Outcome.Allowed, taken, ms)
     }
 
-    fun recordFailure(connection: Connection, key: String, action: String, now: Instant = Instant.now()) {
-        connection.prepareStatement(
-            "INSERT INTO hotspot_ip_throttle (ip_group, action, window_start, hits) VALUES (?, ?, ?, 1) ON CONFLICT (ip_group, action, window_start) DO UPDATE SET hits = hotspot_ip_throttle.hits + 1"
-        ).use { insert ->
-            insert.setString(1, key)
-            insert.setString(2, action)
-            insert.setTimestamp(3, windowStart(now))
-            insert.executeUpdate()
+    fun refund(connection: Connection, reservation: Reservation) = reservation.taken.forEach { refundOne(connection, it, reservation.nowMillis) }
+
+    private fun refundOne(connection: Connection, counter: Triple<String, String, Long>, nowMillis: Long) {
+        connection.prepareStatement("UPDATE hotspot_ip_throttle SET hits = GREATEST(hits - 1, 0) WHERE ip_group = ? AND action = ? AND window_start = ?").use { update ->
+            update.setString(1, counter.first)
+            update.setString(2, counter.second)
+            update.setTimestamp(3, Timestamp(nowMillis - nowMillis % counter.third))
+            update.executeUpdate()
         }
     }
 
-    /** True when this pair or this origin already used its wrong codes of the window. */
-    fun tooManyWrongCodes(connection: Connection, origin: String, email: String, now: Instant = Instant.now()): Boolean =
-        failures(connection, addressKey(origin, email), "verify_fail_addr", now) >= MaxWrongPerAddressAndOrigin ||
-            failures(connection, origin, "verify_fail", now) >= MaxWrongPerOrigin
-
-    fun recordWrongCode(connection: Connection, origin: String, email: String, now: Instant = Instant.now()) {
-        recordFailure(connection, addressKey(origin, email), "verify_fail_addr", now)
-        recordFailure(connection, origin, "verify_fail", now)
+    /** The address got its wrong codes of the hour: its unused codes expire and its counter starts over (the running session's code stays). */
+    fun endGuessing(connection: Connection, email: String, now: Instant = Instant.now()) {
+        expireUnused(connection, email, now)
+        connection.prepareStatement("DELETE FROM hotspot_ip_throttle WHERE ip_group = ? AND action = 'verify_fail_all'").use { delete ->
+            delete.setString(1, addressKey("*", email))
+            delete.executeUpdate()
+        }
     }
 
     /**
@@ -203,6 +245,8 @@ object HotspotGuestCodes {
         codeHash: String,
         expiresAt: Instant,
     ) = transaction(connection) {
+        // One unused code per address: a new send expires the previous one. The running session's code (activated) is not touched.
+        expireUnused(connection, values.email)
         insertRegistration(connection, registrationId, customerId, userId = null, userCompany = null, values, birthday, guest, HotspotNetworks.Form, roamedFrom = null)
         connection.prepareStatement("INSERT INTO hotspot_codes (id, registration_id, code_hash, expires_at) VALUES (?, ?, ?, ?)").use { insert ->
             insert.setObject(1, codeId)

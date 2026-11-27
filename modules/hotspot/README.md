@@ -410,10 +410,14 @@ logged; the access history stays in `hotspot_accesses`. See `ACTIVITY_LOG_MODULE
   (a day by default) has passed, counted from the first activation; devices that joined do not move it. 0 means no wait.
 - The code page never says whether an address already has a session: an address with a usable code gets the same page as a first submission
   (and no new email). The page carries no code id; the code typed is looked up among the newest codes of the submitted address.
-- Wrong codes are counted per (address, origin address) 8 per 15 minutes and per origin address 60 per 15 minutes (IPv6 by /64), never per
-  code, per device (a MAC comes from the form) or for the whole company, so nobody can use up a guest's tries or lock the venue out.
-- Other abuse brakes: 6 codes per hour per device and 12 per destination address, 600 new customers per hour per origin address, and a
-  company ceiling of new customers per hour (setting `newCustomersPerHour`, 300 by default): beyond it NEW addresses get "Intentalo mas tarde"
-  (existing customers keep working) and users with *Configurar hotspot* get one notification per hour. 16 KB bodies, per-IP limits.
+- Wrong codes: one attempt is reserved atomically BEFORE the code is compared (a right code gives it back). Counters: 8 per (address, origin) in
+  15 minutes, 1500 per origin in 15 minutes (a flood brake: guests of a venue share one NAT address), and 30 per address in an hour from
+  anywhere. Reaching the last one does not lock the address: its unused codes expire and the count starts over, so the guest asks for a new
+  code (the running session's code keeps working for the second device). The typed code is compared only with the address's valid codes, and
+  a new send expires the previous unused code.
+- Other brakes: 6 codes per hour per device and 12 per destination address, 1000 registrations and 2000 code/verify requests per origin in
+  10 minutes, 2000 new customers per hour per origin, a company ceiling of new customers per hour (setting `newCustomersPerHour`, 300 by
+  default): beyond it NEW addresses get "Intentalo mas tarde" (existing customers keep working) and users with *Configurar hotspot* get one
+  notification per hour. 16 KB bodies.
 - The email is marked verified only while the customer still has the address the code was sent to.
 - `hotspot_my_wifi_code` is not declared read-only (it creates the user's code the first time): read-only agent tokens cannot call it.
