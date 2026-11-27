@@ -69,7 +69,7 @@ class CrmExtensionsTest {
         assertEquals("0.32.0", CrmServerModule.definition.version)
         // Las extensiones piden la primera version bilingue del CRM; el modulo puede ir por delante.
         assertEquals("0.31.0", CrmExtensions.MinModuleVersion)
-        assertEquals("0.12.0", CrmServerModule.definition.minCoreVersion)
+        assertEquals("0.13.0", CrmServerModule.definition.minCoreVersion)
         assertEquals("0.7.0", CrmServerModule.definition.minAppVersion)
         assertTrue("modules/crm/migrations/V022__extensions_and_secrets.sql" in CrmServerModule.migrationPaths)
     }
