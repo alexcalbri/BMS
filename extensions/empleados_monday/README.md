@@ -79,6 +79,11 @@ solo queda el resultado, sin datos); con "conservar" quedan. **Nunca** se borran
 - Hasta 2 000 elementos por tablero y una importacion en curso a la vez.
 - Solo se importan datos basicos de la ficha y el horario habitual; no hay turnos concretos ni ausencias.
 
+## Version 1.2.0 (registro de actividad, necesita Core 0.12.0 y Empleados 0.3.0)
+
+- Las filas de la importacion en el registro de actividad de la empresa llevan a quien empezo la importacion ("Importacion (Ana Ruiz)"; "Usuario desconocido" si ese usuario ya no existe) y, al terminar, una fila de totales con el origen (Monday y el tablero) y las cifras.
+- Quedan registrados el token de monday (solo que se guardo, cambio o borro, nunca su valor), el inicio, la confirmacion y la cancelacion de una importacion, y las importaciones antiguas que borra la limpieza (la fila se escribe antes del borrado).
+
 ## Version 1.1.0 (bilingue)
 
 - Textos en español e inglés: el código usa `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/empleados_monday/i18n/en.json`. Necesita Core 0.10.0.
