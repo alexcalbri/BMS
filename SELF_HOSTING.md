@@ -87,6 +87,16 @@ no retention purge. Server sign-ins and failures go to `provisioning_audit_log`.
 See "Activity log integrity" in §14 and `ACTIVITY_LOG.md` §9 for what this does
 and does not guarantee.
 
+Since Core 0.13.0 (security hardening): optional **two-step verification**
+(TOTP, recovery codes and a delayed recovery by email; control migrations
+`V017`-`V019` applied by `update.sh`, tenant `V012`-`V015` applied to every
+company by `update.sh` and by the server at startup), a **storage quota** per
+company with a free-disk floor (STORAGE_QUOTA.md), pinned and optionally signed
+Core updates and packages (SIGNING.md), and the PostgreSQL role layout of §5
+(the service's role owns nothing; a separate provisioning login migrates). The
+service role only reads and creates `tenant_data_keys`, and never deletes rows
+of `application_user_2fa_email_recovery`.
+
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
 authentication for that account. This verifies login and the backend is wired
@@ -369,6 +379,49 @@ Exact database names and schemas are deployment choices.
 -   use TLS where database traffic crosses untrusted networks;
 -   do not expose PostgreSQL directly to public clients.
 
+### Roles de PostgreSQL (Ubuntu installer and updater)
+
+The application never runs with the rights that create or own company databases. Three roles, created by
+`install.sh` and set up on existing servers by `update.sh` (`scripts/ubuntu/db-roles.sh`):
+
+| Role | Example | What it is |
+| --- | --- | --- |
+| runtime (`DB_USER`) | `bms_app` | The pooled, long-lived connections of the server. A plain login role: member of no role, `NOCREATEDB NOCREATEROLE`, owns nothing. It reaches company data only through grants: `SELECT, INSERT, UPDATE, DELETE` on the ordinary tables, `SELECT` on `schema_migrations`, `USAGE, SELECT` on sequences; `SELECT, INSERT` only on `activity_log` and `activity_log_chain` and `USAGE` only on `activity_log_id_seq`; in the control database its explicit grants, `SELECT, INSERT` only on `provisioning_audit_log`. |
+| server owner | `server_owner` | The server owner's login (their password). `CREATEDB CREATEROLE`; owns every company database and everything in it. |
+| provisioning (`DB_PROVISIONING_USER`) | `bms_provisioner` | Used only to create, migrate, duplicate and delete companies (and by `update.sh` for company migrations), on short-lived connections of its own, never from the pool. `NOINHERIT NOCREATEDB NOCREATEROLE`: it holds nothing by itself. It is a member of the server owner's role and of the runtime role with `SET` and without `INHERIT` (PostgreSQL 16+ grant options), so it acts as the owner only after `SET ROLE` (to create a database, a business owner role, or run migrations) and as the runtime role only to write the company activity row of a change made from the server. Its password is random, in `/etc/bms/server.env` (`DB_PROVISIONING_PASSWORD`). |
+
+Why this design: company creation from the app needs `CREATE DATABASE` and `CREATE ROLE` at runtime, but the
+connections that serve requests must not carry them. A separate login that the pool never uses keeps a SQL injection
+or a hijacked pooled connection to the runtime role's grants: it cannot `SET ROLE` to the owner (not a member), drop or
+disable the activity-log triggers, alter tables, or create databases and roles. `NOINHERIT` plus explicit `SET ROLE`
+only in the provisioning code (`CompanyProvisioningService.adminConnection`) limits even the provisioning connection to
+what each step needs. What it does not change: the provisioning password lives in the same service environment as the
+runtime one, so code execution inside the server process (not just SQL) can still reach the owner's rights; and the
+superuser, root and the server owner's own login keep full power. Without `DB_PROVISIONING_USER` (development, tests)
+provisioning connects as the runtime role, as before.
+
+Moving an existing server (`update.sh`, idempotent, while the service is stopped): the provisioning role is created; the
+runtime role gets explicitly every DML privilege it had (until then partly through its membership in the owner's
+role); objects in `public` of each company database owned by the superuser (an older `update.sh` created them as
+`postgres`) or by the runtime role are given to the database owner — all objects of the activity log together, so its
+integrity check (owners of its tables, sequence and functions must match) keeps passing; objects of extensions stay;
+the activity-log grants are left exactly `SELECT, INSERT` / `USAGE`; then the runtime role leaves the owner's role.
+Everything is decided before anything changes: every database registered in `companies` must exist with a name
+`bms_<code>` (not the control database, not a template) and belong to a server owner's role. If a registered database
+exists but breaks a rule, the move stops **before any change** and lists them (fix the owner with `ALTER DATABASE ...
+OWNER TO <server owner role>` or the row, and run `update.sh` again); a registered database that does not exist is only
+reported. After the move it proves, as the runtime role, that it can connect to and read `application_users` in the
+control database and in every company database (and the activity log in each company), and that the provisioning
+login can connect and `SET ROLE` to each database's owner (a real connection with its password); any failure rolls the
+update back.
+The superuser only runs catalog queries, `GRANT`/`REVOKE` and `ALTER ... OWNER` there, with `search_path` pinned to
+`pg_catalog`, never code the company database defines. If the update is rolled back, the runtime role becomes a member
+of the owner's role again (the previous release needs it); the next update moves it again.
+
+Not changed on purpose: `REVOKE CONNECT ON DATABASE postgres, template1 FROM PUBLIC` is **not** applied (psql, pg_dump
+and other tools expect to connect there). Company databases and the control database do revoke `CONNECT` from
+`PUBLIC`; the roles that can connect to `postgres` gain nothing there.
+
 ------------------------------------------------------------------------
 
 ## 6. Control Plane
@@ -435,9 +488,19 @@ Document verified variables in a table here as they are implemented:
 | `COMPANY_FILES_ROOT` | No | Server-side directory for the files modules store per company (CRM attachments...), as `{company}/{module}/{yyyy}/{mm}/{id}`; the databases keep only the references. Installer default: `/opt/bms/company-files`; defaults to `build/company-files`. Back it up together with PostgreSQL: the app's company ZIPs do not include it. Deleting a company deletes its folder. |
 | `MODULE_CATALOG_URL` | No | URL of the remote module repository directory. Installer default: `https://github.com/alexcalbri/BMS/tree/master/modules`. GitHub tree URLs and Contents API URLs are accepted. Empty means no remote modules are shown for new installs. |
 | `MODULE_GITHUB_TOKEN` | No | GitHub token for the module catalog and module downloads. Without it GitHub allows 60 API requests per hour per IP, which listing the catalog can use up; with it, 5000. Use a fine-grained token with read-only access to public repositories (or to the private catalog repository). It is sent only to GitHub over HTTPS and is set only here, never in the app. Restart `bms` after changing it. |
-| `MODULE_SIGNATURE_ENFORCED` | No | `false` (default): optional modules may be installed by the server owner without an Ed25519 signature, with a warning in the log (dev/staging); a server administrator always gets the enforced gate. `true` (recommended in production): an unsigned module is rejected unless the server owner authorizes its tree hash with `POST /server/modules/{id}/authorize-unsigned`, same as extensions. Restart `bms` after changing it. |
+| `MODULE_SIGNATURE_ENFORCED` | No | Not set (default): `true` when a package key is installed in `/usr/local/lib/bms/package-keys/` (SIGNING.md), else `false`. `false`: optional modules may be installed by the server owner without an Ed25519 signature, with a warning in the log (dev/staging); a server administrator always gets the enforced gate. `true` (recommended in production): an unsigned module is rejected unless the server owner authorizes its tree hash with `POST /server/modules/{id}/authorize-unsigned`, same as extensions. Restart `bms` after changing it. |
 | `MODULE_PACKAGES_ROOT` | No | Server-side directory where downloaded module packages are stored; defaults to `build/server-modules`. |
 | `VERSION_CATALOG_URL` | No | URL of the remote JSON version catalog used by `/version`. Official URL: `https://raw.githubusercontent.com/alexcalbri/BMS/master/version.json`. |
+| `DB_PROVISIONING_USER`, `DB_PROVISIONING_PASSWORD` | Yes (installer and `update.sh` write them) | Login used only to create, migrate, duplicate and delete companies, on short-lived connections that `SET ROLE` to the server owner's role (section 5, Roles de PostgreSQL). Must differ from `DB_USER`; the password is at least 16 printable ASCII characters without `:` or `\`. Without it (development, tests) provisioning connects as `DB_USER`. |
+| `MAX_REQUEST_BODY_BYTES` | No | Core's default limit of a request body, behind Nginx's 2 MB; `4194304` (4 MB). Upload routes keep their own limits (module files: quota and per-module maximum; backup import 512 MB; extension ZIP 50 MB) and `POST /modules/crm/ui/import` allows 25 MB (`RequestBodyLimits.kt`); `scripts/ubuntu/nginx-site.sh` gives each of them at least as much. |
+| `COMPANY_FILES_MIN_FREE_BYTES` | No | Free-disk floor of `COMPANY_FILES_ROOT`: uploads are refused (507 `STORAGE_DISK_FULL`) under it; `2147483648` (2 GiB). STORAGE_QUOTA.md. |
+| `COMPANY_FILES_MAX_CONCURRENT_UPLOADS` | No | Uploads in progress at the same time per company (429 `STORAGE_BUSY` above it); `4`. The storage quota per company is set by the server owner in the app (default 100 GiB). |
+| `BMS_PUBLIC_BASE_URL` | No (installer and `update.sh` write it) | Public origin (`https://bms.example.com`, no path) used for links in emails (cancel link of the delayed two-step recovery, TWO_FACTOR.md §7) and for the OAuth metadata of Agentes. Written from the domain of the BMS Nginx site when absent; without it the request's validated `Host` is used. Change it if the public name changes. |
+| `BMS_BUILD_USER` | No | Read by `update.sh` only: the user that compiles the release (default `bms-build`, separate from the service user). `bms` goes back to compiling as the service user, only as a way out (section 15). |
+| `BMS_SYSCALL_FILTER` | No | Read by `update.sh` only: `true` adds `SystemCallFilter=@system-service` to `bms.service` (opt-in; section 16). |
+| `CORE_UPDATE_REQUIRE_APPROVED_COMMIT` | No | `true` unless set to `false`: `POST /server/core-update` must carry the commit the owner reviewed (`targetCommit`, app 0.11.0 and later); an older app gets 400 `CORE_COMMIT_INVALID`. `false` lets the server pin the commit it reads itself (SIGNING.md §1). |
+| `BMS_MEMORY_MAX` | No | Read by `update.sh` only: `MemoryMax` of `bms.service` (for example `3G` or `80%`; `none` for no cap). Default: 80% on hosts with at least 8 GiB of RAM, no cap on smaller ones (`units.sh`). |
+| `BMS_NGINX_REPLACE_SITE` | No | Environment of `update.sh` (not `server.env`): `yes` replaces a BMS Nginx site that has lines no installer wrote (move them to `/etc/nginx/bms.d/` first). |
 
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURITY` | No | Server-wide SMTP for password reset codes ("¿Olvidaste tu contraseña?" in the login; without it users cannot recover their password by email) and for modules that send email (hotspot codes). `SMTP_SECURITY` is `starttls` (default), `ssl` or `none`. Empty `SMTP_HOST` disables it; companies can still use their own SMTP. |
 | `PUBLIC_SCHEME`, `ACME_EMAIL` | No | Read only by the root helper `bms-domains-sync`, which publishes module domains (hotspot portals) in Nginx with Let's Encrypt (`https`) or plain HTTP (`http`). |
@@ -708,15 +771,42 @@ End-to-end issuance and renewal against a real domain remain untested in
 this workspace. Failed installs preserve their files and certificates;
 inspect the failing step before recovery instead of rerunning blindly.
 
-Internet-facing production deployments should place the server behind a
-reverse proxy or equivalent ingress with HTTPS.
+### Nginx configuration of the Ubuntu scripts
 
-Document the project's tested proxy configuration when available.
+`install.sh` writes and `update.sh` rewrites (on every update, keeping every `server_name`, the scheme and the
+certificate of the live site) the configuration generated by `scripts/ubuntu/nginx-site.sh`; the old site is kept in
+`/var/lib/bms/nginx-backups/` and restored automatically when `nginx -t` fails or any served name no longer serves the
+app. Local additions go in `/etc/nginx/bms.d/*.conf` (included in the server block), never in the site file. A live site
+with lines no BMS installer or updater ever wrote (a hand-made location, include, rewrite...) is **not** replaced:
+`update.sh` prints those lines and the diff with the proposed site (kept in the backup directory), only adds the limits
+file, and carries on; move the local lines to `/etc/nginx/bms.d/` and run it with `BMS_NGINX_REPLACE_SITE=yes` to
+apply the new site.
 
-The proxy should preserve the headers required by the server and enforce
-appropriate request-size/time-out policies.
-
-Never document a proxy configuration as official until tested.
+- **Request bodies:** 2 MB everywhere (`client_max_body_size 2m`), so nobody can fill memory or disk before signing in.
+  Larger only on the authenticated upload routes found in the code: `POST /modules/<module>/ui/files` (module
+  attachments of CRM, Compras, Tareas, Propietarios, Mantenimiento and any module with that route) without an Nginx
+  limit and with `proxy_request_buffering off` (streamed to the module, no temporary copy); `POST /modules/crm/ui/import`
+  25 MB (CRM import of pasted CSV text; the Core allows the same on that path); `POST /companies/me/backups/import`
+  520 MB, streamed (512 MB ZIP in the Core); `POST /server/extensions/upload` 60 MB, streamed (50 MB ZIP). Each is at
+  least the Core's limit for that route (a test compares `nginx-site.sh` with `RequestBodyLimits.kt`). Module domains of `bms-domains-sync` (hotspot portals) take 2 MB.
+- **Limits per client address** (`/etc/nginx/conf.d/bms-limits.conf`): 50 requests/s (burst 400), `/auth/` also 10/s
+  (burst 40), 100 connections; over them Nginx answers 429. Generous for an office behind one address; the backend
+  keeps its own sign-in limits.
+- **Unknown host names** (`/etc/nginx/sites-available/bms-default`): `return 444` on port 80 and
+  `ssl_reject_handshake on` on 443 (no certificate is shown for a name this server does not serve). Only on ports where
+  no other site is already `default_server`; Ubuntu's stock `/etc/nginx/sites-enabled/default` takes port 80 — if
+  you do not use it, `sudo rm /etc/nginx/sites-enabled/default` and run `update.sh` again.
+- **Headers:** `X-Content-Type-Options`, `X-Frame-Options DENY` (`SAMEORIGIN` under `/modules`, whose web screens the
+  app shows in a same-origin iframe), `Referrer-Policy`, HSTS and `Alt-Svc` only over HTTPS (never over plain HTTP),
+  `X-Forwarded-Host` in every proxied location, and for the web app the Content-Security-Policy
+  `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:
+  blob: https:; font-src 'self' data:; connect-src 'self' https: wss:; media-src 'self' blob: data:; worker-src 'self'
+  blob:; frame-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'` (plus
+  `http:`/`ws:` in HTTP mode). Compose for Web needs `'wasm-unsafe-eval'` for its Skia WebAssembly; images and requests
+  may go to other HTTPS hosts (company logos, a server URL set in the app). Checked with the production bundle of the CI
+  in headless Chrome (`scripts/ubuntu/tests/nginx_test.sh` with `BMS_WEB_DIST`): the app starts, loads its WebAssembly
+  and calls the backend with no CSP violation, and the same check without `'wasm-unsafe-eval'` reports one.
+- `http2 on` with Nginx 1.25.1 or later, `listen ... http2` before; QUIC/HTTP/3 listeners only when Nginx has the module.
 
 ------------------------------------------------------------------------
 
@@ -735,6 +825,49 @@ appropriate backup when they can modify persistent data.
 
 A restore procedure is as important as a backup procedure. Test
 restores.
+
+### Daily backup of the Ubuntu install (`bms-backup`)
+
+`install.sh` and `update.sh` install `/usr/local/sbin/bms-backup` and `bms-backup.timer` (daily, around 02:37 with
+up to 30 minutes of random delay). As root it writes `/var/lib/bms/db-backups/<UTC time>/` (directory and files
+root-only): `db/<database>.dump` (`pg_dump -Fc`) for the control database and every `bms_*` database, `db/roles.sql`
+(`pg_dumpall --roles-only`, with password verifiers), `company-files.tar.gz`, `etc-bms-secret.tar.gz` (all of
+`/etc/bms`, **with `BMS_MASTER_KEY` and the database passwords**), `etc-bms.tar.gz` and `server.env.redactado`
+(without secrets), `nginx.tar.gz`, and `SHA256SUMS`. It keeps 7 copies and skips a run (with an error in
+`/var/log/bms-backup.log`) when the disk would keep less than 2 GiB free, because a full disk stops PostgreSQL.
+
+```bash
+sudo systemctl start bms-backup.service        # one now
+sudo journalctl -u bms-backup.service; sudo cat /var/log/bms-backup.log
+sudo ls /var/lib/bms/db-backups/
+```
+
+Optional settings in `/etc/bms/backup.conf` (root, mode 600, `KEY=value`, read but never executed):
+`BACKUP_KEEP=7`; an off-box copy with `BACKUP_RCLONE_REMOTE=remote:bms` (configure the remote as root with
+`rclone config`) or `BACKUP_RSYNC_TARGET=user@host:/dir` with `BACKUP_RSYNC_SSH_KEY=/root/.ssh/bms-backup` (a key
+used only for this, the host key already in root's `known_hosts`). The off-box copy leaves out
+`etc-bms-secret.tar.gz` and `db/roles.sql` (password verifiers of the PostgreSQL roles) unless
+`BACKUP_OFFSITE_INCLUDE_SECRETS=true`: a copy that carries the data and the key that decrypts its secrets together
+protects nothing. The daily job waits (up to an hour) while an install or update holds the maintenance lock.
+
+**Master key escrow.** `BMS_MASTER_KEY` (in `/etc/bms/server.env`) wraps every company's data key; without it the
+stored secrets (integration tokens, SMTP passwords...) cannot be read, and it is never regenerated. Right after
+installing, copy it to a place outside the server and outside the backups: a password manager with two people able to
+open it, or a sealed printed copy. Check it once a year against `server.env`. Restoring a server needs the database
+dumps, `company-files` and that key; whoever holds the key and a backup can read every stored secret.
+
+Restore of one company database from a daily or pre-update copy (`--create` recreates it with its owner and its
+`CONNECT` grants; the roles must exist — `db/roles.sql` of the same copy has them all):
+
+```bash
+sudo systemctl stop bms
+sudo -u postgres dropdb --force bms_<code>
+sudo -u postgres pg_restore --create --exit-on-error -d postgres /var/lib/bms/db-backups/<time>/db/bms_<code>.dump
+sudo systemctl start bms
+```
+
+A pre-update copy is from before the role move of section 5: after restoring it, fix what made the update fail and run
+`update.sh` again (it moves the roles and migrates again).
 
 ### Empresa module ZIPs
 
@@ -816,63 +949,78 @@ set and versions.
 
 ### Ubuntu updater
 
-`scripts/ubuntu/update.sh` updates an existing installation created by the
-Ubuntu installer. It does not create databases, change secrets or run module
-migrations. It preserves the existing Nginx site, but adds the `/server` proxy
-route when the site is the installer-managed BMS site and the route is
-missing. It also completes newer non-secret server environment defaults when
-older installs do not have them. It:
+`scripts/ubuntu/update.sh` updates an existing installation created by the Ubuntu installer. Order:
 
-1. verifies `/opt/bms/source`, `/opt/bms/app`,
-   `/etc/bms/server.env` and `bms.service`;
-2. asks for the branch, tag or commit and syncs a root-owned mirror
-   (`/var/lib/bms/mirror`) to it;
-3. ensures `TENANT_DATABASES_JSON`, `TENANT_JDBC_URL_PREFIX`,
-   `MIGRATIONS_ROOT` and `COMPANY_BACKUPS_ROOT` exist in
-   `/etc/bms/server.env`;
-4. ensures the installer-managed Nginx site proxies `/server` to Ktor;
-5. exports the mirror commit with `git archive` into
-   `/opt/bms/build-tree` (owned by `bms`) and also moves
-   `/opt/bms/source` to the same commit as a reference (warnings only);
-6. builds `:server:test :server:installDist` with `-PserverOnly=true` in the
-   build tree;
-7. backs up the current runtime app;
-8. replaces `/opt/bms/app`;
-9. restarts `bms.service` and checks `http://127.0.0.1:8080/`.
+1. checks `/opt/bms/source`, `/opt/bms/app`, `/etc/bms/server.env` and `bms.service`; asks for the branch, tag or
+   commit and syncs the root-owned mirror `/var/lib/bms/mirror` to it (with the signature check of `mirror.sh` when it
+   has one, SIGNING.md); every script and SQL file root runs comes from that mirror;
+2. **builds and tests first**: `git archive` of the mirror commit into `/opt/bms/build-tree`, owned by the build user
+   `bms-build` (not the service user `bms`: build code — Gradle plugins, dependencies, Node — cannot read the running
+   server's environment or files), `:server:test :server:installDist` and the web app, with a clean environment, no
+   local build cache and no user-level Gradle/Maven/npm settings (removed before each build). Every process of the
+   build user is killed before root reads anything the build produced; root copies build output only through a
+   root-owned archive it checks first (no links, no special files, no path outside). If this fails nothing on the
+   server has changed;
+3. **backs up**: `pg_dump` of the control and every company database (`/var/lib/bms/backups/<time>/db`, root-only;
+   refused when the disk would keep less than 2 GiB free), the current app, web app, `server.env` and the unit drop-ins;
+4. stops `bms.service`, completes `server.env` (new non-secret keys and `DB_PROVISIONING_*`; copies
+   `server.env.update-backup.*`, mode 600, last three kept), creates or updates the provisioning role, moves the
+   PostgreSQL roles to the layout of section 5 (Roles de PostgreSQL), applies the control migrations as the superuser
+   (every `database/control/migrations/V*.sql` in order) and the company migrations **as the database owner's role
+   through the provisioning login** (`SET ROLE`, `search_path=public`, only on validated company databases — never as
+   the superuser), installs the root helpers (`bms-domains-sync`, `bms-core-update`, `bms-backup`) and the systemd
+   hardening drop-in;
+5. replaces `/opt/bms/app` (with the release's company migrations in `/opt/bms/app/migrations`, root-owned:
+   `MIGRATIONS_ROOT` points there, so the service user can no longer change SQL that later runs as the owner's role)
+   and `/opt/bms/web`, moves `/opt/bms/source` to the same commit (as `bms`, a reference copy only), starts the service
+   and checks it: HTTP answers, the log since the start says `PostgreSQL connection verified` and has no PostgreSQL
+   permission or authentication error, and the runtime role and the provisioning login still reach every database.
+   Then it writes the deployed commit to `/var/lib/bms/deployed-commit`;
+6. **automatic rollback** if anything in steps 4–5 fails or the check fails: previous binaries and web app,
+   `server.env`, unit drop-ins, root helpers and their units (`bms-core-update`, `bms-domains-sync`, `bms-backup`,
+   `mirror.sh`), the runtime role's membership in the owner's role (the previous release needs it), restart, check. The databases are **not** restored automatically: the pre-update dumps stay and the commands are
+   printed (see "Restore" in section 14). Migrations are transactional per file, so a failed one leaves its database as
+   it was;
+7. rewrites the Nginx configuration (section 13), restoring the previous one if it fails, and prunes old backups
+   (last 5 updates, database dumps of the last 3), logs and Nginx copies. Nothing after the deploy can mark the update
+   failed.
 
-Everything root runs comes from the root-owned mirror, never from
-`/opt/bms/source` (which the `bms` user can write). Download
-`update.sh` and `mirror.sh` into a root-owned directory and run it from there:
+`BMS_BUILD_USER=bms` in `server.env` goes back to building as the service user, only as a way out if the separate
+build user ever fails on a server. `/opt/bms/build-home` starts empty (nothing is taken from the service user's home,
+where a planted Gradle or npm setting, init script, cache entry or JDK would run in every build; the build-only caches
+there are deleted), so the first update downloads Gradle and the dependencies again. `BMS_UPDATE_SKIP_DB_DUMP=true` in the environment of a manual run skips the
+pre-update dump (only when the disk cannot hold it and a daily backup is recent). `--harden-host` runs
+`harden-host.sh` at the end (section 16).
+
+Download `update.sh` and `mirror.sh` into a root-owned directory and run it from there. Before the first update with
+this layout, run the read-only `preflight.sh` (with `db-roles.sh` and `nginx-site.sh` next to it): it checks versions
+(Nginx, one PostgreSQL cluster and a matching `pg_dump`, Java 21), memory, `fs.protected_*`, `server.env` keys (never
+printing values), the server owner roles, every company database (name, owner, owners of its objects, extra schemas,
+the owner's `CREATE` on `public`), the runtime role, `pg_hba` for 127.0.0.1, pending update requests, free disk, the
+Nginx site (names and local edits) and the files; it prints PASS/WARN/INFO/FAIL per check and exits 1 on any FAIL.
 
 ```bash
-sudo mkdir -p /root/bms-update
-sudo curl -fsSL -o /root/bms-update/update.sh https://raw.githubusercontent.com/alexcalbri/BMS/master/scripts/ubuntu/update.sh
-sudo curl -fsSL -o /root/bms-update/mirror.sh https://raw.githubusercontent.com/alexcalbri/BMS/master/scripts/ubuntu/mirror.sh
+sudo mkdir -p /root/bms-update && cd /root/bms-update
+for f in update.sh mirror.sh preflight.sh db-roles.sh nginx-site.sh; do
+  sudo curl -fsSL -o "$f" "https://raw.githubusercontent.com/alexcalbri/BMS/master/scripts/ubuntu/$f"
+done
+sudo bash /root/bms-update/preflight.sh
 sudo bash /root/bms-update/update.sh
 ```
 
-**Updating to the activity log (Core 0.12).** `update.sh` applies tenant V011
-to every company as the `postgres` superuser, like the earlier tenant
-migrations, and grants the service user `SELECT, INSERT` on `activity_log` and
-`activity_log_chain` and `USAGE` on its sequence. Afterwards
-`GET /server/activity/verify` should report every company `ok`.
+If `update.sh` (or `mirror.sh`) is in a path that is not entirely root-owned (every directory up to `/`, no
+group/other write, no symlinks), for example `/opt/bms/source/scripts/ubuntu/update.sh`, it refuses to run. It also
+refuses a target reference older than itself (one without `scripts/ubuntu/db-roles.sh` and the other libraries): use
+the `update.sh` of the same reference.
 
-If `update.sh` (or `mirror.sh`) is in a path that is not entirely root-owned
-(every directory up to `/`, no group/other write, no symlinks), for example
-`/opt/bms/source/scripts/ubuntu/update.sh`, it refuses to run and asks you
-to use the root-owned download above.
+**After the first update with this layout**, check: `GET /server/activity/verify` reports every company `ok`; creating
+a test company from the app works (then delete it); `sudo -u postgres psql -c "\du"` shows the runtime role
+(`bms_app`) with no `Member of` and `bms_provisioner` with `No inheritance`.
 
-Existing PostgreSQL databases are preserved. Existing secrets in
-`/etc/bms/server.env` are preserved; the updater only appends missing
-non-secret keys needed by newer server features.
-
-The updater runs Gradle with one worker, disables configuration cache for the
-deployment build and sets Kotlin compiler execution through
-`-Pkotlin.compiler.execution.strategy=in-process`. If the host has less than
-2 GiB available memory and less than 1 GiB swap, it creates a temporary
-2 GiB swap file at `/opt/bms/update.swap` for the build and removes it
-afterward. This avoids depending on the Kotlin daemon socket and gives the
-Kotlin/JS production compiler enough memory on small servers.
+The updater runs Gradle with one worker, disables configuration cache for the deployment build and sets Kotlin
+compiler execution through `-Pkotlin.compiler.execution.strategy=in-process`. If the host has less than 2 GiB
+available memory and less than 1 GiB swap, it creates a temporary 4 GiB swap file at `/var/lib/bms/update.swap` for
+the build and removes it afterward.
 
 ### Webapp compilada por el CI (opcional)
 
@@ -888,7 +1036,10 @@ WEB_DIST_FROM_CI=true
 
 `update.sh` descarga el paquete del mismo commit que va a instalar
 (`https://github.com/alexcalbri/BMS/releases/download/web-dist/web-<sha>.tar.gz`,
-cambiable con `WEB_DIST_BASE_URL`), verifica el checksum, que existan
+cambiable con `WEB_DIST_BASE_URL`) como el usuario de compilacion. Si existe la llave publica de root
+`/usr/local/lib/bms/web_dist_public.pem`, la firma Ed25519 `web-<sha>.tar.gz.sha256.sig` es obligatoria: root la
+verifica (`openssl pkeyutl -verify -rawin`) sobre su propia copia del `.sha256` y compara el hash del paquete con esa
+copia verificada; sin la llave se usa solo el checksum, con un aviso. Despues verifica que existan
 `index.html` y `webApp.js`, y lo despliega igual que una compilacion local. No
 necesita token mientras el repositorio sea publico. Si el CI aun no publico ese
 commit, o algo falla, compila en el servidor como siempre. Sin
@@ -902,7 +1053,11 @@ servidor"). El backend solo registra la solicitud en `core_update_requests`
 `bms-core-update`, que un timer de systemd revisa cada minuto. El
 ayudante usa su propio clon espejo de `origin` en `/var/lib/bms/mirror`
 (rama `CORE_UPDATE_REF` de `server.env`, por defecto `master`), verifica que la
-version del commit coincida con la pedida y corre `update.sh --non-interactive`
+version del commit coincida con la pedida y que sea **posterior** a la instalada (el commit de
+`/var/lib/bms/deployed-commit` debe ser antecesor del pedido y la version pedida mayor; desde la app nunca se vuelve
+atras, ni siquiera con una fila falsificada). Sin `deployed-commit` (un servidor que siempre se actualizo por SSH) la
+app no puede actualizar hasta la primera actualizacion por SSH, que lo escribe. Toma el lock de mantenimiento antes de
+sincronizar el espejo y corre `update.sh --non-interactive`
 con los scripts del espejo, nunca los de `/opt/bms/source`. El instalador
 lo deja instalado; en un servidor anterior hay que correr `update.sh` una vez
 por SSH. Si la solicitud sigue `pending` mas de 3 minutos, la app avisa de que
@@ -926,6 +1081,34 @@ Before exposing a self-hosted installation:
 -   [ ] integration secrets stored server-side;
 -   [ ] logs reviewed for secret leakage;
 -   [ ] dependency/security updates reviewed.
+-   [ ] `BMS_MASTER_KEY` escrowed outside the server and outside the backups (section 14);
+-   [ ] SSH: root password login off, key-only login.
+
+### Hardening the Ubuntu scripts apply
+
+- `bms.service` drop-in `/etc/systemd/system/bms.service.d/hardening.conf` (`scripts/ubuntu/units.sh`):
+  `ProtectProc=invisible`, empty `CapabilityBoundingSet`, `PrivateDevices`, `ProtectKernelTunables/Modules/Logs`,
+  `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+  AF_NETLINK`, `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`, `RemoveIPC`,
+  `SystemCallArchitectures=native`, `TasksMax=4096`, on top of the unit's `NoNewPrivileges`,
+  `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`. `MemoryMax`: `BMS_MEMORY_MAX` in `server.env` (for example
+  `80%` or `3G`, `none` for no cap); without it, `80%` with at least 8 GiB of RAM and no cap below (on a small machine
+  the cap would kill the server, with its module compiler, before the kernel would). `SystemCallFilter=@system-service` (with `EPERM` instead of
+  killing the JVM) is opt-in: `BMS_SYSCALL_FILTER=true` in `server.env`, then `update.sh`; if the service then fails,
+  `journalctl -u bms` shows it and removing the line plus another `update.sh` (or the automatic rollback) undoes it.
+- Root helpers (`bms-domains`, `bms-domains-renew`, `bms-certbot`, `bms-backup`): `NoNewPrivileges`, `PrivateTmp`,
+  `PrivateDevices`, `ProtectKernel*`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`, `RestrictNamespaces`,
+  `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`. No file-system or capability limits: they run `nginx -t`,
+  `certbot`, `runuser` and `psql` as root. `bms-core-update` (it runs the whole `update.sh`) is not sandboxed.
+- The build runs as `bms-build`, separate from the service user `bms` (section 15). `server.env` stays root-only
+  (`600`), read by systemd; the server keeps reading its settings from the environment.
+- `/var/log/bms-domains.log` is mode 640. Certificate orders of module domains are throttled: after a failure each new
+  attempt for that domain waits twice as long (5 minutes up to a day) and at most 5 new orders per hour in total; a
+  domain waiting stays `pending` and is retried after the wait.
+- Optional, off by default: `sudo bash /var/lib/bms/mirror/scripts/ubuntu/harden-host.sh` (or `install.sh` /
+  `update.sh --harden-host`) installs ufw (only SSH — every port sshd listens on and the port of the current session,
+  allowed before ufw is enabled — 80/tcp, 443/tcp, 443/udp), fail2ban (sshd jail) and unattended-upgrades, asking
+  before each.
 
 ------------------------------------------------------------------------
 
@@ -982,6 +1165,49 @@ Then inspect:
 Do not post secrets publicly when requesting support.
 
 ------------------------------------------------------------------------
+
+### Supply chain: Gradle wrapper, daemon JVM, CI and dependency verification
+
+**Gradle wrapper.** `gradle/wrapper/gradle-wrapper.properties` pins `distributionSha256Sum` for the exact
+distribution in `distributionUrl`. When bumping Gradle, change both together; the checksum is the "Binary-only
+(-bin) ZIP" value published at <https://gradle.org/release-checksums/>.
+
+**Daemon JVM (no automatic JDK download).** `gradle/gradle-daemon-jvm.properties` only asks for JDK 21: no
+`toolchainVendor` and no `toolchainUrl.*` lines, so any JDK 21 works (the Ubuntu OpenJDK 21 from apt on the
+server, Liberica in CI) and Gradle has no URL to download one from. If no JDK 21 is installed, Gradle fails with a
+message instead of fetching a binary from a third-party service. Do not regenerate the file with
+`./gradlew updateDaemonJvm` (it would add the vendor and the download URLs again).
+
+**Dependency verification (not enabled).** There is no `gradle/verification-metadata.xml` yet. To adopt it:
+
+1. GitHub, Actions, "Verification metadata", Run workflow (on the branch to adopt). It resolves the full,
+   `serverOnly` and `webOnly` profiles and uploads `verification-metadata.xml` as an artifact.
+2. Download it, review the diff (new artifacts, `origin` comments, anything unexpected) and commit it to
+   `gradle/verification-metadata.xml` on a branch.
+3. Check that the three builds still pass in CI (a missing or changed checksum fails the build on purpose).
+4. Regenerate with the same workflow whenever dependencies change; Dependabot PRs will fail until you do.
+
+Only sha256 checksums are generated (no PGP keyring is trusted automatically).
+
+**CI workflows.** Every action is pinned by commit SHA (tag in a comment; Dependabot updates both), jobs declare
+the minimum `permissions:` and checkouts do not persist the token. Only a push to `master` publishes the
+`web-dist` release (the compile job has read-only access and no secrets; a separate job signs and uploads).
+
+**Signed web distribution.** The release assets are `web-<sha>.tar.gz`, `web-<sha>.tar.gz.sha256` and
+`web-<sha>.tar.gz.sha256.sig`: an Ed25519 signature (OpenSSL, raw) over the `.sha256` file, which names the
+package with the commit sha and its hash. One-time setup by the repository owner:
+
+1. On your own computer: `openssl genpkey -algorithm ed25519 -out web-dist-signing.pem` and
+   `openssl pkey -in web-dist-signing.pem -pubout -out web_dist_public.pem`.
+2. GitHub, Settings, Secrets and variables, Actions: create the secret `WEB_DIST_SIGNING_KEY` with the full
+   contents of `web-dist-signing.pem`, then delete the local private key (or keep it offline). Optionally put the
+   secret in an Environment restricted to the `master` branch.
+3. On the server, as root: `install -d -m 755 -o root -g root /usr/local/lib/bms` and
+   `install -m 644 -o root -g root web_dist_public.pem /usr/local/lib/bms/web_dist_public.pem`.
+
+While that file does not exist, the updater behaves as before (checksum only). Once it exists, `update.sh`
+refuses any CI package without a valid signature and compiles locally instead. The public key is not secret; the
+private key lives only in GitHub.
 
 ## 18. Documentation Maintenance
 

@@ -309,6 +309,8 @@ class ExtensionPackageBuilder(
         var response: HttpResponse<Path>
         var redirects = 0
         while (true) {
+            // Every hop (the first one and each redirect) only to GitHub over https, at a public address.
+            checkDownloadHop(current)
             val request = HttpRequest.newBuilder(URI.create(current)).timeout(Duration.ofMinutes(5)).GET()
             GitHubAuth.header(githubToken, current)?.let { request.header("Authorization", it) }
             response = http.send(request.build(), HttpResponse.BodyHandlers.ofFile(target))
@@ -320,6 +322,16 @@ class ExtensionPackageBuilder(
         if (response.statusCode() != 200) throw ExtensionPackageException("No se pudo descargar el codigo de la extension (HTTP ${response.statusCode()}).")
         if (Files.size(target) > MaxArchiveBytes) throw ExtensionPackageException("El repositorio descargado es demasiado grande.")
         return target
+    }
+
+    private fun checkDownloadHop(url: String) {
+        if (!allowedDownloadUrl(url)) throw ExtensionPackageException("La descarga de la extension solo puede ir a GitHub por https.")
+        val host = URI.create(url).host.lowercase()
+        try {
+            com.ideasdeveloper.bms.server.net.PinnedHost.resolveValidated(host)
+        } catch (failure: com.ideasdeveloper.bms.server.net.PinnedHostException) {
+            throw ExtensionPackageException("La descarga de la extension no puede ir a una direccion privada.")
+        }
     }
 
     // El zip de GitHub trae una carpeta raiz <repo>-<commit>/; solo se extrae <path>/<id>/ (con limites).
@@ -344,12 +356,8 @@ class ExtensionPackageBuilder(
             ),
         )
         val output = work.resolve("kotlinc.log").toFile()
-        val process = ProcessBuilder(
-            javaExecutable, "-Xmx1g", "-Duser.home=$work", "-Djava.io.tmpdir=$work",
-            "-cp", compilerJars.joinToString(File.pathSeparator),
-            "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
-            "@$arguments",
-        ).redirectErrorStream(true).redirectOutput(output).start()
+        // A minimal environment: the code being compiled comes from the catalog (no service secrets in the child).
+        val process = com.ideasdeveloper.bms.server.security.ChildProcesses.startKotlinCompiler(javaExecutable, compilerJars, arguments, work, output)
         if (!process.waitFor(10, TimeUnit.MINUTES)) {
             process.destroyForcibly()
             throw ExtensionPackageException("La compilacion tardo demasiado.")
@@ -398,6 +406,13 @@ class ExtensionPackageBuilder(
 
     companion object {
         private const val MaxArchiveBytes = 300L * 1024 * 1024
+        // Hosts the GitHub archive download may reach, redirects included (codeload serves the zip).
+        internal val DownloadHosts = setOf("github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com")
+
+        /** Whether [url] is a hop the archive download may follow (https to GitHub); the address is checked when it is used. */
+        internal fun allowedDownloadUrl(url: String): Boolean = runCatching { URI.create(url) }.getOrNull()?.let { uri ->
+            uri.scheme?.lowercase() == "https" && uri.host?.lowercase() in DownloadHosts && uri.userInfo == null && (uri.port == -1 || uri.port == 443)
+        } == true
         private val CommitPattern = Regex("[0-9a-f]{40}")
         private val UnsafeLabelChars = Regex("[^A-Za-z0-9._-]")
 

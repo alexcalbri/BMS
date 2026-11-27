@@ -16,9 +16,20 @@ readonly SITE_PREFIX=bms-domain-
 readonly SITES_AVAILABLE=/etc/nginx/sites-available
 readonly SITES_ENABLED=/etc/nginx/sites-enabled
 readonly LOG_FILE=/var/log/bms-domains.log
+# Let's Encrypt throttling (its limits are per account and per domain): one state line per domain with its failed
+# attempts, and the time of every new order of the last hour.
+readonly ACME_STATE_DIR=/var/lib/bms/acme
+readonly ACME_ATTEMPTS_FILE=$ACME_STATE_DIR/attempts
+readonly ACME_ORDERS_FILE=$ACME_STATE_DIR/orders
+readonly ACME_MAX_ORDERS_PER_HOUR=5
+readonly ACME_BACKOFF_FIRST_SECONDS=300
+readonly ACME_BACKOFF_MAX_SECONDS=86400
 readonly DOMAIN_PATTERN='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$'
 
-log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG_FILE"; }
+log() {
+    [[ -e $LOG_FILE ]] || install -m 640 -o root -g adm /dev/null "$LOG_FILE" 2>/dev/null || install -m 640 /dev/null "$LOG_FILE"
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG_FILE"
+}
 die() { log "ERROR: $*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die 'Debe ejecutarse como root.'
@@ -64,6 +75,16 @@ Persistent=true
 WantedBy=timers.target
 UNIT
     chmod 644 /etc/systemd/system/bms-domains{,-renew}.{service,timer}
+    # Sandbox of the root helper units (scripts/ubuntu/units.sh), as far as nginx -t, certbot and runuser still work.
+    units_lib=$(dirname -- "${BASH_SOURCE[0]}")/units.sh
+    if [[ -f $units_lib ]]; then
+        # shellcheck source=units.sh
+        source "$units_lib"
+        bms_helper_hardening | bms_write_dropin bms-domains.service >/dev/null
+        bms_helper_hardening | bms_write_dropin bms-domains-renew.service >/dev/null
+    fi
+    [[ ! -f $LOG_FILE ]] || chmod 640 "$LOG_FILE"
+    install -d -m 700 -o root -g root /var/lib/bms "$ACME_STATE_DIR"
     systemctl daemon-reload
     systemctl enable --now bms-domains.timer bms-domains-renew.timer
     printf 'Publicador de dominios de modulos instalado.\n'
@@ -71,9 +92,13 @@ UNIT
 fi
 
 [[ -r $CONFIG_FILE ]] || die "No se encontro $CONFIG_FILE."
+[[ ! -f $LOG_FILE ]] || chmod 640 "$LOG_FILE"
 
 exec 9>/run/bms-domains.lock
 flock -n 9 || exit 0
+# L1: never while an install or update rewrites Nginx (they hold the maintenance lock); the next minute tries again.
+exec 8>>/run/bms-maintenance.lock
+flock -n 8 || exit 0
 
 config_value() {
     awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$CONFIG_FILE"
@@ -127,7 +152,13 @@ reload_nginx() {
     nginx -t >> "$LOG_FILE" 2>&1 && systemctl reload nginx
 }
 
+# Module domains (hotspot portals) only reach /guest/; small bodies and, when the main site installed the zones
+# (/etc/nginx/conf.d/bms-limits.conf), the same per-address limits.
 proxy_locations() {
+    printf '    server_tokens off;\n    client_max_body_size 2m;\n'
+    if [[ -f /etc/nginx/conf.d/bms-limits.conf ]]; then
+        printf '    limit_req zone=bms_req burst=400 nodelay;\n    limit_conn bms_conn 100;\n    limit_req_status 429;\n    limit_conn_status 429;\n'
+    fi
     cat <<NGINX
     location = / { return 302 /guest/s/default/; }
     location /guest/ {
@@ -137,9 +168,57 @@ proxy_locations() {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     location / { return 404; }
 NGINX
+}
+
+# Failed attempts of [domain] (0 when none).
+acme_attempts() {
+    [[ -f $ACME_ATTEMPTS_FILE ]] || { printf '0 0\n'; return; }
+    awk -v d="$1" '$1 == d { print $2, $3; found = 1 } END { if (!found) print "0 0" }' "$ACME_ATTEMPTS_FILE"
+}
+
+acme_set_attempts() {
+    local domain=$1 count=$2 now
+    now=$(date +%s)
+    install -d -m 700 "$ACME_STATE_DIR"
+    { [[ -f $ACME_ATTEMPTS_FILE ]] && awk -v d="$domain" '$1 != d' "$ACME_ATTEMPTS_FILE"
+      (( count > 0 )) && printf '%s %s %s\n' "$domain" "$count" "$now"; } > "$ACME_ATTEMPTS_FILE.tmp" || true
+    mv -f "$ACME_ATTEMPTS_FILE.tmp" "$ACME_ATTEMPTS_FILE"
+}
+
+# Whether a new certificate order for [domain] may be placed now: after a failure each new attempt waits twice as
+# long (5 minutes, 10, 20... up to a day), and at most ACME_MAX_ORDERS_PER_HOUR new orders per hour in total.
+# Prints the reason when not.
+acme_may_order() {
+    local domain=$1 count last now wait recent
+    now=$(date +%s)
+    read -r count last <<< "$(acme_attempts "$domain")"
+    if (( count > 0 )); then
+        wait=$(( ACME_BACKOFF_FIRST_SECONDS << (count > 9 ? 9 : count - 1) ))
+        (( wait <= ACME_BACKOFF_MAX_SECONDS )) || wait=$ACME_BACKOFF_MAX_SECONDS
+        if (( now - last < wait )); then
+            printf 'Espera de %s minutos tras %s intentos fallidos.' "$(( (wait - (now - last) + 59) / 60 ))" "$count"
+            return 1
+        fi
+    fi
+    recent=0
+    [[ -f $ACME_ORDERS_FILE ]] && recent=$(awk -v since="$((now - 3600))" '$1 >= since' "$ACME_ORDERS_FILE" | wc -l)
+    if (( recent >= ACME_MAX_ORDERS_PER_HOUR )); then
+        printf 'Ya se pidieron %s certificados en la ultima hora.' "$recent"
+        return 1
+    fi
+    return 0
+}
+
+acme_record_order() {
+    local now
+    now=$(date +%s)
+    install -d -m 700 "$ACME_STATE_DIR"
+    { [[ -f $ACME_ORDERS_FILE ]] && awk -v since="$((now - 3600))" '$1 >= since' "$ACME_ORDERS_FILE"; printf '%s\n' "$now"; } > "$ACME_ORDERS_FILE.tmp" || true
+    mv -f "$ACME_ORDERS_FILE.tmp" "$ACME_ORDERS_FILE"
 }
 
 write_http_site() {
@@ -190,7 +269,7 @@ NGINX
 }
 
 publish_domain() {
-    local domain=$1 cert_name="bms-domain-$1" output nginx_config
+    local domain=$1 cert_name="bms-domain-$1" output nginx_config attempts
     log "Publicando $domain"
     if [[ ${#domain} -gt 253 || ! $domain =~ $DOMAIN_PATTERN ]]; then
         set_status "$domain" error 'Dominio invalido.'
@@ -225,6 +304,13 @@ publish_domain() {
         set_status "$domain" error 'Certbot no esta instalado en el servidor.'
         return
     fi
+    # A valid certificate already on disk needs no new order (--keep-until-expiring reuses it).
+    local throttle
+    if [[ ! -f /etc/letsencrypt/live/$cert_name/fullchain.pem ]] && ! throttle=$(acme_may_order "$domain"); then
+        # Stays pending: the next run after the wait tries again.
+        log "$domain: pedido de certificado aplazado. $throttle"
+        return
+    fi
     install -d -m 755 "$ACME_ROOT/.well-known/acme-challenge"
     write_acme_site "$domain"
     enable_site "$domain"
@@ -237,16 +323,20 @@ publish_domain() {
 
     local account_args=(--register-unsafely-without-email)
     [[ -n $ACME_EMAIL ]] && account_args=(--email "$ACME_EMAIL")
+    [[ -f /etc/letsencrypt/live/$cert_name/fullchain.pem ]] || acme_record_order
     if ! output=$(certbot certonly --webroot --webroot-path "$ACME_ROOT" \
         --cert-name "$cert_name" --domain "$domain" "${account_args[@]}" \
         --agree-tos --non-interactive --keep-until-expiring 2>&1); then
         log "$output"
+        read -r attempts _ <<< "$(acme_attempts "$domain")"
+        acme_set_attempts "$domain" "$((attempts + 1))"
         remove_site "$domain"
         reload_nginx || true
         set_status "$domain" error "No se pudo obtener el certificado HTTPS. Verifica que el DNS de $domain apunte a este servidor y que el puerto 80 sea accesible."
         return
     fi
     log "$output"
+    acme_set_attempts "$domain" 0
 
     write_https_site "$domain" "$cert_name"
     if reload_nginx; then
@@ -270,7 +360,7 @@ mapfile -t registered <<< "$registered_output"
 changed=false
 for file in "$SITES_AVAILABLE/$SITE_PREFIX"*; do
     [[ -e $file ]] || continue
-    domain=${file##*/$SITE_PREFIX}
+    domain=${file##*/"$SITE_PREFIX"}
     if ! printf '%s\n' "${registered[@]}" | grep -Fxq -- "$domain"; then
         log "Retirando $domain"
         remove_site "$domain"

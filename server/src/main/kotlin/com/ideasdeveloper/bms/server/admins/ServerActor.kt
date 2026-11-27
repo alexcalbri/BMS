@@ -108,8 +108,12 @@ sealed interface ServerActorLookup {
     /** No valid server session: not signed in on the server, or no longer an active owner or administrator. */
     data object None : ServerActorLookup
 
-    /** An administrator who must change the initial password before anything else works. */
-    data class PasswordChangeRequired(val actor: ServerActor) : ServerActorLookup
+    /**
+     * An administrator who must change the initial password before anything else works, or with
+     * [twoFactorSetup] one the owner requires to use two-step verification who has not turned it on
+     * (TWO_FACTOR.md §5): the same routes stay open.
+     */
+    data class PasswordChangeRequired(val actor: ServerActor, val twoFactorSetup: Boolean = false) : ServerActorLookup
 
     /** An administrator while the server has no active owner whose role could execute the work. */
     data object NoExecutor : ServerActorLookup

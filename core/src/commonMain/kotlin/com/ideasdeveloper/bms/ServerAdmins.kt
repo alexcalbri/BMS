@@ -27,11 +27,13 @@ object ServerPermissionIds {
     const val AuditView = "server.audit.view"
     const val Settings = "server.settings"
     const val Workspace = "server.workspace"
+    // Turn two-step verification off for a user of a company in scope (TWO_FACTOR.md §8). High risk.
+    const val UsersTwoFactorReset = "server.users.two_factor_reset"
 
     val All: List<String> = listOf(
         CompaniesView, CompaniesCreate, CompaniesEdit, CompaniesStatus, CompaniesModules, CompaniesExtensions,
         CompaniesOwnerPassword, CompaniesEnter, ModulesView, ModulesInstall, ModulesRemove, ModulesAuthorizeUnsigned,
-        ExtensionsInstall, ExtensionsAuthorizeUnsigned, CoreUpdate, LogsView, AuditView, Settings, Workspace,
+        ExtensionsInstall, ExtensionsAuthorizeUnsigned, CoreUpdate, LogsView, AuditView, Settings, Workspace, UsersTwoFactorReset,
     )
 }
 
@@ -69,6 +71,8 @@ data class ServerAdminResponse(
     val companies: List<String>,
     val createdAt: String,
     val updatedAt: String,
+    // Whether the administrator has two-step verification on (TWO_FACTOR.md §8.4); null when unknown or older servers.
+    val twoFactorEnabled: Boolean? = null,
 )
 
 @Serializable

@@ -68,12 +68,14 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V011__portal_colors.sql",
         "modules/hotspot/migrations/V012__ip_throttle.sql",
         "modules/hotspot/migrations/V013__registrations_customer_idx.sql",
+        "modules/hotspot/migrations/V014__form_code_sessions.sql",
     )
 
     override val runtimeTables = listOf(
         "hotspot_settings",
         "hotspot_registrations",
         "hotspot_codes",
+        "hotspot_code_devices",
         "hotspot_accesses",
         "hotspot_networks",
         "hotspot_code_sessions",
@@ -120,7 +122,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.14.0",
+        version = "0.15.0",
         minCoreVersion = "0.12.0",
         supportsExtensions = true,
         permissions = listOf(

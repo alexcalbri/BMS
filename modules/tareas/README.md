@@ -220,3 +220,9 @@ reviewer, customer, group and board; status changes; archive), checklist items (
 (name and size, never the content), boards (create, edit with visibility and members, archive), groups (create, rename,
 move, archive), the due reminders and every import (one row per task plus the row of the whole import that the source
 writes with `TareasImportApply.recordImport`). Stored text is Spanish; values are cut to 500 characters.
+
+## Company storage quota (0.6.0, needs Core 0.13.0)
+
+- `POST /files` checks the company's storage (`ModuleFiles.checkRoom`, STORAGE_QUOTA.md) before reading the body and answers
+  `413 STORAGE_QUOTA_EXCEEDED`, `507 STORAGE_DISK_FULL` or `429 STORAGE_BUSY` with `{code, message}`. When a limit is reached
+  while the file arrives, the upload stops, no file is left and the answer is the same. The per-file maximum does not change.

@@ -279,6 +279,11 @@ class AccountService(
             } finally {
                 connection.autoCommit = true
             }
+            // A new email address ends a pending recovery of two-step verification by email (TWO_FACTOR.md §7.5).
+            if (emailChanges) {
+                runCatching { loginDatabases.emailRecovery?.cancelOpen(connection, companyCode, account.id, "email_change") }
+                    .onFailure { log.error("A pending email recovery could not be cancelled after an email change", it) }
+            }
             val stored = if (newLanguage == KeepLanguage) userLanguage(connection, account.id) else newLanguage
             if (newLanguage != KeepLanguage) {
                 SessionLanguages.rememberUser(SessionLanguages.userKey(companyCode, account.id), stored)
@@ -370,7 +375,9 @@ class AccountService(
     }
 
     /** Sets the new password when the code is right and still valid, and closes the user's sessions. */
-    fun confirmPasswordReset(username: String, companyCode: String?, code: String, newPassword: String) {
+    /** Returns whether every AI agent of the account could be disconnected (false: they must be revoked by hand). */
+    fun confirmPasswordReset(username: String, companyCode: String?, code: String, newPassword: String, twoFactorCode: String? = null): Boolean {
+        var agentsDisconnected = true
         val invalid = AccountException("INVALID_CODE", tr("El codigo no es valido o ya vencio. Pide uno nuevo."))
         val name = username.trim()
         if (!identifierPattern.matches(name) || (companyCode != null && !identifierPattern.matches(companyCode))) throw invalid
@@ -414,9 +421,37 @@ class AccountService(
                 throw invalid
             }
             if (!MessageDigest.isEqual(hash.toByteArray(), codeHash(account.id, code.trim()).toByteArray())) throw invalid
+            // Two-step verification on: the emailed code alone is not enough (TWO_FACTOR.md §4). Said only
+            // once the emailed code proved right; the emailed code stays valid for the retry with both.
+            val recovery = secondFactorForReset(connection, account.id, twoFactorCode)
             deleteCode(connection, account.id)
             setPassword(connection, account, companyCode, newPassword)
             store.clear(name)
+            // Earlier access ends with the old password: company sessions a server account opened with the
+            // switcher, and the account's AI agents (Agentes subscribes to the hook); they must be reconnected.
+            if (companyCode == null) {
+                runCatching { loginDatabases.revokeCompanySessionsOpenedBy(account.id) }
+                    .onFailure { log.error("Company sessions of {} could not be revoked after a password reset", account.username, it) }
+            }
+            val event = CredentialsChanged(companyCode, account.id, CredentialsChanged.PasswordReset)
+            val agents = AccountSecurityEvents.credentialsChanged(event)
+            recordGrantsNotEnded(central, event, account.username, agents)
+            agentsDisconnected = agents.complete
+            if (companyCode == null) serverOwnerRecovered(connection, account)
+            if (recovery != null && companyCode == null) {
+                val kind = if (isServerOwner(connection, account.id)) com.ideasdeveloper.bms.server.admins.AuditActor.ServerOwnerKind else com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind
+                com.ideasdeveloper.bms.server.company.application.ProvisioningAudit.insert(
+                    connection, com.ideasdeveloper.bms.server.admins.AuditActor(account.username, account.id, kind), "two_factor.recovery_code_used", null, null,
+                    com.ideasdeveloper.bms.server.company.application.auditDetails("purpose" to "password_reset", "recoveryCodesLeft" to recovery.left),
+                )
+            }
+            if (recovery != null && companyCode != null) {
+                val actor = CoreActivity.tenantPerson(connection, account.id) ?: ActivityActor.user(account.id, account.username)
+                CoreActivity.record(
+                    connection, actor, "user", account.id.toString(), account.username, ActivityActions.SettingsChanged,
+                    "Uso un codigo de recuperacion para recuperar su contrasena (le quedan ${recovery.left}).",
+                )
+            }
             // Recovery with the emailed code, recorded in the company (the password is never stored).
             if (companyCode != null) {
                 val actor = CoreActivity.tenantPerson(connection, account.id) ?: ActivityActor.user(account.id, account.username)
@@ -424,6 +459,63 @@ class AccountService(
                     connection, actor, "user", account.id.toString(), account.username, ActivityActions.PasswordChanged,
                     "Recupero su contrasena con el codigo enviado a su correo.", listOf(ActivityChange.secret("password", "Contrasena")),
                 )
+            }
+        }
+        return agentsDisconnected
+    }
+
+    /**
+     * The second factor of a password reset: nothing to do without two-step verification; otherwise
+     * [twoFactorCode] must be right (authenticator or recovery code). Returns the spent recovery code.
+     */
+    private fun secondFactorForReset(connection: Connection, userId: UUID, twoFactorCode: String?): com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck.Recovery? {
+        val store = loginDatabases.twoFactor
+        if (!store.isEnabled(connection, userId)) return null
+        val typed = twoFactorCode?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw AccountException("TWO_FACTOR_REQUIRED", tr("Escribe tambien el codigo de tu aplicacion de autenticacion o un codigo de recuperacion."))
+        val check = try {
+            store.check(connection, userId, typed.take(64), allowRecovery = true)
+        } catch (failure: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException) {
+            throw AccountException(failure.code, failure.message.orEmpty())
+        }
+        return when (check) {
+            com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck.Throttled -> throw AccountException("TWO_FACTOR_TOO_MANY_ATTEMPTS", tr("Demasiados codigos incorrectos. Espera unos minutos e intentalo de nuevo."))
+            com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck.Invalid -> throw AccountException("TWO_FACTOR_INVALID_CODE", tr("El codigo no es valido."))
+            is com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck.Recovery -> check
+            com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck.Authenticator -> null
+        }
+    }
+
+    private fun isServerOwner(connection: Connection, userId: UUID): Boolean =
+        connection.prepareStatement("SELECT 1 FROM server_owners WHERE user_id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { it.next() }
+        }
+
+    /**
+     * The server owner recovered the password by email (allowed without two-step verification): it is
+     * audited and the owner is told by email, so a takeover through the mailbox does not go unnoticed.
+     */
+    private fun serverOwnerRecovered(connection: Connection, account: Account) {
+        if (!isServerOwner(connection, account.id)) return
+        com.ideasdeveloper.bms.server.company.application.ProvisioningAudit.insert(
+            connection, com.ideasdeveloper.bms.server.admins.AuditActor.owner(account.username, account.id), "server_owner.password_recovered", null, null,
+            com.ideasdeveloper.bms.server.company.application.auditDetails("twoFactor" to loginDatabases.twoFactor.isEnabled(connection, account.id)),
+        )
+        val settings = mail()?.takeIf { it.isUsable } ?: return
+        val email = account.email?.takeIf { UserProfileRules.validEmail(it) } ?: return
+        val language = account.language ?: I18n.language()
+        background.launch {
+            try {
+                val (subject, body) = I18n.withLanguage(language) {
+                    tr("Se cambio la contrasena del dueno del servidor") to
+                        tr("La contrasena del usuario {0} (dueno del servidor) se cambio con un codigo enviado a este correo. Si no fuiste tu, revisa el servidor de inmediato.", account.username) + "\n"
+                }
+                MailSender.sendText(settings, email, subject, body)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                log.warn("Password change notice for {} could not be sent", account.username, failure)
             }
         }
     }

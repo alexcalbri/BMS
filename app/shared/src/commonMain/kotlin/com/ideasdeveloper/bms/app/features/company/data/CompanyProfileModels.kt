@@ -85,6 +85,10 @@ data class CompanyUserResponse(
     val userCode: String = "",
     // The company's business owner: no permissions to choose and always active.
     val isBusinessOwner: Boolean = false,
+    // Verificacion en dos pasos activa (TWO_FACTOR.md 8.4); null cuando el servidor no la informa.
+    val twoFactorEnabled: Boolean? = null,
+    // El servidor dice si quien consulta puede desactivarsela (TWO_FACTOR.md 8.1); null en servidores anteriores.
+    val canResetTwoFactor: Boolean? = null,
 )
 
 @Serializable
@@ -150,6 +154,9 @@ data class CoreUpdateRequestDto(
     val message: String? = null,
     val logTail: String? = null,
     val stalePending: Boolean = false,
+    // Commit exacto (40 hex) que se instala y resultado de la firma ("verified" o "unsigned"); null en servidores anteriores.
+    val targetCommit: String? = null,
+    val signatureStatus: String? = null,
 )
 
 @Serializable
@@ -158,4 +165,43 @@ data class CoreUpdateStatusResponse(
     val latestVersion: String? = null,
     val updateAvailable: Boolean,
     val request: CoreUpdateRequestDto? = null,
+    // Commit (40 hex) de latestVersion en la rama [ref]: es el que se muestra y se devuelve al pedir la actualizacion.
+    // Null en servidores anteriores (entonces no se puede fijar el commit).
+    val latestCommit: String? = null,
+    val ref: String? = null,
+    // Hay una llave de firma instalada en el servidor: sin firma valida no se instala. Falso = "sin firma".
+    val signatureRequired: Boolean = false,
 )
+
+// Cuerpo de POST /server/core-update: el commit que el dueno reviso.
+@Serializable
+data class CoreUpdateTargetRequest(val targetCommit: String)
+
+// Almacenamiento (STORAGE_QUOTA.md). Cuotas en bytes; 0 = sin limite.
+@Serializable
+data class CompanyStorageResponse(
+    val code: String,
+    val name: String = "",
+    val usedBytes: Long = 0,
+    // Cuota efectiva de la empresa.
+    val quotaBytes: Long = 0,
+    // Cuota propia; null = sigue a la cuota por defecto.
+    val customQuotaBytes: Long? = null,
+)
+
+@Serializable
+data class ServerStorageResponse(
+    val defaultQuotaBytes: Long = 0,
+    // Espacio libre minimo del volumen de archivos (lo fija el servidor: company.minFreeDiskBytes).
+    val minFreeDiskBytes: Long = 0,
+    val freeDiskBytes: Long? = null,
+    val totalDiskBytes: Long? = null,
+    val companies: List<CompanyStorageResponse> = emptyList(),
+)
+
+@Serializable
+data class DefaultStorageQuotaRequest(val defaultQuotaBytes: Long)
+
+// Sin valor por defecto: null debe viajar explicito (vuelve a la cuota por defecto).
+@Serializable
+data class CompanyStorageQuotaRequest(val quotaBytes: Long?)

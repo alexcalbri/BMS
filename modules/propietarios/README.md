@@ -128,3 +128,9 @@ and translated only where they are shown. Developments, lots, owners, customers,
 (names, descriptions and results) are not translated; neither are the history texts already written to the database
 ("Alta de:", "Baja de:", the lot diffs and the import notes). Values the app sends back (`op`, ids, filters, the
 "Todos" option value) never change with the language.
+
+## Espacio de almacenamiento de la empresa (0.5.0, necesita Core 0.13.0)
+
+- `POST /files` consulta el espacio de la empresa (`ModuleFiles.checkRoom`, STORAGE_QUOTA.md) antes de leer el cuerpo y responde
+  `413 STORAGE_QUOTA_EXCEEDED`, `507 STORAGE_DISK_FULL` o `429 STORAGE_BUSY` con `{code, message}`. Si el limite se alcanza
+  mientras llega el archivo, la subida se corta, no queda archivo y la respuesta es la misma. El maximo por archivo no cambia.

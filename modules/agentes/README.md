@@ -215,3 +215,37 @@ authorization, which follow the browser language) is available in Spanish (sourc
 The MCP tools (names, descriptions, results), the OAuth protocol answers meant for the client (`error_description`),
 the activity rows already stored and the tool titles shown in the lists stay in Spanish. Token handling, scopes and
 permission checks do not change with the language.
+
+## Hardening (0.7.0)
+
+- Public OAuth routes (`register`, `authorize`, `token`, `revoke`) read at most 64 KB; the MCP endpoint reads at most 1 MB without buffering more.
+- Redirect URIs (registration and every authorization): https, or http on a loopback host; no user info, wildcards, spaces, backslashes or
+  control characters. The `redirect_uri` of an authorization must match one of the client's registered URIs exactly, and errors are only
+  ever redirected to such a URI. Clients already registered keep working (the registration is carried in the signed client id and is
+  not changed); only a registration holding a URI that is not valid today stops being accepted.
+- Sign-in of the OAuth page with two-step verification (Core 0.13.0, TWO_FACTOR.md): an account that has it on gets a second page
+  that asks for the authenticator code or a recovery code; the agent is only authorized after Core accepted the password and the
+  code together. The second page never contains the password (it stays in the server's memory for at most 5 minutes, bound to the
+  OAuth client, its redirect URI and the client address) and ends after 5 wrong codes; Core's per-account code limit applies too.
+  The client address of the browser is recorded with the sign-in. Requires Core 0.13.0 (`minCoreVersion`).
+
+## 0.7.1
+
+- When an account turns on two-step verification or resets its password by email, Core tells the module
+  (`AccountSecurityEvents`) and every agent connection of that account (access and refresh tokens) is revoked: the agents
+  must be connected again. Server accounts' agents (server workspace) are revoked the same way.
+- The sign-ins waiting for their code keep at most one entry per user and client address, expired entries are dropped on
+  every sign-in, and at most 1000 wait at the same time (past that the page asks to try again in a few minutes).
+
+## 0.7.2
+
+- Each connection records who really opened it (migration V006): the account itself, the server owner or administrator
+  behind a switcher session, or the owner of another company of the group behind the business-owner switcher. When
+  that person turns on two-step verification or resets the password, their connections are revoked in every active
+  company and the server workspace, as well as the account's own ones. A connection opened through a switcher stops
+  working (checked on every use, cached 30 s) as soon as that person could no longer enter the company the same way.
+- Connections made before 0.7.2 have no recorded origin: they keep working and show "origen desconocido". They cannot
+  be told apart reliably afterwards (token creation was not in the activity log, and matching switcher sessions by
+  time would blame the business owner for what the server person did, or the other way round), so the business owner
+  or the server owner should review them and revoke the ones nobody recognises.
+- Needs Core with tenant migration V015 (switch origin of sessions).

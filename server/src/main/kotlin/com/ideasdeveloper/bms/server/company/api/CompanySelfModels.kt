@@ -61,6 +61,10 @@ data class CompanyUserResponse(
     val userCode: String = "",
     // The company's business owner: edited with its own rules (no permissions, always active).
     val isBusinessOwner: Boolean = false,
+    // Two-step verification on (TWO_FACTOR.md §8.4); null when it cannot be told.
+    val twoFactorEnabled: Boolean? = null,
+    // Whether the caller may turn this user's two-step verification off (TWO_FACTOR.md §8.4); null when unknown.
+    val canResetTwoFactor: Boolean? = null,
 )
 
 @Serializable

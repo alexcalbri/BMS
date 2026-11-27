@@ -184,3 +184,12 @@ archive, restore), notes and manual history entries (added, deleted: the row is 
 user-account links, custom fields (settings), linking and unlinking of companies, merges, separations, reviews and the
 copies the sharing job makes (one row per destination and batch with the totals). Stored text is Spanish; values are cut
 to 500 characters.
+
+## Email state (0.14.0, migration V012)
+
+`customers.email_status` / `email_verified_at`: `NULL` = unknown (every customer that already existed, imports, staff-created ones: no badge),
+`unverified` = the email was typed in a form that emails a code (the WiFi portal) and the code was not entered yet, `verified` = the code was entered.
+Changing the email (staff, import, agent) goes back to unknown (trigger `customers_reset_email_status`). The customer's page shows a badge
+"Correo verificado" / "Correo sin verificar"; `GET /modules/clientes/customers?emailState=verified|unverified|unknown` and the `emailState` argument
+of `search_customers` filter the list, and every customer carries `emailStatus`. Modules set the state with the columns (the hotspot does).
+Shared copies in linked companies start with no state.

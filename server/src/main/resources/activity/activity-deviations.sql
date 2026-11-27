@@ -62,7 +62,10 @@ wanted_constraints (rel, name, def) AS (VALUES
     ('activity_log_chain', 'activity_log_chain_id_key', 'UNIQUE (id)')
 ),
 constraints_ AS (
-    SELECT p.name AS rel, k.conname::TEXT AS name, pg_catalog.pg_get_constraintdef(k.oid) AS def, k.convalidated
+    -- PostgreSQL 18 keeps every NOT NULL as a constraint of its own (contype 'n'); older versions have none. Whether a
+    -- column is NOT NULL is compared in columns_, so here they only have to be valid.
+    SELECT p.name AS rel, k.conname::TEXT AS name, pg_catalog.pg_get_constraintdef(k.oid) AS def, k.convalidated,
+           k.contype = 'n' AS not_null
     FROM present p JOIN pg_catalog.pg_constraint k ON k.conrelid = p.oid
 ),
 wanted_indexes (rel, name, def) AS (VALUES
@@ -157,8 +160,8 @@ findings (detail) AS (
           AND (k.castsource IN (SELECT atttypid FROM columns_) OR k.casttarget IN (SELECT atttypid FROM columns_))
     -- Constraints, indexes and triggers exactly as V011.
     UNION ALL SELECT 'La restriccion ' || c.name || ' de ' || c.rel || ' no es de V011 o fue cambiada.' FROM constraints_ c
-        WHERE NOT c.convalidated OR NOT EXISTS (SELECT 1 FROM wanted_constraints w
-            WHERE w.rel = c.rel AND w.name = c.name AND w.def = c.def)
+        WHERE NOT c.convalidated OR (NOT c.not_null AND NOT EXISTS (SELECT 1 FROM wanted_constraints w
+            WHERE w.rel = c.rel AND w.name = c.name AND w.def = c.def))
     UNION ALL SELECT 'Falta la restriccion ' || w.name || ' de ' || w.rel || '.' FROM wanted_constraints w
         WHERE w.rel IN (SELECT name FROM present) AND NOT EXISTS (SELECT 1 FROM constraints_ c WHERE c.rel = w.rel AND c.name = w.name)
     UNION ALL SELECT 'La clave foranea ' || k.conname || ' de ' || k.conrelid::pg_catalog.regclass::TEXT || ' apunta a ' || p.name || '.'

@@ -9,12 +9,29 @@ import com.ideasdeveloper.bms.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.bms.app.core.session.PersistentSessionStore
 import com.ideasdeveloper.bms.app.core.session.SessionStore
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Cambia la sesion a otra empresa o, con [target] null, al servidor, sin volver a iniciar sesion.
  * El business owner elige entre sus empresas vinculadas; el dueno del servidor entre todas.
  */
 object CompanySwitch {
+    // Mensaje del servidor cuando el cambio exige haber iniciado sesion con el codigo de dos pasos (403
+    // TWO_FACTOR_REAUTH_REQUIRED). App() lo muestra en un dialogo con "Cerrar sesion e iniciar de nuevo".
+    private val _reauthRequired = MutableStateFlow<String?>(null)
+    val reauthRequired: StateFlow<String?> = _reauthRequired.asStateFlow()
+
+    // Otras pantallas (p. ej. desactivar la verificacion de otra persona) usan el mismo dialogo de volver a iniciar sesion.
+    fun requestReauth(message: String) {
+        _reauthRequired.value = message
+    }
+
+    fun clearReauthRequired() {
+        _reauthRequired.value = null
+    }
+
     /** Devuelve null si cambio, o el mensaje de error para mostrar. */
     suspend fun switchTo(serverUrl: String, session: LoginResponse, target: OwnedCompany?): String? = try {
         CompanyApi(serverUrl).use { api ->
@@ -31,7 +48,9 @@ object CompanySwitch {
         }
         null
     } catch (exception: CompanyException) {
-        exception.message ?: tr("No se pudo cambiar de empresa.")
+        val message = exception.message ?: tr("No se pudo cambiar de empresa.")
+        if (exception.code == "TWO_FACTOR_REAUTH_REQUIRED") _reauthRequired.value = message
+        message
     }
 }
 

@@ -42,6 +42,7 @@ object HotspotActivity {
         "txKbps" to "Velocidad de subida (kbps)",
         "reconnectMinutes" to "Tiempo para reconectar (minutos)",
         "codeTtlMinutes" to "Vigencia del codigo (minutos)",
+        "newCustomersPerHour" to "Clientes nuevos por hora (maximo)",
         "emailSubject" to "Asunto del correo",
         "crmAccessEnabled" to "Acceso por CRM",
         "crmStageId" to "Etapa del CRM que permite el acceso",
@@ -80,7 +81,7 @@ object HotspotActivity {
     /** Who the log shows for the customers the guest portal creates. */
     private val PortalActor = ActivityActor.integration("Portal WiFi")
 
-    private val GuestCustomerLabels = linkedMapOf("name" to "Nombre", "email" to "Correo", "phone" to "Telefono")
+    private val GuestCustomerLabels = linkedMapOf("name" to "Nombre", "email" to "Correo", "phone" to "Telefono", "emailStatus" to "Estado del correo")
 
     /**
      * The customer of Clientes a guest of the portal is: an existing one (linked, untouched) or a new one of type hotspot, whose
@@ -94,12 +95,14 @@ object HotspotActivity {
             query.executeQuery().use { rows -> if (rows.next()) return rows.getObject(1, UUID::class.java) }
         }
         val id = UUID.randomUUID()
+        // A customer the form creates starts "unverified" until the code emailed to that address is entered (Clientes V012).
+        val verifiable = supportsEmailStatus(connection)
         // The portal calls this inside its own transaction; alone, it opens one so the row and the customer are saved together.
         val write = {
             connection.prepareStatement(
                 """
-                INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type)
-                VALUES (?, ?, ?, ?, 'active', 'hotspot')
+                INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type${if (verifiable) ", email_status" else ""})
+                VALUES (?, ?, ?, ?, 'active', 'hotspot'${if (verifiable) ", 'unverified'" else ""})
                 """.trimIndent()
             ).use { insert ->
                 insert.setObject(1, id)
@@ -111,11 +114,48 @@ object HotspotActivity {
             // The record is a Clientes one, so the row is Clientes' (the portal only says who made it).
             record(
                 connection, PortalActor, "customer", id.toString(), name, ActivityActions.Created, "Registro al cliente $name desde el portal WiFi.",
-                ActivityChanges.created(mapOf("name" to name, "email" to email, "phone" to phone), GuestCustomerLabels), module = "clientes",
+                ActivityChanges.created(mapOf("name" to name, "email" to email, "phone" to phone) + (if (verifiable) mapOf("emailStatus" to "sin verificar") else emptyMap()), GuestCustomerLabels), module = "clientes",
             )
         }
         if (connection.autoCommit) transaction(connection) { write() } else write()
         return id
+    }
+
+    /** Whether Clientes has the email state columns (V012); without them the portal works as before, with no state. */
+    fun supportsEmailStatus(connection: Connection): Boolean = connection.prepareStatement(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'customers' AND column_name = 'email_status'"
+    ).use { query -> query.executeQuery().use { it.next() } }
+
+    /**
+     * The guest entered the code emailed to [email]: the customer is verified now, whatever state it had (one that already was
+     * verified stays so and nothing is written) — but only while the customer's current address is still [email] (case and spaces
+     * aside): if staff changed it after the code was sent, the code proves nothing about the new address. Returns true when the
+     * state changed. The change is recorded as made by the portal; the code is never logged.
+     */
+    fun verifyGuestEmail(connection: Connection, customerId: UUID, email: String, now: java.time.Instant = java.time.Instant.now()): Boolean {
+        if (!supportsEmailStatus(connection)) return false
+        return transaction(connection) {
+            val (name, before) = connection.prepareStatement("SELECT display_name, email_status FROM customers WHERE id = ? FOR UPDATE").use { query ->
+                query.setObject(1, customerId)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else return@transaction false }
+            }
+            if (before == "verified") return@transaction false
+            val updated = connection.prepareStatement(
+                "UPDATE customers SET email_status = 'verified', email_verified_at = ? WHERE id = ? AND lower(btrim(primary_email)) = lower(btrim(?)) AND email_status IS DISTINCT FROM 'verified'"
+            ).use { update ->
+                update.setTimestamp(1, java.sql.Timestamp.from(now))
+                update.setObject(2, customerId)
+                update.setString(3, email)
+                update.executeUpdate()
+            }
+            if (updated != 1) return@transaction false
+            record(
+                connection, PortalActor, "customer", customerId.toString(), name, ActivityActions.Updated, "Verifico el correo del cliente $name con el codigo del portal WiFi.",
+                listOf(ActivityChange("emailStatus", "Estado del correo", if (before == "unverified") "sin verificar" else "sin estado", "verificado")),
+                module = "clientes",
+            )
+            true
+        }
     }
 
     private fun record(connection: Connection, actor: ActivityActor, entityType: String, entityId: String?, label: String, action: String, summary: String, changes: List<ActivityChange> = emptyList(), module: String = ModuleId) {
@@ -161,6 +201,7 @@ object HotspotActivity {
         "txKbps" to settings.txKbps,
         "reconnectMinutes" to settings.reconnectMinutes,
         "codeTtlMinutes" to settings.codeTtlMinutes,
+        "newCustomersPerHour" to settings.newCustomersPerHour,
         "emailSubject" to settings.emailSubject,
         "crmAccessEnabled" to settings.crmAccessEnabled,
         "crmStageId" to settings.crmStageId,

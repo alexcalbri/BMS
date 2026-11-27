@@ -23,6 +23,9 @@ import java.util.UUID
 object CrmImportMcpTools {
     private const val Confirm = " Confirma con el usuario antes."
 
+    // The MCP endpoint of Agentes reads at most 1 MB per request, so a longer CSV never arrives whole.
+    const val MaxCsvChars = 1_000_000
+
     private fun map(description: String) = buildJsonObject {
         put("type", "object")
         put("description", description)
@@ -42,13 +45,13 @@ object CrmImportMcpTools {
         McpTool(
             name = "import_csv",
             title = "Importar CSV",
-            description = "Lee leads desde un texto CSV (con encabezados) y crea una importacion en mapeo. Despues revisa el mapeo con get_import y empiezala con start_import.",
+            description = "Lee leads desde un texto CSV (con encabezados) y crea una importacion en mapeo. Despues revisa el mapeo con get_import y empiezala con start_import. La peticion completa no puede pasar de 1 MB: para un CSV mas grande usa import_from_url.",
             permission = CrmScreens.Settings,
             inputSchema = McpSchema.obj(
                 mapOf("csv" to McpSchema.string("Contenido CSV con la fila de encabezados."), "name" to McpSchema.string("Nombre de la importacion (opcional).")),
                 required = listOf("csv"),
             ),
-        ) { call -> read(call) { "file" to (call.string("name", 80).ifEmpty { "CSV pegado ${it.today}" } to CrmImportParse.csv(call.requiredString("csv", 5_000_000))) } },
+        ) { call -> read(call) { "file" to (call.string("name", 80).ifEmpty { "CSV pegado ${it.today}" } to CrmImportParse.csv(call.requiredString("csv", MaxCsvChars))) } },
         McpTool(
             name = "import_from_url",
             title = "Importar desde una direccion",

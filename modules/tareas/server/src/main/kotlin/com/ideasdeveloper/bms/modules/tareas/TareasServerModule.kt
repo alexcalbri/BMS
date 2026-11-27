@@ -15,6 +15,7 @@ import com.ideasdeveloper.bms.server.modules.ServerModule
 import com.ideasdeveloper.bms.server.modules.ServerModuleProvider
 import com.ideasdeveloper.bms.server.modules.SettingsTable
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
+import com.ideasdeveloper.bms.server.modules.StorageQuotaException
 import com.ideasdeveloper.bms.ui.ModuleUiEntry
 import com.ideasdeveloper.bms.ui.UiFileRef
 import com.ideasdeveloper.bms.ui.UiJson
@@ -122,8 +123,8 @@ object TareasServerModule : ServerModule {
         id = TareasModule.id,
         displayName = TareasModule.displayName,
         description = "Tableros de tareas con grupos, varios responsables, revisor, lista de comprobacion, comentarios, adjuntos, avisos de vencimiento y vistas de lista, kanban, agenda y carga de trabajo.",
-        version = "0.5.0",
-        minCoreVersion = "0.12.0",
+        version = "0.6.0",
+        minCoreVersion = "0.13.0",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -170,12 +171,19 @@ object TareasServerModule : ServerModule {
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
+                // Storage quota of the company (STORAGE_QUOTA.md): refused before reading the body.
+                val files = access.files(companyCode, TareasModule.id)
+                try {
+                    files.checkRoom(length)
+                } catch (refused: StorageQuotaException) {
+                    return@post call.respond(HttpStatusCode.fromValue(refused.httpStatus), TareasErrorResponse(refused.code, refused.message.orEmpty()))
+                }
                 // The body goes straight to the file storage; it is never held in memory whole.
                 val body = call.receiveChannel().toInputStream()
                 val result = withContext(Dispatchers.IO) {
                     access.tenantConnectionForCompany(companyCode)?.use { tenant ->
                         runCatching {
-                            TareasRepository.upload(tenant, access.files(companyCode, TareasModule.id), name, path, contentType, body, permissions.userId)
+                            TareasRepository.upload(tenant, files, name, path, contentType, body, permissions.userId)
                         }
                     }
                 } ?: return@post call.respond(HttpStatusCode.Forbidden, TareasErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
@@ -184,6 +192,9 @@ object TareasServerModule : ServerModule {
                     onFailure = { failure ->
                         if (failure is TareasValidationException) {
                             call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("invalid_file", failure.message.orEmpty()))
+                        } else if (failure is StorageQuotaException) {
+                            // Quota, free-disk floor or uploads in progress reached while the body arrived: no file is left.
+                            call.respond(HttpStatusCode.fromValue(failure.httpStatus), TareasErrorResponse(failure.code, failure.message.orEmpty()))
                         } else {
                             log.warn("No se pudo guardar un archivo de tareas ({}).", failure.javaClass.simpleName)
                             call.respond(HttpStatusCode.InternalServerError, TareasErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))

@@ -76,7 +76,13 @@ class ServerOwnerAuthorizer(
             displayName = admin.displayName,
             email = admin.email,
         )
-        return if (admin.mustChangePassword) ServerActorLookup.PasswordChangeRequired(actor) else ServerActorLookup.Found(actor)
+        return when {
+            admin.mustChangePassword -> ServerActorLookup.PasswordChangeRequired(actor)
+            // The owner requires two-step verification and this administrator has not turned it on yet.
+            com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy.adminSetupPending(admins.central, userId) ->
+                ServerActorLookup.PasswordChangeRequired(actor, twoFactorSetup = true)
+            else -> ServerActorLookup.Found(actor)
+        }
         }
     }
 }

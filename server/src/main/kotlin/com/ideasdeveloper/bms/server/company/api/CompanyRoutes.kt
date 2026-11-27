@@ -4,10 +4,13 @@ import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CoreUpdateOutcome
 import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
+import com.ideasdeveloper.bms.server.company.application.CoreUpdateRequestBody
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.bms.server.company.application.CompanyMailRejectedException
 import com.ideasdeveloper.bms.server.company.application.CompanyMailStorageException
 import com.ideasdeveloper.bms.server.company.application.CompanySelfException
+import com.ideasdeveloper.bms.server.company.application.BackupImportLimits
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
 import com.ideasdeveloper.bms.server.admins.ServerActor
 import com.ideasdeveloper.bms.server.admins.ServerActorResolver
@@ -15,6 +18,7 @@ import com.ideasdeveloper.bms.server.admins.ServerPermission
 import com.ideasdeveloper.bms.server.admins.ServerPermissionException
 import com.ideasdeveloper.bms.server.admins.serverActor
 import com.ideasdeveloper.bms.server.auth.application.EmailChangeRule
+import com.ideasdeveloper.bms.server.auth.api.twoFactorResetAnswer
 import com.ideasdeveloper.bms.server.app.RecentServerErrors
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
 import com.ideasdeveloper.bms.server.app.ServerLogsResponse
@@ -26,6 +30,7 @@ import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.ContentTransformationException
 import io.ktor.server.request.receiveMultipart
 import io.ktor.server.request.receive
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -33,8 +38,6 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
-import io.ktor.utils.io.readRemaining
-import io.ktor.utils.io.core.readBytes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.sql.SQLException
@@ -168,6 +171,28 @@ fun Route.companyRoutes(
         }
     }
 
+    // The business owner turns off a user's two-step verification (TWO_FACTOR.md §8).
+    post("/companies/me/users/{userId}/two-factor/disable") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val context = call.businessOwnerContext()
+        val service = selfService
+        if (context == null || service == null) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
+            return@post
+        }
+        val userId = runCatching { java.util.UUID.fromString(call.parameters["userId"]) }.getOrNull()
+            ?: return@post call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("USER_NOT_FOUND", tr("Usuario no encontrado.")))
+        val request = runCatching { call.receive<com.ideasdeveloper.bms.server.auth.api.TwoFactorPasswordRequest>() }.getOrNull()
+            ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
+        call.twoFactorResetAnswer {
+            try {
+                service.disableUserTwoFactor(context.companyCode, context.token, userId, request.currentPassword)
+            } catch (refused: CompanySelfException) {
+                throw com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetException("BUSINESS_OWNER_REQUIRED", 403, refused.message.orEmpty())
+            }
+        }
+    }
+
     post("/companies/me/users") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val context = call.businessOwnerContext()
@@ -278,26 +303,33 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@post
         }
-        var fileName: String? = null
-        var bytes: ByteArray? = null
-        // Extrae el archivo enviado en multipart bajo el campo file.
-        call.receiveMultipart().forEachPart { part ->
-            if (part is PartData.FileItem && part.name == "file") {
-                fileName = part.originalFileName
-                bytes = part.provider().readRemaining().readBytes()
-            }
-            part.dispose()
-        }
-        val uploadedName = fileName
-        val uploadedBytes = bytes
-        if (uploadedName == null || uploadedBytes == null) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_BACKUP", tr("Debes subir un archivo ZIP.")))
-            return@post
-        }
+        // Streamed to disk with size, entry and expanded-size limits (B4); nothing is held in memory.
+        var stored: CompanyBackupResponse? = null
+        var refusal: String? = null
+        var sawFile = false
         try {
-            call.respond(HttpStatusCode.Created, withContext(Dispatchers.IO) { service.storeImportedBackup(context.companyCode, context.token, uploadedName, uploadedBytes) })
-        } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BACKUP_NOT_IMPORTED", exception.message ?: tr("No se pudo importar el backup.")))
+            call.receiveMultipart(formFieldLimit = BackupImportLimits.MaxBytes + 64 * 1024).forEachPart { part ->
+                if (part is PartData.FileItem && part.name == "file" && !sawFile) {
+                    sawFile = true
+                    val name = part.originalFileName.orEmpty()
+                    try {
+                        stored = withContext(Dispatchers.IO) {
+                            part.provider().toInputStream().use { input -> service.storeImportedBackup(context.companyCode, context.token, name, input, call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()) }
+                        }
+                    } catch (exception: CompanySelfException) {
+                        refusal = exception.message ?: tr("No se pudo importar el backup.")
+                    }
+                }
+                part.dispose()
+            }
+        } catch (_: java.io.IOException) {
+            refusal = refusal ?: tr("No se pudo importar el backup.")
+        }
+        val result = stored
+        when {
+            result != null -> call.respond(HttpStatusCode.Created, result)
+            refusal != null -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BACKUP_NOT_IMPORTED", refusal!!))
+            else -> call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_BACKUP", tr("Debes subir un archivo ZIP.")))
         }
     }
 
@@ -875,16 +907,27 @@ fun Route.companyRoutes(
     }
 
     // Pide actualizar el Core a la ultima version del catalogo; la ejecuta el ayudante root del servidor.
+    // Cuerpo opcional {"targetCommit": "<40 hex>"}: el commit que la app mostro (latestCommit del GET).
     post("/server/core-update") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@post
         val service = coreUpdates
             ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", tr("La actualizacion del servidor no esta disponible.")))
-        when (val outcome = withContext(Dispatchers.IO) { service.request(actor.login) }) {
+        val text = runCatching { call.receiveText() }.getOrDefault("")
+        val body = if (text.isBlank()) {
+            CoreUpdateRequestBody()
+        } else {
+            runCatching { kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(CoreUpdateRequestBody.serializer(), text) }.getOrNull()
+                ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
+        }
+        when (val outcome = withContext(Dispatchers.IO) { service.request(actor.login, body.targetCommit) }) {
             is CoreUpdateOutcome.Accepted -> call.respond(HttpStatusCode.Accepted, outcome.request)
             CoreUpdateOutcome.CatalogUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("VERSION_CATALOG_UNAVAILABLE", tr("No se pudo leer el catalogo de versiones.")))
             CoreUpdateOutcome.UpToDate -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UP_TO_DATE", tr("El servidor ya tiene la ultima version.")))
             CoreUpdateOutcome.InProgress -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_IN_PROGRESS", tr("Ya hay una actualizacion en curso.")))
+            CoreUpdateOutcome.CommitUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_COMMIT_UNAVAILABLE", tr("No se pudo leer en GitHub el commit de la ultima version.")))
+            CoreUpdateOutcome.InvalidCommit -> call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("CORE_COMMIT_INVALID", tr("Indica el commit (40 hex) que revisaste.")))
+            is CoreUpdateOutcome.CommitChanged -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_COMMIT_CHANGED", tr("La version publicada cambio (ahora: commit {0}). Revisala otra vez.", outcome.latestCommit)))
         }
     }
 

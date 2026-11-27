@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.agentes
 
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.bms.server.i18n.msg
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
@@ -30,7 +31,14 @@ data class AgentToken(
     val groupScope: Boolean = false,
     // A server administrator's audit-only agent (server workspace; ModuleAccessService.serverAuditAgent).
     val serverAdmin: Boolean = false,
+    // Who really connected it (V006): "self", "server" (through the server switcher) or "company" (business-owner
+    // switcher, from [openerCompany]); null for connections made before 0.7.2 ("origen desconocido").
+    val openerKind: String? = null,
+    val openerUser: UUID? = null,
+    val openerCompany: String? = null,
 ) {
+    /** Connected from a switcher session: it keeps working only while that person may still enter the company. */
+    val openedThroughSwitcher: Boolean get() = openerKind == TokenOpener.Server || openerKind == TokenOpener.Company
     fun isActive(now: Instant = Instant.now()): Boolean = revokedAt == null && (expiresAt == null || expiresAt.isAfter(now))
 
     fun allowsModule(moduleId: String): Boolean = allowedModules == null || moduleId in allowedModules
@@ -46,15 +54,38 @@ data class AgentActivity(val tool: String, val outcome: String, val detail: Stri
 // Who creates a token: a tenant user or a server owner in the server workspace.
 data class AgentOwner(val userId: UUID, val serverOwner: Boolean, val name: String)
 
+/** Who really connects an agent (stored on the token): the account itself, or the person behind a switcher session. */
+data class TokenOpener(val kind: String, val userId: UUID?, val companyCode: String?) {
+    companion object {
+        const val Self = "self"
+        const val Server = "server"
+        const val Company = "company"
+        val Own = TokenOpener(Self, null, null)
+
+        fun of(opener: com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener?): TokenOpener = when (opener?.kind) {
+            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Server -> TokenOpener(Server, opener.userId, null)
+            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Company -> TokenOpener(Company, opener.userId, opener.companyCode)
+            else -> Own
+        }
+    }
+}
+
 /**
  * Agent tokens: "bmsmcp.<company>.<secret>". The company travels in the token so an agent only needs
  * the URL and one header; only the SHA-256 of the whole token is stored, so it is shown once.
  */
 object AgentTokens {
+    // Who/what revoked a connection when the account's credentials changed (stored as written, shown with tr()).
+    val RevokedTwoFactorEnabled = msg("verificacion en dos pasos activada")
+    val RevokedTwoFactorReset = msg("verificacion en dos pasos desactivada por otra persona")
+    val RevokedTwoFactorReplaced = msg("autenticador cambiado")
+    val RevokedPasswordReset = msg("contrasena restablecida")
+    val RevokedCredentialsChanged = msg("credenciales cambiadas")
+
     const val Prefix = "bmsmcp"
     const val RefreshPrefix = "bmsmcpr"
     private const val Columns =
-        "id, user_id, server_owner, user_name, name, token_hint, allowed_modules, read_only, created_at, expires_at, last_used_at, revoked_at, revoked_by, oauth_client, group_scope, server_admin"
+        "id, user_id, server_owner, user_name, name, token_hint, allowed_modules, read_only, created_at, expires_at, last_used_at, revoked_at, revoked_by, oauth_client, group_scope, server_admin, opener_kind, opener_user, opener_company"
     private val companyPattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val secretPattern = Regex("[A-Za-z0-9_-]{43}")
     private val generator = SessionTokenGenerator()
@@ -86,14 +117,16 @@ object AgentTokens {
         readOnly: Boolean,
         expiresAt: Instant?,
         groupScope: Boolean = false,
+        opener: TokenOpener = TokenOpener.Own,
     ): Pair<AgentToken, String> {
         val secret = generator.generate().value
         val token = "$Prefix.$companyCode.$secret"
         val id = UUID.randomUUID()
         tenant.prepareStatement(
             """
-            INSERT INTO agent_tokens (id, user_id, server_owner, user_name, name, token_hash, token_hint, allowed_modules, read_only, expires_at, group_scope)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO agent_tokens (id, user_id, server_owner, user_name, name, token_hash, token_hint, allowed_modules, read_only, expires_at, group_scope,
+                                      opener_kind, opener_user, opener_company)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, id)
@@ -107,6 +140,9 @@ object AgentTokens {
             insert.setBoolean(9, readOnly)
             insert.setTimestamp(10, expiresAt?.let(Timestamp::from))
             insert.setBoolean(11, groupScope)
+            insert.setString(12, opener.kind)
+            insert.setObject(13, opener.userId)
+            insert.setString(14, opener.companyCode)
             insert.executeUpdate()
         }
         return find(tenant, id)!! to token
@@ -160,8 +196,8 @@ object AgentTokens {
         tenant.prepareStatement(
             """
             INSERT INTO agent_tokens (id, user_id, server_owner, user_name, name, token_hash, token_hint, allowed_modules, read_only, expires_at,
-                                      oauth_client, refresh_hash, access_expires_at, group_scope, server_admin)
-            VALUES (?, ?, ?, ?, ?, ?, 'oauth', ?, ?, ?, ?, ?, ?, ?, ?)
+                                      oauth_client, refresh_hash, access_expires_at, group_scope, server_admin, opener_kind)
+            VALUES (?, ?, ?, ?, ?, ?, 'oauth', ?, ?, ?, ?, ?, ?, ?, ?, 'self')
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, id)
@@ -266,6 +302,57 @@ object AgentTokens {
             update.setString(4, clientId)
             update.executeUpdate() == 1
         }
+
+    /** Revokes every live connection of [userId] in this company (access and refresh tokens); returns how many. */
+    fun revokeAllOfUser(tenant: Connection, userId: UUID, by: String): Int =
+        tenant.prepareStatement("UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = ?, refresh_hash = NULL WHERE user_id = ? AND revoked_at IS NULL").use { update ->
+            update.setString(1, by)
+            update.setObject(2, userId)
+            update.executeUpdate()
+        }
+
+    /**
+     * The agents of an account whose credentials changed: a company account's live in its company; a server
+     * account's (owner or administrator) in the server workspace. Nothing when the module is not used there.
+     */
+    fun revokeForCredentialsChange(access: com.ideasdeveloper.bms.server.modules.ModuleAccessService, event: com.ideasdeveloper.bms.server.auth.application.CredentialsChanged): Int {
+        // Stored in Spanish (shown with tr()): one truthful label per reason.
+        val by = when (event.reason) {
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorEnabled -> RevokedTwoFactorEnabled
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorReset -> RevokedTwoFactorReset
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorReplaced -> RevokedTwoFactorReplaced
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.PasswordReset -> RevokedPasswordReset
+            else -> RevokedCredentialsChanged
+        }
+        val home = event.companyCode ?: com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code
+        var revoked = 0
+        // Every active company and the server workspace: the account's own connections where it lives, and in
+        // all of them the ones that person opened through a switcher session.
+        (access.activeCompanies() + com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code + home).distinct().forEach { company ->
+            val tenant = access.tenantConnectionForCompany(company) ?: return@forEach
+            tenant.use { connection ->
+                val present = connection.prepareStatement("SELECT to_regclass('public.agent_tokens') IS NOT NULL").use { q -> q.executeQuery().use { it.next() && it.getBoolean(1) } }
+                if (!present) return@use
+                if (company == home) revoked += revokeAllOfUser(connection, event.userId, by)
+                revoked += revokeOpenedBy(connection, event, by)
+            }
+        }
+        return revoked
+    }
+
+    /** Revokes the connections [event]'s person opened through a switcher session in this company. */
+    fun revokeOpenedBy(tenant: Connection, event: com.ideasdeveloper.bms.server.auth.application.CredentialsChanged, by: String): Int {
+        val (kind, company) = if (event.companyCode == null) TokenOpener.Server to null else TokenOpener.Company to event.companyCode
+        return tenant.prepareStatement(
+            """
+            UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = ?, refresh_hash = NULL
+            WHERE opener_kind = ? AND opener_user = ? AND opener_company IS NOT DISTINCT FROM ? AND revoked_at IS NULL
+            """.trimIndent()
+        ).use { update ->
+            update.setString(1, by); update.setString(2, kind); update.setObject(3, event.userId); update.setString(4, company)
+            update.executeUpdate()
+        }
+    }
 
     fun revoke(tenant: Connection, id: UUID, by: String): Boolean =
         tenant.prepareStatement("UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = ? WHERE id = ? AND revoked_at IS NULL").use { update ->
@@ -386,5 +473,8 @@ object AgentTokens {
         oauthClient = getString("oauth_client"),
         groupScope = getBoolean("group_scope"),
         serverAdmin = getBoolean("server_admin"),
+        openerKind = getString("opener_kind"),
+        openerUser = getObject("opener_user", UUID::class.java),
+        openerCompany = getString("opener_company"),
     )
 }

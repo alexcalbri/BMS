@@ -93,6 +93,10 @@ class CompanySelfService(
     private val secrets: SecretBox? = null,
     // Server administrators with server.workspace also manage the server workspace (SERVER_ADMINS.md §3).
     private val serverActors: ServerActorResolver? = null,
+    // Quota, free-disk floor and uploads in progress of the company (STORAGE_QUOTA.md); imported backups count too.
+    private val storage: com.ideasdeveloper.bms.server.modules.StorageGuard? = null,
+    // Turning a user's two-step verification off (TWO_FACTOR.md §8).
+    private val twoFactorResets: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService? = null,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
     private val tokenGenerator = SessionTokenGenerator()
@@ -277,12 +281,21 @@ class CompanySelfService(
     }
 
     // Guarda un ZIP subido por el usuario sin ejecutar restauracion destructiva.
-    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, bytes: ByteArray): CompanyBackupResponse {
+    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, bytes: ByteArray): CompanyBackupResponse =
+        storeImportedBackup(companyCode, accessToken, fileName, bytes.inputStream())
+
+    /**
+     * Stores an uploaded backup ZIP streaming it to disk (SECURITY_FIXES.md B4): at most
+     * [BackupImportLimits.MaxBytes] are read, then the ZIP is checked entry by entry (at most
+     * [BackupImportLimits.MaxEntries] entries and [BackupImportLimits.MaxUncompressedBytes]
+     * uncompressed, so a ZIP bomb is refused without expanding it) before it takes its name.
+     */
+    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, content: java.io.InputStream, expectedBytes: Long? = null): CompanyBackupResponse {
         val context = authorizeBusinessOwner(companyCode, accessToken)
         validateBackupName(fileName)
-        validateZip(bytes)
-        val output = backupDirectory(context.companyCode).also { it.createDirectories() }.resolve(fileName)
-        output.outputStream().use { it.write(bytes) }
+        val directory = backupDirectory(context.companyCode).also { it.createDirectories() }
+        val output = directory.resolve(fileName)
+        BackupImportLimits.importInto(directory, output, content, expectedBytes, context.companyCode, storage)
         backupRow(context, output, ActivityActions.Imported, "Importo la copia de seguridad ${output.name}.")
         return CompanyBackupResponse(
             fileName = output.name,
@@ -337,12 +350,87 @@ class CompanySelfService(
         }
     }
 
+    /**
+     * The business owner turns off the two-step verification of another user of the company (TWO_FACTOR.md §8):
+     * only with their own session (never one opened from the server switcher, nor in the server workspace) and
+     * never for themself.
+     */
+    fun disableUserTwoFactor(companyCode: String, accessToken: String, userId: UUID, currentPassword: String?): com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetResponse {
+        val resets = twoFactorResets ?: throw CompanySelfException(tr("La verificacion en dos pasos no esta disponible en este servidor."))
+        if (companyCode.trim() == ServerWorkspace.Code) throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val authority = resetAuthority(context, accessToken)
+            ?: throw CompanySelfException(tr("Necesitas el permiso {0}.", ServerPermission.UsersTwoFactorReset.id))
+        val isOwnerRow = userId == context.businessOwnerUserId
+        if (!authority.mayTarget(isOwnerRow)) {
+            throw CompanySelfException(if (isOwnerRow && !authority.server) tr("No puedes desactivar asi tu propia verificacion en dos pasos.") else tr("Una empresa de este business owner no esta en tu alcance."))
+        }
+        resets.checkActor(authority.actor, accessToken, currentPassword)
+        return resets.reset(authority.actor, context.companyCode, userId)
+    }
+
+    /**
+     * Who may reset two-step verification through a company session (TWO_FACTOR.md §8.1), or null:
+     * - the business owner's own session: acts as that owner, never on the owner row;
+     * - a session of the business-owner switcher (owner of another company of the group): the switcher treats
+     *   both owners as one person, so it acts as that owner too, but with its OWN account (password, second-step
+     *   mark of this session) and never on the owner row of either company;
+     * - a session of the server switcher: acts as the server person (owner, or administrator holding
+     *   server.users.two_factor_reset with this company in scope), password of the server account; it may target
+     *   the business owner when the whole owner group is in scope.
+     */
+    private fun resetAuthority(context: BusinessOwnerContext, accessToken: String): ResetAuthority? {
+        val ownerId = context.businessOwnerUserId ?: return null
+        val role = context.businessOwnerRole.orEmpty()
+        val code = context.companyCode
+        val opener = loginDatabases.sessionOpener(code, accessToken)
+        return when (opener?.kind) {
+            null -> ResetAuthority(
+                com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(AuditActor.businessOwner(role), ownerId, role, context.activity.name, code, context.activity),
+                server = false,
+            ) { isOwnerRow -> !isOwnerRow }
+            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Company -> {
+                val origin = opener.companyCode ?: return null
+                val login = loginDatabases.loginOf(origin, opener.userId) ?: return null
+                ResetAuthority(
+                    com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(
+                        AuditActor.businessOwner(login), opener.userId, login, context.activity.name, origin, context.activity, sessionCompanyCode = code,
+                    ),
+                    server = false,
+                ) { isOwnerRow -> !isOwnerRow }
+            }
+            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Server -> {
+                val actor = (ServerOwnerAuthorizer.liveActor(loginDatabases.admins, central, opener.userId) as? ServerActorLookup.Found)?.actor ?: return null
+                if (!actor.isOwner && !(actor.has(ServerPermission.UsersTwoFactorReset) && actor.mayActOn(code))) return null
+                val groupInScope = actor.isOwner || actor.companyScope == null || (loginDatabases.ownerGroupOf(code) + code).all { actor.mayActOn(it) }
+                val name = actor.displayName?.takeIf { it.isNotBlank() } ?: actor.login
+                ResetAuthority(
+                    com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(actor.audit, actor.userId, actor.login, name, null, context.activity, sessionCompanyCode = code),
+                    server = true,
+                ) { isOwnerRow -> !isOwnerRow || groupInScope }
+            }
+            else -> null
+        }
+    }
+
+    private class ResetAuthority(
+        val actor: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor,
+        val server: Boolean,
+        val mayTarget: (isOwnerRow: Boolean) -> Boolean,
+    )
+
     fun users(companyCode: String, accessToken: String): CompanyUsersResponse {
         val context = authorizeUserAdministrator(companyCode, accessToken)
+        // What this caller may reset (TWO_FACTOR.md §8.4): the same rules as the reset itself.
+        val authority = if (context.businessOwnerUserId == null || twoFactorResets == null) null else runCatching { resetAuthority(context, accessToken) }.getOrNull()
         tenantConnection(context.tenant).use { connection ->
             syncPermissionCatalog(connection)
             return CompanyUsersResponse(
-                users = loadUsers(connection),
+                users = loadUsers(connection).map { user ->
+                    user.copy(canResetTwoFactor = user.twoFactorEnabled?.let { enabled ->
+                        enabled && authority?.mayTarget(user.userId == context.businessOwnerUserId.toString()) == true
+                    })
+                },
                 permissions = loadPermissions(connection),
             )
         }
@@ -675,7 +763,9 @@ class CompanySelfService(
             else -> when (val lookup = serverActors?.resolve(accessToken)) {
                 is ServerActorLookup.Found -> if (lookup.actor.has(ServerPermission.Workspace)) lookup.actor.audit
                     else throw CompanySelfException(tr("Necesitas el permiso {0}.", ServerPermission.Workspace.id))
-                is ServerActorLookup.PasswordChangeRequired -> throw CompanySelfException(tr("Cambia tu contrasena antes de continuar."))
+                is ServerActorLookup.PasswordChangeRequired -> throw CompanySelfException(
+                    if (lookup.twoFactorSetup) tr("Activa la verificacion en dos pasos para continuar.") else tr("Cambia tu contrasena antes de continuar."),
+                )
                 else -> null
             }
         }
@@ -898,6 +988,7 @@ class CompanySelfService(
             email = user.third.second,
             userCode = ApplicationUserCodes.ensure(connection, userId),
             isBusinessOwner = connection.isBusinessOwner(userId),
+            twoFactorEnabled = runCatching { loginDatabases.twoFactor.takeIf { it.available(connection) }?.isEnabled(connection, userId) }.getOrNull(),
         )
     }
 
@@ -998,15 +1089,6 @@ class CompanySelfService(
     private fun validateBackupName(fileName: String) {
         if (!backupNamePattern.matches(fileName)) {
             throw CompanySelfException(tr("Nombre de backup invalido."))
-        }
-    }
-
-    // Verifica que el archivo subido sea un ZIP legible y no este vacio.
-    private fun validateZip(bytes: ByteArray) {
-        ZipInputStream(bytes.inputStream()).use { zip ->
-            if (zip.nextEntry == null) {
-                throw CompanySelfException(tr("El archivo ZIP esta vacio."))
-            }
         }
     }
 
@@ -1224,3 +1306,95 @@ private val CompanyProfileLabels = mapOf(
 )
 
 private val UserLabels = mapOf("username" to "Usuario", "displayName" to "Nombre", "email" to "Correo", "active" to "Activo")
+
+/** Limits of an imported backup ZIP (SECURITY_FIXES.md B4). */
+object BackupImportLimits {
+    const val MaxBytes = 512L * 1024 * 1024
+    const val MaxEntries = 10_000
+    const val MaxUncompressedBytes = 4L * 1024 * 1024 * 1024
+
+    // Backups a company keeps (generated and imported): at most this many and this much in total.
+    const val MaxStoredBackups = 20
+    const val MaxStoredBytes = 5L * 1024 * 1024 * 1024
+
+    /**
+     * Writes [content] as [output] in the company's backup [directory] (review item 3). Every check comes before
+     * anything is written: the number and total size of the backups the company keeps, its quota, the free-disk
+     * floor and its uploads in progress ([storage]); while streaming, each chunk is charged to the quota through
+     * the same counting stream and the size limits apply; the ZIP is checked before it takes its name.
+     */
+    fun importInto(directory: Path, output: Path, content: java.io.InputStream, expectedBytes: Long?, companyCode: String, storage: com.ideasdeveloper.bms.server.modules.StorageGuard?) {
+        val stored = Files.list(directory).use { files -> files.filter { it.fileName.toString().endsWith(".zip") && it != output }.toList() }
+        val storedBytes = stored.sumOf { runCatching { Files.size(it) }.getOrDefault(0L) }
+        if (stored.size >= MaxStoredBackups) throw CompanySelfException(tr("La empresa ya guarda {0} copias de seguridad; elimina alguna antes de importar otra.", MaxStoredBackups))
+        if (expectedBytes != null && storedBytes + expectedBytes > MaxStoredBytes) throw storedTooLarge()
+        val upload = try {
+            storage?.checkRoom(companyCode, expectedBytes)
+            storage?.begin(companyCode)
+        } catch (refused: com.ideasdeveloper.bms.server.modules.StorageQuotaException) {
+            throw CompanySelfException(refused.message.orEmpty())
+        }
+        try {
+            val partial = Files.createTempFile(directory, ".import-", ".part")
+            try {
+                val written = try {
+                    Files.newOutputStream(partial).use { out ->
+                        copyLimited(content, out, maxBytes = minOf(MaxBytes, MaxStoredBytes - storedBytes)) { bytes -> upload?.charge(bytes) }
+                    }
+                } catch (refused: com.ideasdeveloper.bms.server.modules.StorageQuotaException) {
+                    throw CompanySelfException(refused.message.orEmpty())
+                }
+                validateZip(partial)
+                Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                upload?.stored(written)
+            } finally {
+                Files.deleteIfExists(partial)
+            }
+        } finally {
+            upload?.close()
+        }
+    }
+
+    fun tooLarge() = CompanySelfException(tr("El backup supera el maximo de {0} MB.", MaxBytes / (1024 * 1024)))
+
+    fun storedTooLarge() = CompanySelfException(tr("Las copias de seguridad de la empresa superarian {0} GB; elimina alguna antes de importar otra.", MaxStoredBytes / (1024 * 1024 * 1024)))
+
+    /** Copies at most [maxBytes] (one byte more and the import is refused); each chunk goes through [charge] first. */
+    fun copyLimited(input: java.io.InputStream, output: java.io.OutputStream, maxBytes: Long = MaxBytes, charge: (Long) -> Unit = {}): Long {
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return total
+            total += read
+            if (total > maxBytes) throw if (maxBytes < MaxBytes) storedTooLarge() else tooLarge()
+            charge(read.toLong())
+            output.write(buffer, 0, read)
+        }
+    }
+
+    /** A readable, non-empty ZIP within the entry and uncompressed-size limits (read as a stream, nothing is kept). */
+    fun validateZip(file: Path, maxEntries: Int = MaxEntries, maxUncompressed: Long = MaxUncompressedBytes) {
+        var entries = 0
+        var expanded = 0L
+        val buffer = ByteArray(64 * 1024)
+        try {
+            ZipInputStream(Files.newInputStream(file)).use { zip ->
+                while (true) {
+                    zip.nextEntry ?: break
+                    entries++
+                    if (entries > maxEntries) throw CompanySelfException(tr("El backup tiene demasiados archivos (maximo {0}).", maxEntries))
+                    while (true) {
+                        val read = zip.read(buffer)
+                        if (read < 0) break
+                        expanded += read
+                        if (expanded > maxUncompressed) throw CompanySelfException(tr("El backup descomprimido supera el maximo permitido."))
+                    }
+                }
+            }
+        } catch (failure: java.util.zip.ZipException) {
+            throw CompanySelfException(tr("El archivo no es un ZIP valido."))
+        }
+        if (entries == 0) throw CompanySelfException(tr("El archivo ZIP esta vacio."))
+    }
+}

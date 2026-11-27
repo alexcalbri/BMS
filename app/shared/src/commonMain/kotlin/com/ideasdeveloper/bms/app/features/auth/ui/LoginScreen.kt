@@ -193,6 +193,20 @@ fun LoginScreen(
                     modifier = Modifier.padding(if (AdaptiveLayout.roomy) 24.dp else 20.dp),
                     horizontalAlignment = CenterHorizontally,
                 ) {
+            if (state.challenge != null) {
+                // Contrasena correcta: segundo paso con el codigo de la aplicacion de autenticacion.
+                TwoFactorSignInStep(
+                    error = state.error,
+                    attemptsLeft = state.attemptsLeft,
+                    notice = state.notice,
+                    emailRecoveryOffered = state.challenge?.emailRecoveryOffered == true,
+                    waitDays = state.waitDays,
+                    isLoading = isLoading,
+                    onSubmit = { code, emailRecovery -> loginViewModel.submitTwoFactor(code, emailRecovery) },
+                    onStartEmailRecovery = { loginViewModel.startEmailRecovery() },
+                    onCancel = { loginViewModel.cancelTwoFactor() },
+                )
+            } else {
             if (!editingServer) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -350,6 +364,7 @@ fun LoginScreen(
                 enabled = !isLoading && serverUrl.isNotBlank() && (serverAdministration || companyCode.isNotBlank()),
             ) {
                 Text(tr("¿Olvidaste tu contraseña?"), color = AppTheme.colors.text)
+            }
             }
                 }
             }

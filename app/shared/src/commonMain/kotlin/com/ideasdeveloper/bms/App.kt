@@ -3,6 +3,9 @@ package com.ideasdeveloper.bms
 import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.Composable
@@ -34,7 +37,9 @@ import com.ideasdeveloper.bms.app.features.auth.data.isServerAdmin
 import com.ideasdeveloper.bms.app.features.auth.data.isServerLevel
 import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import com.ideasdeveloper.bms.app.features.company.data.CompanySwitch
 import com.ideasdeveloper.bms.app.features.serveradmin.data.PasswordChangeRequiredCode
+import com.ideasdeveloper.bms.app.features.serveradmin.data.TwoFactorSetupRequiredCode
 import com.ideasdeveloper.bms.app.features.serveradmin.data.ServerAdminApi
 import com.ideasdeveloper.bms.app.features.serveradmin.data.use
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.AuditLogScreen
@@ -43,6 +48,13 @@ import com.ideasdeveloper.bms.app.features.serveradmin.ui.ForcedPasswordChangeSc
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ServerAdminsScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.LoginScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.ProfileDialog
+import com.ideasdeveloper.bms.app.features.auth.ui.LastRecoveryCodeDialog
+import com.ideasdeveloper.bms.app.features.auth.ui.RecoveryCodeUsedDialog
+import com.ideasdeveloper.bms.app.features.auth.ui.TwoFactorNoticeDialog
+import com.ideasdeveloper.bms.app.features.auth.ui.TwoFactorSetupRequiredScreen
+import com.ideasdeveloper.bms.app.features.auth.data.AccountApi
+import com.ideasdeveloper.bms.app.features.auth.data.LoginException
+import com.ideasdeveloper.bms.app.features.auth.data.use
 import com.ideasdeveloper.bms.app.features.company.ui.CompanyManagementScreen
 import com.ideasdeveloper.bms.app.features.company.ui.CompanyProvisioningScreen
 import com.ideasdeveloper.bms.app.features.company.ui.ServerModuleManagementScreen
@@ -171,8 +183,21 @@ fun App(initialServerUrl: String = "") {
                         mustChangePassword = me.mustChangePassword,
                     )
                 }
+                // El dueno puede exigir la verificacion en dos pasos a los administradores despues de que este entro (o la sesion
+                // se restauro): se consulta el estado para mostrar la activacion. Con cambio de contrasena pendiente se espera.
+                if (!me.mustChangePassword) {
+                    try {
+                        val twoFactor = AccountApi(url).use { api -> api.twoFactorStatus(active.accessToken, null) }
+                        if (twoFactor != null) {
+                            SessionStore.update { it.copy(twoFactorSetupRequired = twoFactor.requiredByServer && !twoFactor.enabled) }
+                        }
+                    } catch (_: LoginException) {
+                        // Sin estado no se bloquea: el servidor responde 403 TWO_FACTOR_SETUP_REQUIRED cuando corresponde.
+                    }
+                }
             } catch (exception: CompanyException) {
                 if (exception.code == PasswordChangeRequiredCode) SessionStore.update { it.copy(mustChangePassword = true) }
+                if (exception.code == TwoFactorSetupRequiredCode) SessionStore.update { it.copy(twoFactorSetupRequired = true) }
             }
         }
 
@@ -376,6 +401,15 @@ fun App(initialServerUrl: String = "") {
                         onLogout = ::requestLogout,
                     )
                 }
+                // Despues del cambio de contrasena, bloquea la app hasta que el administrador active la verificacion en dos pasos
+                // cuando el dueno del servidor se la exige.
+                if (currentSession != null && currentSession.twoFactorSetupRequired && !currentSession.mustChangePassword) {
+                    TwoFactorSetupRequiredScreen(
+                        serverUrl = clientConfiguration?.serverUrl,
+                        session = currentSession,
+                        onLogout = ::requestLogout,
+                    )
+                }
             }
         }
 
@@ -388,6 +422,42 @@ fun App(initialServerUrl: String = "") {
                 onSaved = { profile -> SessionStore.update { it.copy(displayName = profile.displayName, email = profile.email, profileComplete = profile.profileComplete) } },
                 onDismiss = {},
                 onLogout = ::requestLogout,
+            )
+        }
+
+        // Aviso de que el segundo paso se hizo con un codigo de recuperacion (cuantos quedan).
+        currentSession?.takeIf { it.recoveryCodeUsed }?.let { used ->
+            val clear = { SessionStore.update { it.copy(recoveryCodeUsed = false, recoveryCodesLeft = null, lastRecoveryCodeUsed = false) } }
+            if (used.lastRecoveryCodeUsed || used.recoveryCodesLeft == 0) {
+                LastRecoveryCodeDialog(serverUrl = clientConfiguration?.serverUrl, session = used, onDismiss = { clear() })
+            } else {
+                RecoveryCodeUsedDialog(codesLeft = used.recoveryCodesLeft, onDismiss = { clear() })
+            }
+        }
+
+        // El servidor exige haber iniciado sesion con el codigo de dos pasos para cambiar de empresa o volver al servidor.
+        val reauthMessage by CompanySwitch.reauthRequired.collectAsState()
+        reauthMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = { CompanySwitch.clearReauthRequired() },
+                title = { Text(tr("Vuelve a iniciar sesion")) },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        CompanySwitch.clearReauthRequired()
+                        logout()
+                    }) { Text(tr("Cerrar sesion e iniciar de nuevo")) }
+                },
+                dismissButton = { TextButton(onClick = { CompanySwitch.clearReauthRequired() }) { Text(tr("Cancelar")) } },
+            )
+        }
+
+        // Recuperacion por correo: la verificacion en dos pasos quedo desactivada y/o se cancelo una recuperacion en curso.
+        currentSession?.takeIf { it.twoFactorDisabled || it.emailRecoveryCancelled }?.let { notice ->
+            TwoFactorNoticeDialog(
+                twoFactorDisabled = notice.twoFactorDisabled,
+                emailRecoveryCancelled = notice.emailRecoveryCancelled,
+                onDismiss = { SessionStore.update { it.copy(twoFactorDisabled = false, emailRecoveryCancelled = false) } },
             )
         }
 

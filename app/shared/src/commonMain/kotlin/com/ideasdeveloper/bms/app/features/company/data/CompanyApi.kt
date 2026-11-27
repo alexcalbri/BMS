@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.app.features.company.data
 
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
+import com.ideasdeveloper.bms.app.core.session.SessionStore
 import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
@@ -510,6 +511,26 @@ class CompanyApi(serverUrl: String) {
     }
 
     // Crea la empresa del servidor si aun no existe y devuelve su codigo.
+    // Descarga el modulo del catalogo y devuelve su commit, el enlace al commit y el hash para revisarlo antes de autorizarlo sin firma.
+    suspend fun inspectServerModule(accessToken: String, moduleId: String): ModulePackageInspection = call(tr("No se pudo revisar el modulo.")) {
+        client.get("$baseUrl/server/modules/${moduleId.encodeURLPathPart()}/inspect") { bearerAuth(accessToken) }
+    }
+
+    // Autoriza el hash y el commit revisados de un modulo sin firma (409 PACKAGE_CHANGED si lo descargado ahora es otra cosa).
+    suspend fun authorizeUnsignedServerModule(
+        accessToken: String,
+        moduleId: String,
+        confirmationText: String,
+        expectedPackageSha256: String,
+        expectedCommit: String,
+    ): ModuleUnsignedAuthorizationResponse = call(tr("No se pudo autorizar el modulo.")) {
+        client.post("$baseUrl/server/modules/${moduleId.encodeURLPathPart()}/authorize-unsigned") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(AuthorizeUnsignedModuleRequest(confirmationText, expectedPackageSha256, expectedCommit))
+        }
+    }
+
     suspend fun createServerWorkspace(accessToken: String): ServerWorkspaceResponse {
         try {
             val response = client.post("$baseUrl/server/workspace") {
@@ -671,7 +692,8 @@ class CompanyApi(serverUrl: String) {
             val response = request()
             if (response.status == HttpStatusCode.OK) return response.body()
             val error = runCatching { response.body<CompanyErrorResponse>() }.getOrNull()
-            throw CompanyException(error?.message ?: tr("El servidor no pudo completar la operacion."), code = error?.code)
+            if (error?.code == "TWO_FACTOR_SETUP_REQUIRED") SessionStore.update { it.copy(twoFactorSetupRequired = true) }
+            throw CompanyException(error?.message ?: tr("El servidor no pudo completar la operacion."), status = response.status.value, code = error?.code)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
@@ -843,10 +865,61 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
-    // Solicita actualizar el Core; el servidor responde 202 con la solicitud creada.
-    suspend fun requestCoreUpdate(accessToken: String): CoreUpdateRequestDto = call(tr("No se pudo solicitar la actualizacion.")) {
+    // Solicita actualizar el Core; el servidor responde 202 con la solicitud creada. [targetCommit] es el commit
+    // (latestCommit del GET) que el dueno reviso: el servidor lo fija y responde 409 CORE_UPDATE_COMMIT_CHANGED si la
+    // rama avanzo. Sin commit (servidor anterior, que no devuelve latestCommit) se envia sin cuerpo como antes.
+    suspend fun requestCoreUpdate(accessToken: String, targetCommit: String? = null): CoreUpdateRequestDto = call(tr("No se pudo solicitar la actualizacion.")) {
         client.post("$baseUrl/server/core-update") {
             bearerAuth(accessToken)
+            if (targetCommit != null) {
+                contentType(ContentType.Application.Json)
+                setBody(CoreUpdateTargetRequest(targetCommit))
+            }
+        }
+    }
+
+    // Desactiva la verificacion en dos pasos de un usuario (TWO_FACTOR.md 8). [viaServer] false: ruta del business owner
+    // (/companies/me, con el codigo de empresa en la cabecera); true: ruta del servidor (dueno o administrador con permiso).
+    suspend fun resetUserTwoFactor(
+        accessToken: String,
+        companyCode: String,
+        userId: String,
+        currentPassword: String,
+        viaServer: Boolean,
+    ): TwoFactorResetResponse = call(tr("No se pudo desactivar la verificacion en dos pasos.")) {
+        val path = if (viaServer) {
+            "$baseUrl/server/companies/${companyCode.encodeURLPathPart()}/users/${userId.encodeURLPathPart()}/two-factor/disable"
+        } else {
+            "$baseUrl/companies/me/users/${userId.encodeURLPathPart()}/two-factor/disable"
+        }
+        client.post(path) {
+            bearerAuth(accessToken)
+            if (!viaServer) header("X-Company-Code", companyCode)
+            contentType(ContentType.Application.Json)
+            setBody(TwoFactorResetRequest(currentPassword))
+        }
+    }
+
+    // Almacenamiento de las empresas (STORAGE_QUOTA.md, solo el dueno del servidor): cuota por defecto, espacio libre y uso.
+    suspend fun serverStorage(accessToken: String): ServerStorageResponse = call(tr("No se pudo cargar el almacenamiento.")) {
+        client.get("$baseUrl/server/storage") { bearerAuth(accessToken) }
+    }
+
+    // Cambia la cuota por defecto de todas las empresas (0 = sin limite).
+    suspend fun updateDefaultStorageQuota(accessToken: String, defaultQuotaBytes: Long): ServerStorageResponse = call(tr("No se pudo guardar la cuota de almacenamiento.")) {
+        client.put("$baseUrl/server/storage") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(DefaultStorageQuotaRequest(defaultQuotaBytes))
+        }
+    }
+
+    // Cuota propia de una empresa: null vuelve a la cuota por defecto y 0 es sin limite.
+    suspend fun updateCompanyStorageQuota(accessToken: String, companyCode: String, quotaBytes: Long?): CompanyStorageResponse = call(tr("No se pudo guardar la cuota de almacenamiento.")) {
+        client.put("$baseUrl/companies/${companyCode.encodeURLPathPart()}/storage-quota") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(CompanyStorageQuotaRequest(quotaBytes))
         }
     }
 
@@ -855,8 +928,9 @@ class CompanyApi(serverUrl: String) {
         try {
             val response = request()
             if (response.status.isSuccess()) return response.body()
-            val message = runCatching { response.body<CompanyErrorResponse>().message }.getOrNull()
-            throw CompanyException(message ?: failure, status = response.status.value)
+            val error = runCatching { response.body<CompanyErrorResponse>() }.getOrNull()
+            if (error?.code == "TWO_FACTOR_SETUP_REQUIRED") SessionStore.update { it.copy(twoFactorSetupRequired = true) }
+            throw CompanyException(error?.message ?: failure, status = response.status.value, code = error?.code)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {

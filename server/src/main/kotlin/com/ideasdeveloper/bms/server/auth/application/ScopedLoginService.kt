@@ -10,6 +10,8 @@ class ScopedLoginService(
     private val findActiveDatabase: (String) -> String?,
     private val companyScope: (String) -> LoginScope?,
     private val delayMillis: (LoginCredentials) -> Long = { 0L },
+    // Spends what a sign-in in a real company costs, so an unknown or inactive company answers in the same time (B2).
+    private val unknownCompany: (LoginCredentials) -> Unit = {},
 ) {
     /** Milliseconds the caller should wait (non-blocking) before [login]; 0 for none. */
     fun delayMillisFor(credentials: LoginCredentials): Long = delayMillis(credentials)
@@ -17,7 +19,8 @@ class ScopedLoginService(
     fun login(credentials: LoginCredentials): LoginSuccessResponse? {
         val code = credentials.companyCode ?: return serverScope.login(credentials)
         if (!code.matches(Regex("[a-z][a-z0-9_]{0,62}"))) return null
-        val database = findActiveDatabase(code) ?: return null
-        return companyScope(database)?.login(credentials)
+        val database = findActiveDatabase(code) ?: return null.also { unknownCompany(credentials) }
+        val scope = companyScope(database) ?: return null.also { unknownCompany(credentials) }
+        return scope.login(credentials)
     }
 }
