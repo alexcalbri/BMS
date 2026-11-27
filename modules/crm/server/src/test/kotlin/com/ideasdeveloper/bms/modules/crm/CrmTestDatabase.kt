@@ -13,7 +13,7 @@ import java.util.UUID
  * server: [open] drops and creates the database it is given.
  */
 object CrmTestDatabase {
-    val url: String? = (System.getenv("BMS_ACTIVITY_PG_URL") ?: System.getenv("BMS_SERVER_ADMINS_PG_URL"))?.takeIf { it.isNotBlank() }
+    val url: String? = (System.getenv("BMS_CRM_ACTIVITY_PG_URL") ?: System.getenv("BMS_ACTIVITY_PG_URL") ?: System.getenv("BMS_SERVER_ADMINS_PG_URL"))?.takeIf { it.isNotBlank() }
     private val root = I18nCatalogCheck.repoRoot()
 
     private fun urlOf(name: String) = url!!.replace(Regex("/[^/?]+(\\?|$)"), "/$name$1")
