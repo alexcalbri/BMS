@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.McpTool
@@ -236,8 +239,15 @@ object EmpleadosImportApply {
      * Crea o actualiza una ficha por su clave de origen, con su sede, departamento y horario habitual, en una transaccion.
      * Al actualizar solo se pisan los campos que la fila trae no vacios; la baja solo se aplica si la fila no esta activa y
      * nunca se reactiva. No enlaza usuarios. Sin avisos. Las SQLException que no son clave repetida (23505) se relanzan.
+     * [activity]: quien importa (ActivityActor.import de quien la empezo); cada fila del registro lo lleva como actor.
      */
-    fun apply(tenant: Connection, row: ImportedEmployee, users: Map<String, UUID>, actorId: UUID?): EmpleadosImportOutcome {
+    fun apply(
+        tenant: Connection,
+        row: ImportedEmployee,
+        users: Map<String, UUID>,
+        actorId: UUID?,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): EmpleadosImportOutcome {
         val name = row.fullName.trim()
         if (name.isEmpty()) return EmpleadosImportOutcome.Skipped(tr("La fila no tiene nombre."))
         val key = row.key.trim()
@@ -264,7 +274,11 @@ object EmpleadosImportApply {
                 fun catalogId(catalog: Catalog, raw: String?, importKey: (String) -> String?): UUID? {
                     val text = raw?.trim()?.takeIf { it.isNotEmpty() }?.let { clip(it, MaxCatalogName) } ?: return null
                     return try {
-                        EmpleadosRepository.findOrCreateCatalog(tenant, catalog, text, importKey(text))
+                        val known = EmpleadosRepository.listCatalog(tenant, catalog, includeArchived = true).firstOrNull { it.name.equals(text, ignoreCase = true) }
+                        val id = EmpleadosRepository.findOrCreateCatalog(tenant, catalog, text, importKey(text))
+                        // Una sede o departamento nuevo, o archivado que se reactiva, queda en el registro.
+                        if (known == null || known.archived) EmpleadosActivity.catalogCreated(tenant, activity, catalog, id, text, restored = known != null)
+                        id
                     } catch (failure: EmpleadosValidationException) {
                         // Sin sitio para una sede o departamento nuevo: la ficha se guarda sin ella y se avisa.
                         warnings += tr("No se asignó {0} \"{1}\": {2}", tr(catalog.singular), text, failure.message.orEmpty())
@@ -275,10 +289,30 @@ object EmpleadosImportApply {
                 val departmentId = catalogId(Catalog.Departments, row.department) { null }
                 val today = EmpleadosRepository.today()
                 val warning = { warnings.takeIf { it.isNotEmpty() }?.joinToString(" ") }
+                // Nombres de sede y departamento de la fila (los que se guardan), para el registro.
+                val siteName = siteId?.let { clip(row.site.orEmpty().trim(), MaxCatalogName) }
+                val deptName = departmentId?.let { clip(row.department.orEmpty().trim(), MaxCatalogName) }
                 val outcome: EmpleadosImportOutcome = if (existing == null) {
-                    EmpleadosImportOutcome.Created(EmpleadosRepository.insertImported(tenant, key, fields, departmentId, siteId, null, row.active, actorId, today), warning())
+                    val created = EmpleadosRepository.insertImported(tenant, key, fields, departmentId, siteId, null, row.active, actorId, today)
+                    EmpleadosActivity.write(
+                        tenant, activity, EmpleadosActivity.EmployeeType, created, name, ActivityActions.Created, "Importa la ficha de $name.",
+                        ActivityChanges.created(EmpleadosActivity.importedEmployeeCreated(fields, deptName, siteName, row.active), EmpleadosActivity.EmployeeLabels),
+                    )
+                    EmpleadosImportOutcome.Created(created, warning())
                 } else {
-                    EmpleadosRepository.updateImported(tenant, existing.id, fields, departmentId, siteId, null, deactivate = !row.active && existing.status == EmployeeStatus.Active, today = today)
+                    val deactivate = !row.active && existing.status == EmployeeStatus.Active
+                    // Antes de cambiarla: la ficha tal como esta, para escribir solo lo que cambia.
+                    val before = EmpleadosRepository.get(tenant, EmpleadosScope(null, null, canShifts = true, canManage = true, owner = true), existing.id)
+                    EmpleadosRepository.updateImported(tenant, existing.id, fields, departmentId, siteId, null, deactivate = deactivate, today = today)
+                    if (before != null) {
+                        val changes = EmpleadosActivity.importedEmployeeChanges(before, EmpleadosRepository.userLabel(tenant, before.userId), fields, deptName, siteName, deactivate)
+                        if (changes.isNotEmpty()) {
+                            EmpleadosActivity.write(
+                                tenant, activity, EmpleadosActivity.EmployeeType, existing.id, name, ActivityActions.Updated,
+                                "Actualiza la ficha de $name desde la importación.", changes,
+                            )
+                        }
+                    }
                     EmpleadosImportOutcome.Updated(existing.id, warning())
                 }
                 val id = when (outcome) {
@@ -287,7 +321,11 @@ object EmpleadosImportApply {
                     is EmpleadosImportOutcome.Skipped -> null
                 }
                 val slots = cleanSlots(row.weekly)
-                if (id != null && slots.isNotEmpty()) EmpleadosRepository.replaceWeekly(tenant, id, slots)
+                if (id != null && slots.isNotEmpty()) {
+                    val beforeSlots = EmpleadosRepository.weekly(tenant, listOf(id)).map { Triple(it.weekday, it.start, it.end) }
+                    EmpleadosRepository.replaceWeekly(tenant, id, slots)
+                    EmpleadosActivity.weeklyReplaced(tenant, activity, id, name, EmpleadosActivity.slotsText(beforeSlots), EmpleadosActivity.slotsText(slots))
+                }
                 outcome
             }
         } catch (failure: EmpleadosValidationException) {
