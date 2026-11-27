@@ -209,3 +209,14 @@ notices are written in the language of their recipient.
   transaction (the save is rolled back, nothing is left half written).
 - Recurring tasks (the future `mantenimiento` module, through `TareasExternal`), sprints and
   automations are out of scope for 0.1.0.
+
+## Company activity log (0.5.0, needs Core 0.12.0)
+
+Every write of the module leaves a row in the company `activity_log` (Core table) in the same transaction as the change,
+with the actor Core resolves ("Agente de <usuario>" through an agent, "Importacion (<usuario>)" for imports, "Tarea
+programada Recordatorios de tareas" for the due reminders). `tareas_activity` and the author names keep being written
+exactly as before. Recorded: tasks (create; edit with old -> new of title, detail, due date, priority, responsibles,
+reviewer, customer, group and board; status changes; archive), checklist items (add, tick, remove), comments, attachments
+(name and size, never the content), boards (create, edit with visibility and members, archive), groups (create, rename,
+move, archive), the due reminders and every import (one row per task plus the row of the whole import that the source
+writes with `TareasImportApply.recordImport`). Stored text is Spanish; values are cut to 500 characters.

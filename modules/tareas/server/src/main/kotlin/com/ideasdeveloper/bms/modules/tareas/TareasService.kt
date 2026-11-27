@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -77,7 +80,7 @@ object TareasService {
         val result = TareasRepository.transaction(tenant) {
             val groupId = safeInput.groupId ?: groupName?.takeIf { it.isNotBlank() }?.let { wanted ->
                 if (scope.admin) {
-                    TareasRepository.findOrCreateGroup(tenant, board.id, wanted)
+                    TareasLog.findOrCreateGroup(tenant, permissions.activityActor, board.id, wanted)
                 } else {
                     TareasRepository.listGroups(tenant, board.id).firstOrNull { it.name.equals(wanted.trim(), ignoreCase = true) }?.id
                         ?: throw TareasValidationException(tr("El grupo \"{0}\" no existe en el tablero.", wanted.trim()))
@@ -85,8 +88,13 @@ object TareasService {
             }
             val created = TareasRepository.createIfAbsent(tenant, safeInput.copy(groupId = groupId), scope.userId, source, externalRef)
             if (created.created) {
-                checklist.map { it.trim() }.filter { it.isNotEmpty() }.take(TareasRepository.MaxChecklistItems).forEach { TareasRepository.addChecklistItem(tenant, created.id, it) }
+                val items = checklist.map { it.trim() }.filter { it.isNotEmpty() }.take(TareasRepository.MaxChecklistItems)
+                items.forEach { TareasRepository.addChecklistItem(tenant, created.id, it) }
                 TareasRepository.addActivity(tenant, created.id, "created", msg("Tarea creada"), name)
+                val actor = permissions.activityActor
+                TareasRepository.get(tenant, created.id)?.let { task ->
+                    TareasLog.taskCreated(tenant, actor, task, source, listOfNotNull(items.takeIf { it.isNotEmpty() }?.let { ActivityChange.of("checklist", "Lista de comprobacion", null, it) }))
+                }
             }
             created
         }
@@ -122,6 +130,8 @@ object TareasService {
             if (!TareasRepository.update(tenant, id, safeInput)) throw TareasValidationException(tr(TaskNotFound))
             val newcomers = TareasRepository.setAssignees(tenant, id, safeInput.assignees)
             TareasRepository.addActivity(tenant, id, "updated", msg("Tarea editada"), name)
+            // The activity log keeps what the module's own history does not: what changed, old -> new.
+            TareasRepository.get(tenant, id)?.let { after -> TareasLog.taskUpdated(tenant, permissions.activityActor, task, after) }
             newcomers
         }
         val updated = TareasRepository.get(tenant, id) ?: throw TareasValidationException(tr(TaskNotFound))
@@ -143,6 +153,11 @@ object TareasService {
             val before = TareasRepository.setStatus(tenant, id, applied.status, scope.userId) ?: throw TareasValidationException(tr(TaskNotFound))
             val note = if (applied.redirectedToReview) " (enviada a revisión)" else ""
             TareasRepository.addActivity(tenant, id, "status", "${before.label} → ${applied.status.label}$note", name)
+            TareasLog.record(
+                tenant, permissions.activityActor, TareasLog.Task, id, task.title, ActivityActions.StatusChanged,
+                "Cambio la tarea ${task.title} de ${before.label} a ${applied.status.label}${if (applied.redirectedToReview) " (necesita revision)" else ""}.",
+                listOf(ActivityChange.of("status", "Estado", before.label, applied.status.label)),
+            )
             before
         }
         val updated = TareasRepository.get(tenant, id) ?: throw TareasValidationException(tr(TaskNotFound))
@@ -164,7 +179,10 @@ object TareasService {
         if (!scope.canEditTask(task)) throw TareasValidationException(tr("No tienes permiso para archivar esta tarea."))
         val name = actorName(tenant, access, permissions)
         TareasRepository.transaction(tenant) {
-            if (TareasRepository.archive(tenant, id)) TareasRepository.addActivity(tenant, id, "archived", msg("Tarea archivada"), name)
+            if (TareasRepository.archive(tenant, id)) {
+                TareasRepository.addActivity(tenant, id, "archived", msg("Tarea archivada"), name)
+                TareasLog.record(tenant, permissions.activityActor, TareasLog.Task, id, task.title, ActivityActions.Archived, "Archivo la tarea ${task.title}.")
+            }
         }
     }
 
@@ -173,7 +191,14 @@ object TareasService {
         val task = active(visibleTask(tenant, scope, id))
         if (!scope.canWorkOnTask(task)) throw TareasValidationException(tr("No tienes permiso para comentar esta tarea."))
         val name = actorName(tenant, access, permissions)
-        val commentId = TareasRepository.addComment(tenant, id, scope.userId, name, body)
+        val commentId = TareasRepository.transaction(tenant) {
+            TareasRepository.addComment(tenant, id, scope.userId, name, body).also { commentId ->
+                TareasLog.record(
+                    tenant, permissions.activityActor, TareasLog.Comment, commentId, task.title, ActivityActions.Commented, "Comento la tarea ${task.title}.",
+                    listOf(ActivityChange.of("body", "Comentario", null, body.trim())),
+                )
+            }
+        }
         TareasNotify.commented(tenant, access.notificationsFor(TareasModule.id), task, scope.userId, name, body)
         return commentId
     }
@@ -191,14 +216,29 @@ object TareasService {
         TareasRepository.getChecklistItem(tenant, itemId) ?: throw TareasValidationException(tr("Elemento de la lista no encontrado."))
 
     fun addChecklistItem(tenant: Connection, permissions: ModulePermissions, taskId: UUID, text: String): UUID {
-        workableTask(tenant, permissions, taskId)
-        return TareasRepository.addChecklistItem(tenant, taskId, text)
+        val (_, task) = workableTask(tenant, permissions, taskId)
+        return TareasRepository.transaction(tenant) {
+            TareasRepository.addChecklistItem(tenant, taskId, text).also { itemId ->
+                TareasLog.record(
+                    tenant, permissions.activityActor, TareasLog.ChecklistItem, itemId, text.trim(), ActivityActions.Created, "Agrego un elemento a la lista de la tarea ${task.title}.",
+                    listOf(ActivityChange.of("text", "Elemento", null, text.trim()), ActivityChange.of("task", "Tarea", null, task.title)),
+                )
+            }
+        }
     }
 
     fun toggleChecklistItem(tenant: Connection, permissions: ModulePermissions, itemId: UUID, done: Boolean) {
         val item = itemOf(tenant, itemId)
-        val (scope, _) = workableTask(tenant, permissions, item.taskId)
-        TareasRepository.toggleChecklistItem(tenant, itemId, done, scope.userId)
+        val (scope, task) = workableTask(tenant, permissions, item.taskId)
+        TareasRepository.transaction(tenant) {
+            if (TareasRepository.toggleChecklistItem(tenant, itemId, done, scope.userId) && item.done != done) {
+                TareasLog.record(
+                    tenant, permissions.activityActor, TareasLog.ChecklistItem, itemId, item.text, ActivityActions.Updated,
+                    "${if (done) "Marco" else "Desmarco"} un elemento de la lista de la tarea ${task.title}.",
+                    listOf(ActivityChange.of("done", "Hecho", item.done, done), ActivityChange.of("task", "Tarea", null, task.title)),
+                )
+            }
+        }
     }
 
     fun removeChecklistItem(tenant: Connection, permissions: ModulePermissions, itemId: UUID) {
@@ -206,21 +246,51 @@ object TareasService {
         val scope = scope(tenant, permissions)
         val task = active(visibleTask(tenant, scope, item.taskId))
         if (!scope.canEditTask(task)) throw TareasValidationException(tr("No tienes permiso para editar esta tarea."))
-        TareasRepository.removeChecklistItem(tenant, itemId)
+        TareasRepository.transaction(tenant) {
+            // The row goes first: the item is gone right after.
+            TareasLog.record(
+                tenant, permissions.activityActor, TareasLog.ChecklistItem, itemId, item.text, ActivityActions.Deleted,
+                "Quito un elemento de la lista de la tarea ${task.title}.",
+                listOf(ActivityChange.of("text", "Elemento", item.text, null), ActivityChange.of("done", "Hecho", item.done, null), ActivityChange.of("task", "Tarea", task.title, null)),
+            )
+            TareasRepository.removeChecklistItem(tenant, itemId)
+        }
     }
 
     // ---- files ----
 
     /** Links the uploads of this user to the task and returns their names (nothing for a server owner: no user to own the files). */
     fun attachFiles(tenant: Connection, permissions: ModulePermissions, taskId: UUID, refs: List<UiFileRef>): List<String> {
-        val (scope, _) = workableTask(tenant, permissions, taskId)
+        val (scope, task) = workableTask(tenant, permissions, taskId)
         val ids = refs.mapNotNull { runCatching { UUID.fromString(it.id) }.getOrNull() }
-        return TareasRepository.attach(tenant, taskId, ids, scope.userId)
+        return TareasRepository.transaction(tenant) {
+            val before = TareasRepository.listAttachments(tenant, taskId).map { it.id }.toSet()
+            val names = TareasRepository.attach(tenant, taskId, ids, scope.userId)
+            // Name and size of each file, never its content.
+            TareasRepository.listAttachments(tenant, taskId).filter { it.id !in before }.forEach { file ->
+                TareasLog.record(
+                    tenant, permissions.activityActor, TareasLog.Attachment, file.id, file.name, ActivityActions.AttachmentAdded,
+                    "Adjunto el archivo ${file.name} a la tarea ${task.title}.",
+                    listOf(ActivityChange.of("file", "Archivo", null, "${file.name} (${TareasLog.size(file.size)})"), ActivityChange.of("task", "Tarea", null, task.title)),
+                )
+            }
+            names
+        }
     }
 
     fun removeFiles(tenant: Connection, permissions: ModulePermissions, taskId: UUID, ids: Collection<UUID>): Int {
-        workableTask(tenant, permissions, taskId)
-        return TareasRepository.markDeleted(tenant, taskId, ids)
+        val (_, task) = workableTask(tenant, permissions, taskId)
+        return TareasRepository.transaction(tenant) {
+            val wanted = ids.toSet()
+            TareasRepository.listAttachments(tenant, taskId).filter { it.id in wanted }.forEach { file ->
+                TareasLog.record(
+                    tenant, permissions.activityActor, TareasLog.Attachment, file.id, file.name, ActivityActions.AttachmentRemoved,
+                    "Quito el archivo ${file.name} de la tarea ${task.title}.",
+                    listOf(ActivityChange.of("file", "Archivo", "${file.name} (${TareasLog.size(file.size)})", null), ActivityChange.of("task", "Tarea", task.title, null)),
+                )
+            }
+            TareasRepository.markDeleted(tenant, taskId, ids)
+        }
     }
 
     // ---- boards (tareas.boards, business owner or server owner) ----
@@ -234,25 +304,56 @@ object TareasService {
     fun createBoard(tenant: Connection, permissions: ModulePermissions, name: String, description: String, visibility: BoardVisibility, members: Collection<UUID>): UUID {
         val scope = adminScope(tenant, permissions)
         requireUsers(tenant, members)
-        return TareasRepository.createBoard(tenant, name, description, visibility, members, scope.userId)
+        return TareasRepository.transaction(tenant) {
+            TareasRepository.createBoard(tenant, name, description, visibility, members, scope.userId).also { id ->
+                TareasRepository.getBoard(tenant, id)?.let { board ->
+                    TareasLog.record(
+                        tenant, permissions.activityActor, TareasLog.Board, id, board.name, ActivityActions.Created, "Creo el tablero ${board.name}.",
+                        ActivityChanges.created(TareasLog.boardValues(board, TareasRepository.users(tenant)), TareasLog.BoardLabels),
+                    )
+                }
+            }
+        }
     }
 
     fun updateBoard(tenant: Connection, permissions: ModulePermissions, id: UUID, name: String, description: String, visibility: BoardVisibility, members: Collection<UUID>) {
         adminScope(tenant, permissions)
         val current = TareasRepository.getBoard(tenant, id) ?: throw TareasValidationException(tr(BoardNotFound))
         requireUsers(tenant, members.filter { it !in current.members })
-        TareasRepository.updateBoard(tenant, id, name, description, visibility, members)
+        TareasRepository.transaction(tenant) {
+            if (TareasRepository.updateBoard(tenant, id, name, description, visibility, members)) {
+                val users = TareasRepository.users(tenant)
+                TareasRepository.getBoard(tenant, id)?.let { after ->
+                    val changes = ActivityChanges.diff(TareasLog.boardValues(current, users), TareasLog.boardValues(after, users), TareasLog.BoardLabels)
+                    if (changes.isNotEmpty()) {
+                        TareasLog.record(tenant, permissions.activityActor, TareasLog.Board, id, after.name, ActivityActions.Updated, "Modifico el tablero ${after.name}.", changes)
+                    }
+                }
+            }
+        }
     }
 
     fun archiveBoard(tenant: Connection, permissions: ModulePermissions, id: UUID) {
         adminScope(tenant, permissions)
-        if (!TareasRepository.archiveBoard(tenant, id)) throw TareasValidationException(tr(BoardNotFound))
+        TareasRepository.transaction(tenant) {
+            val board = TareasRepository.getBoard(tenant, id)
+            if (!TareasRepository.archiveBoard(tenant, id)) throw TareasValidationException(tr(BoardNotFound))
+            TareasLog.record(tenant, permissions.activityActor, TareasLog.Board, id, board?.name.orEmpty(), ActivityActions.Archived, "Archivo el tablero ${board?.name.orEmpty()}.")
+        }
     }
 
     fun addGroup(tenant: Connection, permissions: ModulePermissions, boardId: UUID, name: String): UUID {
         adminScope(tenant, permissions)
-        TareasRepository.getBoard(tenant, boardId) ?: throw TareasValidationException(tr(BoardNotFound))
-        return TareasRepository.addGroup(tenant, boardId, name)
+        val board = TareasRepository.getBoard(tenant, boardId) ?: throw TareasValidationException(tr(BoardNotFound))
+        return TareasRepository.transaction(tenant) {
+            TareasRepository.addGroup(tenant, boardId, name).also { id ->
+                val group = TareasRepository.getGroup(tenant, id)
+                TareasLog.record(
+                    tenant, permissions.activityActor, TareasLog.Group, id, group?.name ?: name.trim(), ActivityActions.Created, "Creo el grupo ${group?.name ?: name.trim()} en el tablero ${board.name}.",
+                    listOf(ActivityChange.of("board", "Tablero", null, board.name), ActivityChange.of("name", "Nombre", null, group?.name ?: name.trim())),
+                )
+            }
+        }
     }
 
     private fun groupOf(tenant: Connection, boardId: UUID, groupId: UUID): BoardGroup =
@@ -260,19 +361,42 @@ object TareasService {
 
     fun renameGroup(tenant: Connection, permissions: ModulePermissions, boardId: UUID, groupId: UUID, name: String) {
         adminScope(tenant, permissions)
-        groupOf(tenant, boardId, groupId)
-        TareasRepository.renameGroup(tenant, groupId, name)
+        val group = groupOf(tenant, boardId, groupId)
+        TareasRepository.transaction(tenant) {
+            if (TareasRepository.renameGroup(tenant, groupId, name)) {
+                val renamed = TareasRepository.getGroup(tenant, groupId)?.name ?: name.trim()
+                if (renamed != group.name) {
+                    TareasLog.record(
+                        tenant, permissions.activityActor, TareasLog.Group, groupId, renamed, ActivityActions.Updated, "Renombro el grupo ${group.name} a $renamed.",
+                        listOf(ActivityChange.of("name", "Nombre", group.name, renamed)),
+                    )
+                }
+            }
+        }
     }
 
     fun moveGroup(tenant: Connection, permissions: ModulePermissions, boardId: UUID, groupId: UUID, up: Boolean) {
         adminScope(tenant, permissions)
-        groupOf(tenant, boardId, groupId)
-        TareasRepository.moveGroup(tenant, groupId, up)
+        val group = groupOf(tenant, boardId, groupId)
+        TareasRepository.transaction(tenant) {
+            if (TareasRepository.moveGroup(tenant, groupId, up)) {
+                val moved = TareasRepository.getGroup(tenant, groupId)
+                TareasLog.record(
+                    tenant, permissions.activityActor, TareasLog.Group, groupId, group.name, ActivityActions.Updated,
+                    "Movio el grupo ${group.name} hacia ${if (up) "arriba" else "abajo"}.",
+                    listOf(ActivityChange.of("position", "Posicion", group.position, moved?.position)),
+                )
+            }
+        }
     }
 
     fun archiveGroup(tenant: Connection, permissions: ModulePermissions, boardId: UUID, groupId: UUID) {
         adminScope(tenant, permissions)
-        groupOf(tenant, boardId, groupId)
-        TareasRepository.archiveGroup(tenant, groupId)
+        val group = groupOf(tenant, boardId, groupId)
+        TareasRepository.transaction(tenant) {
+            if (TareasRepository.archiveGroup(tenant, groupId)) {
+                TareasLog.record(tenant, permissions.activityActor, TareasLog.Group, groupId, group.name, ActivityActions.Archived, "Archivo el grupo ${group.name}.")
+            }
+        }
     }
 }
