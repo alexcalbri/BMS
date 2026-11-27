@@ -1,6 +1,35 @@
 #!/usr/bin/env bash
-# Sourced by the fresh-install script. Run as the provisioning administrator.
+# Sourced by install.sh and update.sh (always from the root-owned tree, never from /opt/bms/source).
 # Migration files must contain one outer BEGIN/COMMIT and transactional SQL.
+#
+# Who runs a migration: by default the PostgreSQL superuser (the control database, which belongs to it). With
+# MIGRATION_ROLE set (company databases, update.sh), the provisioning login (MIGRATION_LOGIN, password in the root-only
+# MIGRATION_PASSFILE, TCP to MIGRATION_HOST:MIGRATION_PORT) runs it after SET ROLE to the database owner, with a fixed
+# search_path (public; pg_catalog is searched first): nothing in a company database runs with superuser rights.
+
+migration_psql() {
+    local target=$1
+    shift
+    if [[ -z ${MIGRATION_ROLE:-} ]]; then
+        runuser -u postgres -- psql -X -d "$target" "$@"
+        return
+    fi
+    [[ $MIGRATION_ROLE =~ ^[a-z][a-z0-9_]{0,62}$ && ${MIGRATION_LOGIN:-} =~ ^[a-z][a-z0-9_]{0,62}$ ]] || {
+        printf 'ERROR: MIGRATION_ROLE o MIGRATION_LOGIN invalido.\n' >&2
+        return 1
+    }
+    [[ -n ${MIGRATION_PASSFILE:-} && -f $MIGRATION_PASSFILE ]] || {
+        printf 'ERROR: falta MIGRATION_PASSFILE.\n' >&2
+        return 1
+    }
+    # The settings travel in the startup packet, so they win over anything the database or a role sets for itself.
+    {
+        printf 'SET ROLE "%s";\n' "$MIGRATION_ROLE"
+        cat
+    } | PGPASSFILE=$MIGRATION_PASSFILE PGOPTIONS='-c search_path=public -c statement_timeout=0' PGCONNECT_TIMEOUT=15 \
+        psql -X -w -h "${MIGRATION_HOST:-127.0.0.1}" -p "${MIGRATION_PORT:-5432}" -U "$MIGRATION_LOGIN" -d "$target" "$@"
+}
+
 apply_migration() {
     local target=$1 module=$2 file=$3 version checksum trimmed_checksum
     version=$(basename "$file" .sql)
@@ -37,12 +66,13 @@ if not sql.startswith('BEGIN;') or not sql.endswith('COMMIT;'):
 print(sql[len('BEGIN;'):-len('COMMIT;')])
 PY
         # Stop the stream on invalid files so psql cannot commit partial work.
+        # shellcheck disable=SC2181
         [[ $? == 0 ]] || return 1
         cat <<'SQL'
 INSERT INTO schema_migrations (module, version, checksum) VALUES (:'module', :'version', :'checksum');
 \endif
 COMMIT;
 SQL
-    } | runuser -u postgres -- psql -X -d "$target" -v ON_ERROR_STOP=1 \
+    } | migration_psql "$target" -v ON_ERROR_STOP=1 \
         -v module="$module" -v version="$version" -v checksum="$checksum" -v trimmed_checksum="$trimmed_checksum"
 }

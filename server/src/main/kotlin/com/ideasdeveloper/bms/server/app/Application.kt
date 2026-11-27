@@ -822,5 +822,8 @@ private fun Application.companyProvisioningConfig(): CompanyProvisioningConfig {
             ?: databaseUrl.substringBeforeLast('/') + "/",
         migrationsRoot = environment.config.propertyOrNull("provisioning.migrationsRoot")?.getString()
             ?: ".",
+        // Separate login for provisioning (DB_PROVISIONING_USER/PASSWORD, written by install.sh and update.sh).
+        provisioningUser = environment.config.propertyOrNull("provisioning.user")?.getString()?.trim()?.takeIf { it.isNotEmpty() },
+        provisioningPassword = environment.config.propertyOrNull("provisioning.password")?.getString(),
     )
 }
