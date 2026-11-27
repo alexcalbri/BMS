@@ -20,23 +20,30 @@ class MantenimientoMondayActivityTest {
         error("no database in this test: ${method.name}")
     } as Connection
 
+    private fun job(created: Int, updated: Int, skipped: Int, failed: Int, filesDone: Int, filesFailed: Int) = MondayJob(
+        id = jobId, boardId = "123", boardName = "Tablero de mantenimiento", target = MondayDestination.Orders, defaultKind = MondayDestination.KindCorrective,
+        status = MondayJobStatus.Done, cursor = null, pages = 1, retries = 0, summary = null, mapping = MondayMapping(), total = created + updated + skipped + failed,
+        applied = created + updated + skipped + failed, created = created, updated = updated, skipped = skipped, failed = failed, filesDone = filesDone,
+        filesFailed = filesFailed, message = "", createdBy = ana, createdAt = java.time.Instant.EPOCH,
+    )
+
     @Test
     fun importSummaryHasTheTotalsAndWhoStartedIt() {
         val starter = ActivityActor.import(ActivityLogTesting.user("Ana Ruiz", ana))
         val row = ActivityLogTesting.rows {
-            MantenimientoMondayRunner.recordImportSummary(unusedConnection, jobId, "Tablero de mantenimiento", starter, 5, 1, 0, 2, 4, 1)
+            MantenimientoMondayActivity.total(unusedConnection, starter, job(5, 1, 0, 2, 4, 1))
         }.single()
         assertEquals(ActivityActions.Imported, row.action)
         assertEquals("mantenimiento", row.entry.moduleId)
         assertEquals("Importacion (Ana Ruiz)", row.display)
-        assertEquals("creadas 5, actualizadas 1, omitidas 0, con error 2", row.change("lots")!!.new)
+        assertEquals("creados 5, actualizados 1, omitidos 0, con error 2", row.change("records")!!.new)
     }
 
     @Test
     fun importSummaryThroughAnAgentNamesTheAgent() {
         val starter = ActivityActor.import(ActivityLogTesting.user("Ana Ruiz", ana).viaAgent("Claude"))
         val row = ActivityLogTesting.rows {
-            MantenimientoMondayRunner.recordImportSummary(unusedConnection, jobId, "Tablero de mantenimiento", starter, 1, 0, 0, 0, 0, 0)
+            MantenimientoMondayActivity.total(unusedConnection, starter, job(1, 0, 0, 0, 0, 0))
         }.single()
         assertTrue(row.display.startsWith("Importacion (Agente de "), row.display)
     }
@@ -44,7 +51,7 @@ class MantenimientoMondayActivityTest {
     @Test
     fun tokenChangeIsRecordedAsASecretWithoutItsValue() {
         val row = ActivityLogTesting.rows {
-            MantenimientoMondaySettings.recordTokenChange(unusedConnection, ActivityLogTesting.user("Ana Ruiz", ana), "Guardo el token de monday.")
+            MantenimientoMondayActivity.token(unusedConnection, ActivityLogTesting.user("Ana Ruiz", ana), "Guardo el token de la API de monday.")
         }.single()
         assertEquals(ActivityActions.SettingsChanged, row.action)
         val change = row.change("mondayToken")!!

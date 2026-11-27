@@ -3,7 +3,7 @@
   "module": "mantenimiento",
   "displayName": "Importacion de mantenimiento desde monday",
   "description": "Importa tableros de monday al modulo Mantenimiento: como planes preventivos o como ordenes y proyectos. Lee el tablero con el token de la empresa, mapea sus columnas y trae subelementos, actualizaciones y archivos.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "minModuleVersion": "0.3.0",
   "source": { "type": "github", "url": "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/mantenimiento_monday" },
   "permissions": [
@@ -12,7 +12,7 @@
     "mantenimiento.import.write"
   ],
   "settings": [],
-  "migrations": ["migrations/V001__settings.sql", "migrations/V002__read_state.sql"],
+  "migrations": ["migrations/V001__settings.sql", "migrations/V002__read_state.sql", "migrations/V003__job_agent.sql"],
   "uninstall": { "options": [
     { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
   ] }
