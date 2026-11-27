@@ -41,6 +41,10 @@ data class LoginSuccessResponse(
     // The second step used a recovery code; how many are left.
     val recoveryCodeUsed: Boolean = false,
     val recoveryCodesLeft: Int? = null,
+    // The emailed recovery code was used: two-step verification is now off (TWO_FACTOR.md §7.4).
+    val twoFactorDisabled: Boolean = false,
+    // This sign-in cancelled a pending recovery by email (TWO_FACTOR.md §7.5).
+    val emailRecoveryCancelled: Boolean = false,
 )
 
 // A company the session can move to.

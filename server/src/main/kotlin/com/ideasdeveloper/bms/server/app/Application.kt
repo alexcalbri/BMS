@@ -14,6 +14,7 @@ import com.ideasdeveloper.bms.server.auth.api.accountProfileRoutes
 import com.ideasdeveloper.bms.server.auth.api.passwordResetRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorRecoveryLinkRoutes
 import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountPasswords
 import com.ideasdeveloper.bms.server.auth.application.AccountService
@@ -318,6 +319,32 @@ fun Application.module() {
         },
         moduleNames = { id -> moduleRegistry.availableDefinition(id)?.displayName },
     ).also { moduleAccessRef = it }
+    // Delayed recovery of two-step verification by email (TWO_FACTOR.md §7) and its job (every 10 minutes).
+    val emailRecovery = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorEmailRecovery(
+        central = DatabaseFactory.getDataSource(),
+        sources = loginDatabases::accountSource,
+        companies = loginDatabases::activeCompanyCodes,
+        mail = serverMailSettings().let { settings -> { settings } },
+        twoFactor = loginDatabases.twoFactor,
+        notify = { companyCode, userId, title, text ->
+            val tenant = if (companyCode != null) moduleAccessService.tenantConnectionForCompany(companyCode) else {
+                DatabaseFactory.getDataSource().connection.use { connection ->
+                    connection.prepareStatement("SELECT database_name FROM companies WHERE is_server_workspace AND is_active").use { query ->
+                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                    }
+                }?.let { moduleAccessService.tenantConnectionForDatabase(it) }
+            }
+            tenant?.use { moduleAccessService.notifications.notify(it, com.ideasdeveloper.bms.server.modules.NewNotification(userId, com.ideasdeveloper.bms.server.activity.CoreModuleId, title, text)) }
+        },
+    ).also { loginDatabases.emailRecovery = it }
+    val emailRecoveryJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "two-factor-email-recovery").apply { isDaemon = true } }
+    emailRecoveryJob.scheduleWithFixedDelay({
+        try {
+            emailRecovery.runDue()
+        } catch (failure: Throwable) {
+            log.error("Two-step email recovery job failed", failure)
+        }
+    }, 2, 10, java.util.concurrent.TimeUnit.MINUTES)
     // Extensions installed per company (EXTENSIONS.md): bundled in the modules or loaded from packages.
     val extensionConnections = ExtensionConnections.from(moduleAccessService)
     val extensionStorage = ExtensionStorage(secretBox)
@@ -474,6 +501,7 @@ fun Application.module() {
     }, 10, 60, java.util.concurrent.TimeUnit.MINUTES)
     monitor.subscribe(ApplicationStopped) {
         integrityJob.shutdownNow()
+        emailRecoveryJob.shutdownNow()
         moduleJobs.stop()
         moduleAccessService.close()
         remoteModuleCatalog.close()
@@ -515,7 +543,11 @@ fun Application.module() {
                 logout = loginDatabases::logout,
                 includeSession = false,
                 completeTwoFactor = loginDatabases::completeTwoFactor,
+                startEmailRecovery = loginDatabases::startEmailRecovery,
+                completeEmailRecovery = loginDatabases::completeEmailRecovery,
             )
+            // The cancel link of the recovery email (no session, server-rendered page).
+            twoFactorRecoveryLinkRoutes { loginDatabases.emailRecovery }
             passwordResetRoutes(accountService)
         }
         rateLimit(RateLimitName("admin")) {
@@ -598,6 +630,17 @@ private fun notifyServerOwners(central: DataSource, access: ModuleAccessService,
             access.notifications.notify(tenant, com.ideasdeveloper.bms.server.modules.NewNotification(owner, com.ideasdeveloper.bms.server.activity.CoreModuleId, title, text))
         }
     }
+}
+
+// Public origin for links in emails: BMS_PUBLIC_BASE_URL when set, else the Host the proxy validated (never X-Forwarded-Host).
+internal fun publicBase(call: ApplicationCall): String {
+    System.getenv("BMS_PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }?.let { return it }
+    val proxied = call.request.local.remoteAddress.let { it == "127.0.0.1" || it == "::1" || it == "0:0:0:0:0:0:0:1" }
+    val scheme = (if (proxied) call.request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim() else null)
+        ?.takeIf { it == "https" || it == "http" } ?: call.request.local.scheme
+    val host = call.request.headers["Host"]?.trim()?.takeIf { it.isNotEmpty() && it.length <= 255 && it.none { char -> char.isWhitespace() || char == '/' || char == '@' || char == '\\' } }
+        ?: call.request.local.serverHost
+    return "$scheme://$host"
 }
 
 // IP del cliente; detras del proxy local se toma X-Real-IP.

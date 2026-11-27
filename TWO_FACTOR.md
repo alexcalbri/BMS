@@ -28,10 +28,10 @@ account has two-step verification on, no session is opened; the answer is:
      "message": "Escribe el codigo de tu aplicacion de autenticacion.",
      "challengeToken": "<43 chars, base64url>",
      "expiresInSeconds": 300,
-     "methods": ["totp", "recovery_code"]}
+     "methods": ["totp", "recovery_code", "email_recovery"]}
 ```
 
-(Older apps show `message` and stop; that is intended. The message of an older app is the same text.)
+`"email_recovery"` is listed only when the server has SMTP configured (§7). (Older apps show `message` and stop; that is intended. The message of an older app is the same text.)
 A wrong password keeps answering `401 LOGIN_REJECTED` exactly as before: `TWO_FACTOR_REQUIRED` only proves the
 password was right.
 
@@ -152,3 +152,104 @@ refused (`TWO_FACTOR_REQUIRED_BY_SERVER`).
 4. Server owner: a switch "Exigir verificacion en dos pasos a los administradores" (Administradores del servidor).
 5. Administrators with `twoFactorSetupRequired`: the enrolment screen before anything else.
 6. The Agentes OAuth page (module package) gets the code field from Core; nothing in the app.
+
+
+## 7. Delayed recovery by email (lost authenticator and recovery codes)
+
+The everyday fallback stays the recovery codes; there is no email code as a second factor. A person who knows
+the password but has neither the authenticator nor a recovery code can start a **delayed** recovery: the account's
+mailbox gets a warning with a cancel link at once, and only **7 days later** a one-time code that, entered at the
+second step, signs in once and turns two-step verification off (the person must enrol again). Every account type
+that can have two-step verification can use it. It needs the server's SMTP (`mail.*` settings); without it the
+option is not offered (`"email_recovery"` missing from `methods`, `emailRecovery.available` false). Feature
+detection: the field `emailRecovery` in `GET /auth/two-factor` (Core version set by the lead, 0.14.0 expected).
+
+### 7.1 Start — `POST /auth/login/two-factor/email-recovery {challengeToken}`
+
+Same rate limit as `/auth/login`; needs the challenge of step 1 (right password) from the same client address,
+and counts one attempt of it (the challenge stays usable for codes). Answer, always the same once the challenge is
+valid (whether a process was started now, one was already open, the account has no valid email, or starts are
+throttled — at most 3 starts per account in 7 days):
+
+```
+202 {"status": "requested",
+     "message": "Si la cuenta tiene un correo valido, enviamos un aviso. El codigo para entrar llegara a ese correo dentro de 7 dias; desde el aviso se puede cancelar.",
+     "waitDays": 7}
+```
+
+| Status | code | Meaning |
+|---|---|---|
+| 401 | `TWO_FACTOR_CHALLENGE_EXPIRED` | Unknown/expired/used-up challenge: back to step 1. |
+| 503 | `MAIL_NOT_CONFIGURED` | The server has no SMTP (the app should not have offered it). |
+| 400 | `INVALID_REQUEST` | Body is not valid JSON. |
+
+When a process really starts: at most one open process per account; the account's email (as it is now) gets
+"Se inicio la recuperacion del acceso" with the start time (UTC), the client address of step 1, the date the code
+will be sent, and a cancel link `<public base>/auth/two-factor/recovery-cancel?t=<token>` (`&c=<company code>` for
+a company account). The public base is `BMS_PUBLIC_BASE_URL` when set, else the request's validated Host. An
+in-app notification is added (company accounts: their company; server accounts: the server workspace, when it
+exists). The token is 32 random bytes (base64url), single use, stored only as its SHA-256.
+
+### 7.2 Cancel by the link (no sign-in, works in any browser) — server-rendered page
+
+- `GET /auth/two-factor/recovery-cancel?t=<token>[&c=<code>]` → `200 text/html`: a minimal page "¿Cancelar la
+  recuperacion del acceso?" with one form button that POSTs to the same path (hidden `t`, `c`). It changes
+  nothing (mail scanners that prefetch links cancel nothing). An unknown, used or finished token shows "Este
+  enlace ya no es valido" (still 200). With `Accept: application/json`: `{"valid": true|false}`.
+- `POST /auth/two-factor/recovery-cancel` (form `t`, `c`, `application/x-www-form-urlencoded`) → `200 text/html`
+  "Se cancelo la recuperacion del acceso. Si no la pediste tu, cambia tu contrasena." or the "no longer valid"
+  page. With `Accept: application/json`: `{"cancelled": true|false}`.
+- Headers on both: `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'; style-src
+  'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. Same rate limit as `/auth/login`. The page is
+  in the account's language when the token is valid, else the request's.
+
+### 7.3 Signed in — the account section
+
+`GET /auth/two-factor` gains:
+```
+"emailRecovery": {"available": true,
+                  "pending": {"startedAt": "2026-11-27T10:00:00Z", "startedFrom": "203.0.113.7",
+                              "codeDueAt": "2026-12-04T10:00:00Z", "codeSent": false, "codeExpiresAt": null}}
+```
+(`pending` null when there is none; `available`: SMTP configured, the account has two-step verification on and a
+valid email.) `DELETE /auth/two-factor/email-recovery` (same session rules as §3) cancels the open process →
+`204`, or `409 EMAIL_RECOVERY_NOT_PENDING`. The app shows, when `pending` is set, a warning card "Alguien inicio la
+recuperacion del acceso por correo el … desde …; el codigo se enviara el …" with a "Cancelar" button.
+
+### 7.4 After 7 days — the code, and finishing
+
+A server job (every 10 minutes, idempotent) sends the second email "Tu codigo para recuperar el acceso" with a
+one-time code `XXXX-XXXX-XXXX` (Base32, 60 bits, stored hashed), valid 24 hours. At most one valid code exists at
+any time (a lost send is re-issued with a new code that replaces the old). Unused for 24 h, the process ends
+(`expired`); a new one may be started.
+
+`POST /auth/login/two-factor/email-recovery/complete {challengeToken, code}` (same rate limit as `/auth/login`, a
+fresh step-1 challenge) → `200` normal `LoginSuccessResponse` plus `"twoFactorDisabled": true`: two-step
+verification of the account is off (secret and recovery codes deleted), this one session is open, and the app
+should take the person to enrolment (an administrator the owner requires to use it also gets
+`twoFactorSetupRequired: true`). Errors: `401 TWO_FACTOR_INVALID_CODE` (with `attemptsLeft` of the challenge; also
+for "no code issued", "expired" or "wrong account"), `401 TWO_FACTOR_CHALLENGE_EXPIRED`, `429
+TWO_FACTOR_TOO_MANY_ATTEMPTS` (5 wrong codes per account in 15 minutes, as for other codes).
+
+### 7.5 What ends a process
+
+- The cancel link, or `DELETE /auth/two-factor/email-recovery` → `cancelled` (by link / by the signed-in user).
+- Any full sign-in with the authenticator or a recovery code → cancelled automatically; the login response then
+  has `"emailRecoveryCancelled": true` (the app says "Se cancelo la recuperacion por correo que estaba en curso")
+  and the account gets an email saying so.
+- A change of the account's email address (any path: the check runs on the change through `/auth/profile`, when
+  the code is sent and when it is entered) → cancelled.
+- Turning two-step verification off → cancelled. A password reset does not shorten or skip the wait.
+
+Recorded (never the token or the code): company accounts in the activity log (entity `user`), server accounts in
+`provisioning_audit_log`: `two_factor.email_recovery_started`, `…_cancelled` (details `by`: `link`, `user`,
+`sign_in`, `email_change`, `disabled`), `…_code_sent`, `…_completed`, `…_expired`.
+
+### 7.6 What the app shows at the second step
+
+Besides the code field and "Usar un codigo de recuperacion": when `methods` has `"email_recovery"`, a link "No
+tengo acceso a mi autenticador ni a mis codigos" → explanation (7 days, warning email with cancel link, two-step
+verification is turned off when finished) → "Iniciar recuperacion por correo" (calls 7.1, shows its `message`),
+and a field "Tengo el codigo del correo" (calls 7.4 with a fresh challenge: the app keeps the password from step 1
+only in memory, or asks for it again).

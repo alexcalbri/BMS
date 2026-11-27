@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Step 1 of a sign-in passed (right password) for an account with two-step verification on: no
  * session was opened, the caller gets [token] for step 2 (POST /auth/login/two-factor).
  */
-class TwoFactorRequiredException(val token: String, val expiresInSeconds: Long) :
+class TwoFactorRequiredException(val token: String, val expiresInSeconds: Long, val emailRecovery: Boolean = false) :
     Exception(tr("Escribe el codigo de tu aplicacion de autenticacion."))
 
 /**
@@ -34,7 +34,7 @@ class TwoFactorChallenges(private val clock: () -> Instant = Instant::now) {
         const val MaxPending = 10_000
     }
 
-    fun issue(userId: UUID, username: String, companyCode: String?, clientAddress: String): TwoFactorRequiredException {
+    fun issue(userId: UUID, username: String, companyCode: String?, clientAddress: String, emailRecovery: Boolean = false): TwoFactorRequiredException {
         val now = clock()
         if (challenges.size >= MaxPending) challenges.entries.removeIf { !it.value.expiresAt.isAfter(now) }
         // Full of live challenges (a flood): the oldest go, the newest sign-ins still work.
@@ -43,7 +43,7 @@ class TwoFactorChallenges(private val clock: () -> Instant = Instant::now) {
         }
         val token = tokens.generate()
         challenges[token.hash] = Challenge(userId, username, companyCode, clientAddress, now.plus(Lifetime))
-        return TwoFactorRequiredException(token.value, Lifetime.seconds)
+        return TwoFactorRequiredException(token.value, Lifetime.seconds, emailRecovery)
     }
 
     /** The live challenge of [token] for [clientAddress], counting one attempt; null when unknown, expired, used up or from elsewhere. */
