@@ -336,6 +336,7 @@ object PropietariosMondayRunner {
                 PropietariosMondayClient.download(link.url, deadline) { contentType, body ->
                     val stored = PropietariosImportApply.attachFile(
                         context.tenant, context.files, lotId, PropietariosMondayMapping.AssetPrefix + file.asset, name, contentType, body, job.createdBy,
+                        activity = importerActivity(context, job),
                     )
                     if (stored) done++
                 }
@@ -360,13 +361,21 @@ object PropietariosMondayRunner {
             "Archivos: ${job.filesDone} importados y ${job.filesFailed} con error."
         PropietariosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
         // Una fila con los totales de la importacion (las de cada lote y archivo ya estan en el registro).
+        recordImportSummary(tenant, jobId, job.boardName, importer, job.created, job.updated, job.skipped, job.failed, job.filesDone, job.filesFailed)
+    }
+
+    /** Una fila con los totales de la importacion de monday, a nombre de [importer]. */
+    internal fun recordImportSummary(
+        tenant: Connection, jobId: UUID, boardName: String, importer: ActivityActor,
+        created: Int, updated: Int, skipped: Int, failed: Int, filesDone: Int, filesFailed: Int,
+    ) {
         ActivityLog.record(tenant, importer, ActivityEntry(
-            moduleId = "propietarios", entityType = "importacion", entityId = jobId.toString(), entityLabel = job.boardName,
+            moduleId = "propietarios", entityType = "importacion", entityId = jobId.toString(), entityLabel = boardName,
             action = ActivityActions.Imported,
-            summary = "Importo ${job.created} lotes de monday desde ${job.boardName}.",
+            summary = "Importo $created lotes de monday desde $boardName.",
             changes = listOf(
-                ActivityChange("lots", "Lotes", null, "creados ${job.created}, actualizados ${job.updated}, omitidos ${job.skipped}, con error ${job.failed}"),
-                ActivityChange("files", "Archivos", null, "importados ${job.filesDone}, con error ${job.filesFailed}"),
+                ActivityChange("lots", "Lotes", null, "creados $created, actualizados $updated, omitidos $skipped, con error $failed"),
+                ActivityChange("files", "Archivos", null, "importados $filesDone, con error $filesFailed"),
             ),
         ))
     }

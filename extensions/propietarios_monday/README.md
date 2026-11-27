@@ -4,6 +4,10 @@ Importa un tablero de [monday.com](https://monday.com) al modulo **Propietarios*
 importacion del modulo (`PropietariosImportSource`) y no tiene rutas propias. Pensada para tableros como "Lot Owners Group":
 cada elemento es un lote y cada grupo, un propietario o una familia.
 
+## Registro de actividad (1.2.0, needs Propietarios 0.4.0)
+
+La importacion deja una fila con sus totales y cada lote, titular, adjunto y desarrollo importado queda en el registro de actividad a nombre de "Importacion (quien la inicio)". Guardar o quitar el token de monday queda registrado sin su valor.
+
 ## Que importa
 
 | monday | Propietarios |
