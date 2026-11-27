@@ -321,3 +321,33 @@ the target and the company.
 - `GET /server/admins`, `GET /server/admins/{id}` → `ServerAdminResponse.twoFactorEnabled: Boolean?`.
 The app shows the state and, for the actors of §8.1 and only when it is `true`, a "Desactivar verificacion en dos
 pasos" button that asks for the actor's password and warns that the person's sessions and agents are closed.
+
+## 9. Replacing the authenticator (and the "last recovery code" case)
+
+Every session remembers how it passed its second step (`totp`, `recovery_code`, or `inherited` from the session
+it was switched from) and when.
+
+- Sign-in with the LAST recovery code: the `LoginSuccessResponse` has `recoveryCodeUsed: true`,
+  `recoveryCodesLeft: 0` and `lastRecoveryCodeUsed: true`; the app must take the person to "Configurar un nuevo
+  autenticador" at once.
+- `GET /auth/two-factor` gains `secondFactorMethod` (this session; null when none) and `replaceWindowUntil` (ISO
+  instant, null when closed): a session opened with a recovery code may replace the authenticator with the
+  password alone for 15 minutes after its sign-in.
+
+`POST /auth/two-factor/replace/setup {currentPassword, code?}` → same body as `/auth/two-factor/setup` (secret,
+otpauthUri…) for the NEW authenticator; the current one keeps working until confirmed. `code` (current
+authenticator code or a recovery code, which is then spent) is required unless `replaceWindowUntil` is open; without
+it → `400 TWO_FACTOR_CODE_REQUIRED`.
+
+`POST /auth/two-factor/replace/confirm {code}` (a code of the NEW authenticator) → `{"recoveryCodes": [10 new],
+"agentsDisconnected", "notice", "agentsDisconnectFailed"}`: the new secret replaces the old one, every old recovery
+code stops working, the account's other sessions close, its AI agents are disconnected, and the account gets an
+email and an in-app notice; recorded as `two_factor.authenticator_replaced` (server audit for server accounts,
+activity log for company accounts). Errors: `409 TWO_FACTOR_NOT_PENDING` (no setup), `400 TWO_FACTOR_INVALID_CODE`,
+`429 TWO_FACTOR_TOO_MANY_ATTEMPTS`, plus those of §3.
+
+Unchanged: `POST /auth/two-factor/recovery-codes` still needs an authenticator code (after replacing, the person has
+one); `disable` still needs an authenticator or recovery code.
+
+The app shows, in the two-step section: "Cambiar de autenticador" (password, and a code unless the window is open;
+then the QR/secret of the new one, a code from it, and the new recovery codes once).
