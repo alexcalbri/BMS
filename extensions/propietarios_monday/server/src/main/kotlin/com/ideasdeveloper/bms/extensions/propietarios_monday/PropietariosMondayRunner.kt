@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.propietarios_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityEntry
+import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.modules.propietarios.LotImportOutcome
 import com.ideasdeveloper.bms.modules.propietarios.PropietariosImportApply
 import com.ideasdeveloper.bms.modules.propietarios.PropietariosImportJobContext
@@ -212,8 +217,10 @@ object PropietariosMondayRunner {
             return 0
         }
         // Idempotente: el desarrollo se busca por su clave (o es el elegido), asi cada corrida llega al mismo.
+        // Quien inicio la importacion: sus filas dicen "Importacion (<usuario>)".
+        val importer = importerActivity(context, job)
         val developmentId = PropietariosImportApply.ensureDevelopment(
-            tenant, DevelopmentKeyPrefix + job.boardId, job.boardName.ifBlank { "Monday ${job.boardId}" }, job.targetDevelopmentId, job.createdBy,
+            tenant, DevelopmentKeyPrefix + job.boardId, job.boardName.ifBlank { "Monday ${job.boardId}" }, job.targetDevelopmentId, job.createdBy, importer,
         )
         val batch = PropietariosMondayJobs.pending(tenant, job.id, BatchSize)
         var processed = 0
@@ -230,7 +237,7 @@ object PropietariosMondayRunner {
                 lotId = null
                 try {
                     val lot = MondayRowDto.decode(row.payload)
-                    when (val result = PropietariosImportApply.apply(tenant, context.access, developmentId, lot, Author, job.createdBy, context.today)) {
+                    when (val result = PropietariosImportApply.apply(tenant, context.access, developmentId, lot, Author, job.createdBy, context.today, activity = importer)) {
                         is LotImportOutcome.Created -> { outcome = "created"; lotId = result.lotId }
                         is LotImportOutcome.Updated -> { outcome = "updated"; lotId = result.lotId }
                         is LotImportOutcome.Skipped -> { outcome = "skipped"; message = result.reason }
@@ -266,7 +273,7 @@ object PropietariosMondayRunner {
         }
         if (processed > 0) PropietariosMondayJobs.resetRetries(tenant, job.id)
         PropietariosMondayJobs.recount(tenant, job.id)
-        if (PropietariosMondayJobs.statusOf(tenant, job.id) == MondayJobStatus.Applying && PropietariosMondayJobs.pending(tenant, job.id, 1).isEmpty()) finish(tenant, job.id)
+        if (PropietariosMondayJobs.statusOf(tenant, job.id) == MondayJobStatus.Applying && PropietariosMondayJobs.pending(tenant, job.id, 1).isEmpty()) finish(tenant, job.id, importer)
         return processed
     }
 
@@ -347,10 +354,27 @@ object PropietariosMondayRunner {
         return FilesResult(done, failed, problems, true)
     }
 
-    private fun finish(tenant: Connection, jobId: UUID) {
+    private fun finish(tenant: Connection, jobId: UUID, importer: ActivityActor) {
         val job = PropietariosMondayJobs.find(tenant, jobId) ?: return
         val message = "Importacion terminada: ${job.created} lotes creados, ${job.updated} actualizados, ${job.skipped} omitidos y ${job.failed} con error. " +
             "Archivos: ${job.filesDone} importados y ${job.filesFailed} con error."
         PropietariosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
+        // Una fila con los totales de la importacion (las de cada lote y archivo ya estan en el registro).
+        ActivityLog.record(tenant, importer, ActivityEntry(
+            moduleId = "propietarios", entityType = "importacion", entityId = jobId.toString(), entityLabel = job.boardName,
+            action = ActivityActions.Imported,
+            summary = "Importo ${job.created} lotes de monday desde ${job.boardName}.",
+            changes = listOf(
+                ActivityChange("lots", "Lotes", null, "creados ${job.created}, actualizados ${job.updated}, omitidos ${job.skipped}, con error ${job.failed}"),
+                ActivityChange("files", "Archivos", null, "importados ${job.filesDone}, con error ${job.filesFailed}"),
+            ),
+        ))
+    }
+
+    /** Quien inicio la importacion, para el registro de actividad ("Importacion (Ana Ruiz)"). */
+    private fun importerActivity(context: PropietariosImportJobContext, job: MondayJob): ActivityActor {
+        val creator = job.createdBy ?: return ActivityActor.import(null)
+        val startedBy = context.access.userAccess(context.tenant, context.companyCode, creator, serverOwner = false)?.permissions("propietarios")?.activityActor
+        return ActivityActor.import(startedBy ?: ActivityActor.user(creator, "Usuario"))
     }
 }

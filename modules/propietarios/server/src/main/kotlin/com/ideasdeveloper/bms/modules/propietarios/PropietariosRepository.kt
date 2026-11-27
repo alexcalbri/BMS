@@ -575,7 +575,8 @@ object PropietariosRepository {
     }
 
     /** Une las subidas pendientes de [uploaderId] al lote y devuelve sus nombres. Las de otra persona, o ya unidas, se ignoran; sin usuario no se une nada. */
-    fun attach(tenant: Connection, lotId: UUID, ids: Collection<UUID>, uploaderId: UUID?): List<String> {
+    /** Enlaza las subidas pendientes [ids] al lote; devuelve nombre y tamano de cada una enlazada. */
+    fun attach(tenant: Connection, lotId: UUID, ids: Collection<UUID>, uploaderId: UUID?): List<Pair<String, Long>> {
         val pending = ids.distinct()
         if (pending.isEmpty() || uploaderId == null) return emptyList()
         return transaction(tenant) {
@@ -586,10 +587,10 @@ object PropietariosRepository {
                 """
                 UPDATE propietarios_attachments SET lot_id = ?
                 WHERE lot_id IS NULL AND NOT delete_pending AND uploaded_by = ? AND id = ANY(?)
-                RETURNING name
+                RETURNING name, size
                 """.trimIndent(),
                 listOf(lotId, uploaderId, tenant.uuidArray(pending)),
-            ) { it.getString("name") }
+            ) { it.getString("name") to it.getLong("size") }
         }
     }
 
