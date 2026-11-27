@@ -8,6 +8,13 @@
 # this helper validates them, configures Nginx and reports 'active' or 'error'.
 set -Eeuo pipefail
 umask 022
+# Locale (scripts/ubuntu/tests/locale_test.sh): with the server's LANG (en_US.UTF-8 and others) bracket ranges such as
+# [!-~] or [a-z], sort orders and case conversions do not mean plain ASCII. Everything below runs as in C for ASCII while
+# text stays UTF-8 (plain C when C.UTF-8 is missing); the exact ASCII checks also set LC_ALL=C themselves (bms_ascii_match).
+if [[ $(LC_ALL=C.UTF-8 locale charmap 2>/dev/null) == UTF-8 ]]; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+unset LANGUAGE
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
 
 readonly CONFIG_FILE=/etc/bms/server.env
 readonly APP_PORT=8080
@@ -106,7 +113,7 @@ config_value() {
 
 DB_URL=$(config_value DB_URL)
 DB_NAME=${DB_URL##*/}
-[[ $DB_NAME =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die 'No se pudo inferir la base central desde DB_URL.'
+bms_ascii_match "$DB_NAME" '^[a-z][a-z0-9_]{0,62}$' || die 'No se pudo inferir la base central desde DB_URL.'
 PUBLIC_SCHEME=$(config_value PUBLIC_SCHEME)
 PUBLIC_SCHEME=${PUBLIC_SCHEME:-https}
 ACME_EMAIL=$(config_value ACME_EMAIL)
@@ -271,7 +278,7 @@ NGINX
 publish_domain() {
     local domain=$1 cert_name="bms-domain-$1" output nginx_config attempts
     log "Publicando $domain"
-    if [[ ${#domain} -gt 253 || ! $domain =~ $DOMAIN_PATTERN ]]; then
+    if (( ${#domain} > 253 )) || ! bms_ascii_match "$domain" "$DOMAIN_PATTERN"; then
         set_status "$domain" error 'Dominio invalido.'
         return
     fi

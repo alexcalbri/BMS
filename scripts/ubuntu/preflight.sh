@@ -11,6 +11,19 @@
 # Nginx, systemd and file checks that need a real install).
 set -uo pipefail
 umask 077
+# The locale this server gives its scripts (LANG from the session or /etc/default/locale), kept before this script fixes
+# its own: it is shown and the validators' self-test runs under it.
+SYSTEM_LOCALE_VARS=()
+for variable in LANG LC_ALL LC_CTYPE LC_COLLATE; do
+    [[ -n ${!variable:-} ]] && SYSTEM_LOCALE_VARS+=("$variable=${!variable}")
+done
+# Locale (scripts/ubuntu/tests/locale_test.sh): with the server's LANG (en_US.UTF-8 and others) bracket ranges such as
+# [!-~] or [a-z], sort orders and case conversions do not mean plain ASCII. Everything below runs as in C for ASCII while
+# text stays UTF-8 (plain C when C.UTF-8 is missing); the exact ASCII checks also set LC_ALL=C themselves (bms_ascii_match).
+if [[ $(LC_ALL=C.UTF-8 locale charmap 2>/dev/null) == UTF-8 ]]; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+unset LANGUAGE
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CONFIG_FILE=${BMS_PREFLIGHT_CONFIG:-/etc/bms/server.env}
@@ -89,6 +102,32 @@ if [[ ${BMS_PREFLIGHT_SKIP_HOST:-} != true ]]; then
     done
 fi
 
+# --- Locale -------------------------------------------------------------------------------------------------------
+# The update that failed with "DB_PROVISIONING_PASSWORD debe tener al menos 16 caracteres ASCII imprimibles" ran under
+# LANG=en_US.UTF-8, where [!-~] does not mean printable ASCII. The scripts now fix their locale; this shows the system's
+# and runs update.sh's validators under it (bash update.sh --self-test), so that class of problem shows up here.
+default_locale=$(sed -nE 's/^LANG="?([^"]*)"?$/\1/p' /etc/default/locale 2>/dev/null | head -n 1)
+report INFO 'locale del sistema' "${SYSTEM_LOCALE_VARS[*]:-sin LANG ni LC_*} (/etc/default/locale: ${default_locale:-sin LANG})"
+if env -u LANG -u LC_ALL -u LC_CTYPE -u LC_COLLATE ${SYSTEM_LOCALE_VARS[@]+"${SYSTEM_LOCALE_VARS[@]}"} \
+    bash -c '[[ 0123456789abcdef0123456789abcdef =~ ^[!-~]{16,}$ && ! é =~ ^[a-z]$ ]]' 2>/dev/null; then # locale-lint: unprotected on purpose
+    report PASS 'rangos sin proteccion' 'con este locale [!-~] y [a-z] son ASCII'
+else
+    report INFO 'rangos sin proteccion' 'con este locale [!-~] o [a-z] no son ASCII: los scripts de BMS fijan su propio locale (LC_ALL=C.UTF-8 / C)'
+fi
+if [[ -f $SELF_DIR/update.sh ]]; then
+    if self_test=$(env -u LANG -u LC_ALL -u LC_CTYPE -u LC_COLLATE ${SYSTEM_LOCALE_VARS[@]+"${SYSTEM_LOCALE_VARS[@]}"} \
+        bash "$SELF_DIR/update.sh" --self-test 2>&1); then
+        report PASS 'validadores de update.sh' "$(grep -c '^PASS' <<< "$self_test") comprobaciones con el locale del sistema"
+    else
+        report FAIL 'validadores de update.sh' "$(grep -v '^PASS' <<< "$self_test" | head -n 5 | paste -sd ';' -)"
+    fi
+    # The same validators on the values of server.env (never printed).
+    # shellcheck source=/dev/null
+    source <(sed -n '/^# BEGIN validators/,/^# END validators/p' "$SELF_DIR/update.sh")
+else
+    report WARN 'validadores de update.sh' 'falta update.sh junto a preflight.sh: no se probaron'
+fi
+
 # --- server.env -------------------------------------------------------------------------------------------------
 if [[ ! -r $CONFIG_FILE ]]; then
     report FAIL 'server.env' "no se puede leer $CONFIG_FILE"
@@ -108,17 +147,25 @@ else report FAIL 'server.env claves' "faltan o estan vacias: ${missing[*]}"; fi
 DB_URL=$(config_value DB_URL)
 DB_USER=$(config_value DB_USER)
 CONTROL_DB=''
-if [[ $DB_URL =~ ^jdbc:postgresql://[A-Za-z0-9.-]+(:[0-9]{1,5})?/([a-z][a-z0-9_]{0,62})$ ]]; then
+if bms_ascii_match "$DB_URL" '^jdbc:postgresql://[A-Za-z0-9.-]+(:[0-9]{1,5})?/([a-z][a-z0-9_]{0,62})$'; then
     CONTROL_DB=${BASH_REMATCH[2]}
     report PASS 'DB_URL' "forma jdbc:postgresql://servidor:puerto/$CONTROL_DB"
 else
     report FAIL 'DB_URL' 'no tiene la forma jdbc:postgresql://servidor:puerto/base (sin parametros)'
 fi
-if [[ $DB_USER =~ ^[a-z][a-z0-9_]{0,62}$ && $DB_USER != pg_* && $DB_USER != postgres ]]; then report PASS 'DB_USER' "$DB_USER"
+if bms_ascii_match "$DB_USER" '^[a-z][a-z0-9_]{0,62}$' && [[ $DB_USER != pg_* && $DB_USER != postgres ]]; then report PASS 'DB_USER' "$DB_USER"
 else report FAIL 'DB_USER' 'no es un nombre de rol valido'; fi
 provisioner=$(config_value DB_PROVISIONING_USER)
 if [[ -n $provisioner ]]; then report INFO 'DB_PROVISIONING_USER' "$provisioner (ya configurado)"
 else report INFO 'DB_PROVISIONING_USER' 'no existe aun; update.sh crea bms_provisioner'; fi
+if declare -F valid_provisioner_password >/dev/null && grep -q '^DB_PROVISIONING_PASSWORD=' "$CONFIG_FILE"; then
+    provisioner_password=$(config_value DB_PROVISIONING_PASSWORD)
+    provisioner_password=${provisioner_password#\"}
+    provisioner_password=${provisioner_password%\"}
+    if valid_provisioner_password "$provisioner_password"; then report PASS 'DB_PROVISIONING_PASSWORD' 'cumple la politica (16+ ASCII imprimibles, sin ":" ni "\")'
+    else report FAIL 'DB_PROVISIONING_PASSWORD' 'no cumple la politica: al menos 16 caracteres ASCII imprimibles, sin ":" ni "\"'; fi
+    unset provisioner_password
+fi
 
 # --- PostgreSQL ---------------------------------------------------------------------------------------------------
 if ! pg_read postgres -c 'SELECT 1' >/dev/null 2>&1; then

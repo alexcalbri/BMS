@@ -19,10 +19,14 @@
 # Every query here pins search_path = pg_catalog, pg_temp and schema-qualifies what it touches, and only reads
 # catalogs or runs GRANT, REVOKE and ALTER ... OWNER: nothing a company database defines is executed.
 
+# Sourced: the checks here never rely on the caller's locale (bms_ascii_match, LC_ALL=C on sort and the like).
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+
 readonly BMS_ROLE_PATTERN='^[a-z][a-z0-9_]{0,62}$'
 readonly BMS_TENANT_DB_PATTERN='^bms_[a-z0-9_]{1,59}$'
 
-bms_valid_role() { [[ $1 =~ $BMS_ROLE_PATTERN && $1 != pg_* && $1 != postgres ]]; }
+bms_valid_role() { bms_ascii_match "$1" "$BMS_ROLE_PATTERN" && [[ $1 != pg_* && $1 != postgres ]]; }
 
 # Roles of the active and inactive server owners (application_users.postgres_role of server_owners), one per
 # line, only those that exist as PostgreSQL roles and are not superusers.
@@ -57,7 +61,7 @@ SQL
             printf 'missing %s\n' "$name"
             continue
         fi
-        if [[ ! $name =~ $BMS_TENANT_DB_PATTERN || $name == "$control_db" ]]; then
+        if ! bms_ascii_match "$name" "$BMS_TENANT_DB_PATTERN" || [[ $name == "$control_db" ]]; then
             printf 'reject %s no es un nombre de base de empresa (bms_<codigo>) o es la base central\n' "$name"
             continue
         fi

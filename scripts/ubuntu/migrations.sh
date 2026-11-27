@@ -7,6 +7,10 @@
 # MIGRATION_PASSFILE, TCP to MIGRATION_HOST:MIGRATION_PORT) runs it after SET ROLE to the database owner, with a fixed
 # search_path (public; pg_catalog is searched first): nothing in a company database runs with superuser rights.
 
+# Sourced: the checks here never rely on the caller's locale.
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+
 migration_psql() {
     local target=$1
     shift
@@ -14,7 +18,7 @@ migration_psql() {
         runuser -u postgres -- psql -X -d "$target" "$@"
         return
     fi
-    [[ $MIGRATION_ROLE =~ ^[a-z][a-z0-9_]{0,62}$ && ${MIGRATION_LOGIN:-} =~ ^[a-z][a-z0-9_]{0,62}$ ]] || {
+    { bms_ascii_match "$MIGRATION_ROLE" '^[a-z][a-z0-9_]{0,62}$' && bms_ascii_match "${MIGRATION_LOGIN:-}" '^[a-z][a-z0-9_]{0,62}$'; } || {
         printf 'ERROR: MIGRATION_ROLE o MIGRATION_LOGIN invalido.\n' >&2
         return 1
     }

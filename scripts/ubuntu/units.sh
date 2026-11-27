@@ -3,6 +3,10 @@
 # own files; these are drop-ins (<unit>.d/hardening.conf) so update.sh can write, compare and, on a failed update,
 # take them back.
 
+# Sourced: the checks here never rely on the caller's locale.
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+
 # bms.service: the Ktor server (user bms, Java). [syscall_filter] true adds SystemCallFilter=@system-service, with
 # EPERM instead of killing the JVM on a refused call; it is opt-in (BMS_SYSCALL_FILTER=true in server.env) until
 # it has been tried on the server. [memory_max] (for example 80% or 3G) adds MemoryMax; empty leaves it out, which is
@@ -33,7 +37,7 @@ KeyringMode=private
 SystemCallArchitectures=native
 TasksMax=4096
 UNIT
-    if [[ $memory_max =~ ^([1-9][0-9]?%|[1-9][0-9]*[KMGT]?)$ ]]; then
+    if bms_ascii_match "$memory_max" '^([1-9][0-9]?%|[1-9][0-9]*[KMGT]?)$'; then
         printf 'MemoryMax=%s\n' "$memory_max"
     fi
     if [[ $syscall_filter == true ]]; then

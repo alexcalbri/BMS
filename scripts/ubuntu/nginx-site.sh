@@ -14,6 +14,10 @@
 #   POST /server/extensions/upload         extension package ZIP, multipart (50 MB, ExtensionPackageService.MaxZipBytes).
 # JSON routes that stay under 2 MB on purpose: module screen actions, the MCP endpoint of Agentes (1 MB), OAuth (64 KB).
 
+# Sourced: the parsing here never relies on the caller's locale (bms_ascii_match, LC_ALL=C on grep, sed, awk and sort).
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+
 # shellcheck disable=SC2034 # used by the scripts that source this file
 readonly BMS_NGINX_LIMITS_FILE=/etc/nginx/conf.d/bms-limits.conf
 readonly BMS_NGINX_CATCHALL_SITE=/etc/nginx/sites-available/bms-default
@@ -146,9 +150,9 @@ bms_nginx_has_http3() { nginx -V 2>&1 | grep -q -- '--with-http_v3_module'; }
 # True when this Nginx is 1.25.1 or later ("http2 on;"; older ones take "listen ... http2").
 bms_nginx_has_http2_directive() {
     local version
-    version=$(nginx -v 2>&1 | sed -nE 's#.*nginx/([0-9]+\.[0-9]+\.[0-9]+).*#\1#p')
+    version=$(nginx -v 2>&1 | LC_ALL=C sed -nE 's#.*nginx/([0-9]+\.[0-9]+\.[0-9]+).*#\1#p')
     [[ -n $version ]] || return 0
-    printf '%s\n1.25.1\n' "$version" | sort -V -C -r 2>/dev/null || [[ $version == 1.25.1 ]]
+    printf '%s\n1.25.1\n' "$version" | LC_ALL=C sort -V -C -r 2>/dev/null || [[ $version == 1.25.1 ]]
 }
 
 # The whole BMS site. https needs cert_name (/etc/letsencrypt/live/<cert_name>/); [http3] yes adds QUIC listeners
@@ -230,7 +234,7 @@ NGINX
 # Ports (80, 443) that some enabled Nginx configuration other than the BMS catch-all already marks default_server.
 # Reads `nginx -T` output on stdin.
 bms_nginx_taken_default_ports() {
-    awk -v ours="$BMS_NGINX_CATCHALL_SITE" -v ours_enabled="/etc/nginx/sites-enabled/bms-default" '
+    LC_ALL=C awk -v ours="$BMS_NGINX_CATCHALL_SITE" -v ours_enabled="/etc/nginx/sites-enabled/bms-default" '
         /^# configuration file / { file = $4; sub(/:$/, "", file); skip = (file == ours || file == ours_enabled); next }
         skip { next }
         {
@@ -240,14 +244,14 @@ bms_nginx_taken_default_ports() {
             if (line !~ /[[:space:]](default_server|default)[[:space:];]/) next
             if (line ~ /(^|[^0-9])443([^0-9]|$)/) print 443
             else if (line ~ /(^|[^0-9])80([^0-9]|$)/ || line !~ /[0-9]/) print 80
-        }' | sort -u | tr '\n' ' '
+        }' | LC_ALL=C sort -u | LC_ALL=C tr '\n' ' '
 }
 
 # Every name the site serves (all server_name lines; "_" left out), in order, space separated.
 bms_nginx_site_names() {
     awk '$1 == "server_name" { for (i = 2; i <= NF; i++) { n = $i; sub(/;$/, "", n); if (n != "" && n != "_" && !(n in seen)) { seen[n] = 1; printf "%s%s", sep, n; sep = " " } } }
         END { if (sep != "") print "" }' "$1" |
-        tr ' ' '\n' | grep -E '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$' | paste -sd ' '
+        LC_ALL=C tr ' ' '\n' | LC_ALL=C grep -E '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$' | paste -sd ' '
 }
 
 # Lines of an existing site that no BMS installer or updater ever wrote (comments and blank lines aside): local
@@ -286,8 +290,8 @@ bms_nginx_unknown_lines() {
 ^return 404;$
 RE
 )
-    sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/[[:space:]][[:space:]]*/ /g' "$1" |
-        grep -v '^$' | grep -Ev -f <(printf '%s\n' "$patterns") || true
+    LC_ALL=C sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/[[:space:]][[:space:]]*/ /g' "$1" |
+        grep -v '^$' | LC_ALL=C grep -Ev -f <(printf '%s\n' "$patterns") || true
 }
 
 # Reads the parameters of an existing BMS site (written by any installer version): prints
@@ -296,12 +300,12 @@ bms_nginx_site_params() {
     local file=$1 domain cert scheme=http
     grep -q 'proxy_pass http://127.0.0.1:8080' "$file" || return 1
     domain=$(awk '$1 == "server_name" { gsub(/;/, "", $2); print $2; exit }' "$file")
-    [[ $domain =~ ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$ && $domain == *.* ]] || return 1
+    bms_ascii_match "$domain" '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$' && [[ $domain == *.* ]] || return 1
     cert=-
-    if grep -Eq '^[[:space:]]*listen[[:space:]]+(\[::\]:)?443[[:space:]]' "$file"; then
+    if LC_ALL=C grep -Eq '^[[:space:]]*listen[[:space:]]+(\[::\]:)?443[[:space:]]' "$file"; then
         scheme=https
-        cert=$(sed -nE 's#^[[:space:]]*ssl_certificate[[:space:]]+/etc/letsencrypt/live/([^/]+)/fullchain\.pem;.*#\1#p' "$file" | head -n 1)
-        [[ $cert =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+        cert=$(LC_ALL=C sed -nE 's#^[[:space:]]*ssl_certificate[[:space:]]+/etc/letsencrypt/live/([^/]+)/fullchain\.pem;.*#\1#p' "$file" | head -n 1)
+        bms_ascii_match "$cert" '^[A-Za-z0-9._-]+$' || return 1
     fi
     printf '%s %s %s\n' "$scheme" "$domain" "$cert"
 }

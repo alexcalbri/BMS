@@ -16,6 +16,10 @@
 #                                         db/roles.sql (the PostgreSQL password verifiers)
 # The off-box copy never carries the master key unless told to: keep it apart (SELF_HOSTING.md, master key escrow).
 
+# Sourced or run: the checks here never rely on the caller's locale (bms_ascii_match, LC_ALL=C on sort and sed).
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+
 readonly BMS_BACKUP_ROOT=/var/lib/bms/db-backups
 readonly BMS_BACKUP_CONF=/etc/bms/backup.conf
 readonly BMS_BACKUP_SERVER_ENV=/etc/bms/server.env
@@ -45,7 +49,7 @@ SQL
 bms_backup_space_ok() {
     local dir=$1 bytes=$2 free
     free=$(df -P -B1 -- "$dir" | awk 'NR == 2 { print $4 }')
-    [[ $free =~ ^[0-9]+$ && $bytes =~ ^[0-9]+$ ]] || return 1
+    bms_ascii_match "$free" '^[0-9]+$' && bms_ascii_match "$bytes" '^[0-9]+$' || return 1
     (( free >= bytes + 2147483648 ))
 }
 
@@ -74,7 +78,7 @@ bms_backup_log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee 
 
 # server.env without its secrets (values of keys naming a password, key, token or secret).
 bms_redacted_env() {
-    sed -E 's/^([A-Za-z0-9_]*(PASSWORD|KEY|TOKEN|SECRET)[A-Za-z0-9_]*)=.*/\1=<redactado>/' "${1:-$BMS_BACKUP_SERVER_ENV}"
+    LC_ALL=C sed -E 's/^([A-Za-z0-9_]*(PASSWORD|KEY|TOKEN|SECRET)[A-Za-z0-9_]*)=.*/\1=<redactado>/' "${1:-$BMS_BACKUP_SERVER_ENV}"
 }
 
 bms_backup_offsite() {
@@ -117,7 +121,7 @@ bms_backup_main() {
     db_url=$(awk -F= '$1 == "DB_URL" { sub(/^[^=]*=/, ""); print; exit }' "$BMS_BACKUP_SERVER_ENV")
     control_db=${db_url##*/}
     control_db=${control_db%%\?*}
-    [[ $control_db =~ ^[a-z][a-z0-9_]{0,62}$ ]] || { printf 'DB_URL invalida en server.env.\n' >&2; return 1; }
+    bms_ascii_match "$control_db" '^[a-z][a-z0-9_]{0,62}$' || { printf 'DB_URL invalida en server.env.\n' >&2; return 1; }
     # L3: not while an install or update runs (its own dump comes first); wait for it, at most an hour.
     exec 7>>/run/bms-maintenance.lock
     if ! flock -w 3600 7; then
@@ -125,7 +129,7 @@ bms_backup_main() {
         return 1
     fi
     keep=$(bms_backup_setting BACKUP_KEEP)
-    [[ $keep =~ ^[1-9][0-9]{0,2}$ ]] || keep=7
+    bms_ascii_match "$keep" '^[1-9][0-9]{0,2}$' || keep=7
     umask 077
     install -d -m 700 -o root -g root "$BMS_BACKUP_ROOT"
     touch "$BMS_BACKUP_LOG" && chmod 640 "$BMS_BACKUP_LOG"
@@ -165,7 +169,7 @@ bms_backup_main() {
     # Retention: the newest [keep] copies stay.
     while IFS= read -r item; do
         rm -rf --one-file-system -- "$item"
-    done < <(find "$BMS_BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*' -printf '%f\n' | sort -r | tail -n "+$((keep + 1))" | sed "s#^#$BMS_BACKUP_ROOT/#")
+    done < <(find "$BMS_BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*' -printf '%f\n' | LC_ALL=C sort -r | tail -n "+$((keep + 1))" | sed "s#^#$BMS_BACKUP_ROOT/#")
     bms_backup_offsite "$dir" || status=1
     bms_backup_log "Respaldo terminado (estado $status): $dir"
     return "$status"
@@ -213,6 +217,11 @@ UNIT
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     set -Eeuo pipefail
     umask 077
+    # Locale (scripts/ubuntu/tests/locale_test.sh): with the server's LANG (en_US.UTF-8 and others) bracket ranges such as
+    # [!-~] or [a-z], sort orders and case conversions do not mean plain ASCII. Everything below runs as in C for ASCII while
+    # text stays UTF-8 (plain C when C.UTF-8 is missing); the exact ASCII checks also set LC_ALL=C themselves (bms_ascii_match).
+    if [[ $(LC_ALL=C.UTF-8 locale charmap 2>/dev/null) == UTF-8 ]]; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+    unset LANGUAGE
     if [[ ${1:-} == --install ]]; then
         [[ $EUID -eq 0 ]] || { printf 'Debe ejecutarse como root.\n' >&2; exit 1; }
         bms_backup_install "$(realpath -e -- "${BASH_SOURCE[0]}")"
