@@ -75,6 +75,14 @@ data class ActivityIntegrityReport(
     // Why the log is not hardened yet, when it is not.
     val notHardenedReasons: List<String> = emptyList(),
     val checkedAt: String = "",
+    // When activity-harden.sh first gave the log to bms_audit and how far the chain reached then: rows up to that
+    // position were written while the server owner's role could still change them and are not covered.
+    val hardenedAt: String? = null,
+    val hardenedSeq: Long? = null,
+    // What the guarantee covers, in one Spanish sentence.
+    val coverage: String? = null,
+    // Facts that are not problems (a database restored with the same chain...).
+    val notes: List<String> = emptyList(),
 )
 
 @Serializable

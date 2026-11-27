@@ -20,10 +20,12 @@ import javax.sql.DataSource
 
 /**
  * Tamper evidence of the company activity logs (ACTIVITY_LOG.md §9). Each committed row of activity_log is
- * sealed into a hash chain by the database (tenant V011, activity_log_seal); [check] recomputes the whole
- * chain with PostgreSQL's built-in functions only (never the company's own functions, which a compromised
- * role could have replaced), checks the triggers and functions of V011, whether the log is hardened
- * (owned by [AuditRole]) and every anchor the server wrote for that database in provisioning_audit_log.
+ * sealed into a hash chain (activity_log_chain) by the database (tenant V011, activity_log_seal); [check] recomputes
+ * the whole chain with PostgreSQL's built-in functions only (never the company's own functions, which a compromised
+ * role could have replaced), compares every object of the log with V011 (the deviation query shared with
+ * scripts/ubuntu/activity-harden.sh: triggers, rules, row security, inheritance, columns, constraints, indexes,
+ * functions, owners, grants, per-database settings), and checks every anchor the server wrote for the company in
+ * provisioning_audit_log. It reads in short transactions and bounded chunks, and takes no lock that blocks writers.
  */
 object ActivityIntegrity {
     const val AuditRole = "bms_audit"
@@ -33,33 +35,42 @@ object ActivityIntegrity {
     const val Migration = "V011__create_activity_log"
     val Genesis: String = "0".repeat(64)
     private const val MaxProblems = 50
+    private const val ChunkRows = 5_000
 
-    // What V011 creates, exactly: a changed body, owner-made trigger or a disabled one is a failure.
-    private data class FunctionSpec(val sourceSha256: String, val securityDefiner: Boolean)
+    /**
+     * The functions of the log as each tenant migration that defines them leaves them (sha256 of prosrc). A release
+     * that changes them (a later V0xx, applied to hardened companies by activity-harden.sh) adds its entry and keeps
+     * the older ones: a function must be exactly one of these (ACTIVITY_LOG.md §9, "Migrations").
+     */
+    internal data class AuditVersion(val migration: String, val functions: Map<String, String>)
 
-    private val functions = mapOf(
-        "activity_log_append_only" to FunctionSpec("45089d99a85cd2b976c095af6c9f508be04047e0b2f5c4e32e4238ac105d48d2", false),
-        "activity_log_before_insert" to FunctionSpec("4c9cf680b089eb6210c03c60e7ed14c9c21914c862778e42838b5e8b3fd2eacf", false),
-        "activity_log_seal" to FunctionSpec("99752b867e206098b8d8b2fa704d8aa0ae8f966a199b12865bf5c357ea5eddfc", true),
+    internal val versions = listOf(
+        AuditVersion(
+            Migration,
+            mapOf(
+                "activity_log_append_only" to "b9a98b70ecff1413d3ddf7b46c3630e4c92c5f822aede3ca6bd962bcfaeda5be",
+                "activity_log_before_insert" to "10300c25697cb3b9ca55b5f868f13190e319481156ee4e1d0cca2c8d83aa191c",
+                "activity_log_seal" to "42706921fd21093c593ca0ae0dfe6138eade686012183d5543d93051e5459611",
+            ),
+        ),
     )
-    private const val FunctionConfig = "search_path=pg_catalog, pg_temp"
 
-    internal val triggers = mapOf(
-        "activity_log_before_insert" to "CREATE TRIGGER activity_log_before_insert BEFORE INSERT ON public.activity_log FOR EACH ROW EXECUTE FUNCTION public.activity_log_before_insert()",
-        "activity_log_no_change" to "CREATE TRIGGER activity_log_no_change BEFORE DELETE OR UPDATE ON public.activity_log FOR EACH ROW EXECUTE FUNCTION public.activity_log_append_only()",
-        "activity_log_no_truncate" to "CREATE TRIGGER activity_log_no_truncate BEFORE TRUNCATE ON public.activity_log FOR EACH STATEMENT EXECUTE FUNCTION public.activity_log_append_only()",
-        "activity_log_seal" to "CREATE CONSTRAINT TRIGGER activity_log_seal AFTER INSERT ON public.activity_log DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.activity_log_seal()",
-    )
-    private val eventTriggers = setOf("bms_activity_log_no_drop", "bms_activity_log_no_move")
+    /** sha256 of the body of bms_audit.activity_log_guard() as scripts/ubuntu/activity-harden.sql creates it. */
+    internal const val GuardSha256 = "0a092808680c57d8d1dee7a6b9f03fc9ba2856c9095e36ef616407f03c03b742"
+
+    /** The deviation query (resource shared with activity-harden.sh). */
+    internal val deviationQuery: String by lazy {
+        ActivityIntegrity::class.java.getResourceAsStream("/activity/activity-deviations.sql")!!.use { String(it.readAllBytes(), Charsets.UTF_8) }
+    }
 
     // The row hash of V011's activity_log_seal, from the stored columns, with built-ins only (search_path is pg_catalog).
-    private const val RowHash = """pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(COALESCE(prev_hash, '') || '|' || pg_catalog.jsonb_build_array(
-            chain_seq, id, pg_catalog.to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-            actor_kind, actor_user_id, actor_name, actor_display, agent_name, real_actor_kind,
-            real_actor_user_id, real_actor_name, module_id, entity_type, entity_id, entity_label,
-            action, summary, changes, origin)::text, 'UTF8')), 'hex')"""
+    private const val RowHash = """pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(c.prev_hash || '|' || pg_catalog.jsonb_build_array(
+            c.chain_seq, a.id, pg_catalog.to_char(a.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+            a.actor_kind, a.actor_user_id, a.actor_name, a.actor_display, a.agent_name, a.real_actor_kind,
+            a.real_actor_user_id, a.real_actor_name, a.module_id, a.entity_type, a.entity_id, a.entity_label,
+            a.action, a.summary, a.changes, a.origin)::text, 'UTF8')), 'hex')"""
 
-    /** One anchor: how far the chain of database [databaseOid] reached when the server looked. */
+    /** One anchor: how far the chain of the company reached when the server looked (database oid for information only). */
     data class Anchor(
         val lastSeq: Long,
         val lastId: Long?,
@@ -69,10 +80,12 @@ object ActivityIntegrity {
         val hardened: Boolean,
         val reason: String,
         val at: String,
+        val hardenedAt: String? = null,
     ) {
         fun details(companyId: String?, firstAt: String? = null, lastAt: String? = null): String = auditDetails(
             "lastSeq" to lastSeq, "lastId" to lastId, "lastHash" to lastHash, "count" to count, "databaseOid" to databaseOid,
             "hardened" to hardened, "reason" to reason, "companyId" to companyId, "firstAt" to firstAt, "lastAt" to lastAt,
+            "hardenedAt" to hardenedAt,
         )
 
         companion object {
@@ -88,6 +101,7 @@ object ActivityIntegrity {
                     hardened = (json["hardened"] as? JsonPrimitive)?.booleanOrNull == true,
                     reason = text("reason").orEmpty(),
                     at = at,
+                    hardenedAt = text("hardenedAt"),
                 )
             }.getOrNull()
         }
@@ -109,40 +123,64 @@ object ActivityIntegrity {
         val firstBadId: Long?,
         val problems: List<String>,
         val anchorsChecked: Int,
+        val hardenedAt: String? = null,
+        val hardenedSeq: Long? = null,
+        val notes: List<String> = emptyList(),
     ) {
-        fun anchor(reason: String): Anchor = Anchor(lastSeq, lastId, lastHash, rows, databaseOid, hardened, reason, Instant.now().toString())
+        fun anchor(reason: String): Anchor =
+            Anchor(lastSeq, lastId, lastHash, rows, databaseOid, hardened, reason, Instant.now().toString(), hardenedAt)
 
         fun report(companyCode: String): ActivityIntegrityReport = ActivityIntegrityReport(
             companyCode = companyCode, ok = ok, hardened = hardened, rows = rows, lastSeq = lastSeq, lastId = lastId,
             lastHash = lastHash.takeIf { lastSeq > 0 }, anchorsChecked = anchorsChecked, firstBadId = firstBadId, problems = problems,
-            notHardenedReasons = notHardened, checkedAt = Instant.now().toString(),
+            notHardenedReasons = notHardened, checkedAt = Instant.now().toString(), hardenedAt = hardenedAt, hardenedSeq = hardenedSeq,
+            coverage = coverage(), notes = notes,
         )
+
+        /** What the guarantee covers, in one Spanish sentence (ACTIVITY_LOG.md §9). */
+        fun coverage(): String = when {
+            !tablePresent -> "La empresa aun no tiene registro de actividad."
+            hardenedAt == null -> "El registro aun no esta protegido (bms_audit): solo se detectan cambios, no se impiden."
+            else -> "Protegido desde $hardenedAt: las filas hasta la posicion ${hardenedSeq ?: 0} de la cadena se escribieron antes " +
+                "y no estan cubiertas por la garantia; las posteriores si."
+        }
     }
 
     /**
      * Checks the log of [tenant] (connected as the runtime role) against [anchors] (all anchors of the company, oldest
-     * first). Runs in its own read-only transaction and never writes.
+     * first). Reads in short read-only transactions (catalogs, head) and in chunks of [ChunkRows] chain positions, each
+     * its own statement, so no snapshot is held for long and writers never wait; never writes.
      */
-    fun check(tenant: Connection, anchors: List<Anchor>, statementTimeoutMillis: Long = 600_000): Result {
+    fun check(tenant: Connection, anchors: List<Anchor>, statementTimeoutMillis: Long = 60_000): Result {
         val autoCommit = tenant.autoCommit
-        tenant.autoCommit = false
         try {
+            tenant.autoCommit = true
             tenant.createStatement().use { statement ->
-                // One snapshot for the chain, the head and the catalog: rows sealed meanwhile do not look like a mismatch.
-                statement.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-                statement.execute("SET LOCAL statement_timeout = $statementTimeoutMillis")
+                statement.execute("SET statement_timeout = $statementTimeoutMillis")
                 // Built-ins only: nothing the company database defines can stand in for them.
-                statement.execute("SET LOCAL search_path = pg_catalog, pg_temp")
+                statement.execute("SET search_path = pg_catalog, pg_temp")
+                statement.execute("SET default_transaction_read_only = on")
+                statement.execute("SET lock_timeout = '5s'")
             }
             return inspect(tenant, anchors)
         } finally {
-            runCatching { tenant.rollback() }
+            runCatching {
+                tenant.createStatement().use { statement ->
+                    statement.execute("RESET statement_timeout")
+                    statement.execute("RESET search_path")
+                    statement.execute("RESET default_transaction_read_only")
+                    statement.execute("RESET lock_timeout")
+                }
+            }
             runCatching { tenant.autoCommit = autoCommit }
         }
     }
 
+    private class Head(val lastSeq: Long, val lastHash: String, val hardenedAt: String?, val hardenedSeq: Long?)
+
     private fun inspect(tenant: Connection, anchors: List<Anchor>): Result {
         val problems = mutableListOf<String>()
+        val notes = mutableListOf<String>()
         var firstBad: Long? = null
         var more = 0
         fun bad(id: Long?, problem: String) {
@@ -150,154 +188,174 @@ object ActivityIntegrity {
             if (firstBad == null && id != null) firstBad = id
         }
         val databaseOid = scalar(tenant, "SELECT oid::bigint FROM pg_database WHERE datname = current_database()")!!.toLong()
-        val v011 = scalar(
+        val applied = scalar(
             tenant,
-            "SELECT CASE WHEN to_regclass('public.schema_migrations') IS NULL THEN 'false' ELSE (SELECT EXISTS (SELECT 1 FROM public.schema_migrations WHERE module = 'tenant' AND version = '$Migration'))::text END",
-        ) == "true"
+            "SELECT CASE WHEN to_regclass('public.schema_migrations') IS NULL THEN '' ELSE (SELECT string_agg(version, ',') FROM public.schema_migrations WHERE module = 'tenant') END",
+        ).orEmpty().split(',').toSet()
+        val v011 = Migration in applied
         val present = scalar(tenant, "SELECT to_regclass('public.activity_log') IS NOT NULL") == "t"
-        val ours = anchors.filter { it.databaseOid == databaseOid }
-        // The latest anchor of the company was of another database that was not deleted by the server: replaced.
-        anchors.lastOrNull()?.let { latest ->
-            if (latest.databaseOid != null && latest.databaseOid != databaseOid && latest.reason != "deletion") {
-                bad(null, "La base de datos de la empresa no es la que tenia el registro anclado el ${latest.at} (fue borrada o reemplazada).")
-            }
-        }
+        // Only the anchors since the company's last deletion (a code used again later starts a new chain).
+        val ours = anchors.drop(anchors.indexOfLast { it.reason == "deletion" } + 1)
         if (!present) {
             if (v011) bad(null, "Falta la tabla activity_log aunque la migracion V011 consta como aplicada.")
-            if (ours.isNotEmpty()) bad(null, "Falta la tabla activity_log y hay ${ours.size} anclas de su cadena.")
+            if (ours.any { it.lastSeq > 0 }) bad(null, "Falta la tabla activity_log y hay ${ours.size} anclas de su cadena.")
             return Result(problems.isEmpty(), false, false, listOf("La empresa aun no tiene el registro de actividad (V011)."), 0, 0, null, Genesis,
                 null, null, databaseOid, firstBad, problems, ours.size)
         }
 
-        // Functions and triggers exactly as V011 created them.
-        val owners = mutableMapOf<String, String>()
-        tenant.prepareStatement(
-            """
-            SELECT p.proname, pg_get_userbyid(p.proowner), encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex'), p.prosecdef,
-                   COALESCE(array_to_string(p.proconfig, ';'), '')
-            FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY (?)
-            """.trimIndent()
-        ).use { query ->
-            query.setArray(1, tenant.createArrayOf("text", functions.keys.toTypedArray()))
-            query.executeQuery().use { rows ->
-                val seen = mutableSetOf<String>()
-                while (rows.next()) {
-                    val name = rows.getString(1)
-                    val spec = functions.getValue(name)
-                    if (!seen.add(name)) bad(null, "La funcion $name tiene una sobrecarga que V011 no crea.")
-                    owners[name] = rows.getString(2)
-                    if (rows.getString(3) != spec.sourceSha256 || rows.getBoolean(4) != spec.securityDefiner || rows.getString(5) != FunctionConfig) {
-                        bad(null, "La funcion $name fue cambiada: no es la de la migracion V011.")
+        // Objects and settings exactly as V011 leaves them (the query activity-harden.sh runs too).
+        // The source of every version this release knows is accepted (an older migration's body is still the migration's).
+        val sources = versions.flatMap { it.functions.entries }.groupBy({ it.key }, { it.value }).mapValues { (_, hashes) -> hashes.distinct().joinToString("|") }
+        val notHardened = mutableListOf<String>()
+        tenant.autoCommit = false
+        val head: Head?
+        try {
+            tenant.createStatement().use { it.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY") }
+            tenant.prepareStatement("SELECT set_config('bms.runtime_user', current_user, true), set_config('bms.audit_functions', ?, true)").use { query ->
+                query.setString(1, (sources + ("guard" to GuardSha256)).entries.joinToString(";") { "${it.key}=${it.value}" })
+                query.executeQuery().close()
+            }
+            tenant.createStatement().use { statement ->
+                statement.executeQuery(deviationQuery).use { rows ->
+                    while (rows.next()) {
+                        when (rows.getString(1)) {
+                            "hardening" -> notHardened += rows.getString(2)
+                            else -> bad(null, rows.getString(2))
+                        }
                     }
                 }
-                (functions.keys - seen).forEach { bad(null, "Falta la funcion $it.") }
             }
-        }
-        tenant.prepareStatement(
-            "SELECT tgname, tgenabled, pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid = 'public.activity_log'::regclass AND NOT tgisinternal"
-        ).use { query ->
-            query.executeQuery().use { rows ->
-                val seen = mutableSetOf<String>()
-                while (rows.next()) {
-                    val name = rows.getString(1)
-                    val expected = triggers[name] ?: continue
-                    seen += name
-                    if (rows.getString(2) !in setOf("O", "A")) bad(null, "El disparador $name esta desactivado (tgenabled = ${rows.getString(2)}).")
-                    if (rows.getString(3) != expected) bad(null, "El disparador $name fue cambiado.")
+            head = if (scalar(tenant, "SELECT relkind FROM pg_class WHERE oid = to_regclass('public.activity_log_chain_head')") == "r") {
+                tenant.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "SELECT last_seq, last_hash, to_char(hardened_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), hardened_seq FROM public.activity_log_chain_head WHERE id = 1"
+                    ).use { r -> if (r.next()) Head(r.getLong(1), r.getString(2), r.getString(3), r.getObject(4) as Long?) else null }
                 }
-                (triggers.keys - seen).forEach { bad(null, "Falta el disparador $it.") }
-            }
+            } else null
+            tenant.commit()
+        } finally {
+            runCatching { tenant.rollback() }
+            tenant.autoCommit = true
         }
-
-        // Hardened: everything belongs to bms_audit, which the runtime role (current_user) is not a member of.
-        val notHardened = mutableListOf<String>()
-        tenant.createStatement().use { statement ->
-            statement.executeQuery(
-                """
-                SELECT c.relname, pg_get_userbyid(c.relowner) FROM pg_class c
-                WHERE c.oid IN ('public.activity_log'::regclass, 'public.activity_log_id_seq'::regclass)
-                   OR c.oid = to_regclass('public.activity_log_chain_head')
-                """.trimIndent()
-            ).use { rows -> while (rows.next()) owners[rows.getString(1)] = rows.getString(2) }
-        }
-        owners.filterValues { it != AuditRole }.keys.sorted().forEach { notHardened += "$it pertenece a ${owners[it]}, no a $AuditRole." }
-        val audit = scalar(tenant, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$AuditRole')") == "t"
-        if (!audit) notHardened += "No existe el rol $AuditRole."
-        if (audit && scalar(tenant, "SELECT pg_has_role(current_user, '$AuditRole', 'MEMBER')") == "t") {
-            notHardened += "El rol de la aplicacion es miembro de $AuditRole."
-        }
-        listOf("UPDATE", "DELETE", "TRUNCATE", "TRIGGER", "REFERENCES").filter { privilege ->
-            scalar(tenant, "SELECT has_table_privilege(current_user, 'public.activity_log', '$privilege')") == "t"
-        }.takeIf { it.isNotEmpty() }?.let { notHardened += "El rol de la aplicacion tiene ${it.joinToString(", ")} sobre activity_log." }
-        val guards = tenant.createStatement().use { statement ->
-            statement.executeQuery("SELECT evtname FROM pg_event_trigger WHERE evtenabled <> 'D'").use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
-        }
-        (eventTriggers - guards).sorted().forEach { notHardened += "Falta el disparador de eventos $it." }
-        val hardened = notHardened.isEmpty()
+        val hardened = notHardened.isEmpty() && head?.hardenedAt != null
+        if (notHardened.isEmpty() && head?.hardenedAt == null) notHardened += "La cabeza de la cadena no dice cuando se protegio el registro."
         if (!hardened && ours.any { it.hardened }) {
             bad(null, "El registro estaba protegido ($AuditRole) y ya no lo esta: " + notHardened.joinToString(" "))
         }
+        ours.lastOrNull { it.hardenedAt != null }?.let { anchored ->
+            if (head?.hardenedAt != anchored.hardenedAt) {
+                bad(null, "La fecha de proteccion del registro cambio (era ${anchored.hardenedAt}, ahora ${head?.hardenedAt ?: "ninguna"}): " +
+                    "se desprotegio y se volvio a proteger, y las filas de entre medio no estan cubiertas.")
+            }
+        }
+        if (head == null) {
+            bad(null, "Falta la cabeza de la cadena (activity_log_chain_head).")
+        }
+        val chainPresent = scalar(tenant, "SELECT relkind FROM pg_class WHERE oid = to_regclass('public.activity_log_chain')") == "r"
 
-        // The chain, in sealing order: contiguous, linked, every hash recomputed.
-        val anchorAt = ours.groupBy { it.lastSeq }
+        // The chain, in sealing order up to the head read above: contiguous, linked, every hash recomputed, in chunks.
+        val anchorAt = ours.filter { it.lastSeq > 0 }.groupBy { it.lastSeq }
+        val end = head?.lastSeq ?: 0
         var expectedSeq = 1L
         var previous = Genesis
         var rows = 0L
         var lastId: Long? = null
-        var firstAt: String? = null
-        var lastAt: String? = null
         val matched = mutableSetOf<Anchor>()
-        tenant.prepareStatement(
-            "SELECT id, chain_seq, prev_hash, row_hash, $RowHash, occurred_at::text FROM public.activity_log ORDER BY chain_seq NULLS LAST, id"
-        ).use { query ->
-            query.fetchSize = 2_000
-            query.executeQuery().use { result ->
-                while (result.next()) {
-                    rows++
-                    val id = result.getLong(1)
-                    val seq = result.getObject(2) as Long?
-                    val at = result.getString(6)
-                    if (firstAt == null || at < firstAt!!) firstAt = at
-                    if (lastAt == null || at > lastAt!!) lastAt = at
-                    if (seq == null) {
-                        bad(id, "La fila $id no esta sellada en la cadena (se escribio sin su disparador).")
-                        continue
+        if (chainPresent) {
+            while (expectedSeq <= end) {
+                var read = 0
+                tenant.prepareStatement(
+                    """
+                    SELECT c.chain_seq, c.id, c.prev_hash, c.row_hash, CASE WHEN a.id IS NULL THEN NULL ELSE $RowHash END
+                    FROM public.activity_log_chain c LEFT JOIN public.activity_log a ON a.id = c.id
+                    WHERE c.chain_seq >= ? AND c.chain_seq <= ? ORDER BY c.chain_seq LIMIT ?
+                    """.trimIndent()
+                ).use { query ->
+                    query.setLong(1, expectedSeq)
+                    query.setLong(2, end)
+                    query.setInt(3, ChunkRows)
+                    query.executeQuery().use { result ->
+                        while (result.next()) {
+                            read++
+                            val seq = result.getLong(1)
+                            val id = result.getLong(2)
+                            if (seq != expectedSeq) bad(id, "Faltan las posiciones $expectedSeq a ${seq - 1} de la cadena antes de la fila $id.")
+                            if (result.getString(3) != previous) bad(id, "La fila $id no enlaza con la fila anterior de la cadena.")
+                            val stored = result.getString(4)
+                            val recomputed = result.getString(5)
+                            when {
+                                recomputed == null -> bad(id, "La fila $id (posicion $seq de la cadena) fue borrada.")
+                                stored != recomputed -> bad(id, "La fila $id fue modificada: su hash no coincide con su contenido.")
+                                else -> rows++
+                            }
+                            anchorAt[seq]?.forEach { anchor ->
+                                matched += anchor
+                                if (anchor.lastHash != stored) bad(id, "La fila $id no coincide con el ancla del ${anchor.at}.")
+                            }
+                            previous = stored
+                            expectedSeq = seq + 1
+                            lastId = id
+                        }
                     }
-                    if (seq != expectedSeq) {
-                        if (seq > expectedSeq) bad(id, "Faltan las filas $expectedSeq a ${seq - 1} de la cadena antes de la fila $id.")
-                        else bad(id, "La fila $id repite la posicion $seq de la cadena.")
-                    }
-                    if (result.getString(3) != previous) bad(id, "La fila $id no enlaza con la fila anterior de la cadena.")
-                    val stored = result.getString(4)
-                    if (stored != result.getString(5)) bad(id, "La fila $id fue modificada: su hash no coincide con su contenido.")
-                    anchorAt[seq]?.forEach { anchor ->
-                        matched += anchor
-                        if (anchor.lastHash != stored) bad(id, "La fila $id no coincide con el ancla del ${anchor.at}.")
-                    }
-                    previous = stored.orEmpty()
-                    expectedSeq = seq + 1
-                    lastId = id
+                }
+                if (read == 0) {
+                    bad(null, "Faltan las posiciones $expectedSeq a $end de la cadena (la cabeza dice $end).")
+                    break
                 }
             }
         }
-        val lastSeq = expectedSeq - 1
+        val lastSeq = minOf(expectedSeq - 1, end)
+        if (head != null && previous != head.lastHash && lastSeq == end) {
+            bad(null, "La cabeza de la cadena no coincide con su ultima fila: se borraron filas del final o se altero la cabeza.")
+        }
+        // Nothing after the head (read again, with the end of the chain, in one snapshot).
+        if (chainPresent && head != null) {
+            tenant.createStatement().use { statement ->
+                statement.executeQuery(
+                    "SELECT (SELECT max(chain_seq) FROM public.activity_log_chain), h.last_seq FROM public.activity_log_chain_head h WHERE h.id = 1"
+                ).use { r ->
+                    if (r.next()) {
+                        val max = r.getObject(1) as Long?
+                        if (max != null && max > r.getLong(2)) bad(null, "La cadena llega a la posicion $max y la cabeza dice ${r.getLong(2)}: se altero la cabeza.")
+                    }
+                }
+            }
+        }
         ours.filter { it !in matched && it.lastSeq > 0 }.forEach { anchor ->
-            bad(null, "Faltan filas: el ancla del ${anchor.at} llegaba a la posicion ${anchor.lastSeq} de la cadena y la cadena llega a $lastSeq.")
+            if (anchor.databaseOid != null && anchor.databaseOid != databaseOid && anchor.lastSeq > end) {
+                bad(null, "La base de datos de la empresa no es la que tenia el registro anclado el ${anchor.at} (fue reemplazada, o restaurada de una copia anterior a esa fecha).")
+            } else {
+                bad(null, "Faltan filas: el ancla del ${anchor.at} llegaba a la posicion ${anchor.lastSeq} de la cadena y la cadena llega a $lastSeq.")
+            }
         }
-        val head = tenant.createStatement().use { statement ->
+        if (ours.any { it.databaseOid != null && it.databaseOid != databaseOid } && matched.any { it.databaseOid != databaseOid }) {
+            notes += "La base de datos fue restaurada o recreada (otro oid) con la misma cadena: sus anclas anteriores coinciden."
+        }
+
+        // Rows without a seal (written with the trigger disabled, or a setting forged to skip it), and the dates.
+        tenant.createStatement().use { statement ->
             statement.executeQuery(
-                "SELECT last_seq, last_hash FROM public.activity_log_chain_head WHERE id = 1"
-            ).use { result -> if (result.next()) result.getLong(1) to result.getString(2) else null }
+                (if (chainPresent) "SELECT a.id, count(*) OVER () FROM public.activity_log a WHERE NOT EXISTS (SELECT 1 FROM public.activity_log_chain c WHERE c.id = a.id)"
+                else "SELECT a.id, count(*) OVER () FROM public.activity_log a") + " ORDER BY a.id LIMIT 20"
+            ).use { r ->
+                var total = 0L
+                while (r.next()) {
+                    total = r.getLong(2)
+                    bad(r.getLong(1), "La fila ${r.getLong(1)} no esta sellada en la cadena (se escribio sin su disparador).")
+                }
+                if (total > 20) bad(null, "Hay $total filas sin sellar.")
+                rows += total
+            }
         }
-        when {
-            head == null -> bad(null, "Falta la cabeza de la cadena (activity_log_chain_head).")
-            head.first != lastSeq || head.second != previous ->
-                bad(null, "La cabeza de la cadena dice ${head.first} filas y la tabla tiene $lastSeq: se borraron filas del final o se altero la cabeza.")
+        val (firstAt, lastAt) = tenant.createStatement().use { statement ->
+            statement.executeQuery("SELECT min(occurred_at)::text, max(occurred_at)::text FROM public.activity_log").use { r ->
+                if (r.next()) r.getString(1) to r.getString(2) else null to null
+            }
         }
         if (more > 0) problems += "Y $more problemas mas."
         return Result(
             problems.isEmpty(), true, hardened, notHardened, rows, lastSeq, lastId, previous, firstAt, lastAt, databaseOid,
-            firstBad, problems, ours.size,
+            firstBad, problems, ours.size, head?.hardenedAt, head?.hardenedSeq, notes,
         )
     }
 
@@ -367,8 +425,10 @@ class ActivityIntegrityService(
         val company = company(companyCode) ?: return null
         val result = outcome(company, unreadable(company) { check(company) })
         if (result.tablePresent) {
-            val last = anchors(company.code).lastOrNull { it.databaseOid == result.databaseOid }
-            if (last == null || last.lastSeq != result.lastSeq || last.lastHash != result.lastHash || last.hardened != result.hardened || reason != "hourly") {
+            val last = anchors(company.code).lastOrNull()
+            if (last == null || last.lastSeq != result.lastSeq || last.lastHash != result.lastHash || last.hardened != result.hardened ||
+                last.hardenedAt != result.hardenedAt || last.databaseOid != result.databaseOid || reason != "hourly"
+            ) {
                 central.connection.use { connection ->
                     ProvisioningAudit.insert(connection, AuditActor.system(), ActivityIntegrity.AnchorAction, company.code, null, result.anchor(reason).details(company.id))
                 }

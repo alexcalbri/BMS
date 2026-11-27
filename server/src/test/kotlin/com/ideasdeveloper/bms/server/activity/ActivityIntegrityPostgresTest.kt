@@ -130,9 +130,35 @@ class ActivityIntegrityPostgresTest {
         sql.forEach { db.run(it) }
     }
 
+    /**
+     * What scripts/ubuntu/activity-harden.sh feeds the superuser for one database (its psql variable and the canonical
+     * migration spliced in), with the role and search path pg-safe.sh pins. The shell paths themselves (settings,
+     * evidence, the check first) are tested by scripts/ubuntu/tests/activity-harden-test.sh.
+     */
     private fun harden(database: String) = superuser(database).use { db ->
+        db.run("SET ROLE NONE")
+        db.run("SET search_path = pg_catalog, pg_temp")
+        db.run(hardenSql())
+    }
+
+    private fun hardenSql(): String {
+        val canonical = migration("database/tenant/migrations/V011__create_activity_log.sql")
+        return File(root, "scripts/ubuntu/activity-harden.sql").readText()
+            .replace(":'db_user'", "'$runtimeRole'")
+            .replace("\n-- @canonical@\n", "\n$canonical\n")
+    }
+
+    /** The deviation query as activity-harden.sh runs it (as the superuser), minus the "hardening" rows when [all] is false. */
+    private fun deviations(database: String, all: Boolean = false): List<String> = superuser(database).use { db ->
+        db.run("SET search_path = pg_catalog, pg_temp")
         db.run("SELECT set_config('bms.runtime_user', '$runtimeRole', false)")
-        db.run(File(root, "scripts/ubuntu/activity-harden.sql").readText())
+        db.prepareStatement("SELECT set_config('bms.audit_functions', ?, false)").use { st ->
+            st.setString(1, (ActivityIntegrity.versions.last().functions + ("guard" to ActivityIntegrity.GuardSha256)).entries.joinToString(";") { "${it.key}=${it.value}" })
+            st.executeQuery().close()
+        }
+        db.createStatement().use { st ->
+            st.executeQuery(ActivityIntegrity.deviationQuery).use { r -> buildList { while (r.next()) if (all || r.getString(1) != "hardening") add(r.getString(1) + ": " + r.getString(2)) } }
+        }
     }
 
     @Test
@@ -206,18 +232,25 @@ class ActivityIntegrityPostgresTest {
         asOwner("bms_ai_del", "ALTER TABLE activity_log DISABLE TRIGGER activity_log_no_change", "DELETE FROM activity_log WHERE id = ${deleted[1]}")
         val gap = service.verify("del")
         assertFalse(gap.ok)
-        assertEquals(deleted[2], gap.firstBadId)
-        assertTrue(gap.problems.any { it.contains("Faltan las filas 2 a 2") }, gap.problems.toString())
-        assertTrue(gap.problems.any { it.contains("activity_log_no_change esta desactivado") }, gap.problems.toString())
+        assertEquals(deleted[1], gap.firstBadId)
+        assertTrue(gap.problems.any { it.contains("posicion 2 de la cadena) fue borrada") }, gap.problems.toString())
+        assertTrue(gap.problems.any { it.contains("activity_log_no_change de activity_log esta desactivado") }, gap.problems.toString())
+        // Its chain row deleted too: the gap in the chain itself.
+        asOwner("bms_ai_del", "ALTER TABLE activity_log_chain DISABLE TRIGGER activity_log_chain_no_change", "DELETE FROM activity_log_chain WHERE id = ${deleted[1]}")
+        val hole = service.verify("del")
+        assertEquals(deleted[2], hole.firstBadId)
+        assertTrue(hole.problems.any { it.contains("Faltan las posiciones 2 a 2") }, hole.problems.toString())
 
         // The newest rows deleted (and the head rewound): the anchor still says how far the chain reached.
         val tail = write("bms_ai_tail", 4)
         service.anchor("tail", "hourly")
         asOwner(
             "bms_ai_tail", "ALTER TABLE activity_log DISABLE TRIGGER activity_log_no_change",
-            "DELETE FROM activity_log WHERE id >= ${tail[2]}",
+            "ALTER TABLE activity_log_chain DISABLE TRIGGER activity_log_chain_no_change",
+            "DELETE FROM activity_log WHERE id >= ${tail[2]}", "DELETE FROM activity_log_chain WHERE id >= ${tail[2]}",
             "ALTER TABLE activity_log ENABLE TRIGGER activity_log_no_change",
-            "UPDATE activity_log_chain_head SET last_seq = 2, last_hash = (SELECT row_hash FROM activity_log WHERE chain_seq = 2)",
+            "ALTER TABLE activity_log_chain ENABLE TRIGGER activity_log_chain_no_change",
+            "UPDATE activity_log_chain_head SET last_seq = 2, last_hash = (SELECT row_hash FROM activity_log_chain WHERE chain_seq = 2)",
         )
         val cut = service.verify("tail")
         assertFalse(cut.ok)
@@ -283,6 +316,12 @@ class ActivityIntegrityPostgresTest {
             "DROP FUNCTION activity_log_seal() CASCADE", "ALTER TABLE activity_log OWNER TO $owner", "GRANT bms_audit TO $runtimeRole",
             "UPDATE activity_log_chain_head SET last_seq = 0", "SELECT setval('activity_log_id_seq', 1)",
             "DROP EVENT TRIGGER bms_activity_log_no_drop", "SET session_replication_role = replica",
+            "DELETE FROM activity_log_chain", "TRUNCATE activity_log_chain", "INSERT INTO activity_log_chain VALUES (99, 99, 'x', 'y')",
+            "DROP TABLE activity_log_chain CASCADE", "DROP INDEX activity_log_occurred_idx", "ALTER TABLE activity_log ADD COLUMN x INT",
+            "CREATE TRIGGER x BEFORE INSERT ON activity_log FOR EACH ROW EXECUTE FUNCTION activity_log_before_insert()",
+            "CREATE RULE x AS ON INSERT TO activity_log DO INSTEAD NOTHING", "ALTER TABLE activity_log ENABLE ROW LEVEL SECURITY",
+            "ALTER SEQUENCE activity_log_id_seq INCREMENT BY 2", "DROP SEQUENCE activity_log_id_seq CASCADE",
+            "UPDATE activity_log_chain_head SET hardened_at = now()",
         ).forEach { sql ->
             listOf(false, true).forEach { owned ->
                 runtime("bms_ai_acme").use { db ->
@@ -291,6 +330,8 @@ class ActivityIntegrityPostgresTest {
                 }
             }
         }
+        // The guard matches exact objects: other tables of the schema named activity_log* are the owner's business.
+        asOwner("bms_ai_acme", "CREATE TABLE activity_log_notes (x INT)", "DROP TABLE activity_log_notes")
         // The runtime still writes, and the chain still verifies (and keeps matching its anchor).
         write("bms_ai_acme", 2)
         val after = service.verify("acme")
@@ -312,6 +353,158 @@ class ActivityIntegrityPostgresTest {
         val downgraded = service.verify("acme")
         assertFalse(downgraded.ok)
         assertTrue(downgraded.problems.any { it.contains("estaba protegido") }, downgraded.problems.toString())
+    }
+
+    @Test
+    fun tamperingInstalledBeforeHardeningIsReportedAndHardeningRemovesItAndRecordsWhenTheGuaranteeStarts() {
+        if (url == null) return
+        reset("pre")
+        val service = service()
+        write("bms_ai_pre", 2)
+        assertTrue(deviations("bms_ai_pre").isEmpty(), deviations("bms_ai_pre").toString())
+        // The reviewer's path: before the hardening the owner's role leaves itself live control over future rows.
+        asOwner(
+            "bms_ai_pre",
+            "CREATE FUNCTION public.evil_rewrite() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.summary := 'Reescrita.'; RETURN NEW; END $$",
+            "CREATE TRIGGER zz_rewrite BEFORE INSERT ON activity_log FOR EACH ROW EXECUTE FUNCTION public.evil_rewrite()",
+            "CREATE RULE swallow AS ON INSERT TO activity_log WHERE NEW.summary LIKE 'tragar%' DO INSTEAD NOTHING",
+            "ALTER TABLE activity_log ENABLE ROW LEVEL SECURITY",
+            "CREATE POLICY hide ON activity_log FOR SELECT USING (summary <> 'oculta')",
+            "ALTER TABLE activity_log ALTER COLUMN entity_label SET DEFAULT 'x'",
+            "ALTER TABLE activity_log ADD COLUMN extra TEXT DEFAULT 'oculto'",
+            "CREATE TABLE activity_log_shadow () INHERITS (activity_log)",
+            "CREATE FUNCTION public.evil_check(BIGINT) RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS 'SELECT true'",
+            "ALTER TABLE activity_log_chain ADD CONSTRAINT evil CHECK (public.evil_check(id))",
+            "CREATE INDEX evil_idx ON activity_log ((public.evil_check(id)))",
+            "ALTER TABLE activity_log_chain_head SET UNLOGGED",
+            "CREATE FUNCTION public.activity_log_seal(INTEGER) RETURNS INTEGER LANGUAGE sql AS 'SELECT 1'",
+            "UPDATE activity_log_chain_head SET hardened_at = '2000-01-01', hardened_seq = 0",
+            "CREATE TABLE refs (id BIGINT REFERENCES activity_log (id))",
+            "ALTER TABLE activity_log DISABLE TRIGGER activity_log_seal",
+        )
+        val tampered = service.verify("pre")
+        assertFalse(tampered.ok)
+        listOf(
+            "zz_rewrite", "La regla swallow", "seguridad por filas", "La politica hide", "entity_label fue cambiada", "extra no es de V011",
+            "hereda de activity_log", "La restriccion evil", "El indice evil_idx", "UNLOGGED", "sobrecarga", "La clave foranea",
+            "activity_log_seal de activity_log esta desactivado",
+        ).forEach { expected -> assertTrue(tampered.problems.any { it.contains(expected) }, "$expected: ${tampered.problems}") }
+
+        harden("bms_ai_pre")
+        assertEquals(emptyList(), deviations("bms_ai_pre", all = true))
+        val clean = service.verify("pre")
+        assertTrue(clean.ok, clean.problems.toString())
+        assertTrue(clean.hardened, clean.notHardenedReasons.toString())
+        // The guarantee starts at this hardening (not at the forged date), after the 2 rows written before it.
+        assertEquals(2L, clean.hardenedSeq)
+        assertTrue(clean.hardenedAt!!.startsWith(java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString()), clean.hardenedAt)
+        assertTrue(clean.coverage!!.contains("hasta la posicion 2"), clean.coverage)
+        // Nothing of it acts on new rows: no rewrite, no swallowed insert, no hidden column, no child rows.
+        write("bms_ai_pre", 1, "tragar")
+        assertEquals("tragar 1.", scalar("bms_ai_pre", "SELECT summary FROM activity_log ORDER BY id DESC LIMIT 1"))
+        assertEquals("3", scalar("bms_ai_pre", "SELECT count(*) FROM activity_log"))
+        assertEquals("0", scalar("bms_ai_pre", "SELECT count(*) FROM pg_inherits"))
+        assertEquals("p", scalar("bms_ai_pre", "SELECT relpersistence FROM pg_class WHERE relname = 'activity_log_chain_head'"))
+        assertTrue(service.verify("pre").ok)
+        // A hardening done again (after the superuser undid it) moves the start: reported against the anchor.
+        service.anchor("pre", "hourly")
+        superuser("bms_ai_pre").use { it.run("ALTER TABLE activity_log OWNER TO $owner") }
+        Thread.sleep(1_100)
+        harden("bms_ai_pre")
+        val moved = service.verify("pre")
+        assertFalse(moved.ok)
+        assertTrue(moved.problems.any { it.contains("fecha de proteccion") }, moved.problems.toString())
+    }
+
+    @Test
+    fun aRestoredCopyWithTheSameChainVerifiesAndAnOlderOneIsReported() {
+        if (url == null) return
+        reset("orig")
+        val service = service()
+        write("bms_ai_orig", 3)
+        harden("bms_ai_orig")
+        service.anchor("orig", "hourly")
+        // A restore as SELF_HOSTING.md describes it gives a new database (new oid) with the same chain.
+        superuser("postgres").use { admin ->
+            admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'bms_ai_orig'")
+            admin.run("CREATE DATABASE bms_ai_older TEMPLATE bms_ai_orig")
+        }
+        write("bms_ai_orig", 2)
+        service.anchor("orig", "hourly")
+        superuser("postgres").use { admin ->
+            admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'bms_ai_orig'")
+            admin.run("CREATE DATABASE bms_ai_restored TEMPLATE bms_ai_orig")
+        }
+        superuser(central).use { it.run("UPDATE companies SET database_name = 'bms_ai_restored' WHERE code = 'orig'") }
+        val restored = service.verify("orig")
+        assertTrue(restored.ok, restored.problems.toString())
+        assertTrue(restored.notes.any { it.contains("restaurada") }, restored.notes.toString())
+        // A copy from before the last anchor lost rows: that is reported.
+        superuser(central).use { it.run("UPDATE companies SET database_name = 'bms_ai_older' WHERE code = 'orig'") }
+        val older = service.verify("orig")
+        assertFalse(older.ok)
+        assertTrue(older.problems.any { it.contains("restaurada de una copia anterior") }, older.problems.toString())
+    }
+
+    @Test
+    fun sixteenConcurrentWritersKeepAContiguousChainAndWritersNeverHangOrUseSnapshotIsolation() {
+        if (url == null) return
+        reset("busy")
+        harden("bms_ai_busy")
+        val pool = Executors.newFixedThreadPool(16)
+        val futures = (1..16).map { writer ->
+            pool.submit {
+                runtime("bms_ai_busy").use { db ->
+                    repeat(50) { index ->
+                        ActivityLog.atomically(db) {
+                            ActivityLog.record(db, ActivityActor.user(UUID.randomUUID(), "Escritor $writer"), ActivityEntry("crm", "lead", "$writer-$index", "", ActivityActions.Created, "Fila $writer-$index."))
+                        }
+                    }
+                }
+            }
+        }
+        futures.forEach { it.get(3, TimeUnit.MINUTES) }
+        pool.shutdown()
+        val report = service().verify("busy")
+        assertTrue(report.ok, report.problems.toString())
+        assertEquals(800L, report.rows)
+        assertEquals(800L, report.lastSeq)
+        // A transaction of 20,000 rows seals in one pass at commit.
+        runtime("bms_ai_busy").use { db ->
+            db.autoCommit = false
+            db.run("INSERT INTO public.activity_log (actor_kind, actor_name, actor_display, module_id, entity_type, action, summary) SELECT 'import', 'Importacion', 'Importacion', 'crm', 'lead', 'imported', 'Fila ' || g FROM generate_series(1, 20000) g")
+            val started = System.nanoTime()
+            db.commit()
+            val millis = (System.nanoTime() - started) / 1_000_000
+            assertTrue(millis < 5_000, "20,000 rows took $millis ms to seal")
+        }
+        assertEquals(20_800L, service().verify("busy").lastSeq)
+        // Snapshot isolation would fail at commit under concurrency: refused at the insert, clearly.
+        runtime("bms_ai_busy").use { db ->
+            db.autoCommit = false
+            db.transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ
+            val refused = assertFailsWith<SQLException> {
+                ActivityLog.record(db, ActivityActor.system(), ActivityEntry("core", "x", null, "", ActivityActions.Updated, "x"))
+            }
+            assertTrue(refused.message!!.contains("READ COMMITTED"), refused.message)
+            db.rollback()
+        }
+        // A commit waiting for the company's sealing lock fails after 10 s instead of hanging.
+        runtime("bms_ai_busy").use { holder ->
+            holder.autoCommit = false
+            ActivityLog.record(holder, ActivityActor.system(), ActivityEntry("core", "x", null, "", ActivityActions.Updated, "sostiene"))
+            holder.run("SET CONSTRAINTS ALL IMMEDIATE")
+            runtime("bms_ai_busy").use { waiter ->
+                waiter.autoCommit = false
+                ActivityLog.record(waiter, ActivityActor.system(), ActivityEntry("core", "x", null, "", ActivityActions.Updated, "espera"))
+                val started = System.nanoTime()
+                val timeout = assertFailsWith<SQLException> { waiter.commit() }
+                assertEquals("55P03", timeout.sqlState)
+                assertTrue((System.nanoTime() - started) / 1_000_000 in 9_000..20_000)
+            }
+            holder.commit()
+        }
+        assertTrue(service().verify("busy").ok)
     }
 
     private fun loginDatabases(): LoginDatabases {
