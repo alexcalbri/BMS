@@ -73,7 +73,7 @@ bms_backup_log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee 
 
 # server.env without its secrets (values of keys naming a password, key, token or secret).
 bms_redacted_env() {
-    sed -E 's/^([A-Za-z0-9_]*(PASSWORD|KEY|TOKEN|SECRET)[A-Za-z0-9_]*)=.*/\1=<redactado>/' "$BMS_BACKUP_SERVER_ENV"
+    sed -E 's/^([A-Za-z0-9_]*(PASSWORD|KEY|TOKEN|SECRET)[A-Za-z0-9_]*)=.*/\1=<redactado>/' "${1:-$BMS_BACKUP_SERVER_ENV}"
 }
 
 bms_backup_offsite() {
