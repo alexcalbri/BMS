@@ -98,6 +98,37 @@ printf 'server {\n    listen 80;\n    server_name otro.example.org;\n    root /s
 check 'un sitio ajeno no se toma como de BMS' eval '! bms_nginx_site_params "$WORK/foreign"'
 equals 'parametros del sitio generado' 'https bms.example.com bms-bms.example.com' "$(printf '%s\n' "$https_site" > "$WORK/gen"; bms_nginx_site_params "$WORK/gen")"
 
+# Every served name is kept, and a regenerated site is recognised as a BMS one; a local edit is not.
+multi=$(bms_nginx_site https "bms.example.com www.bms.example.com" bms-bms.example.com /opt/bms/web /var/www/bms-acme 8080 yes)
+printf '%s\n' "$multi" > "$WORK/multi"
+equals 'se conservan todos los nombres' 'bms.example.com www.bms.example.com' "$(bms_nginx_site_names "$WORK/multi")"
+check 'la redireccion a HTTPS sirve para cada nombre' grep -qF 'return 301 https://$host$request_uri;' "$WORK/multi"
+for file in multi gen; do
+    equals "sitio conocido sin lineas propias: $file" '' "$(bms_nginx_unknown_lines "$WORK/$file")"
+done
+printf '%s\n' "$http_site" > "$WORK/gen-http"
+equals 'sitio HTTP generado sin lineas propias' '' "$(bms_nginx_unknown_lines "$WORK/gen-http")"
+# The sites the previous installer (before this package) wrote, with its own heredocs.
+if git -C "$REPO" cat-file -e e663b11:scripts/ubuntu/install.sh 2>/dev/null; then
+    git -C "$REPO" show e663b11:scripts/ubuntu/install.sh > "$WORK/old-install.sh"
+    index=0
+    while IFS= read -r start; do
+        index=$((index + 1))
+        body=$(sed -n "$((start + 1)),\$p" "$WORK/old-install.sh" | sed '/^NGINX$/q' | sed '$d')
+        # shellcheck disable=SC2034 # read by the eval below
+        (DOMAIN=crm.example.org APP_DIR=/opt/bms APP_PORT=8080 CERT_NAME=bms-crm.example.org ACME_ROOT=/var/www/bms-acme
+            eval "cat <<NGINX
+$body
+NGINX") > "$WORK/installer-$index"
+        equals "sitio del instalador anterior $index sin lineas propias" '' "$(bms_nginx_unknown_lines "$WORK/installer-$index")"
+    done < <(grep -n 'cat > "$NGINX_SITE" <<NGINX' "$WORK/old-install.sh" | cut -d: -f1)
+    equals 'se leyeron los dos sitios del instalador anterior' 2 "$index"
+fi
+sed 's#    location /notifications {#    location /intranet { proxy_pass http://10.0.0.5; }\n    location /notifications {#' "$WORK/gen" > "$WORK/edited"
+equals 'una edicion local se detecta' 'location /intranet { proxy_pass http://10.0.0.5; }' "$(bms_nginx_unknown_lines "$WORK/edited")"
+printf 'include /etc/nginx/snippets/otro.conf;\n' >> "$WORK/edited"
+equals 'y un include ajeno tambien' 2 "$(bms_nginx_unknown_lines "$WORK/edited" | wc -l)"
+
 # Ports another default_server takes (nginx -T output).
 taken=$(printf '%s\n' '# configuration file /etc/nginx/sites-enabled/default:' 'server {' '    listen 80 default_server;' '    listen [::]:80 default_server;' '}' \
     '# configuration file /etc/nginx/sites-available/bms-default:' '    listen 443 ssl default_server;' | bms_nginx_taken_default_ports)

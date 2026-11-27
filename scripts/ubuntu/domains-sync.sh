@@ -96,6 +96,9 @@ fi
 
 exec 9>/run/bms-domains.lock
 flock -n 9 || exit 0
+# L1: never while an install or update rewrites Nginx (they hold the maintenance lock); the next minute tries again.
+exec 8>>/run/bms-maintenance.lock
+flock -n 8 || exit 0
 
 config_value() {
     awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$CONFIG_FILE"

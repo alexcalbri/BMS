@@ -171,7 +171,14 @@ PREVIOUS_SOURCE_COMMIT=''
 BACKUP_DIR=''
 BUILD_USER=$DEFAULT_BUILD_USER
 BUILD_HOME=$BUILD_HOME_DIR
+BUILD_DIR=$BUILD_TREE
+CI_WEB_DIR=''
+WEB_DIST_ROOT_OWNED=false
+PROVISIONER=''
+readonly DEPLOYED_FILE=$ROOT_STATE_DIR/deployed-commit
+readonly ALLOWED_SIGNERS=/usr/local/lib/bms/allowed_signers
 
+# shellcheck disable=SC2329 # called from the EXIT trap
 cleanup_update_swap() {
     if [[ $UPDATE_SWAP_CREATED == true ]]; then
         swapoff "$UPDATE_SWAP_FILE" >/dev/null 2>&1 || true
@@ -212,9 +219,14 @@ ensure_update_swap() {
     UPDATE_SWAP_CREATED=true
 }
 
+# The build runs as the build user with a clean environment (nothing of root's), no user-level Gradle, Maven or npm
+# settings and no local build cache: a build can only use what the tree and the dependency caches give it.
 run_gradle() {
+    clean_build_home_config
     # HOME explicito: /opt/bms es de root; el usuario de compilacion tiene su propio directorio.
-    runuser -u "$BUILD_USER" -- env \
+    runuser -u "$BUILD_USER" -- env -i \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        LANG=C.UTF-8 \
         HOME="$BUILD_HOME" \
         GRADLE_USER_HOME="$BUILD_HOME/.gradle" \
         JAVA_HOME="$UPDATE_JAVA_HOME" \
@@ -222,11 +234,40 @@ run_gradle() {
         bash ./gradlew \
         --no-daemon \
         --no-configuration-cache \
+        --no-build-cache \
         --max-workers=1 \
         --console=plain \
         "-Dorg.gradle.jvmargs=$GRADLE_JVM_ARGS" \
+        "-Dorg.gradle.caching=false" \
         "-Pkotlin.compiler.execution.strategy=in-process" \
         "$@"
+}
+
+# Settings a build could have left in the build user's home for the next one (init scripts, gradle.properties,
+# repository mirrors, the local build cache) are removed before each build, as that user (no link is followed by root).
+clean_build_home_config() {
+    runuser -u "$BUILD_USER" -- rm -rf --one-file-system -- \
+        "$BUILD_HOME/.gradle/gradle.properties" "$BUILD_HOME/.gradle/init.d" "$BUILD_HOME/.gradle/init.gradle" \
+        "$BUILD_HOME/.gradle/init.gradle.kts" "$BUILD_HOME/.gradle/caches/build-cache-1" "$BUILD_HOME/.m2/settings.xml" \
+        "$BUILD_HOME/.npmrc" "$BUILD_HOME/.yarnrc" "$BUILD_HOME/.yarnrc.yml" "$BUILD_HOME/.gitconfig" "$BUILD_HOME/.config" \
+        "$BUILD_HOME/.bashrc" "$BUILD_HOME/.profile" 2>/dev/null || true
+}
+
+# No process of the build user may outlive a build step (a daemon or a forked helper could change the output after
+# root checked it): every one is killed before root reads anything the build produced. With BMS_BUILD_USER=bms the
+# build user is the service user, whose processes cannot be killed: then only the Gradle daemons are stopped.
+stop_build_user_processes() {
+    if [[ $BUILD_USER == bms ]]; then
+        runuser -u bms -- env -i PATH=/usr/bin:/bin HOME="$BUILD_HOME" GRADLE_USER_HOME="$BUILD_HOME/.gradle" \
+            JAVA_HOME="$UPDATE_JAVA_HOME" bash "$BUILD_DIR/gradlew" -p "$BUILD_DIR" --stop >/dev/null 2>&1 || true
+        return 0
+    fi
+    pkill -KILL -u "$BUILD_USER" 2>/dev/null || true
+    for _ in {1..100}; do
+        pgrep -u "$BUILD_USER" >/dev/null 2>&1 || return 0
+        sleep 0.1
+    done
+    die "Siguen corriendo procesos de $BUILD_USER despues de la compilacion; no se usa lo compilado."
 }
 
 config_has_key() {
@@ -237,6 +278,21 @@ config_has_key() {
 config_value() {
     local key=$1
     awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$CONFIG_FILE"
+}
+
+# Sets [key] to [value], replacing the line when the key exists (the copy of server.env in the backup is restored on a
+# rollback).
+set_config_value() {
+    local key=$1 value=$2
+    if ! config_has_key "$key"; then
+        append_config_value "$key" "$value"
+        return
+    fi
+    [[ $(config_value "$key") == "$value" ]] && return
+    awk -v key="$key" -v value="$value" -F= '$1 == key { print key "=" value; next } { print }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+    chmod 600 "$CONFIG_FILE.tmp"
+    mv -f -- "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+    printf 'Configuracion cambiada en server.env: %s\n' "$key"
 }
 
 append_config_value() {
@@ -279,7 +335,9 @@ configure_server_env() {
     install -m 600 -o root -g root "$CONFIG_FILE" "$CONFIG_FILE.update-backup.$(date -u +%Y%m%dT%H%M%SZ)"
     append_config_value TENANT_DATABASES_JSON '[]'
     append_config_value TENANT_JDBC_URL_PREFIX "$tenant_prefix"
-    append_config_value MIGRATIONS_ROOT "$SOURCE_DIR"
+    # M5: the server reads the company migrations from a root-owned copy shipped with the release, never from
+    # /opt/bms/source (which the service user can write, and whose SQL would later run as the owner's role).
+    set_config_value MIGRATIONS_ROOT "$APP_RUNTIME_DIR/migrations"
     append_config_value COMPANY_BACKUPS_ROOT "$APP_DIR/company-backups"
     append_config_value COMPANY_FILES_ROOT "$APP_DIR/company-files"
     append_config_value MODULE_CATALOG_URL 'https://github.com/alexcalbri/BMS/tree/master/modules'
@@ -351,9 +409,10 @@ configure_service_writable_paths() {
 # A6: sandbox of bms.service as a drop-in (scripts/ubuntu/units.sh). The previous drop-in directory is kept in the
 # update's backup so a failed start can take it back.
 configure_service_hardening() {
-    local filter
+    local filter memory
     filter=$(config_value BMS_SYSCALL_FILTER)
-    if [[ $(bms_service_hardening "${filter:-false}" | bms_write_dropin "$SERVICE_NAME") == changed ]]; then
+    memory=$(bms_default_memory_max "$(config_value BMS_MEMORY_MAX)")
+    if [[ $(bms_service_hardening "${filter:-false}" "$memory" | bms_write_dropin "$SERVICE_NAME") == changed ]]; then
         printf 'Servicio endurecido (%s.d/hardening.conf).\n' "$SERVICE_NAME"
     fi
     systemd-analyze verify "/etc/systemd/system/$SERVICE_NAME" >/dev/null 2>&1 ||
@@ -365,6 +424,14 @@ bms_pg_super() {
     local database=$1
     shift
     runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d "$database" "$@"
+}
+
+# psql as the provisioning login over TCP with the root-only passfile (db-roles.sh verifies access with it).
+bms_pg_as_provisioner() {
+    local database=$1
+    shift
+    PGPASSFILE=$PROVISIONER_PASSFILE PGCONNECT_TIMEOUT=15 psql -X -w -v ON_ERROR_STOP=1 \
+        -h "$MIGRATION_HOST" -p "$MIGRATION_PORT" -U "$PROVISIONER" -d "$database" "$@"
 }
 
 pg_super_count() {
@@ -627,9 +694,11 @@ harden_app_dir() {
 }
 
 # A3: the user that compiles. BMS_BUILD_USER=bms in server.env goes back to compiling as the service user (only as
-# a way out if the separate user ever fails on a server; SELF_HOSTING.md section 15).
+# a way out if the separate user ever fails on a server; SELF_HOSTING.md section 15). Its home starts empty: nothing
+# is taken from the service user's home (a Gradle or npm setting, init script, cache entry or JDK the service user
+# could have planted there would run in every build), and the build-only caches left there are removed.
 ensure_build_user() {
-    local name src dst
+    local name
     BUILD_USER=$(config_value BMS_BUILD_USER)
     BUILD_USER=${BUILD_USER:-$DEFAULT_BUILD_USER}
     [[ $BUILD_USER =~ ^[a-z][a-z0-9-]{0,31}$ && $BUILD_USER != root ]] || die 'BMS_BUILD_USER invalido en server.env.'
@@ -645,22 +714,21 @@ ensure_build_user() {
     [[ $(id -u "$BUILD_USER") != 0 ]] || die "$BUILD_USER no puede ser root."
     [[ " $(id -nG "$BUILD_USER") " != *' bms '* ]] || die "$BUILD_USER no debe pertenecer al grupo bms."
     BUILD_HOME=$BUILD_HOME_DIR
-    [[ ! -L $BUILD_HOME ]] || rm -f -- "$BUILD_HOME"
-    if [[ ! -d $BUILD_HOME ]]; then
+    # A home without the marker (new, or filled by an earlier version that imported the service user's caches) is
+    # emptied once.
+    if [[ -L $BUILD_HOME || ! -d $BUILD_HOME || ! -f $BUILD_HOME/.bms-build-home-v2 || -L $BUILD_HOME/.bms-build-home-v2 ]]; then
         rm -rf --one-file-system -- "$BUILD_HOME"
         mkdir -m 700 -- "$BUILD_HOME"
+        : > "$BUILD_HOME/.bms-build-home-v2"
+        chmod 644 "$BUILD_HOME/.bms-build-home-v2"
     fi
     chown -h "$BUILD_USER:$BUILD_USER" "$BUILD_HOME"
     chmod 700 "$BUILD_HOME"
-    # Las caches de compilacion que dejaba bms (Gradle, Node, Kotlin) pasan una vez al usuario de compilacion,
-    # sin seguir enlaces, para no descargar todo de nuevo.
-    for name in .gradle .konan .kotlin .m2 .npm .yarn .cache; do
-        src=$APP_HOME_DIR/$name
-        dst=$BUILD_HOME/$name
-        if [[ -d $src && ! -L $src && ! -e $dst && ! -L $dst ]]; then
-            mv -T -- "$src" "$dst"
-            chown -R -h "$BUILD_USER:$BUILD_USER" -- "$dst"
-            printf 'Cache %s movida a %s.\n' "$name" "$BUILD_HOME"
+    chown -h root:root "$BUILD_HOME/.bms-build-home-v2"
+    for name in .gradle .konan .kotlin .m2 .npm .yarn; do
+        if [[ -e $APP_HOME_DIR/$name || -L $APP_HOME_DIR/$name ]]; then
+            rm -rf --one-file-system -- "${APP_HOME_DIR:?}/$name"
+            printf 'Cache de compilacion de bms eliminada: %s\n' "$APP_HOME_DIR/$name"
         fi
     done
 }
@@ -669,78 +737,90 @@ ensure_build_user() {
 # distribucion que el CI (.github/workflows/build.yml) publico para este mismo commit en el release
 # "web-dist" de GitHub. Se activa con WEB_DIST_FROM_CI=true en /etc/bms/server.env (o en el
 # entorno). Si algo falla (sin paquete para ese sha, sin red, firma, checksum o contenido invalidos) devuelve 1
-# y el llamador compila como siempre. Deja la ruta en WEB_DIST.
-# Todo se descarga y se extrae como el usuario de compilacion (nunca como root); copy_dist_as_bms revisa despues
-# que no haya enlaces ni archivos especiales antes de copiar a un directorio de root. Con la llave publica de root
-# WEB_DIST_PUBLIC_KEY instalada, la firma Ed25519 del .sha256 es obligatoria y se verifica sobre una copia de root.
+# y el llamador compila como siempre. Deja la ruta en WEB_DIST (un directorio de root).
+# curl corre como el usuario de compilacion (no como root) pero escribe por su salida en archivos de un directorio
+# propio de root: root nunca abre una ruta de ese usuario. Con la llave publica de root WEB_DIST_PUBLIC_KEY instalada,
+# la firma Ed25519 del .sha256 es obligatoria. El hash se calcula sobre la copia de root, y root extrae esa copia
+# solo si su listado no tiene enlaces, archivos especiales ni rutas fuera del directorio (dist.sh).
 fetch_ci_web_dist() {
-    local sha=$1 base name dir verify_dir expected actual
+    local sha=$1 base name dir expected actual
     base=$(config_value WEB_DIST_BASE_URL)
     base=${base:-https://github.com/alexcalbri/BMS/releases/download/web-dist}
     [[ $base =~ ^https://[A-Za-z0-9./_-]+$ ]] || { warn 'WEB_DIST_BASE_URL invalida.'; return 1; }
     command -v curl >/dev/null 2>&1 || { warn 'no hay curl para descargar la webapp del CI.'; return 1; }
     name=web-$sha.tar.gz
-    dir=$BUILD_DIR/web-ci
-    rm -rf --one-file-system -- "$dir"
-    install -d -m 755 -o "$BUILD_USER" -g "$BUILD_USER" "$dir" || return 1
+    dir=$(mktemp -d -p "$ROOT_STATE_DIR" webdist.XXXXXX) || return 1
+    CI_WEB_DIR=$dir
     printf 'Descargando la webapp compilada por el CI (%s)...\n' "$name"
+    ci_download() {
+        runuser -u "$BUILD_USER" -- env -i PATH=/usr/bin:/bin HOME="$BUILD_HOME" \
+            curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-delay 5 --connect-timeout 15 --max-time "$2" --max-filesize "$3" -o - "$base/$1"
+    }
     # --fail: un 404 (el CI aun no publica ese commit) cuenta como error y se compila.
-    runuser -u "$BUILD_USER" -- curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 600 --max-filesize 209715200 \
-        -o "$dir/$name" "$base/$name" || return 1
-    runuser -u "$BUILD_USER" -- curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
-        -o "$dir/$name.sha256" "$base/$name.sha256" || return 1
-    # Root lee las copias por una tuberia del usuario de compilacion (nunca abre sus rutas) en un directorio propio.
-    verify_dir=$(mktemp -d -p "$ROOT_STATE_DIR" webdist.XXXXXX) || return 1
-    runuser -u "$BUILD_USER" -- cat -- "$dir/$name.sha256" | head -c 4096 > "$verify_dir/sha256" || { rm -rf -- "$verify_dir"; return 1; }
+    ci_download "$name" 600 209715200 > "$dir/package.tar.gz" || return 1
+    ci_download "$name.sha256" 60 4096 > "$dir/sha256" || return 1
     if [[ -e $WEB_DIST_PUBLIC_KEY || -L $WEB_DIST_PUBLIC_KEY ]]; then
         if ! is_root_private_file "$WEB_DIST_PUBLIC_KEY"; then
             warn "$WEB_DIST_PUBLIC_KEY existe pero no es un archivo solo de root; no se usa la webapp del CI."
-            rm -rf -- "$verify_dir"
             return 1
         fi
-        if ! runuser -u "$BUILD_USER" -- curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-            --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 60 --max-filesize 65536 \
-            -o "$dir/$name.sha256.sig" "$base/$name.sha256.sig"; then
+        if ! ci_download "$name.sha256.sig" 60 4096 > "$dir/sig"; then
             warn 'la webapp del CI no tiene firma (.sha256.sig) y la firma es obligatoria con la llave instalada.'
-            rm -rf -- "$verify_dir"
             return 1
         fi
-        runuser -u "$BUILD_USER" -- cat -- "$dir/$name.sha256.sig" | head -c 4096 > "$verify_dir/sig" || { rm -rf -- "$verify_dir"; return 1; }
-        if ! openssl pkeyutl -verify -rawin -pubin -inkey "$WEB_DIST_PUBLIC_KEY" -in "$verify_dir/sha256" -sigfile "$verify_dir/sig" >/dev/null 2>&1; then
+        if ! openssl pkeyutl -verify -rawin -pubin -inkey "$WEB_DIST_PUBLIC_KEY" -in "$dir/sha256" -sigfile "$dir/sig" >/dev/null 2>&1; then
             warn 'la firma de la webapp del CI no es valida.'
-            rm -rf -- "$verify_dir"
             return 1
         fi
         printf 'Firma de la webapp del CI verificada.\n'
     else
         warn "no hay llave de firma de la webapp ($WEB_DIST_PUBLIC_KEY): se usa sin firma, solo con su checksum."
     fi
-    # El .sha256 (la copia verificada de root) debe nombrar exactamente este paquete; se compara el hash, no solo el nombre.
-    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$verify_dir/sha256")
-    rm -rf -- "$verify_dir"
+    stop_build_user_processes
+    # El .sha256 (verificado) debe nombrar exactamente este paquete; se compara el hash de la copia de root.
+    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$dir/sha256")
     [[ $expected =~ ^[0-9a-f]{64}$ ]] || { warn 'checksum del CI ilegible.'; return 1; }
-    actual=$(runuser -u "$BUILD_USER" -- sha256sum "$dir/$name" | awk '{print $1}')
+    actual=$(sha256sum -- "$dir/package.tar.gz" | awk '{print $1}')
     [[ $actual == "$expected" ]] || { warn 'el checksum de la webapp del CI no coincide.'; return 1; }
-    install -d -m 755 -o "$BUILD_USER" -g "$BUILD_USER" "$dir/dist" || return 1
-    runuser -u "$BUILD_USER" -- tar -xzf "$dir/$name" -C "$dir/dist" --no-same-owner || return 1
+    install -d -m 700 -o root -g root "$dir/dist" || return 1
+    bms_extract_checked "$dir/package.tar.gz" "$dir/dist" -z || { warn 'el paquete de la webapp del CI tiene enlaces, archivos especiales o rutas no permitidas.'; return 1; }
     [[ -f $dir/dist/index.html && -f $dir/dist/webApp.js ]] || { warn 'la webapp del CI esta incompleta.'; return 1; }
     WEB_DIST=$dir/dist
+    WEB_DIST_ROOT_OWNED=true
 }
 
+# The new release is healthy when it answers HTTP, its log since the start says it verified its PostgreSQL connection
+# and has no PostgreSQL permission or authentication error (the startup catch-up connects to every company with the
+# provisioning login), and the runtime role and the provisioning login still reach every database (db-roles.sh).
+# Without [since] (the rollback's check of the previous release) only HTTP.
 backend_answers() {
+    local since=${1:-} log
     for _ in {1..30}; do
         if systemctl is-active --quiet "$SERVICE_NAME" &&
             curl --noproxy '*' --fail --silent --show-error --max-time 5 "http://127.0.0.1:$APP_PORT/" >/dev/null; then
-            return 0
+            break
         fi
         sleep 3
     done
-    return 1
+    systemctl is-active --quiet "$SERVICE_NAME" || return 1
+    curl --noproxy '*' --fail --silent --max-time 5 --output /dev/null "http://127.0.0.1:$APP_PORT/" || return 1
+    [[ -n $since ]] || return 0
+    sleep 15
+    log=$(journalctl -u "$SERVICE_NAME" --since "@$since" --no-pager -o cat 2>/dev/null) || log=''
+    if ! grep -q 'PostgreSQL connection verified' <<< "$log"; then
+        printf 'ERROR: el servidor no registro "PostgreSQL connection verified" al arrancar.\n' >&2
+        return 1
+    fi
+    if grep -Eiq 'permission denied for|must be owner of|password authentication failed|permission denied to set role' <<< "$log"; then
+        printf 'ERROR: el servidor registro errores de permisos de PostgreSQL al arrancar:\n' >&2
+        grep -Ei 'permission denied for|must be owner of|password authentication failed|permission denied to set role' <<< "$log" | head -n 10 >&2
+        return 1
+    fi
+    bms_verify_role_access "$CONTROL_DB" "$DB_USER" "$PROVISIONER" "$(bms_tenant_databases "$CONTROL_DB" 2>/dev/null)"
 }
 
-# The site serves the web app's index.html and sends /auth/login to the backend (400 for an empty login).
+# The site serves the web app's index.html and sends /auth/login to the backend (400 for an empty login), for [name].
 nginx_serves_app() {
     local scheme=$1 domain=$2 port=80 body status
     [[ $scheme == https ]] && port=443
@@ -756,11 +836,22 @@ nginx_serves_app() {
     return 1
 }
 
-# A5: the BMS site is written again from nginx-site.sh (same domain, scheme and certificate as the live one), with the
-# limits file and the catch-all server. On a failed nginx -t or a site that no longer serves the app, the previous
-# files come back and Nginx is reloaded with them. Never fatal: the old configuration keeps working.
+# Every name the site serves answers as the app.
+nginx_serves_all() {
+    local scheme=$1 names=$2 name
+    for name in $names; do
+        nginx_serves_app "$scheme" "$name" || { warn "el nombre $name no sirve la app con la configuracion nueva."; return 1; }
+    done
+}
+
+# A5: the BMS site is written again from nginx-site.sh (every server_name, scheme and certificate of the live one),
+# with the limits file and the catch-all server. A live site with lines no installer wrote (local edits) is NOT
+# replaced: the proposal and the diff are printed and kept, only the limits file (zones, used by nothing else) is
+# added; BMS_NGINX_REPLACE_SITE=yes in the environment replaces it anyway. On a failed nginx -t or any served name
+# that no longer serves the app, the previous files come back (the limits file stays: unused zones are harmless).
+# Never fatal: the old configuration keeps working.
 configure_nginx() {
-    local params scheme domain cert stamp backup new taken ports='' file http3
+    local params scheme domain cert names stamp backup new taken ports='' file http3 unknown
     if [[ ! -f $NGINX_SITE || -L $NGINX_SITE ]]; then
         warn "no se encontro $NGINX_SITE (o es un enlace); no se cambia Nginx."
         return 0
@@ -770,6 +861,8 @@ configure_nginx() {
         return 0
     fi
     read -r scheme domain cert <<< "$params"
+    names=$(bms_nginx_site_names "$NGINX_SITE")
+    [[ -n $names ]] || names=$domain
     if [[ $scheme == https && ! -f /etc/letsencrypt/live/$cert/fullchain.pem ]]; then
         warn "no se encontro el certificado /etc/letsencrypt/live/$cert; no se cambia Nginx."
         return 0
@@ -781,26 +874,36 @@ configure_nginx() {
         [[ -f $file ]] && cp -a -- "$file" "$backup/${file//\//_}"
     done
     [[ -L /etc/nginx/sites-enabled/bms-default ]] && touch "$backup/catchall-enabled"
-    new=$(mktemp -p "$ROOT_STATE_DIR" nginx.XXXXXX)
+    new=$backup/proposed-site
     http3=no
     bms_nginx_has_http3 && http3=yes
     BMS_NGINX_HTTP2_DIRECTIVE=no
     bms_nginx_has_http2_directive && BMS_NGINX_HTTP2_DIRECTIVE=yes
-    bms_nginx_site "$scheme" "$domain" "$cert" "$WEB_RUNTIME_DIR" "$ACME_ROOT" "$APP_PORT" "$http3" > "$new"
-    if cmp -s "$new" "$NGINX_SITE" && [[ -f $BMS_NGINX_LIMITS_FILE ]] && cmp -s "$BMS_NGINX_LIMITS_FILE" <(bms_nginx_limits); then
-        rm -f -- "$new"
+    bms_nginx_site "$scheme" "$names" "$cert" "$WEB_RUNTIME_DIR" "$ACME_ROOT" "$APP_PORT" "$http3" > "$new"
+    install -d -m 755 -o root -g root "$BMS_NGINX_LOCAL_DIR"
+    bms_nginx_limits > "$BMS_NGINX_LIMITS_FILE.tmp"
+    chmod 644 "$BMS_NGINX_LIMITS_FILE.tmp"
+    mv -f -- "$BMS_NGINX_LIMITS_FILE.tmp" "$BMS_NGINX_LIMITS_FILE"
+    if cmp -s "$new" "$NGINX_SITE"; then
         rm -rf -- "$backup"
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx
+        return 0
+    fi
+    unknown=$(bms_nginx_unknown_lines "$NGINX_SITE")
+    if [[ -n $unknown && ${BMS_NGINX_REPLACE_SITE:-} != yes ]]; then
+        warn "$NGINX_SITE tiene lineas que ningun instalador de BMS escribio (cambios locales); NO se reemplaza."
+        printf 'Lineas propias:\n%s\n' "$(head -n 40 <<< "$unknown")" >&2
+        printf 'Diferencias con la configuracion nueva (propuesta en %s):\n' "$new" >&2
+        diff -u "$NGINX_SITE" "$new" | head -n 200 >&2 || true
+        printf 'Pasa los cambios locales a %s/*.conf y ejecuta update.sh con BMS_NGINX_REPLACE_SITE=yes para aplicarla.\n' "$BMS_NGINX_LOCAL_DIR" >&2
+        if nginx -t >/dev/null 2>&1; then systemctl reload nginx; fi
         return 0
     fi
     # Puertos del servidor por defecto que ya usa otro sitio (por ejemplo el "default" de Ubuntu).
     taken=$(nginx -T 2>/dev/null | bms_nginx_taken_default_ports) || taken='80 443'
     [[ " $taken " == *' 80 '* ]] || ports='80'
     [[ $scheme != https || " $taken " == *' 443 '* ]] || ports+=' 443'
-    install -d -m 755 -o root -g root "$BMS_NGINX_LOCAL_DIR"
-    bms_nginx_limits > "$BMS_NGINX_LIMITS_FILE"
-    chmod 644 "$BMS_NGINX_LIMITS_FILE"
     install -m 644 -o root -g root "$new" "$NGINX_SITE"
-    rm -f -- "$new"
     if [[ -n ${ports// /} ]]; then
         bms_nginx_catchall "$ports" > "$BMS_NGINX_CATCHALL_SITE"
         chmod 644 "$BMS_NGINX_CATCHALL_SITE"
@@ -810,14 +913,14 @@ configure_nginx() {
     fi
     [[ " $taken " == *' 80 '* ]] &&
         warn 'otro sitio de Nginx ya es default_server en el puerto 80 (normalmente /etc/nginx/sites-enabled/default de Ubuntu): los nombres desconocidos siguen recibiendo ese sitio. Si no lo usas: sudo rm /etc/nginx/sites-enabled/default && sudo bash update.sh'
-    if nginx -t >/dev/null 2>&1 && systemctl reload nginx && nginx_serves_app "$scheme" "$domain"; then
-        printf 'Nginx actualizado (limites de cuerpo, limites por direccion, servidor por defecto, cabeceras).\n'
+    if nginx -t >/dev/null 2>&1 && systemctl reload nginx && nginx_serves_all "$scheme" "$names"; then
+        printf 'Nginx actualizado (limites de cuerpo, limites por direccion, servidor por defecto, cabeceras) para: %s\n' "$names"
         prune_old "$NGINX_BACKUP_DIR" '20*' "$KEEP_BACKUPS"
         return 0
     fi
-    warn "la configuracion nueva de Nginx fallo (nginx -t o la comprobacion del sitio); se restaura la anterior ($backup)."
+    warn "la configuracion nueva de Nginx fallo (nginx -t o la comprobacion de algun nombre); se restaura la anterior ($backup)."
     nginx -t 2>&1 | tail -n 5 >&2 || true
-    for file in "$NGINX_SITE" "$BMS_NGINX_LIMITS_FILE" "$BMS_NGINX_CATCHALL_SITE"; do
+    for file in "$NGINX_SITE" "$BMS_NGINX_CATCHALL_SITE"; do
         if [[ -f $backup/${file//\//_} ]]; then
             cp -a -- "$backup/${file//\//_}" "$file"
         else
@@ -834,17 +937,68 @@ configure_nginx() {
     fi
 }
 
+# shellcheck disable=SC2329 # called from the EXIT trap
 print_database_restore_help() {
     [[ -n $BACKUP_DIR && -d $BACKUP_DIR/db ]] || return 0
     printf '\nLas bases NO se restauraron (no es automatico). Copia previa a la actualizacion: %s/db\n' "$BACKUP_DIR" >&2
-    printf 'Para volver a ella (borra lo escrito despues), con el servicio detenido, por cada base:\n' >&2
+    printf 'Solo si una migracion dejo datos mal (borra lo escrito despues de la copia), con el servicio detenido:\n' >&2
     printf '  sudo systemctl stop bms\n' >&2
-    printf '  sudo -u postgres dropdb <base> && sudo -u postgres createdb -O <dueno> <base>\n' >&2
-    printf '  sudo -u postgres pg_restore -d <base> %s/db/<base>.dump\n' "$BACKUP_DIR" >&2
-    printf 'Detalle en SELF_HOSTING.md, seccion 15 (Restaurar despues de una actualizacion fallida).\n' >&2
+    printf '  sudo -u postgres dropdb --force <base>\n' >&2
+    printf '  sudo -u postgres pg_restore --create --exit-on-error -d postgres %s/db/<base>.dump\n' "$BACKUP_DIR" >&2
+    printf '  (--create vuelve a crear la base con su dueno y sus permisos de CONNECT; los roles deben existir:\n' >&2
+    printf '   %s/db/roles.sql tiene todos)\n' "$BACKUP_DIR" >&2
+    printf '  sudo systemctl start bms\n' >&2
+    printf 'La copia es de antes del cambio de roles: corrige la causa y vuelve a ejecutar update.sh (vuelve a ordenar\n' >&2
+    printf 'los roles y migra). Detalle en SELF_HOSTING.md, seccion 15.\n' >&2
 }
 
-# The automatic rollback (A7): binaries, unit settings and role memberships of the previous release; restart.
+# Root helpers and their units as they were before this update (L5): the previous release's update requests keep
+# going to the helper that release expects. /usr/local/lib/bms holds keys too: only mirror.sh is saved and restored.
+readonly HELPER_FILES=(
+    /usr/local/sbin/bms-domains-sync /usr/local/sbin/bms-core-update /usr/local/sbin/bms-backup /usr/local/lib/bms/mirror.sh
+    /etc/systemd/system/bms-domains.service /etc/systemd/system/bms-domains.timer
+    /etc/systemd/system/bms-domains-renew.service /etc/systemd/system/bms-domains-renew.timer
+    /etc/systemd/system/bms-core-update.service /etc/systemd/system/bms-core-update.timer
+    /etc/systemd/system/bms-backup.service /etc/systemd/system/bms-backup.timer
+)
+readonly HELPER_DROPINS=(bms-domains.service.d bms-domains-renew.service.d bms-backup.service.d)
+
+backup_helpers() {
+    local dir=$1 file
+    install -d -m 700 -o root -g root "$dir/helpers"
+    for file in "${HELPER_FILES[@]}"; do
+        [[ -f $file && ! -L $file ]] && cp -a -- "$file" "$dir/helpers/${file//\//_}"
+    done
+    for file in "${HELPER_DROPINS[@]}"; do
+        [[ -d /etc/systemd/system/$file ]] && cp -a -- "/etc/systemd/system/$file" "$dir/helpers/$file"
+    done
+    return 0
+}
+
+# shellcheck disable=SC2329 # called from the EXIT trap
+restore_helpers() {
+    local dir=$1 file unit
+    [[ -d $dir/helpers ]] || return 0
+    for file in "${HELPER_FILES[@]}"; do
+        if [[ -f $dir/helpers/${file//\//_} ]]; then
+            # A copy and a rename: a running helper (bash reads its script as it goes) keeps its old file.
+            cp -a -- "$dir/helpers/${file//\//_}" "$file.rollback" && mv -f -- "$file.rollback" "$file"
+        elif [[ -e $file ]]; then
+            unit=${file##*/}
+            [[ $unit == *.timer ]] && systemctl disable --now "$unit" >/dev/null 2>&1
+            rm -f -- "$file"
+        fi
+    done
+    for file in "${HELPER_DROPINS[@]}"; do
+        rm -rf --one-file-system -- "/etc/systemd/system/$file"
+        [[ -d $dir/helpers/$file ]] && cp -a -- "$dir/helpers/$file" "/etc/systemd/system/$file"
+    done
+    return 0
+}
+
+# The automatic rollback (A7): binaries, server.env, unit settings, root helpers and role memberships of the
+# previous release; restart.
+# shellcheck disable=SC2329 # called from the EXIT trap
 rollback_after_failure() {
     trap - ERR
     set +e
@@ -854,21 +1008,28 @@ rollback_after_failure() {
     esac
     printf '\nLa actualizacion fallo; se vuelve a la version anterior...\n' >&2
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+    # The flags are set before the first move: a failure between the two moves is restored too.
     if [[ $APP_SWAPPED == true && -d $APP_RUNTIME_DIR.previous ]]; then
         rm -rf --one-file-system -- "$APP_RUNTIME_DIR.failed"
-        mv -T -- "$APP_RUNTIME_DIR" "$APP_RUNTIME_DIR.failed" && mv -T -- "$APP_RUNTIME_DIR.previous" "$APP_RUNTIME_DIR"
+        [[ ! -e $APP_RUNTIME_DIR ]] || mv -T -- "$APP_RUNTIME_DIR" "$APP_RUNTIME_DIR.failed"
+        mv -T -- "$APP_RUNTIME_DIR.previous" "$APP_RUNTIME_DIR"
         rm -rf --one-file-system -- "$APP_RUNTIME_DIR.failed"
     fi
     if [[ $WEB_SWAPPED == true && -d $WEB_RUNTIME_DIR.previous ]]; then
         rm -rf --one-file-system -- "$WEB_RUNTIME_DIR.failed"
-        mv -T -- "$WEB_RUNTIME_DIR" "$WEB_RUNTIME_DIR.failed" && mv -T -- "$WEB_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR"
+        [[ ! -e $WEB_RUNTIME_DIR ]] || mv -T -- "$WEB_RUNTIME_DIR" "$WEB_RUNTIME_DIR.failed"
+        mv -T -- "$WEB_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR"
         rm -rf --one-file-system -- "$WEB_RUNTIME_DIR.failed"
+    fi
+    if [[ -n $BACKUP_DIR && -f $BACKUP_DIR/server.env ]]; then
+        install -m 600 -o root -g root "$BACKUP_DIR/server.env" "$CONFIG_FILE"
     fi
     if [[ -n $DROPIN_BACKUP ]]; then
         rm -rf --one-file-system -- "/etc/systemd/system/$SERVICE_NAME.d"
         if [[ -d $DROPIN_BACKUP/dropins ]]; then
             cp -a -- "$DROPIN_BACKUP/dropins" "/etc/systemd/system/$SERVICE_NAME.d"
         fi
+        restore_helpers "$DROPIN_BACKUP"
     fi
     systemctl daemon-reload
     if [[ $LAYOUT_CHANGED == true ]]; then
@@ -893,6 +1054,7 @@ rollback_after_failure() {
     print_database_restore_help
 }
 
+# shellcheck disable=SC2329 # called from the EXIT trap
 on_update_exit() {
     local code=$?
     trap - EXIT
@@ -901,6 +1063,7 @@ on_update_exit() {
     fi
     cleanup_update_swap
     [[ -z $PROVISIONER_PASSFILE ]] || rm -f -- "$PROVISIONER_PASSFILE"
+    [[ -z $CI_WEB_DIR ]] || rm -rf --one-file-system -- "$CI_WEB_DIR"
     exit "$code"
 }
 
@@ -966,7 +1129,11 @@ else
     printf 'Sincronizando el espejo de root con %s...\n' "$GIT_REF"
     BUILD_SHA=$(sync_mirror "$GIT_REF") || die "No se pudo traer $GIT_REF desde GitHub al espejo $MIRROR_DIR."
     [[ $BUILD_SHA =~ ^[0-9a-f]{40}$ ]] || die 'No se pudo leer el commit del espejo.'
-    # Firma del commit (SIGNING.md), cuando el mirror.sh instalado sabe verificarla.
+    # Firma del commit (SIGNING.md), cuando el mirror.sh instalado sabe verificarla. Con una llave instalada, un
+    # mirror.sh que no sabe verificar no sirve.
+    if [[ -e $ALLOWED_SIGNERS || -L $ALLOWED_SIGNERS ]] && ! declare -F verify_mirror_signature >/dev/null; then
+        die "Hay una llave de firma en $ALLOWED_SIGNERS pero $MIRROR_LIB_FILE no sabe verificar firmas: descarga el mirror.sh actual junto a update.sh."
+    fi
     if declare -F verify_mirror_signature >/dev/null; then
         MANUAL_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$MIRROR_DIR/server/build.gradle.kts" | head -n 1)
         SIGNATURE_STATUS=$(verify_mirror_signature "$BUILD_SHA" "$MANUAL_VERSION") ||
@@ -1016,6 +1183,7 @@ ensure_build_user
 # this succeeds.
 TARGET_COMMIT=${BUILD_SHA:0:7}
 BUILD_DIR=$BUILD_TREE
+stop_build_user_processes
 rm -rf --one-file-system -- "$BUILD_DIR"
 install -d -m 755 -o "$BUILD_USER" -g "$BUILD_USER" "$BUILD_DIR"
 git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$TRUSTED_DIR" archive "$BUILD_SHA" |
@@ -1023,14 +1191,13 @@ git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$TRUSTED_DIR" archiv
 [[ -f $BUILD_DIR/gradlew && -f $BUILD_DIR/server/build.gradle.kts ]] || die 'El arbol de compilacion esta incompleto.'
 
 cd "$BUILD_DIR"
-runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" GRADLE_USER_HOME="$BUILD_HOME/.gradle" JAVA_HOME="$UPDATE_JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
-
 install -d -m 700 -o root -g root "$BUILD_LOG_DIR"
 SERVER_BUILD_LOG="$BUILD_LOG_DIR/server-$TARGET_COMMIT.log"
 WEB_BUILD_LOG="$BUILD_LOG_DIR/web-$TARGET_COMMIT.log"
 
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     run_gradle -PserverOnly=true :server:test :server:installDist 2>&1 | tee "$SERVER_BUILD_LOG"
+    stop_build_user_processes
     [[ -x $BUILD_DIR/server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
 fi
 if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
@@ -1041,6 +1208,7 @@ if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
         if ! fetch_ci_web_dist "$BUILD_SHA"; then
             warn 'no se pudo usar la webapp del CI; se compilara aqui.'
             WEB_DIST=''
+            WEB_DIST_ROOT_OWNED=false
         fi
     fi
     if [[ -z $WEB_DIST ]]; then
@@ -1048,13 +1216,14 @@ if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
         # kotlinStoreYarnLock fails with "Lock file was changed". It is only a build cache.
         runuser -u "$BUILD_USER" -- rm -rf -- "$BUILD_DIR/build/js"
         run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution 2>&1 | tee "$WEB_BUILD_LOG"
+        stop_build_user_processes
         WEB_DIST="$BUILD_DIR/app/webApp/build/dist/js/productionExecutable"
     fi
     [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se genero la distribucion web completa.'
 fi
 cd /
 
-# 2. Backups: databases (pg_dump, before any migration), binaries, web, configuration. Root only.
+# 2. Backups: databases (pg_dump, before any migration), binaries, web, configuration, root helpers. Root only.
 TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 BACKUP_DIR=$BACKUP_ROOT/$TIMESTAMP
 install -d -m 700 -o root -g root "$BACKUP_DIR"
@@ -1075,6 +1244,7 @@ install -m 600 -o root -g root "$CONFIG_FILE" "$BACKUP_DIR/server.env"
 if [[ -d /etc/systemd/system/$SERVICE_NAME.d ]]; then
     cp -a "/etc/systemd/system/$SERVICE_NAME.d" "$BACKUP_DIR/dropins"
 fi
+backup_helpers "$BACKUP_DIR"
 printf '%s\n' "$BUILD_SHA" > "$BACKUP_DIR/source-commit.txt"
 [[ -z $PREVIOUS_SOURCE_COMMIT ]] || printf '%s\n' "$PREVIOUS_SOURCE_COMMIT" > "$BACKUP_DIR/previous-commit.txt"
 
@@ -1095,53 +1265,70 @@ if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     configure_service_hardening
 fi
 
-# 4. New binaries and web app.
+# 4. New binaries (with the release's migrations, root-owned: MIGRATIONS_ROOT) and web app. The flags are set before
+# the first move so a failure between the two moves is restored as well.
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     rm -rf "$APP_RUNTIME_DIR.new"
     install -d -m 755 "$APP_RUNTIME_DIR.new"
     copy_dist_as_bms "$BUILD_DIR/server/build/install/server" "$APP_RUNTIME_DIR.new" "$BUILD_USER"
+    install -d -m 755 "$APP_RUNTIME_DIR.new/migrations"
+    bms_release_migrations "$TRUSTED_DIR" "$BUILD_SHA" "$APP_RUNTIME_DIR.new/migrations" ||
+        die 'No se pudieron copiar las migraciones de la version a la distribucion.'
     chown -R root:root "$APP_RUNTIME_DIR.new"
     chmod -R a+rX "$APP_RUNTIME_DIR.new"
     chmod -R go-w "$APP_RUNTIME_DIR.new"
 
     rm -rf "$APP_RUNTIME_DIR.previous"
-    mv "$APP_RUNTIME_DIR" "$APP_RUNTIME_DIR.previous"
-    mv "$APP_RUNTIME_DIR.new" "$APP_RUNTIME_DIR"
     APP_SWAPPED=true
     STAGE=swapped
+    mv "$APP_RUNTIME_DIR" "$APP_RUNTIME_DIR.previous"
+    mv "$APP_RUNTIME_DIR.new" "$APP_RUNTIME_DIR"
 fi
 
 if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
     rm -rf "$WEB_RUNTIME_DIR.new"
     install -d -m 755 "$WEB_RUNTIME_DIR.new"
-    copy_dist_as_bms "$WEB_DIST" "$WEB_RUNTIME_DIR.new" "$BUILD_USER"
+    if [[ $WEB_DIST_ROOT_OWNED == true ]]; then
+        # Already a checked root copy (fetch_ci_web_dist).
+        cp -a -- "$WEB_DIST/." "$WEB_RUNTIME_DIR.new/"
+    else
+        copy_dist_as_bms "$WEB_DIST" "$WEB_RUNTIME_DIR.new" "$BUILD_USER"
+    fi
     chown -R root:root "$WEB_RUNTIME_DIR.new"
     chmod -R a+rX "$WEB_RUNTIME_DIR.new"
     chmod -R go-w "$WEB_RUNTIME_DIR.new"
     rm -rf "$WEB_RUNTIME_DIR.previous"
+    WEB_SWAPPED=true
     mv "$WEB_RUNTIME_DIR" "$WEB_RUNTIME_DIR.previous"
     mv "$WEB_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR"
-    WEB_SWAPPED=true
 fi
 
-# El codigo fuente (MIGRATIONS_ROOT del servidor) se deja en el mismo sha como bms; no se confia en el.
+# /opt/bms/source is only a reference copy now (the server reads its migrations from the distribution): best effort.
 git_source fetch --tags --prune origin || warn "no se pudo actualizar $SOURCE_DIR (fetch)."
-git_source checkout --detach "$BUILD_SHA" || warn "no se pudo dejar $SOURCE_DIR en el commit $BUILD_SHA."
+git_source checkout --detach "$BUILD_SHA" || warn "no se pudo dejar $SOURCE_DIR en el commit $BUILD_SHA (solo es una copia de referencia)."
 
-# 5. Start and check; a release that does not answer is rolled back (on_update_exit).
+# 5. Start and check; a release that does not answer, logs PostgreSQL permission errors or loses database access is
+# rolled back (on_update_exit).
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     systemctl daemon-reload
+    STARTED_AT=$(date +%s)
     systemctl start "$SERVICE_NAME"
-    if ! backend_answers; then
+    if ! backend_answers "$STARTED_AT"; then
         systemctl status "$SERVICE_NAME" --no-pager >&2 || true
         journalctl -u "$SERVICE_NAME" -n 80 --no-pager >&2 || true
-        die "El servicio no respondio en http://127.0.0.1:$APP_PORT/ despues de 90 segundos."
+        die 'La version nueva no paso la comprobacion (HTTP, permisos de PostgreSQL o acceso a las bases).'
     fi
+    # M3: what the root helper compares the next request with (it refuses anything that is not a later version).
+    printf '%s\n' "$BUILD_SHA" > "$DEPLOYED_FILE.tmp"
+    chmod 600 "$DEPLOYED_FILE.tmp"
+    mv -f -- "$DEPLOYED_FILE.tmp" "$DEPLOYED_FILE"
 fi
 STAGE='done'
 
-# 6. Nginx (restores itself on failure) and cleanup.
-configure_nginx
+# 6. The deploy is done: nothing from here can fail the update (L8). Nginx (restores itself on failure) and cleanup.
+set +e
+trap - ERR
+configure_nginx || warn 'no se pudo actualizar Nginx; sigue la configuracion anterior.'
 rm -rf "$APP_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR.previous"
 cd /
 [[ $BUILD_DIR != "$BUILD_TREE" ]] || rm -rf --one-file-system -- "$BUILD_TREE"
@@ -1153,9 +1340,10 @@ done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -name '20*' -type d -printf
 prune_old "$BUILD_LOG_DIR" '*.log' "$KEEP_LOGS"
 
 if [[ $HARDEN_HOST == true ]]; then
-    bash "$TRUSTED_DIR/scripts/ubuntu/harden-host.sh"
+    bash "$TRUSTED_DIR/scripts/ubuntu/harden-host.sh" || warn 'harden-host.sh no termino bien; revisa su salida.'
 fi
 
 printf 'BMS actualizado (%s) de %s a %s.\n' "$UPDATE_TARGET" "$CURRENT_COMMIT" "$TARGET_COMMIT"
 printf 'Respaldo: %s\n' "$BACKUP_DIR"
 printf 'Logs: sudo journalctl -u bms -f\n'
+exit 0

@@ -176,7 +176,7 @@ server {
     server_tokens off;
     client_max_body_size $BMS_NGINX_DEFAULT_BODY;
     location /.well-known/acme-challenge/ { root $acme_root; }
-    location / { return 301 https://$domain\$request_uri; }
+    location / { return 301 https://\$host\$request_uri; }
 }
 server {
 NGINX
@@ -241,6 +241,53 @@ bms_nginx_taken_default_ports() {
             if (line ~ /(^|[^0-9])443([^0-9]|$)/) print 443
             else if (line ~ /(^|[^0-9])80([^0-9]|$)/ || line !~ /[0-9]/) print 80
         }' | sort -u | tr '\n' ' '
+}
+
+# Every name the site serves (all server_name lines; "_" left out), in order, space separated.
+bms_nginx_site_names() {
+    awk '$1 == "server_name" { for (i = 2; i <= NF; i++) { n = $i; sub(/;$/, "", n); if (n != "" && n != "_" && !(n in seen)) { seen[n] = 1; printf "%s%s", sep, n; sep = " " } } }
+        END { if (sep != "") print "" }' "$1" |
+        tr ' ' '\n' | grep -E '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$' | paste -sd ' '
+}
+
+# Lines of an existing site that no BMS installer or updater ever wrote (comments and blank lines aside): local
+# edits that a regeneration would lose. Empty output: the file is a known BMS site and can be regenerated.
+bms_nginx_unknown_lines() {
+    local patterns
+    patterns=$(cat <<'RE'
+^server \{$
+^\}$
+^listen [^;]+;$
+^server_name [^;]+;$
+^root [^;]+;$
+^index index\.html;$
+^server_tokens off;$
+^http[23] on;$
+^ssl_certificate(_key)? /etc/letsencrypt/live/[^;]+;$
+^ssl_protocols [^;]+;$
+^client_max_body_size [0-9]+[kmKM]?;$
+^client_body_timeout [0-9]+s;$
+^limit_req zone=bms_(req|auth) burst=[0-9]+ nodelay;$
+^limit_conn bms_conn [0-9]+;$
+^limit_(req|conn)_status 429;$
+^include /etc/nginx/bms\.d/\*\.conf;$
+^add_header (X-Content-Type-Options|X-Frame-Options|Referrer-Policy|Content-Security-Policy|Strict-Transport-Security|Alt-Svc|Cache-Control) .+ always;$
+^location (/auth/|/companies|/server|= /version|/notifications|/\.well-known/oauth-|/modules|/|= /companies/me/backups/import|= /server/extensions/upload|= /modules/crm/ui/import) \{$
+^location ~ \\\.map\$ \{$
+^location ~ "\^/modules/\[a-z\]\[a-z0-9_\]\{0,62\}/ui/files\$" \{$
+^location /\.well-known/acme-challenge/ \{ root [^;]+; \}$
+^location / \{ return (301 https://[^ ]+\$request_uri|503); \}$
+^proxy_pass http://127\.0\.0\.1:8080;$
+^proxy_http_version 1\.1;$
+^proxy_set_header (Host|X-Real-IP|X-Forwarded-For|X-Forwarded-Proto|X-Forwarded-Host) \$[a-z_]+;$
+^proxy_request_buffering off;$
+^proxy_(send|read)_timeout [0-9]+s;$
+^try_files \$uri \$uri/ /index\.html;$
+^return 404;$
+RE
+)
+    sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/[[:space:]][[:space:]]*/ /g' "$1" |
+        grep -v '^$' | grep -Ev -f <(printf '%s\n' "$patterns") || true
 }
 
 # Reads the parameters of an existing BMS site (written by any installer version): prints

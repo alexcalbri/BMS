@@ -122,8 +122,11 @@ PENDING=$(central_psql -At -F '|' -c "SELECT id, target_version, coalesce(target
 IFS='|' read -r REQUEST_ID TARGET_VERSION TARGET_COMMIT <<< "$PENDING"
 [[ $REQUEST_ID =~ ^[0-9]+$ ]] || die 'Identificador de solicitud invalido.'
 
-# Si hay otra instalacion o actualizacion en curso, la solicitud sigue pendiente.
-maintenance_lock_free || exit 0
+# Si hay otra instalacion o actualizacion en curso, la solicitud sigue pendiente. Desde aqui este ayudante tiene el
+# lock de mantenimiento (L9): nadie mas toca el espejo mientras lo sincroniza; update.sh lo hereda
+# (BMS_MAINTENANCE_LOCKED=1) en vez de pedirlo otra vez.
+exec 8>>"$MAINTENANCE_LOCK_FILE"
+flock -n 8 || exit 0
 
 LOG_FILE=/var/log/bms-core-update-$REQUEST_ID.log
 FINALIZED=false
@@ -213,11 +216,16 @@ SIGNATURE_STATUS=$(verify_mirror_signature "$TARGET_COMMIT" "$TARGET_VERSION" 2>
 printf '%s Firma: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SIGNATURE_STATUS" >> "$LOG_FILE"
 
 # Ya desplegado: no se vuelve a compilar ni a reiniciar.
-if [[ -f $DEPLOYED_FILE && $(cat "$DEPLOYED_FILE") == "$TARGET_COMMIT" ]]; then
+DEPLOYED_COMMIT=''
+[[ -f $DEPLOYED_FILE && ! -L $DEPLOYED_FILE ]] && DEPLOYED_COMMIT=$(head -c 64 "$DEPLOYED_FILE" | tr -d '[:space:]')
+if [[ $DEPLOYED_COMMIT == "$TARGET_COMMIT" ]]; then
     finish_request 'done' 'Ya estaba actualizado' || report_failure
     prune_logs
     exit 0
 fi
+# Solo hacia adelante: el instalado debe ser antecesor del pedido y la version pedida mayor que la instalada.
+mirror_forward_ok_in "$MIRROR_DIR" "$DEPLOYED_COMMIT" "$TARGET_COMMIT" "$TARGET_VERSION" 2>> "$LOG_FILE" ||
+    fail_request "La solicitud no es una version posterior a la instalada; desde la app no se vuelve atras (revisa el log)"
 
 RUNNING_ID=$(central_psql -At -v id="$REQUEST_ID" <<'SQL'
 UPDATE core_update_requests
@@ -231,10 +239,11 @@ SQL
 printf '%s Actualizando a %s (commit %s)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TARGET_VERSION" "$TARGET_COMMIT" >> "$LOG_FILE"
 UPDATE_STATUS=0
 # update.sh reinicia bms.service; este ayudante es su propia unidad, asi que no se interrumpe.
-BMS_TRUSTED_DIR=$MIRROR_DIR bash "$MIRROR_DIR/scripts/ubuntu/update.sh" \
+BMS_MAINTENANCE_LOCKED=1 BMS_TRUSTED_DIR=$MIRROR_DIR bash "$MIRROR_DIR/scripts/ubuntu/update.sh" \
     --non-interactive --commit "$TARGET_COMMIT" --target ambos >> "$LOG_FILE" 2>&1 || UPDATE_STATUS=$?
 
 if (( UPDATE_STATUS == 0 )); then
+    # update.sh ya escribio el commit desplegado; se repite por si es una version anterior de update.sh.
     printf '%s\n' "$TARGET_COMMIT" > "$DEPLOYED_FILE"
     finish_request 'done' "Actualizado a $TARGET_VERSION" || report_failure
 else

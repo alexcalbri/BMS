@@ -124,14 +124,33 @@ deviations() {
 # --- The provisioning login and the move (twice: idempotent).
 ERRORS=$(mktemp)
 printf '%s' 'clave-de-aprovisionamiento-123' | bms_role_set_password "$PROVISIONER" "$BMS_PROVISIONER_ATTRIBUTES" || die 'rol de aprovisionamiento'
+# A real connection of the provisioning login (update.sh defines the same with its passfile).
+bms_pg_as_provisioner() {
+    local database=$1
+    shift
+    PGPASSWORD='clave-de-aprovisionamiento-123' psql -X -q -v ON_ERROR_STOP=1 -h "$PG_HOST" -p "$PG_PORT" -U "$PROVISIONER" -d "$database" "$@"
+}
+# Registered databases that exist but break the rules (the control database, postgres, one owned by another role):
+# nothing changes, and the message names them.
+check 'con bases registradas que no cumplen las reglas no se cambia nada' eval '! bms_migrate_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2> "$ERRORS"'
+equals 'se nombran las tres bases rechazadas' 3 "$(grep -c '^ - ' "$ERRORS")"
+check 'el mensaje dice que no se cambio ningun rol' grep -q 'no se cambio ningun rol' "$ERRORS"
+equals 'el runtime sigue siendo miembro y el aprovisionamiento no gano nada' 't f' "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER'), pg_has_role('$PROVISIONER', '$OWNER', 'SET')" | tr '|' ' ')"
+equals 'las tablas de la empresa vieja siguen siendo de postgres' postgres "$(sql "$OLD" "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'public.activity_log'::regclass")"
+sql "$CONTROL" "DELETE FROM companies WHERE code IN ('seca_tctl', 'seca_tpg', 'seca_tforeign')" >/dev/null
 bms_migrate_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2> "$ERRORS" || { cat "$ERRORS" >&2; die 'primera pasada'; }
-check 'se avisa de la base central, postgres, la ajena y la inexistente' \
-    bash -c "grep -c 'se omite' '$ERRORS' | grep -qx 4"
+check 'solo se avisa de la base inexistente' bash -c "grep -c 'se omite' '$ERRORS' | grep -qx 1 && grep -q 'bms_seca_tgone' '$ERRORS'"
 rm -f "$ERRORS"
 before=$(sql "$OLD" "SELECT pg_catalog.array_to_string(array_agg(relacl::text || relowner::text ORDER BY relname), ';') FROM pg_class WHERE relnamespace = 'public'::regnamespace")
 bms_migrate_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2>/dev/null || die 'segunda pasada'
 equals 'segunda pasada: nada cambia' "$before" "$(sql "$OLD" "SELECT pg_catalog.array_to_string(array_agg(relacl::text || relowner::text ORDER BY relname), ';') FROM pg_class WHERE relnamespace = 'public'::regnamespace")"
 
+# The access proof after the move fails when the runtime role lost access to a company.
+sql postgres "REVOKE CONNECT ON DATABASE $NEW FROM $RUNTIME" >/dev/null
+check 'la comprobacion de acceso detecta una empresa sin acceso' eval '! bms_verify_role_access "$CONTROL" "$RUNTIME" "$PROVISIONER" "$NEW $OWNER" 2>/dev/null'
+sql postgres "GRANT CONNECT ON DATABASE $NEW TO $RUNTIME" >/dev/null
+check 'y pasa con el acceso devuelto (conexion real del aprovisionamiento)' bms_verify_role_access "$CONTROL" "$RUNTIME" "$PROVISIONER" "$NEW $OWNER
+$OLD $OWNER"
 equals 'runtime ya no es miembro del dueno' f "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER')")"
 equals 'aprovisionamiento: SET sin heredar' 't f t' "$(sql postgres "SELECT pg_has_role('$PROVISIONER', '$OWNER', 'SET'), pg_has_role('$PROVISIONER', '$OWNER', 'USAGE'), pg_has_role('$PROVISIONER', '$RUNTIME', 'SET')" | tr '|' ' ')"
 equals 'atributos' 'f f f t' "$(sql postgres "SELECT rolcreatedb, rolcreaterole, rolinherit, (SELECT rolinherit FROM pg_roles WHERE rolname = '$RUNTIME') FROM pg_roles WHERE rolname = '$PROVISIONER'" | tr '|' ' ')"

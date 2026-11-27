@@ -164,3 +164,40 @@ verify_signature_in() {
         "$commit" "$signers" "$tag" >&2
     return 1
 }
+
+# Version declared by <commit> in <dir> (server/build.gradle.kts), or nothing.
+mirror_version_in() {
+    local dir=$1 commit=$2
+    mirror_git_in "$dir" show "$commit:server/build.gradle.kts" 2>/dev/null |
+        sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' | head -n 1
+}
+
+# Only forward (M3 of SECURITY_FIXES.md): a request may install <target> only when the deployed commit <deployed> is
+# an ancestor of it and <target_version> is strictly higher than the deployed one; otherwise a forged request row
+# could bring back an old commit and run its old update.sh as root. Prints the reason and fails when refused.
+mirror_forward_ok_in() {
+    local dir=$1 deployed=${2:-} target=${3:-} target_version=${4:-} deployed_version highest
+    if [[ ! $deployed =~ $MIRROR_COMMIT_PATTERN ]]; then
+        printf 'No se sabe que commit esta instalado (falta %s/deployed-commit): ejecuta update.sh una vez por SSH.\n' "$MIRROR_STATE_DIR" >&2
+        return 1
+    fi
+    if [[ ! $target =~ $MIRROR_COMMIT_PATTERN || ! $target_version =~ $MIRROR_VERSION_PATTERN ]]; then
+        printf 'Commit o version invalidos.\n' >&2
+        return 1
+    fi
+    if ! mirror_git_in "$dir" cat-file -e "$deployed^{commit}" 2>/dev/null ||
+        ! mirror_git_in "$dir" merge-base --is-ancestor "$deployed" "$target"; then
+        printf 'El commit %s no es posterior al instalado (%s): no se vuelve atras desde la app.\n' "$target" "$deployed" >&2
+        return 1
+    fi
+    deployed_version=$(mirror_version_in "$dir" "$deployed")
+    if [[ ! $deployed_version =~ $MIRROR_VERSION_PATTERN ]]; then
+        printf 'No se pudo leer la version del commit instalado %s.\n' "$deployed" >&2
+        return 1
+    fi
+    highest=$(printf '%s\n%s\n' "$deployed_version" "$target_version" | sort -V | tail -n 1)
+    if [[ $target_version == "$deployed_version" || $highest != "$target_version" ]]; then
+        printf 'La version %s no es mayor que la instalada (%s).\n' "$target_version" "$deployed_version" >&2
+        return 1
+    fi
+}
