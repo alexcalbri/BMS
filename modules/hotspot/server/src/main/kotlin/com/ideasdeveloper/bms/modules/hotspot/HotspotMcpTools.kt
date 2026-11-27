@@ -46,6 +46,7 @@ object HotspotMcpTools {
         "accessMinutes" to McpSchema.integer("Tiempo de acceso general en minutos.", 1, 10080),
         "reconnectMinutes" to McpSchema.integer("Minutos que un correo espera para volver a conectarse.", 0, 525600),
         "codeTtlMinutes" to McpSchema.integer("Vigencia del codigo enviado por correo, en minutos.", 1, 1440),
+        "newCustomersPerHour" to McpSchema.integer("Maximo de clientes NUEVOS que el formulario puede crear por hora en la empresa (freno contra abusos).", 10, 100000),
         "dataLimitMb" to McpSchema.integer("Limite de datos por sesion en MB; 0 sin limite.", 0, 1048576),
         "rxKbps" to McpSchema.integer("Velocidad de descarga en kbps; 0 sin limite.", 0, 10000000),
         "txKbps" to McpSchema.integer("Velocidad de subida en kbps; 0 sin limite.", 0, 10000000),
@@ -166,8 +167,8 @@ object HotspotMcpTools {
             title = "Mi codigo WiFi",
             description = "Devuelve el codigo de acceso WiFi del usuario conectado, para redes con acceso por codigo de usuario.",
             permission = HotspotScreens.View,
-            // Creates the code the first time, exactly like opening "Accesos WiFi"; no data of anyone else changes.
-            readOnly = true,
+            // Creates the user's code the first time, exactly like opening "Accesos WiFi": it writes, so a read-only agent cannot call it.
+            readOnly = false,
         ) { call -> myCode(call) },
         McpTool(
             name = "export_report",
@@ -304,6 +305,7 @@ object HotspotMcpTools {
             put("accessMinutes", settings.accessMinutes)
             put("reconnectMinutes", settings.reconnectMinutes)
             put("codeTtlMinutes", settings.codeTtlMinutes)
+            put("newCustomersPerHour", settings.newCustomersPerHour)
             put("dataLimitMb", settings.dataLimitMb)
             put("rxKbps", settings.rxKbps)
             put("txKbps", settings.txKbps)

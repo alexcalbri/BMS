@@ -41,6 +41,32 @@ object OAuthPages {
         )
     }
 
+    /**
+     * Second step for an account with two-step verification on: one field for the authenticator code or a
+     * recovery code. The password is not in this page; [pending] only means something to this server.
+     */
+    fun twoFactor(request: OAuthRequest, params: Parameters, pending: String, error: String?): String {
+        val hidden = carried.mapNotNull { key -> params[key]?.let { hiddenInput(key, it) } }.joinToString("")
+        val company = params["company"].orEmpty().trim().lowercase()
+        return page(
+            tr("Verificacion en dos pasos"),
+            """
+            <p class="lead">${tr("Tu cuenta usa verificacion en dos pasos.")}</p>
+            <p class="muted">${tr("Escribe el codigo de 6 digitos de tu aplicacion de autenticacion o uno de tus codigos de recuperacion.")}</p>
+            ${error?.let { "<p class=\"error\">${esc(it)}</p>" }.orEmpty()}
+            <form method="post" action="${AgentOAuth.Base}/authorize" autocomplete="off">
+              <input type="hidden" name="step" value="code">$hidden
+              ${hiddenInput("pending", pending)}${hiddenInput("company", company)}
+              <label>${tr("Codigo")}
+                <input name="code" required autofocus inputmode="text" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="32">
+              </label>
+              <button type="submit">${tr("Verificar")}</button>
+            </form>
+            ${returnNote(request)}
+            """,
+        )
+    }
+
     fun consent(ticket: String, request: OAuthRequest, user: VerifiedUser, tools: List<RegisteredMcpTool>, error: String?): String {
         val modules = tools.groupBy { it.moduleId }.map { (id, list) -> Triple(id, list.first().moduleName, list) }.sortedBy { it.second }
         val moduleChecks = modules.joinToString("") { (id, name, list) ->

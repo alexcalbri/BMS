@@ -26,7 +26,11 @@ import java.util.concurrent.ConcurrentHashMap
 
 fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
     route("/modules") {
+        // The installed modules and their versions: only for a signed-in user (B7); the app does not use it before.
         get {
+            if (!kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { access.hasSession(call) }) {
+                return@get call.respond(HttpStatusCode.Unauthorized, ModuleAccessErrorResponse("missing_session", tr("La sesion es requerida.")))
+            }
             call.respond(HttpStatusCode.OK, registry.definitions.map { it.localized() })
         }
 
@@ -42,7 +46,9 @@ fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
                 call.respond(HttpStatusCode.NotFound)
                 return@get
             }
-            call.respond(HttpStatusCode.OK, definition.localized())
+            // The app reads it without a session (minAppVersion and the views); the versions only with one (B7).
+            val signedIn = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { access.hasSession(call) }
+            call.respond(HttpStatusCode.OK, definition.localized().let { if (signedIn) it else it.copy(version = "", minCoreVersion = null, extensionPermissions = emptyList()) })
         }
 
         // Web-UI modules: the app exchanges its session for a one-time ticket and opens the

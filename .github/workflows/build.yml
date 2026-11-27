@@ -22,26 +22,44 @@ env:
   GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
 
 jobs:
+  # The committed gradle/wrapper/gradle-wrapper.jar must be an official Gradle release jar (checksum list of Gradle).
+  wrapper-validation:
+    name: Validar el wrapper de Gradle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
   server:
     name: Pruebas del servidor
+    needs: wrapper-validation
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      # Mismo JDK que gradle/gradle-daemon-jvm.properties, para que Gradle no descargue otro.
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # JDK 21, el que pide gradle/gradle-daemon-jvm.properties (sin vendor), para que Gradle no descargue otro.
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: liberica
           java-version: 21
       # Las pruebas del servidor no usan base de datos (no hace falta un servicio PostgreSQL).
       # En ramas que no son develop/main/master solo se lee la cache, no se escribe.
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: ${{ github.ref_name != 'develop' && github.ref_name != 'main' && github.ref_name != 'master' }}
       - run: ./gradlew :server:test --continue
       - name: Reporte de pruebas
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: reporte-pruebas-servidor
           path: server/build/reports/tests
@@ -51,32 +69,40 @@ jobs:
     name: Compilacion de la app (JVM, JS, Android)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: liberica
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: ${{ github.ref_name != 'develop' && github.ref_name != 'main' && github.ref_name != 'master' }}
       # El SDK de Android viene en la imagen ubuntu-latest (ANDROID_HOME) con las licencias aceptadas.
       - run: ./gradlew :app:shared:compileKotlinJvm :app:shared:compileKotlinJs :app:shared:compileAndroidMain --continue
 
+  # Compila y empaqueta sin ningun permiso de escritura ni acceso a secretos: aqui corre codigo de
+  # Gradle/npm y, en un PR, codigo del propio PR.
   web-dist:
     name: Distribucion web de produccion
+    needs: wrapper-validation
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Escribir en el release "web-dist" solo se hace en pushes; en un PR solo se compila y se sube el artifact.
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: liberica
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: ${{ github.ref_name != 'develop' && github.ref_name != 'main' && github.ref_name != 'master' }}
       # Misma invocacion que update.sh (-PwebOnly): sin Android ni servidor, solo lo que necesita la web.
@@ -98,7 +124,7 @@ jobs:
           tar -C "$dist" --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2020-01-01' -czf "$name" .
           sha256sum "$name" > "$name.sha256"
           echo "name=$name" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: web-dist-${{ github.sha }}
           path: |
@@ -106,27 +132,77 @@ jobs:
             ${{ steps.pack.outputs.name }}.sha256
           retention-days: 14
           if-no-files-found: error
+
+  # Publica y firma. Solo en pushes a master (nunca PR, develop ni otras ramas). No compila nada ni hace
+  # checkout: solo toma el artifact del job anterior, lo firma con la clave privada guardada en el secreto
+  # WEB_DIST_SIGNING_KEY (clave Ed25519 en PEM) y lo sube al release. update.sh verifica la firma sin red con
+  # la clave publica instalada en /usr/local/lib/bms/web_dist_public.pem (ver SELF_HOSTING.md).
+  web-dist-publish:
+    name: Publicar distribucion web (solo master)
+    # Only a commit whose server tests passed is published (update.sh may install it).
+    needs: [web-dist, server]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: web-dist-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: web-dist-${{ github.sha }}
+          path: pkg
+      - name: Firmar
+        env:
+          SIGNING_KEY: ${{ secrets.WEB_DIST_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          name="web-${GITHUB_SHA}.tar.gz"
+          test -f "pkg/$name" && test -f "pkg/$name.sha256"
+          # El .sha256 debe corresponder al paquete descargado (nombre y hash).
+          (cd pkg && sha256sum --check --strict "$name.sha256")
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "::warning::Falta el secreto WEB_DIST_SIGNING_KEY: se publica SIN firma; un servidor con clave instalada la rechazara."
+            exit 0
+          fi
+          umask 077
+          key="$RUNNER_TEMP/web-dist-signing.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          # Se firma el .sha256 (que nombra el paquete con el sha del commit y su hash), no el tar.
+          openssl pkeyutl -sign -rawin -inkey "$key" -in "pkg/$name.sha256" -out "pkg/$name.sha256.sig"
+          # Comprobacion inmediata con la clave publica derivada de la privada.
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/web-dist-public.pem"
+          openssl pkeyutl -verify -rawin -pubin -inkey "$RUNNER_TEMP/web-dist-public.pem" \
+            -in "pkg/$name.sha256" -sigfile "pkg/$name.sha256.sig"
+          rm -f "$key"
+          echo "Clave publica que debe tener el servidor (sha256 de su DER):"
+          openssl pkey -pubin -in "$RUNNER_TEMP/web-dist-public.pem" -outform DER | sha256sum
       # Release rodante "web-dist" (prerelease, sin cambiar de commit ni de rama): conserva los paquetes de
       # los ultimos commits publicados. Un release es publico y se descarga sin token; un artifact de
       # Actions exige token incluso en repositorios publicos.
       - name: Publicar en el release web-dist
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          NAME: ${{ steps.pack.outputs.name }}
+          GH_REPO: ${{ github.repository }}
+          NAME: web-${{ github.sha }}.tar.gz
           KEEP: '10'
         run: |
           set -euo pipefail
           if ! gh release view web-dist >/dev/null 2>&1; then
             gh release create web-dist --prerelease --target "$GITHUB_SHA" \
               --title 'Distribucion web compilada' \
-              --notes 'Paquetes de la webApp compilados por CI (web-<sha>.tar.gz + .sha256). Los consume scripts/ubuntu/update.sh. No es una version.'
+              --notes 'Paquetes de la webApp compilados por CI (web-<sha>.tar.gz + .sha256 + .sha256.sig). Los consume scripts/ubuntu/update.sh. No es una version.'
           fi
-          gh release upload web-dist "$NAME" "$NAME.sha256" --clobber
+          files=("pkg/$NAME" "pkg/$NAME.sha256")
+          [ -f "pkg/$NAME.sha256.sig" ] && files+=("pkg/$NAME.sha256.sig")
+          gh release upload web-dist "${files[@]}" --clobber
           # Deja solo los KEEP paquetes mas recientes (por fecha de subida).
           gh release view web-dist --json assets \
             --jq '.assets | map(select(.name|endswith(".tar.gz"))) | sort_by(.createdAt) | reverse | .['"$KEEP"':] | .[].name' |
             while read -r old; do
               gh release delete-asset web-dist "$old" --yes || true
               gh release delete-asset web-dist "$old.sha256" --yes || true
+              gh release delete-asset web-dist "$old.sha256.sig" --yes || true
             done

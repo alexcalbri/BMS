@@ -418,7 +418,9 @@ class ActivityIntegrityPostgresTest {
             db.run("INSERT INTO companies (id, code, name, database_name, owner_group) VALUES (gen_random_uuid(), 'old', 'Empresa vieja', 'bms_ai_old', gen_random_uuid())")
         }
         val updateSh = File(root, "scripts/ubuntu/update.sh").readText()
-        assertTrue(updateSh.contains("apply_migration \"\$tenant_db\" tenant database/tenant/migrations/V011__create_activity_log.sql"))
+        // update.sh applies every tenant migration from V006 on (V011 included) to each company, in order.
+        assertTrue(updateSh.contains("apply_migration \"\$tenant_db\" tenant \"\$migration\""))
+        assertTrue(updateSh.contains("database/tenant/migrations/V011__create_activity_log.sql"))
         val grants = updateSh.lines().dropWhile { !it.startsWith("-- Activity log (tenant V011") }.drop(1).takeWhile { it.startsWith("GRANT") }
         assertEquals(2, grants.size, grants.toString())
         superuser("bms_ai_old").use { db ->

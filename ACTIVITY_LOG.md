@@ -215,10 +215,11 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
   job does it, and none is planned. The runtime role is granted only `SELECT, INSERT` on `activity_log` and
   `activity_log_chain` and `USAGE` on the id sequence (server catch-up and `update.sh`); BEFORE UPDATE/DELETE and
   BEFORE TRUNCATE triggers refuse those operations on both tables for everyone, the owner included. These triggers
-  are defence in depth, not a barrier: the runtime role is a member of the server owner's role, which owns the
-  company database and can disable them; verification reports that. On servers where `update.sh` applied the table as the
-  PostgreSQL superuser, the owner role cannot disable the refusal triggers (it can still drop the tables as owner of the
-  schema, which verification detects).
+  are defence in depth, not a barrier: the server owner's role owns the company database and can disable them;
+  verification reports that. The runtime role is not a member of that role (SELF_HOSTING.md §5, Roles de PostgreSQL):
+  only the separate provisioning login can `SET ROLE` to it, so the pooled connections cannot disable, alter or drop
+  anything of the log. `update.sh` gives the objects an older version created as the PostgreSQL superuser to the
+  database owner, all of the log's objects together (their owners stay one role).
 - **Chain.** A BEFORE INSERT trigger gives each row its id from the sequence (explicit ids are refused) and the time of
   its transaction (no backdating), and refuses a transaction that is not READ COMMITTED (a REPEATABLE READ or
   SERIALIZABLE writer would not see the chain rows committed while it waited for the lock and would fail at commit:
@@ -269,8 +270,8 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
   `lastHash`, `anchorsChecked`, `firstBadId`, `problems`, `notes`) names the first bad row. Every finding is written
   once per distinct finding (while the server runs) as `activity.integrity_failed` and sent as a notification to every
   active server owner.
-- **Migrations.** Tenant V011 is applied like the earlier tenant migrations: by `update.sh` as the `postgres` superuser
-  in every existing company (then its grants: `SELECT, INSERT` on `activity_log` and `activity_log_chain`, `USAGE` on
+- **Migrations.** Tenant V011 is applied like the earlier tenant migrations: by `update.sh` (as the `postgres` superuser
+  in releases before the role split; now as the database owner's role) in every existing company (then its grants: `SELECT, INSERT` on `activity_log` and `activity_log_chain`, `USAGE` on
   `activity_log_id_seq`), and by the server (as the server owner's role) when it creates a company and in the startup
   catch-up. It works whoever owns the company's other tables (servers where an older `update.sh` created them as
   `postgres` included; tested). A later migration that changes the log's functions adds its function hashes as a new
@@ -300,8 +301,7 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
   company's log wait and fail after 10 s (SQLSTATE 55P03) until it lets go; a role that can insert into the chain
   (the runtime role, the owner's role) can also do it with a chain row ahead of the real one (unique violation). It is
   a denial of service, not a way to alter sealed rows. PostgreSQL offers no way to reserve an advisory lock key.
-- **Migrations as superuser in owner-owned databases.** `update.sh` (as on `develop`) runs tenant migrations and their
-  grants with `psql` as the `postgres` superuser inside company databases that the server owner's role owns, so
-  anything that role planted there (triggers on `schema_migrations`, functions or operators in `public`, per-database
-  settings) could run with superuser rights during an update. This exposure predates the activity log and is not
-  addressed here; it is left to a separate security pass.
+- **Migrations as superuser in owner-owned databases** (fixed, SECURITY_FIXES.md A2): `update.sh` runs company
+  migrations as the database owner's role through the provisioning login, with a fixed `search_path`, only on
+  databases named `bms_<code>` owned by a server owner's role. The superuser only runs catalog queries, `GRANT`,
+  `REVOKE` and `ALTER ... OWNER` there (the one-time role layout move), never code the database defines.

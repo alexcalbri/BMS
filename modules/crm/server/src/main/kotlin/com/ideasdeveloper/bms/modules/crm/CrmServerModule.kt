@@ -18,6 +18,7 @@ import com.ideasdeveloper.bms.server.modules.ServerModuleProvider
 import com.ideasdeveloper.bms.server.modules.SmtpSettings
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
 import com.ideasdeveloper.bms.server.outbound.OutboundQueue
+import com.ideasdeveloper.bms.server.modules.StorageQuotaException
 import com.ideasdeveloper.bms.ui.ModuleUiEntry
 import com.ideasdeveloper.bms.ui.UiJson
 import com.ideasdeveloper.bms.ui.UiNotice
@@ -259,8 +260,8 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.31.0",
-        minCoreVersion = "0.12.0",
+        version = "0.32.0",
+        minCoreVersion = "0.13.0",
         minAppVersion = "0.7.0",
         supportsExtensions = true,
         permissions = listOf(
@@ -303,21 +304,32 @@ object CrmServerModule : ServerModule {
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
+                // Storage quota of the company (STORAGE_QUOTA.md): refused before reading the body.
+                val files = access.files(companyCode, CrmModule.id)
+                try {
+                    files.checkRoom(length)
+                } catch (refused: StorageQuotaException) {
+                    return@post call.respond(HttpStatusCode.fromValue(refused.httpStatus), CrmErrorResponse(refused.code, refused.message.orEmpty()))
+                }
                 // The body goes straight to the file storage; it is never held in memory whole.
                 val body = call.receiveChannel().toInputStream()
                 val result = withContext(Dispatchers.IO) {
                     access.tenantConnectionForCompany(companyCode)?.use { tenant ->
                         runCatching {
                             val actor = CrmRepository.actor(tenant, permissions, access.userIdentity(tenant, permissions))
-                            CrmAttachments.upload(tenant, access.files(companyCode, CrmModule.id), name, path, contentType, body, actor.name)
+                            CrmAttachments.upload(tenant, files, name, path, contentType, body, actor.name)
                         }
                     }
                 } ?: return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("TENANT_UNAVAILABLE", tr("No se pudo abrir la empresa.")))
                 result.fold(
                     onSuccess = { ref -> call.respondText(UiJson.encodeToString(UiFileRef.serializer(), ref), ContentType.Application.Json) },
                     onFailure = { failure ->
-                        if (failure is CrmValidationException) call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("invalid_file", failure.message.orEmpty()))
-                        else call.respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))
+                        when (failure) {
+                            is CrmValidationException -> call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("invalid_file", failure.message.orEmpty()))
+                            // Quota, free-disk floor or uploads in progress reached while the body arrived: no file is left.
+                            is StorageQuotaException -> call.respond(HttpStatusCode.fromValue(failure.httpStatus), CrmErrorResponse(failure.code, failure.message.orEmpty()))
+                            else -> call.respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))
+                        }
                     },
                 )
             }
@@ -343,7 +355,9 @@ object CrmServerModule : ServerModule {
                     HttpHeaders.ContentDisposition,
                     ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.ref.name).toString(),
                 )
-                val type = runCatching { ContentType.parse(file.contentType) }.getOrDefault(ContentType.Application.OctetStream)
+                // The type was written by whoever uploaded the file: only a short safe list is respected, the rest is octet-stream.
+                val type = CrmDownloads.contentType(file.contentType)
+                call.response.header("X-Content-Type-Options", "nosniff")
                 val content = withContext(Dispatchers.IO) { file.open() }
                     ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("missing_content", tr("El archivo ya no esta en el almacenamiento del servidor.")))
                 call.respondOutputStream(type) { content.use { it.copyTo(this) } }

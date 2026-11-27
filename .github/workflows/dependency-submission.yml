@@ -7,21 +7,39 @@ on:
     branches: [develop]
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  dependency-submission:
+  # Runs Gradle (build code of the repository) with a read-only token; the graph goes out as an artifact.
+  dependency-graph:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      # Same JDK as gradle/gradle-daemon-jvm.properties, so Gradle does not download another one.
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # JDK 21, as required by gradle/gradle-daemon-jvm.properties (no vendor), so Gradle does not download another one.
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: liberica
           java-version: 21
-      - uses: gradle/actions/dependency-submission@v6
+      - uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
+          dependency-graph: generate-and-upload
           # Only what ships: runtime classpaths (not tests or hot reload) and the Kotlin compiler
           # bundled with the server. Build tooling (Gradle plugins, lint) would only add noise.
           dependency-graph-include-configurations: '^((?!.*([Tt]est|[Dd]ev|HotReload)).*[Rr]untimeClasspath|moduleCompiler)$'
+
+  # Only uploads the graph produced above: no checkout, no Gradle, the write permission the API requires.
+  dependency-submit:
+    needs: dependency-graph
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          dependency-graph: download-and-submit

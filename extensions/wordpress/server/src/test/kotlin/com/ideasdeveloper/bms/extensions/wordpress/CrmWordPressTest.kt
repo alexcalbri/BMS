@@ -165,6 +165,46 @@ class CrmWordPressTest {
         assertFailsWith<CrmWordPressException> { CrmWordPress.checkSite("https://nada.example.com") { throw java.net.UnknownHostException() } }
     }
 
+    @Test
+    fun rpcConnectsToTheValidatedAddressOnlyAndRefusesPrivateOnes() {
+        val settings = com.ideasdeveloper.bms.modules.crm.CrmWordPressSettings(enabled = true, siteUrl = "https://mi-inmobiliaria.com", secret = secret, siteName = "", lastEventAt = null, lastError = "")
+        val oldFetch = CrmWordPress.fetch
+        val oldResolve = CrmWordPress.resolve
+        try {
+            var resolved = 0
+            var connectedTo: java.net.InetAddress? = null
+            CrmWordPress.resolve = { resolved++; address("93.184.216.34") }
+            CrmWordPress.fetch = { _, address, _, _ -> connectedTo = address; CrmWordPress.SiteAnswer(200, """{"site":"x"}""".toByteArray()) }
+            CrmWordPress.rpc(settings, "ping")
+            // One resolution; the connection gets that same address (no second lookup that could answer differently).
+            assertEquals(1, resolved)
+            assertEquals(address("93.184.216.34"), connectedTo)
+            // A host that resolves inside is refused before any connection.
+            connectedTo = null
+            CrmWordPress.resolve = { throw com.ideasdeveloper.bms.server.net.PinnedHostException("El servidor apunta a una red privada o local: no se permite.") }
+            assertFailsWith<CrmWordPressException> { CrmWordPress.rpc(settings, "ping") }
+            assertNull(connectedTo)
+        } finally {
+            CrmWordPress.fetch = oldFetch
+            CrmWordPress.resolve = oldResolve
+        }
+    }
+
+    @Test
+    fun aSignedRequestIsAcceptedOnlyOnceInTheWindow() {
+        val now = Instant.parse("2026-10-29T12:00:00Z")
+        val sig = "a".repeat(64)
+        assertTrue(CrmWordPress.firstUse("empresa1", sig, now))
+        assertFalse(CrmWordPress.firstUse("empresa1", sig, now.plusSeconds(60)))
+        assertFalse(CrmWordPress.firstUse("empresa1", sig.uppercase(), now.plusSeconds(500)))
+        // Another company, or a failed event that was forgotten, can go again.
+        assertTrue(CrmWordPress.firstUse("empresa2", sig, now))
+        CrmWordPress.forget("empresa1", sig)
+        assertTrue(CrmWordPress.firstUse("empresa1", sig, now.plusSeconds(61)))
+        // After the whole window the entry is gone (and the timestamp would no longer pass anyway).
+        assertTrue(CrmWordPress.firstUse("empresa2", sig, now.plusSeconds(700)))
+    }
+
     // Conexion que falla al usarse: demuestra que una operacion ajena no toca la base.
     private object UntouchedConnection {
         val connection = java.lang.reflect.Proxy.newProxyInstance(UntouchedConnection::class.java.classLoader, arrayOf(java.sql.Connection::class.java)) { _, method, _ ->

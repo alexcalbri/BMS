@@ -3,7 +3,7 @@ package com.ideasdeveloper.bms.server.app
 import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
 import kotlinx.serialization.Serializable
 
-const val BMSVersion = "0.12.0"
+const val BMSVersion = "0.13.0"
 
 // El servidor no conoce la version de la app (cada cliente trae la suya): solo informa la ultima disponible.
 @Serializable
@@ -17,6 +17,9 @@ data class VersionResponse(
         get() = CoreUpdateService.isUpdateAvailable(coreVersion, latestCoreVersion)
     val modulesUpdateAvailable: Boolean
         get() = moduleUpdates.isNotEmpty()
+
+    /** What anyone may read before signing in (B7): the Core version for the app's compatibility check and the latest app. */
+    fun publicView(): VersionResponse = VersionResponse(coreVersion = coreVersion, latestAppVersion = latestAppVersion)
 }
 
 @Serializable

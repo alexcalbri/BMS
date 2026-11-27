@@ -225,6 +225,9 @@ fun PasswordResetDialog(
     var info by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var done by remember { mutableStateOf(false) }
+    // El servidor pidio ademas el codigo de la aplicacion de autenticacion (cuentas con verificacion en dos pasos).
+    var needsTwoFactor by remember { mutableStateOf(false) }
+    var twoFactorCode by remember { mutableStateOf("") }
     val minimum = if (companyCode == null) 16 else 12
 
     fun run(block: suspend (AccountApi) -> Unit) {
@@ -290,6 +293,17 @@ fun PasswordResetDialog(
                         isError = confirmation.isNotEmpty() && confirmation != newPassword,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (needsTwoFactor) {
+                        // El codigo del correo sigue valido: solo falta este segundo codigo.
+                        OutlinedTextField(
+                            value = twoFactorCode,
+                            onValueChange = { twoFactorCode = it },
+                            label = { Text(tr("Codigo de tu aplicacion o de recuperacion")) },
+                            singleLine = true,
+                            enabled = !working,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
                 info?.let { Text(it, color = AppTheme.colors.success) }
                 error?.let { Text(it, color = AppTheme.colors.danger) }
@@ -308,11 +322,24 @@ fun PasswordResetDialog(
                     },
                 ) { Text(tr("Enviar codigo")) }
                 else -> TextButton(
-                    enabled = !working && code.length == 6 && newPassword.length >= minimum && newPassword == confirmation,
+                    enabled = !working && code.length == 6 && newPassword.length >= minimum && newPassword == confirmation &&
+                        (!needsTwoFactor || twoFactorCode.isNotBlank()),
                     onClick = {
-                        run { api ->
-                            info = api.confirmPasswordReset(username, companyCode, code, newPassword)
-                            done = true
+                        working = true
+                        error = null
+                        scope.launch {
+                            try {
+                                AccountApi(serverUrl).use { api ->
+                                    info = api.confirmPasswordReset(username, companyCode, code, newPassword, twoFactorCode.takeIf { needsTwoFactor })
+                                }
+                                done = true
+                            } catch (exception: LoginException) {
+                                // La cuenta tiene dos pasos: aparece el segundo campo y se vuelve a enviar todo junto.
+                                if (exception.code == "TWO_FACTOR_REQUIRED") needsTwoFactor = true
+                                error = exception.message
+                            } finally {
+                                working = false
+                            }
                         }
                     },
                 ) { Text(tr("Cambiar contrasena")) }

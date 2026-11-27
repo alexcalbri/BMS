@@ -33,6 +33,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.bms.app.core.session.SessionStore
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.bms.app.features.auth.data.ServerPermission
+import com.ideasdeveloper.bms.app.features.auth.data.can
 import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
 import com.ideasdeveloper.bms.app.features.company.data.CompanyProfileResponse
@@ -213,6 +215,8 @@ fun ServerStaffScreen(
                             companyCode = workspaceCode,
                             primaryColor = primaryColor,
                             description = tr("Usuarios de la empresa del servidor. Los permisos disponibles vienen de los modulos activos en el servidor."),
+                            canResetTwoFactor = session.can(ServerPermission.UsersTwoFactorReset),
+                            resetViaServer = true,
                         )
                     }
                 }

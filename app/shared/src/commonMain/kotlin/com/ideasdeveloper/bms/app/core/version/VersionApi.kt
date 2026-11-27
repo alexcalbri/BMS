@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -26,9 +27,14 @@ class VersionApi(serverUrl: String) {
         }
     }
 
-    suspend fun version(): VersionResponse? {
+    // Sin sesion el servidor solo devuelve coreVersion y latestAppVersion (lo que necesita la comprobacion de
+    // compatibilidad antes de iniciar sesion). latestCoreVersion y moduleUpdates los da solo a quien manda el token de
+    // una sesion del servidor con permiso para actualizar o ver modulos: la pantalla de inicio lo pasa en [accessToken].
+    suspend fun version(accessToken: String? = null): VersionResponse? {
         return try {
-            val response = client.get("$baseUrl/version")
+            val response = client.get("$baseUrl/version") {
+                accessToken?.takeIf { it.isNotBlank() }?.let { bearerAuth(it) }
+            }
             if (response.status == HttpStatusCode.OK) response.body() else null
         } catch (_: Exception) {
             null
@@ -52,6 +58,7 @@ fun isCoreAtLeast(version: String, major: Int, minor: Int, patch: Int): Boolean 
 }
 
 @Serializable
+// Todos los campos tienen valor por defecto: sin sesion (o con un servidor anterior) faltan latestCoreVersion y moduleUpdates.
 data class VersionResponse(
     val coreVersion: String = ClientVersion,
     val latestCoreVersion: String? = null,
@@ -61,8 +68,8 @@ data class VersionResponse(
 
 @Serializable
 data class ModuleVersionUpdate(
-    val moduleId: String,
-    val displayName: String,
-    val currentVersion: String,
-    val latestVersion: String,
+    val moduleId: String = "",
+    val displayName: String = "",
+    val currentVersion: String = "",
+    val latestVersion: String = "",
 )

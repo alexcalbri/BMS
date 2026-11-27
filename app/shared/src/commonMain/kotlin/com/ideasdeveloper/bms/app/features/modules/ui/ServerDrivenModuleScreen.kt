@@ -10,7 +10,10 @@ import com.ideasdeveloper.bms.app.core.layout.ContentWidth
 import com.ideasdeveloper.bms.app.core.layout.contentWidth
 import com.ideasdeveloper.bms.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -382,6 +385,8 @@ private fun CustomerServerDrivenContent(
     var profileCustomerId by remember { mutableStateOf(initialProfileId) }
     // Si el formulario de crear cliente esta abierto (al editar se abre solo).
     var customerFormOpen by remember { mutableStateOf(false) }
+    // Filtro por estado del correo: null = todos, o verified / unverified / unknown (se pide al servidor).
+    var emailFilter by remember { mutableStateOf<String?>(null) }
 
     fun activeContext(): Triple<String, String, String>? {
         val activeServerUrl = serverUrl ?: return null
@@ -397,7 +402,7 @@ private fun CustomerServerDrivenContent(
             try {
                 ModuleApi(activeServerUrl).use { api ->
                     fields = api.customerFields(token, companyCode).fields
-                    customers = api.customers(token, companyCode).customers
+                    customers = api.customers(token, companyCode, emailFilter).customers
                 }
                 error = null
             } catch (exception: ModuleException) {
@@ -434,7 +439,7 @@ private fun CustomerServerDrivenContent(
         return CreateCustomerRequest(displayName = name, primaryEmail = email, primaryPhone = phone, dynamicFields = JsonObject(result))
     }
 
-    LaunchedEffect(serverUrl, session?.accessToken, session?.companyCode) {
+    LaunchedEffect(serverUrl, session?.accessToken, session?.companyCode, emailFilter) {
         loadAll()
     }
 
@@ -625,8 +630,9 @@ private fun CustomerServerDrivenContent(
         message?.let { text -> item { Text(text, color = AppTheme.colors.success) } }
         error?.let { text -> item { Text(text, color = AppTheme.colors.danger) } }
         item { Text(tr("Clientes"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText) }
+        item { EmailStateFilter(selected = emailFilter, enabled = !loading, onSelect = { emailFilter = it }) }
         if (customers.isEmpty()) {
-            item { Text(tr("Aun no hay clientes."), color = AppTheme.colors.muted) }
+            item { Text(if (emailFilter == null) tr("Aun no hay clientes.") else tr("No hay clientes con ese estado del correo."), color = AppTheme.colors.muted) }
         } else {
             items(customers, key = { it.id }) { customer ->
                 CustomerRow(
@@ -663,6 +669,41 @@ private fun CustomerServerDrivenContent(
     }
 }
 
+// Etiqueta pequena con borde de color en la fila del cliente.
+@Composable
+private fun EmailStatusBadge(label: String, color: Color) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = AppTheme.colors.surface,
+        border = BorderStroke(1.5.dp, color),
+        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = AppTheme.colors.text, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+    }
+}
+
+// Filtro de la lista por estado del correo; el valor es el que entiende el servidor (emailState).
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun EmailStateFilter(selected: String?, enabled: Boolean, onSelect: (String?) -> Unit) {
+    val options = listOf<Pair<String?, String>>(
+        null to tr("Todos"),
+        "verified" to tr("Correo verificado"),
+        "unverified" to tr("Correo sin verificar"),
+        "unknown" to tr("Sin estado"),
+    )
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { (value, label) ->
+            val active = value == selected
+            Button(
+                enabled = enabled,
+                onClick = { onSelect(value) },
+                colors = if (active) accentButtonColors() else ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
+            ) { Text(label) }
+        }
+    }
+}
+
 @Composable
 private fun CustomerRow(
     customer: CustomerResponse,
@@ -676,6 +717,12 @@ private fun CustomerRow(
         Text(listOf(customer.displayName, customer.primaryEmail, customer.primaryPhone).filter { it.isNotBlank() }.joinToString(" - ") + if (customer.customerType != "general") " (${customer.customerType})" else "", color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
         if (customer.customerCode.isNotBlank()) {
             CopyableCode(label = tr("Codigo de cliente"), code = customer.customerCode)
+        }
+        // Estado del correo cuando el cliente lo trae (lo da el servidor; sin valor no se muestra nada).
+        when (customer.emailStatus) {
+            "verified" -> EmailStatusBadge(tr("Correo verificado"), AppTheme.colors.success)
+            "unverified" -> EmailStatusBadge(tr("Correo sin verificar"), AppTheme.colors.warning)
+            else -> Unit
         }
         androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { onEdit(customer) }, colors = secondaryButtonColors) { Text(tr("Editar")) }

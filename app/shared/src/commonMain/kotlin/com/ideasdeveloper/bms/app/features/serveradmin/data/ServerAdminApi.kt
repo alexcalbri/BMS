@@ -2,11 +2,14 @@ package com.ideasdeveloper.bms.app.features.serveradmin.data
 
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
+import com.ideasdeveloper.bms.app.core.session.SessionStore
 import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
 import com.ideasdeveloper.bms.app.features.company.data.CompanyErrorResponse
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import com.ideasdeveloper.bms.app.features.company.data.TwoFactorResetRequest
+import com.ideasdeveloper.bms.app.features.company.data.TwoFactorResetResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -32,6 +35,7 @@ import kotlinx.serialization.json.Json
 // Codigos de error del servidor que la app interpreta.
 const val PermissionRequiredCode = "SERVER_PERMISSION_REQUIRED"
 const val PasswordChangeRequiredCode = "PASSWORD_CHANGE_REQUIRED"
+const val TwoFactorSetupRequiredCode = "TWO_FACTOR_SETUP_REQUIRED"
 
 // Cliente HTTP de administradores del servidor, auditoria y la sesion propia del nivel servidor.
 // Los errores se lanzan como CompanyException con status y code del servidor.
@@ -117,6 +121,16 @@ class ServerAdminApi(serverUrl: String) {
         }
     }
 
+    // Solo el dueno del servidor: desactiva la verificacion en dos pasos de un administrador (TWO_FACTOR.md 8).
+    suspend fun resetTwoFactor(token: String, id: String, currentPassword: String): TwoFactorResetResponse =
+        call(tr("No se pudo desactivar la verificacion en dos pasos.")) {
+            client.post("$baseUrl/server/admins/${id.encodeURLPathPart()}/two-factor/disable") {
+                bearerAuth(token)
+                contentType(ContentType.Application.Json)
+                setBody(TwoFactorResetRequest(currentPassword))
+            }
+        }
+
     suspend fun setActive(token: String, id: String, active: Boolean) {
         send(tr("No se pudo cambiar el estado del administrador.")) {
             client.put("$baseUrl/server/admins/${id.encodeURLPathPart()}/status") {
@@ -197,6 +211,8 @@ class ServerAdminApi(serverUrl: String) {
 
     private suspend fun failed(response: HttpResponse, failure: String): CompanyException {
         val error = runCatching { response.body<CompanyErrorResponse>() }.getOrNull()
+        // El dueno exige la verificacion en dos pasos y esta cuenta aun no la tiene: la app muestra la activacion.
+        if (error?.code == TwoFactorSetupRequiredCode) SessionStore.update { it.copy(twoFactorSetupRequired = true) }
         val message = error?.message
             ?: if (response.status == HttpStatusCode.Forbidden) tr("No tienes permiso para esta accion.") else failure
         return CompanyException(message, status = response.status.value, code = error?.code)

@@ -394,3 +394,30 @@ key, masked), the revocation and restoration of user codes, the grants to networ
 exports of the visitors' report, and the CRM check and the SMTP migration when they change a setting or an
 expiry. Guest traffic (registrations, sessions that end on their own, the network guard's disconnects) is not
 logged; the access history stays in `hotspot_accesses`. See `ACTIVITY_LOG_MODULE_GUIDE.md`.
+
+## Form access: one code, one session (0.15.0, migration V014)
+
+- The guest is a customer in Clientes from the moment the form is sent (an existing customer with that email is reused, untouched).
+  A new one starts with email state "unverified" (Clientes 0.14.0, V012) and becomes "verified" when the emailed code is entered; a
+  customer that was verified or had no state is never downgraded. The verification is logged as made by "Portal WiFi" (never the code).
+  Without the Clientes columns the portal works as before, with no state.
+- The emailed code is one session shared by up to 2 devices. It starts at the first device that enters it and lasts the network's access
+  time; a second device that enters the same code (it opens the portal, sends the form with the same address, and types the code it got by
+  email on the first device) ends at the same moment, for the minutes left (rounded up to a whole minute). A third device is
+  refused. The two slots are the primary key of `hotspot_code_devices` and the code's row is locked, so devices activating at the same time
+  never make three.
+- When the time is over the code cannot connect again, and the address cannot start a new session until the reconnection time of the network
+  (a day by default) has passed, counted from the first activation; devices that joined do not move it. 0 means no wait.
+- The code page never says whether an address already has a session: an address with a usable code gets the same page as a first submission
+  (and no new email). The page carries no code id; the code typed is looked up among the newest codes of the submitted address.
+- Wrong codes: one attempt is reserved atomically BEFORE the code is compared (a right code gives it back). Counters: 8 per (address, origin) in
+  15 minutes, 1500 per origin in 15 minutes (a flood brake: guests of a venue share one NAT address), and 30 per address in an hour from
+  anywhere. Reaching the last one does not lock the address: its unused codes expire and the count starts over, so the guest asks for a new
+  code (the running session's code keeps working for the second device). The typed code is compared only with the address's valid codes, and
+  a new send expires the previous unused code.
+- Other brakes: 6 codes per hour per device and 12 per destination address, 1000 registrations and 2000 code/verify requests per origin in
+  10 minutes, 2000 new customers per hour per origin, a company ceiling of new customers per hour (setting `newCustomersPerHour`, 300 by
+  default): beyond it NEW addresses get "Intentalo mas tarde" (existing customers keep working) and users with *Configurar hotspot* get one
+  notification per hour. 16 KB bodies.
+- The email is marked verified only while the customer still has the address the code was sent to.
+- `hotspot_my_wifi_code` is not declared read-only (it creates the user's code the first time): read-only agent tokens cannot call it.

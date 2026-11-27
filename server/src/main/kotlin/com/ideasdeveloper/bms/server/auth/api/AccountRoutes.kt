@@ -34,7 +34,14 @@ data class UpdateAccountProfileRequest(
 data class PasswordResetRequest(val username: String, val companyCode: String? = null)
 
 @Serializable
-data class PasswordResetConfirmation(val username: String, val companyCode: String? = null, val code: String, val newPassword: String)
+data class PasswordResetConfirmation(
+    val username: String,
+    val companyCode: String? = null,
+    val code: String,
+    val newPassword: String,
+    // Authenticator or recovery code, for an account with two-step verification on (TWO_FACTOR.md §4).
+    val twoFactorCode: String? = null,
+)
 
 @Serializable
 data class AccountMessageResponse(val message: String)
@@ -68,8 +75,11 @@ fun Route.passwordResetRoutes(service: AccountService) {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val request = call.receiveOrNull<PasswordResetConfirmation>() ?: return@post
         call.answer {
-            service.confirmPasswordReset(request.username, request.companyCode?.trim()?.takeIf { it.isNotEmpty() }, request.code, request.newPassword)
-            AccountMessageResponse(tr("Contrasena actualizada. Ya puedes iniciar sesion."))
+            val agents = service.confirmPasswordReset(request.username, request.companyCode?.trim()?.takeIf { it.isNotEmpty() }, request.code, request.newPassword, request.twoFactorCode)
+            AccountMessageResponse(
+                tr("Contrasena actualizada. Ya puedes iniciar sesion.") + " " +
+                    if (agents) tr("Se desconectaron tus agentes de IA: vuelve a conectarlos.") else tr("No se pudieron desconectar tus agentes de IA: revocalos a mano en Agentes IA."),
+            )
         }
     }
 }
@@ -99,7 +109,8 @@ private suspend inline fun <reified T : Any> ApplicationCall.answer(crossinline 
         val status = when (failure.code) {
             "INVALID_SESSION" -> HttpStatusCode.Unauthorized
             "MAIL_NOT_CONFIGURED" -> HttpStatusCode.ServiceUnavailable
-            "TOO_MANY_ATTEMPTS" -> HttpStatusCode.TooManyRequests
+            "TOO_MANY_ATTEMPTS", "TWO_FACTOR_TOO_MANY_ATTEMPTS" -> HttpStatusCode.TooManyRequests
+            "TWO_FACTOR_UNAVAILABLE" -> HttpStatusCode.ServiceUnavailable
             "PASSWORD_CHANGE_REQUIRED" -> HttpStatusCode.Forbidden
             else -> HttpStatusCode.BadRequest
         }

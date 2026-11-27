@@ -96,11 +96,13 @@ class LocalFileBackend(private val root: Path) : FileBackend {
  * The file storage of every company. New files go to the backend [backendFor] chooses for the
  * company (today always the local disk; a per-company setting, e.g. Google Drive configured by
  * the business owner or the server owner, plugs in here); existing files are read from the
- * backend they were written to.
+ * backend they were written to. [guard] enforces the storage quota, the free-disk floor and the
+ * cap on uploads in progress (STORAGE_QUOTA.md); without one nothing is limited (tests, tools).
  */
 class CompanyFiles(
     private val backends: List<FileBackend>,
     private val backendFor: (companyCode: String) -> String = { LocalFileBackend.Local },
+    val guard: StorageGuard? = null,
 ) {
     init {
         require(backends.map { it.id }.toSet().size == backends.size) { "Cada backend de archivos necesita un id distinto." }
@@ -111,29 +113,65 @@ class CompanyFiles(
 
     fun module(companyCode: String, moduleId: String) = ModuleFiles(this, companyCode, moduleId)
 
-    fun deleteCompany(companyCode: String) = backends.forEach { it.deleteCompany(companyCode) }
+    fun deleteCompany(companyCode: String) {
+        backends.forEach { it.deleteCompany(companyCode) }
+        guard?.forget(companyCode)
+    }
+
+    internal fun checkRoom(companyCode: String, expectedBytes: Long?) {
+        guard?.checkRoom(companyCode, expectedBytes)
+    }
+
+    internal fun usage(companyCode: String): StorageUsage = guard?.usage(companyCode) ?: StorageUsage(0, null, null)
 
     internal fun write(companyCode: String, moduleId: String, name: String, contentType: String, content: InputStream, maxBytes: Long): StoredFileRef {
         val backend = backend(backendFor(companyCode))
-        val counted = LimitedInputStream(content, maxBytes)
-        val ref = backend.write(companyCode, moduleId, name, contentType, counted)
-        return StoredFileRef(backend.id, ref, counted.count)
+        val upload = guard?.begin(companyCode)
+        try {
+            upload?.checkRoom()
+            val counted = LimitedInputStream(content, maxBytes, upload)
+            val ref = backend.write(companyCode, moduleId, name, contentType, counted)
+            upload?.stored(counted.count)
+            return StoredFileRef(backend.id, ref, counted.count)
+        } finally {
+            upload?.close()
+        }
     }
 
     internal fun read(companyCode: String, moduleId: String, file: StoredFileRef): InputStream? = backend(file.backend).read(companyCode, moduleId, file.ref)
 
-    internal fun delete(companyCode: String, moduleId: String, file: StoredFileRef) = backend(file.backend).delete(companyCode, moduleId, file.ref)
+    internal fun delete(companyCode: String, moduleId: String, file: StoredFileRef) {
+        backend(file.backend).delete(companyCode, moduleId, file.ref)
+        guard?.removed(companyCode, file.size)
+    }
 
     companion object {
         fun local(root: Path) = CompanyFiles(listOf(LocalFileBackend(root)))
+
+        /** The server's storage: local disk under [root] with the limits of [guard]. */
+        fun local(root: Path, guard: StorageGuard) = CompanyFiles(listOf(LocalFileBackend(root)), guard = guard)
     }
 }
 
 /** Files of one module in one company: what a module uses to store, read and delete its files. */
 class ModuleFiles internal constructor(private val files: CompanyFiles, val companyCode: String, val moduleId: String) {
-    /** Stores [content] (at most [maxBytes], or [FileTooLargeException]) and returns where it went. */
+    /**
+     * Stores [content] (at most [maxBytes], or [FileTooLargeException]) and returns where it went.
+     * Also refused with [StorageQuotaException] when the company's quota, the free-disk floor or the
+     * cap on uploads in progress is reached (STORAGE_QUOTA.md); a refused upload leaves no file.
+     */
     fun put(name: String, contentType: String, content: InputStream, maxBytes: Long): StoredFileRef =
         files.write(companyCode, moduleId, name, contentType, content, maxBytes)
+
+    /**
+     * Cheap check before reading an upload body: [StorageQuotaException] when the company is over
+     * its quota, [expectedBytes] (Content-Length, null when unknown) does not fit in what is left, or
+     * the disk is under the free-space floor. Reserves nothing.
+     */
+    fun checkRoom(expectedBytes: Long? = null) = files.checkRoom(companyCode, expectedBytes)
+
+    /** What the company uses and may use now (all modules together). */
+    fun usage(): StorageUsage = files.usage(companyCode)
 
     fun open(file: StoredFileRef): InputStream? = files.read(companyCode, moduleId, file)
 
@@ -141,7 +179,8 @@ class ModuleFiles internal constructor(private val files: CompanyFiles, val comp
 }
 
 // Counts what passes and fails as soon as the limit is crossed, so an oversize upload stops early.
-private class LimitedInputStream(input: InputStream, private val maxBytes: Long) : FilterInputStream(input) {
+// With an [upload] every chunk is also charged to the company's quota and the disk floor.
+private class LimitedInputStream(input: InputStream, private val maxBytes: Long, private val upload: StorageGuard.Upload? = null) : FilterInputStream(input) {
     var count = 0L
         private set
 
@@ -149,6 +188,7 @@ private class LimitedInputStream(input: InputStream, private val maxBytes: Long)
         if (read > 0) {
             count += read
             if (count > maxBytes) throw FileTooLargeException(maxBytes)
+            upload?.charge(read.toLong())
         }
         return read
     }

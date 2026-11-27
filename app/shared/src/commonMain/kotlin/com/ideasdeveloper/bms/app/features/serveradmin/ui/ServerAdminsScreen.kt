@@ -48,6 +48,7 @@ import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
 import com.ideasdeveloper.bms.app.features.company.data.CompanySummaryResponse
+import com.ideasdeveloper.bms.app.features.company.ui.TwoFactorResetDialog
 import com.ideasdeveloper.bms.app.features.serveradmin.data.CreateServerAdminRequest
 import com.ideasdeveloper.bms.app.features.serveradmin.data.ServerAdminApi
 import com.ideasdeveloper.bms.app.features.serveradmin.data.ServerAdminResponse
@@ -105,6 +106,7 @@ fun ServerAdminsScreen(
     var resettingPassword by remember { mutableStateOf<ServerAdminResponse?>(null) }
     var resetError by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<ServerAdminResponse?>(null) }
+    var resettingTwoFactor by remember { mutableStateOf<ServerAdminResponse?>(null) }
 
     fun reload() {
         val url = serverUrl ?: return
@@ -193,6 +195,24 @@ fun ServerAdminsScreen(
         )
     }
 
+    resettingTwoFactor?.let { target ->
+        TwoFactorResetDialog(
+            targetName = target.displayName.ifBlank { target.login },
+            submit = { currentPassword ->
+                val url = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
+                val accessToken = token ?: throw CompanyException(tr("Inicia sesion de nuevo."))
+                ServerAdminApi(url).use { api -> api.resetTwoFactor(accessToken, target.id, currentPassword) }
+            },
+            onDone = { resultMessage ->
+                resettingTwoFactor = null
+                error = null
+                message = resultMessage
+                reload()
+            },
+            onDismiss = { resettingTwoFactor = null },
+        )
+    }
+
     deleting?.let { target ->
         ConfirmDialog(
             title = tr("Eliminar administrador"),
@@ -244,6 +264,8 @@ fun ServerAdminsScreen(
                             tr("Un administrador solo puede hacer lo que sus permisos indican y, si se limita por empresas, solo en ellas. Solo el dueno del servidor gestiona administradores."),
                             color = colors.muted,
                         )
+                        // Politica de verificacion en dos pasos para los administradores (solo el dueno).
+                        TwoFactorPolicySection(serverUrl = serverUrl, accessToken = token)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -409,6 +431,7 @@ fun ServerAdminsScreen(
                                         { api, accessToken -> api.setActive(accessToken, admin.id, active) },
                                     )
                                 },
+                                onResetTwoFactor = { resettingTwoFactor = admin },
                                 onResetPassword = {
                                     resetError = null
                                     resettingPassword = admin
@@ -453,6 +476,7 @@ private fun AdminCard(
     onSavePermissions: () -> Unit,
     onToggleActive: () -> Unit,
     onResetPassword: () -> Unit,
+    onResetTwoFactor: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val colors = AppTheme.colors
@@ -473,6 +497,13 @@ private fun AdminCard(
             style = MaterialTheme.typography.bodySmall,
             color = if (admin.active) colors.success else colors.warning,
         )
+        admin.twoFactorEnabled?.let { enabled ->
+            Text(
+                if (enabled) tr("Verificacion en dos pasos: activada") else tr("Verificacion en dos pasos: desactivada"),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.muted,
+            )
+        }
         if (admin.mustChangePassword) {
             Text(tr("Aun debe cambiar su contrasena inicial."), style = MaterialTheme.typography.bodySmall, color = colors.warning)
         }
@@ -544,6 +575,10 @@ private fun AdminCard(
                 Text(if (admin.active) tr("Desactivar") else tr("Activar"))
             }
             Button(enabled = !busy, onClick = onResetPassword, colors = secondaryButtonColors()) { Text(tr("Restablecer contrasena")) }
+            // Solo el dueno (esta pantalla): para quien perdio su autenticador y sus codigos.
+            if (admin.twoFactorEnabled == true) {
+                Button(enabled = !busy, onClick = onResetTwoFactor, colors = secondaryButtonColors()) { Text(tr("Desactivar verificacion en dos pasos")) }
+            }
             Button(
                 enabled = !busy,
                 onClick = onDelete,

@@ -59,6 +59,7 @@ object ClientesServerModule : ServerModule {
         "modules/clientes/migrations/V009__customer_accounts.sql",
         "modules/clientes/migrations/V010__link_origins_and_review_codes.sql",
         "modules/clientes/migrations/V011__customer_search_indexes.sql",
+        "modules/clientes/migrations/V012__email_verification.sql",
     )
 
     override val runtimeTables = listOf("customer_activity", "customer_notes", "customer_history", "customer_link_jobs", "customer_merges", "customer_accounts", "customer_link_origins")
@@ -74,7 +75,7 @@ object ClientesServerModule : ServerModule {
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.13.0",
+        version = "0.14.0",
         minCoreVersion = "0.12.0",
         locked = true,
         permissions = listOf(
@@ -191,8 +192,10 @@ object ClientesServerModule : ServerModule {
                     return@get call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CURSOR", tr("El cursor de paginacion no es valido.")))
                 }
                 val limit = (call.request.queryParameters["limit"]?.toIntOrNull() ?: CustomerQuery.PageSize).coerceIn(1, CustomerQuery.PageSize)
+                // emailState: verified | unverified | unknown (only the customers in that state of their email).
+                val emailState = call.request.queryParameters["emailState"].orEmpty()
                 val answer = withContext(Dispatchers.IO) {
-                    tenantReply(access, call) { tenant -> json(HttpStatusCode.OK, CustomerQuery.page(tenant, query, cursor, limit)) }
+                    tenantReply(access, call) { tenant -> json(HttpStatusCode.OK, CustomerQuery.page(tenant, query, cursor, limit, emailState)) }
                 }
                 answer(call)
             }
@@ -333,7 +336,7 @@ object ClientesServerModule : ServerModule {
 
     // The customer's row whatever its status (a merged duplicate is archived), or null when it does not exist.
     internal fun customerAnyStatus(tenant: Connection, id: UUID): CustomerResponse? = tenant.prepareStatement(
-        "SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, flexible_attributes::text AS flexible_attributes FROM customers WHERE id = ?"
+        "SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, email_status, flexible_attributes::text AS flexible_attributes FROM customers WHERE id = ?"
     ).use { query ->
         query.setObject(1, id)
         query.executeQuery().use { rows -> if (rows.next()) rowCustomer(rows) else null }
@@ -358,7 +361,7 @@ object ClientesServerModule : ServerModule {
     }
 
     internal fun activeCustomer(tenant: Connection, id: UUID): CustomerResponse? = tenant.prepareStatement(
-        "SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, flexible_attributes::text AS flexible_attributes FROM customers WHERE id = ? AND status <> 'archived'"
+        "SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, email_status, flexible_attributes::text AS flexible_attributes FROM customers WHERE id = ? AND status <> 'archived'"
     ).use { query ->
         query.setObject(1, id)
         query.executeQuery().use { rows -> if (rows.next()) rowCustomer(rows) else null }
@@ -597,6 +600,7 @@ object ClientesServerModule : ServerModule {
         status = rows.getString("status"),
         customerType = rows.getString("customer_type"),
         customerCode = rows.getString("customer_code"),
+        emailStatus = rows.getString("email_status").orEmpty(),
         dynamicFields = Json.parseToJsonElement(rows.getString("flexible_attributes")).jsonObject,
     )
 
@@ -617,7 +621,7 @@ data class CustomerFieldResponse(val id: String, val fieldKey: String, val label
 data class CustomerFieldsResponse(val fields: List<CustomerFieldResponse>)
 
 @Serializable
-data class CustomerResponse(val id: String, val displayName: String, val primaryEmail: String, val primaryPhone: String, val status: String, val dynamicFields: JsonObject = JsonObject(emptyMap()), val customerType: String = "general", val customerCode: String = "")
+data class CustomerResponse(val id: String, val displayName: String, val primaryEmail: String, val primaryPhone: String, val status: String, val dynamicFields: JsonObject = JsonObject(emptyMap()), val customerType: String = "general", val customerCode: String = "", val emailStatus: String = "")
 
 @Serializable
 data class CustomersResponse(val customers: List<CustomerResponse>, val nextCursor: String? = null)
@@ -629,7 +633,7 @@ data class CustomerHistoryResponse(val entries: List<CustomerHistoryEntry>)
 data class ClientesErrorResponse(val code: String, val message: String)
 
 /** Lista y busqueda de clientes con paginacion por cursor (lower(display_name), id); la migracion V011 crea los indices. */
-internal object CustomerQuery {
+object CustomerQuery {
     const val PageSize = 200
 
     class Cursor(val sortName: String, val id: UUID)
@@ -649,9 +653,10 @@ internal object CustomerQuery {
     fun escapeLike(text: String): String = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     /** Condicion de la pagina: visibles y no archivados, busqueda [q] (prefijo de nombre, correo o telefono; codigo exacto) y cursor. */
-    fun filter(q: String, cursor: Cursor?): Filter {
+    fun filter(q: String, cursor: Cursor?, emailState: String = ""): Filter {
         val parts = mutableListOf("status <> 'archived'", CustomerSql.Visible)
         val params = mutableListOf<Any>()
+        emailStateCondition(emailState)?.let { parts += it }
         val term = q.trim().take(100)
         if (term.isNotEmpty()) {
             parts += "(lower(display_name) LIKE ? OR lower(primary_email) LIKE ? OR customer_code = ? OR primary_phone LIKE ?)"
@@ -671,7 +676,7 @@ internal object CustomerQuery {
     /** SQL de una pagina ordenada por nombre y id; pide una fila de mas para saber si hay otra pagina. */
     fun pageSql(filter: Filter): String =
         """
-        SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code,
+        SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, email_status,
             flexible_attributes::text AS flexible_attributes, lower(display_name) AS sort_name
         FROM customers
         WHERE ${filter.where}
@@ -679,8 +684,18 @@ internal object CustomerQuery {
         LIMIT ?
         """.trimIndent()
 
-    fun page(tenant: Connection, q: String, cursor: Cursor?, limit: Int): CustomersResponse {
-        val filter = filter(q, cursor)
+    /** The values of the email state filter: "verified", "unverified" (waiting for the code) or "unknown" (no state); anything else is no filter. */
+    val EmailStates = setOf("verified", "unverified", "unknown")
+
+    fun emailStateCondition(emailState: String): String? = when (emailState) {
+        "verified" -> "email_status = 'verified'"
+        "unverified" -> "email_status = 'unverified'"
+        "unknown" -> "email_status IS NULL"
+        else -> null
+    }
+
+    fun page(tenant: Connection, q: String, cursor: Cursor?, limit: Int, emailState: String = ""): CustomersResponse {
+        val filter = filter(q, cursor, emailState)
         val rows = tenant.prepareStatement(pageSql(filter)).use { query ->
             filter.params.forEachIndexed { index, value -> query.setObject(index + 1, value) }
             query.setInt(filter.params.size + 1, limit + 1)

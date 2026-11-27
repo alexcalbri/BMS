@@ -13,6 +13,7 @@ import com.ideasdeveloper.bms.server.modules.ModulePermissionLookup
 import com.ideasdeveloper.bms.server.modules.ServerModule
 import com.ideasdeveloper.bms.server.modules.ServerModuleProvider
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
+import com.ideasdeveloper.bms.server.modules.StorageQuotaException
 import com.ideasdeveloper.bms.ui.ModuleUiEntry
 import com.ideasdeveloper.bms.ui.UiFileRef
 import com.ideasdeveloper.bms.ui.UiJson
@@ -105,8 +106,8 @@ object PropietariosServerModule : ServerModule {
         id = PropietariosModule.id,
         displayName = PropietariosModule.displayName,
         description = "Registro de desarrollos, lotes y propietarios: area, numero de registro y estado de cada lote, titulares vigentes con su porcentaje, historial de cambios de titularidad y adjuntos como escrituras y planos.",
-        version = "0.4.0",
-        minCoreVersion = "0.12.0",
+        version = "0.5.0",
+        minCoreVersion = "0.13.0",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -154,6 +155,13 @@ object PropietariosServerModule : ServerModule {
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
+                // Espacio de almacenamiento de la empresa (STORAGE_QUOTA.md): se rechaza antes de leer el cuerpo.
+                val files = access.files(companyCode, PropietariosModule.id)
+                try {
+                    files.checkRoom(length)
+                } catch (refused: StorageQuotaException) {
+                    return@post call.respond(HttpStatusCode.fromValue(refused.httpStatus), PropietariosErrorResponse(refused.code, refused.message.orEmpty()))
+                }
                 // El cuerpo va directo al almacenamiento de archivos; nunca se guarda entero en memoria.
                 val body = call.receiveChannel().toInputStream()
                 // La conexion se abre dentro de upload, solo para el conteo y el INSERT: no se mantiene abierta mientras llega el cuerpo.
@@ -161,7 +169,7 @@ object PropietariosServerModule : ServerModule {
                     try {
                         Result.success(
                             PropietariosRepository.upload(
-                                { access.tenantConnectionForCompany(companyCode) }, access.files(companyCode, PropietariosModule.id),
+                                { access.tenantConnectionForCompany(companyCode) }, files,
                                 name, path, contentType, body, permissions.userId,
                             ),
                         )
@@ -185,6 +193,9 @@ object PropietariosServerModule : ServerModule {
                     onFailure = { failure ->
                         if (failure is PropietariosValidationException) {
                             call.respond(HttpStatusCode.BadRequest, PropietariosErrorResponse("invalid_file", failure.message.orEmpty()))
+                        } else if (failure is StorageQuotaException) {
+                            // Espacio, piso de disco libre o subidas en curso alcanzados mientras llegaba el cuerpo: no queda archivo.
+                            call.respond(HttpStatusCode.fromValue(failure.httpStatus), PropietariosErrorResponse(failure.code, failure.message.orEmpty()))
                         } else {
                             log.warn("No se pudo guardar un archivo de propietarios ({}).", failure.javaClass.simpleName)
                             call.respond(HttpStatusCode.InternalServerError, PropietariosErrorResponse("DATABASE_ERROR", tr("No se pudo guardar el archivo.")))

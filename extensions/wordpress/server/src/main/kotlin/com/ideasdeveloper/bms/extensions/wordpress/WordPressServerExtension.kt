@@ -60,7 +60,7 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
         module = "crm",
         displayName = "WordPress (Real Estate 7)",
         description = "Conecta el sitio WordPress (Real Estate 7) con el plugin BMS Connector: formularios y consultas crean leads, y las propiedades se buscan y se vinculan a ellos.",
-        version = "1.2.0",
+        version = "1.3.0",
         minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -104,9 +104,12 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
             val answer = CrmExtensions.withEnabledTenant(call, access, company, HttpStatusCode.Forbidden) { tenant ->
                 val settings = CrmWordPress.load(tenant)
                 if (!settings.enabled || !CrmWordPress.validSignature(settings.secret, timestamp, signature, body)) return@withEnabledTenant "no"
+                // Una peticion firmada que ya se acepto no se acepta otra vez dentro de la ventana de cinco minutos.
+                if (!CrmWordPress.firstUse(company, signature.orEmpty())) return@withEnabledTenant "no"
                 try {
                     CrmWordPress.handle(tenant, body.decodeToString()) { leadId -> CrmHost.notifyNewLead(tenant, leadId) }
                 } catch (failure: Exception) {
+                    CrmWordPress.forget(company, signature.orEmpty())
                     CrmWordPress.recordError(tenant, failure.message ?: failure.javaClass.simpleName)
                     return@withEnabledTenant "error"
                 }

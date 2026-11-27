@@ -1,7 +1,5 @@
 package com.ideasdeveloper.bms.server.modules
 
-import com.sun.net.httpserver.HttpServer
-import java.net.InetSocketAddress
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -54,24 +52,14 @@ class ModuleRequirementsTest {
     fun catalogReadsMinimumsWhenPresentAndNullWhenAbsent() {
         val catalog = """{"modules":[{"id":"crm","displayName":"CRM","description":"x","version":"0.1.0","minCoreVersion":"0.5.0","minAppVersion":"0.6.0"},""" +
             """{"id":"agentes","displayName":"A","description":"x","version":"0.1.0"}]}"""
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
-            createContext("/catalog.json") { exchange ->
-                val bytes = catalog.toByteArray()
-                exchange.sendResponseHeaders(200, bytes.size.toLong())
-                exchange.responseBody.use { it.write(bytes) }
-            }
-            start()
-        }
-        try {
-            RemoteModuleCatalog().use { remote ->
-                val byId = remote.modules("http://127.0.0.1:${server.address.port}/catalog.json").associateBy { it.definition.id }
-                assertEquals("0.5.0", byId.getValue("crm").definition.minCoreVersion)
-                assertEquals("0.6.0", byId.getValue("crm").definition.minAppVersion)
-                assertNull(byId.getValue("agentes").definition.minCoreVersion)
-                assertNull(byId.getValue("agentes").definition.minAppVersion)
-            }
-        } finally {
-            server.stop(0)
+        // The catalog is read over pinned https (RemoteModuleCatalog); the test answers in memory.
+        val address = java.net.InetAddress.getByAddress(byteArrayOf(140.toByte(), 82, 112, 3))
+        RemoteModuleCatalog(resolve = { address }, transport = { _, _, _ -> CatalogHttpResponse(200, catalog) }).use { remote ->
+            val byId = remote.modules("https://catalog.example/catalog.json").associateBy { it.definition.id }
+            assertEquals("0.5.0", byId.getValue("crm").definition.minCoreVersion)
+            assertEquals("0.6.0", byId.getValue("crm").definition.minAppVersion)
+            assertNull(byId.getValue("agentes").definition.minCoreVersion)
+            assertNull(byId.getValue("agentes").definition.minAppVersion)
         }
     }
 

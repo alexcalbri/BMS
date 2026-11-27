@@ -12,10 +12,16 @@ import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.bms.server.auth.api.accountProfileRoutes
 import com.ideasdeveloper.bms.server.auth.api.passwordResetRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorResetRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorRecoveryLinkRoutes
 import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountPasswords
 import com.ideasdeveloper.bms.server.auth.application.AccountService
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
+import com.ideasdeveloper.bms.server.company.api.StorageAdmin
+import com.ideasdeveloper.bms.server.company.api.storageRoutes
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
@@ -92,6 +98,11 @@ fun Application.module() {
     install(ContentNegotiation) {
         json(kotlinx.serialization.json.Json { encodeDefaults = true; ignoreUnknownKeys = true })
     }
+    // Every body is limited unless the route is an upload that limits itself (B10, UploadRoutes).
+    install(RequestBodyLimit) {
+        defaultBytes = environment.config.propertyOrNull("http.maxRequestBodyBytes")?.getString()?.trim()?.toLongOrNull()
+            ?.takeIf { it > 0 } ?: DefaultRequestBodyBytes
+    }
     install(RateLimit) {
         register(RateLimitName("login")) {
             rateLimiter(
@@ -99,7 +110,7 @@ fun Application.module() {
                 refillPeriod = 60.seconds,
             )
 
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         register(RateLimitName("admin")) {
             rateLimiter(
@@ -109,7 +120,7 @@ fun Application.module() {
 
             // Siempre por IP: una clave derivada de la cabecera Authorization se evade rotando el
             // token (basta con enviar uno distinto en cada peticion) y haria crecer el mapa sin tope.
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Lecturas del Core (/version, /modules, /notifications): por IP, holgado para el uso normal
         // de la app pero evita inundaciones que abririan una conexion a la base de datos cada una.
@@ -118,7 +129,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Reads of the activity logs (/companies/me/activity*, /server/activity*): each one reads one or
         // every company database, so per client IP and tighter than the other admin routes.
@@ -127,7 +138,7 @@ fun Application.module() {
                 limit = 30,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
         // enough for webhook bursts, but it stops floods that would open a database connection each.
@@ -136,21 +147,35 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
     }
     DatabaseFactory.init(environment.config)
+    // Read the package signing keys now: a rejected keys folder is logged as an error at startup, not at the first install.
+    log.info("Package signing keys configured: {}", com.ideasdeveloper.bms.server.extensions.packages.BMSPublicKeys.installed)
     val modulePackagesRoot = Path.of(
         environment.config.propertyOrNull("modules.packagesRoot")?.getString()
             ?: "build/server-modules"
     )
     // Files modules store for each company (attachments...); back this folder up with the databases.
-    val companyFiles = CompanyFiles.local(
-        Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    // Every write is limited by the company's quota, a free-disk floor and a cap on uploads in progress (STORAGE_QUOTA.md).
+    val companyFilesRoot = Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    val companyBackupsRoot = Path.of(environment.config.propertyOrNull("company.backupsRoot")?.getString() ?: "build/company-backups")
+    val storageQuotas = com.ideasdeveloper.bms.server.modules.StorageQuotas(DatabaseFactory.getDataSource())
+    val storageGuard = com.ideasdeveloper.bms.server.modules.StorageGuard(
+        root = companyFilesRoot,
+        quotaFor = storageQuotas::effectiveQuotaBytes,
+        minFreeBytes = environment.config.propertyOrNull("company.minFreeDiskBytes")?.getString()?.trim()?.toLongOrNull()
+            ?.coerceAtLeast(0) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMinFreeBytes,
+        maxConcurrentUploads = environment.config.propertyOrNull("company.maxConcurrentUploads")?.getString()?.trim()?.toIntOrNull()
+            ?.coerceAtLeast(1) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMaxConcurrentUploads,
+        // The company's backups count in its quota too.
+        extraRoots = listOf(companyBackupsRoot),
     )
+    val companyFiles = CompanyFiles.local(companyFilesRoot, storageGuard)
     val classpathModules = loadServerModules()
     val packageRequirements = mutableMapOf<String, ModuleRequirements>()
-    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements)
+    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements, modulePackagesRoot)
     val serverModules = (classpathModules + packagedModules).sortedBy { it.definition.id }
     val installedServerModules = loadInstalledServerModuleDefinitions(DatabaseFactory.getDataSource(), serverModules)
     val moduleRegistry = ModuleRegistry(
@@ -165,6 +190,10 @@ fun Application.module() {
     }
     val githubToken = environment.config.propertyOrNull("modules.githubToken")?.getString()?.trim()?.takeIf { it.isNotEmpty() }
     val remoteModuleCatalog = RemoteModuleCatalog(githubToken)
+    // Secrets are sealed with BMS_MASTER_KEY (server.env); without it the server runs but cannot store new ones.
+    val secretBox: SecretBox = MasterKeySecretBox.fromEnvironment().also { box ->
+        if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
+    }
     val loginDatabases = LoginDatabases(
         central = DatabaseFactory.getDataSource(),
         centralDatabase = DatabaseFactory.getDatabase(),
@@ -175,6 +204,8 @@ fun Application.module() {
         tenantJdbcUrlPrefix = environment.config.propertyOrNull("provisioning.tenantJdbcUrlPrefix")?.getString()
             ?: environment.config.property("database.url").getString().substringBeforeLast('/') + "/",
         lifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
+        // TOTP secrets of two-step verification are sealed with the master key (TWO_FACTOR.md).
+        secrets = secretBox,
     )
     val centralSessions = SessionService(
         sessionRepository = ApplicationSessionRepository(DatabaseFactory.getDatabase()),
@@ -182,10 +213,6 @@ fun Application.module() {
         tokenGenerator = SessionTokenGenerator(),
         sessionLifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
     )
-    // Secrets are sealed with BMS_MASTER_KEY (server.env); without it the server runs but cannot store new ones.
-    val secretBox: SecretBox = MasterKeySecretBox.fromEnvironment().also { box ->
-        if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
-    }
     val provisioningConfig = companyProvisioningConfig()
     // Set below; the integrity service notifies the server owners through it (their notifications in the workspace).
     lateinit var moduleAccessRef: ModuleAccessService
@@ -219,8 +246,9 @@ fun Application.module() {
             modulePackagesRoot,
             githubToken,
             JdbcModuleUnsignedAuthorizationStore { DatabaseFactory.getDataSource().connection },
-            // Compuerta de firma de modulos: permisiva por defecto (develop/pruebas); produccion la pone en true.
-            signatureEnforced = System.getenv("MODULE_SIGNATURE_ENFORCED")?.trim()?.equals("true", ignoreCase = true) ?: false,
+            // Compuerta de firma de modulos (SIGNING.md): MODULE_SIGNATURE_ENFORCED=true/false manda; sin valor, activa
+            // solo cuando hay una llave publica de paquetes instalada.
+            signatureEnforced = com.ideasdeveloper.bms.server.modules.ModuleSignaturePolicy.enforced(),
         ),
         requestRestart = ::restartToLoadModules,
         companyFiles = companyFiles,
@@ -297,6 +325,34 @@ fun Application.module() {
         },
         moduleNames = { id -> moduleRegistry.availableDefinition(id)?.displayName },
     ).also { moduleAccessRef = it }
+    // Delayed recovery of two-step verification by email (TWO_FACTOR.md §7) and its job (every 10 minutes).
+    // In-app notice to an account (company: its company; server account: the server workspace).
+    val notifyAccount: (String?, java.util.UUID, String, String) -> Unit = { companyCode, userId, title, text ->
+            val tenant = if (companyCode != null) moduleAccessService.tenantConnectionForCompany(companyCode) else {
+                DatabaseFactory.getDataSource().connection.use { connection ->
+                    connection.prepareStatement("SELECT database_name FROM companies WHERE is_server_workspace AND is_active").use { query ->
+                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                    }
+                }?.let { moduleAccessService.tenantConnectionForDatabase(it) }
+            }
+            tenant?.use { moduleAccessService.notifications.notify(it, com.ideasdeveloper.bms.server.modules.NewNotification(userId, com.ideasdeveloper.bms.server.activity.CoreModuleId, title, text)) }
+    }
+    val emailRecovery = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorEmailRecovery(
+        central = DatabaseFactory.getDataSource(),
+        sources = loginDatabases::accountSource,
+        companies = loginDatabases::activeCompanyCodes,
+        mail = serverMailSettings().let { settings -> { settings } },
+        twoFactor = loginDatabases.twoFactor,
+        notify = notifyAccount,
+    ).also { loginDatabases.emailRecovery = it }
+    val emailRecoveryJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "two-factor-email-recovery").apply { isDaemon = true } }
+    emailRecoveryJob.scheduleWithFixedDelay({
+        try {
+            emailRecovery.runDue()
+        } catch (failure: Throwable) {
+            log.error("Two-step email recovery job failed", failure)
+        }
+    }, 2, 10, java.util.concurrent.TimeUnit.MINUTES)
     // Extensions installed per company (EXTENSIONS.md): bundled in the modules or loaded from packages.
     val extensionConnections = ExtensionConnections.from(moduleAccessService)
     val extensionStorage = ExtensionStorage(secretBox)
@@ -322,7 +378,7 @@ fun Application.module() {
             ),
             verifier = ExtensionSignatureVerifier(),
             authorizations = unsignedAuthorizations,
-            moduleJar = { id -> installedModuleJar(DatabaseFactory.getDataSource(), id) },
+            moduleJar = { id -> installedModuleJar(DatabaseFactory.getDataSource(), id, modulePackagesRoot) },
             githubToken = githubToken,
         ),
         authorizations = unsignedAuthorizations,
@@ -394,6 +450,7 @@ fun Application.module() {
         audit = { actor, action, details -> companyProvisioning.recordAudit(actor, action, null, null, details) },
         passwordAttempts = passwordAttempts,
         deactivateWorkspaceStaff = { adminUserId, by, reason -> companySelfServiceRef.deactivateWorkspaceStaffOf(adminUserId, by, reason) },
+        twoFactorEnabled = { id -> com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy.enabledOnServer(DatabaseFactory.getDataSource(), id) },
     )
     val accountService = AccountService(
         central = DatabaseFactory.getDataSource(),
@@ -427,19 +484,22 @@ fun Application.module() {
     )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.
     val moduleJobs = ModuleJobScheduler(moduleRegistry, moduleAccessService).also { it.start() }
+    // Turning another account's two-step verification off (TWO_FACTOR.md §8).
+    val twoFactorResets = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService(
+        loginDatabases, passwordAttempts, mail = serverMailSettings().let { settings -> { settings } }, notify = notifyAccount,
+    )
     val companySelfService = CompanySelfService(
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,
         moduleRegistry = moduleRegistry,
-        backupsRoot = Path.of(
-            environment.config.propertyOrNull("company.backupsRoot")?.getString()
-                ?: "build/company-backups"
-        ),
+        backupsRoot = companyBackupsRoot,
         ownerEditor = companyProvisioning::updateBusinessOwnerBySelf,
         verifyOwnerPassword = { companyCode, username, password -> loginDatabases.verifyPassword(companyCode, username, password) },
         passwordAttempts = passwordAttempts,
         secrets = secretBox,
         serverActors = serverActors,
+        storage = storageGuard,
+        twoFactorResets = twoFactorResets,
     ).also { companySelfServiceRef = it }
     // Hourly: every company's chain verified and anchored in provisioning_audit_log, after the startup catch-up.
     val integrityJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "activity-integrity").apply { isDaemon = true } }
@@ -453,6 +513,7 @@ fun Application.module() {
     }, 10, 60, java.util.concurrent.TimeUnit.MINUTES)
     monitor.subscribe(ApplicationStopped) {
         integrityJob.shutdownNow()
+        emailRecoveryJob.shutdownNow()
         moduleJobs.stop()
         moduleAccessService.close()
         remoteModuleCatalog.close()
@@ -469,16 +530,20 @@ fun Application.module() {
             get("/version") {
                 // En cache unos minutos: la consulta hace peticiones HTTP salientes y no debe poder
                 // amplificarse desde fuera.
-                call.respond(
-                    versionCache.get {
-                        versionResponse(
-                            catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
-                            central = DatabaseFactory.getDataSource(),
-                            remoteModuleCatalog = remoteModuleCatalog,
-                            defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
-                        )
-                    }
-                )
+                val full = versionCache.get {
+                    versionResponse(
+                        catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
+                        central = DatabaseFactory.getDataSource(),
+                        remoteModuleCatalog = remoteModuleCatalog,
+                        defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
+                    )
+                }
+                // B7: before signing in the app only needs the Core version (compatibility) and the latest
+                // app version; the rest only for a server user who may update the Core or see the modules.
+                val token = call.request.headers[io.ktor.http.HttpHeaders.Authorization]?.takeIf { it.startsWith("Bearer ") }?.removePrefix("Bearer ")?.trim()
+                val actor = token?.takeIf { it.isNotEmpty() }?.let { withContextIO { (serverActors.resolve(it) as? com.ideasdeveloper.bms.server.admins.ServerActorLookup.Found)?.actor } }
+                val detailed = actor != null && (actor.has(com.ideasdeveloper.bms.server.admins.ServerPermission.CoreUpdate) || actor.has(com.ideasdeveloper.bms.server.admins.ServerPermission.ModulesView))
+                call.respond(if (detailed) full else full.publicView())
             }
         }
 
@@ -489,7 +554,13 @@ fun Application.module() {
                 switchTo = loginDatabases::switchTo,
                 logout = loginDatabases::logout,
                 includeSession = false,
+                completeTwoFactor = loginDatabases::completeTwoFactor,
+                startEmailRecovery = loginDatabases::startEmailRecovery,
+                knownPublicHost = loginDatabases::knownPublicHost,
+                completeEmailRecovery = loginDatabases::completeEmailRecovery,
             )
+            // The cancel link of the recovery email (no session, server-rendered page).
+            twoFactorRecoveryLinkRoutes { loginDatabases.emailRecovery }
             passwordResetRoutes(accountService)
         }
         rateLimit(RateLimitName("admin")) {
@@ -502,6 +573,12 @@ fun Application.module() {
                 includeLogin = false,
             )
             accountProfileRoutes(accountService)
+            // The user's own two-step verification (TWO_FACTOR.md §3).
+            twoFactorRoutes(
+                com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorAccountService(
+                    loginDatabases, passwordAttempts = passwordAttempts, mail = serverMailSettings().let { settings -> { settings } }, notify = notifyAccount,
+                ),
+            )
         }
         rateLimit(RateLimitName("admin")) {
             // Registra rutas de provisioning server_owner y autoservicio business_owner.
@@ -517,10 +594,25 @@ fun Application.module() {
                             environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty()
                         )?.latestCoreVersion
                     },
+                    // The request must carry the commit the owner approved (the app sends targetCommit). Only for an
+                    // older app: CORE_UPDATE_REQUIRE_APPROVED_COMMIT=false lets the server pin the commit itself.
+                    requireApprovedCommit = coreUpdateRequiresApprovedCommit(System.getenv("CORE_UPDATE_REQUIRE_APPROVED_COMMIT")),
                 ),
                 addToScope = { userId, code -> loginDatabases.admins.addCompany(userId, code) },
             )
             serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity, activityIntegrity)
+            // Storage quotas of the companies (STORAGE_QUOTA.md), owner only.
+            twoFactorPolicyRoutes(serverActors, DatabaseFactory.getDataSource())
+            twoFactorResetRoutes(
+                serverActors,
+                com.ideasdeveloper.bms.server.auth.api.ServerTwoFactorResets(
+                    twoFactorResets,
+                    ownerGroupOf = loginDatabases::ownerGroupOf,
+                    businessOwnerOf = { code -> runCatching { loginDatabases.businessOwnerId(code) }.getOrNull() },
+                    isAdmin = { id -> loginDatabases.admins.find(id)?.usable == true },
+                ),
+            )
+            storageRoutes(serverActors, StorageAdmin(DatabaseFactory.getDataSource(), storageQuotas, storageGuard, companyFilesRoot))
             // The company's own activity log (ACTIVITY_LOG.md §3).
             companyActivityRoutes(moduleAccessService, activityModuleName)
         }
@@ -569,6 +661,24 @@ private fun notifyServerOwners(central: DataSource, access: ModuleAccessService,
     }
 }
 
+// Public origin for links in emails (review item 4): BMS_PUBLIC_BASE_URL when set; otherwise the request's Host only
+// when [knownHost] says it is a domain of this server (never X-Forwarded-Host). Null: build no link.
+internal fun publicBase(call: ApplicationCall, knownHost: (String) -> Boolean): String? {
+    configuredPublicBase()?.let { return it }
+    val proxied = call.request.local.remoteAddress.let { it == "127.0.0.1" || it == "::1" || it == "0:0:0:0:0:0:0:1" }
+    val scheme = (if (proxied) call.request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim() else null)
+        ?.takeIf { it == "https" || it == "http" } ?: call.request.local.scheme
+    val host = call.request.headers["Host"]?.trim()?.lowercase()
+        ?.takeIf { it.isNotEmpty() && it.length <= 255 && Regex("[a-z0-9.-]+(:[0-9]{1,5})?").matches(it) } ?: return null
+    return if (knownHost(host.substringBefore(':'))) "$scheme://$host" else null
+}
+
+/** CORE_UPDATE_REQUIRE_APPROVED_COMMIT: on unless it says false (review item 7). */
+internal fun coreUpdateRequiresApprovedCommit(value: String?): Boolean = value?.trim()?.equals("false", ignoreCase = true) != true
+
+internal fun configuredPublicBase(): String? =
+    System.getenv("BMS_PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+
 // IP del cliente; detras del proxy local se toma X-Real-IP.
 internal fun clientAddress(call: ApplicationCall): String {
     val remoteAddress = call.request.local.remoteAddress
@@ -614,6 +724,8 @@ private class ExpiringCache<T : Any>(private val ttlMillis: Long, private val fa
         }
     }
 }
+
+private suspend fun <T> withContextIO(block: () -> T): T = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { block() }
 
 private val versionCache = ExpiringCache<VersionResponse>(ttlMillis = 5 * 60_000L, failureTtlMillis = 45_000L)
 
@@ -713,28 +825,42 @@ private fun loadPackagedModules(
     central: DataSource,
     classpathModuleIds: Set<String>,
     requirements: MutableMap<String, ModuleRequirements>,
+    packagesRoot: Path,
 ): List<ServerModule> {
     val log = LoggerFactory.getLogger("ModulePackages")
     val packages = try {
         central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT module_id, installed_package_path FROM server_modules WHERE installed_package_path LIKE '%.jar'"
+                "SELECT module_id, installed_package_path, package_sha256 FROM server_modules WHERE installed_package_path LIKE '%.jar'"
             ).use { query ->
                 query.executeQuery().use { rows ->
-                    buildList { while (rows.next()) add(rows.getString("module_id") to rows.getString("installed_package_path")) }
+                    buildList { while (rows.next()) add(Triple(rows.getString("module_id"), rows.getString("installed_package_path"), rows.getString("package_sha256"))) }
                 }
             }
         }
     } catch (_: SQLException) {
         emptyList()
     }
-    return packages.flatMap { (moduleId, path) ->
-        val jar = Path.of(path)
+    return packages.flatMap { (moduleId, path, sha256) ->
+        // B8: only a jar inside the modules folder whose hash is the one recorded at install (ModuleJarIntegrity).
+        val checked = if (moduleId in classpathModuleIds || !Files.isRegularFile(Path.of(path))) null
+            else com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.check(moduleId, path, sha256, packagesRoot) { actual ->
+                com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.recordFirst(central, moduleId, actual)
+            }
+        val jar = when (checked) {
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Verified -> checked.jar
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Recorded -> checked.jar
+            else -> Path.of(path)
+        }
         when {
             // A module compiled into this server (base module or :server:run) wins over a package.
             moduleId in classpathModuleIds -> emptyList()
             !Files.isRegularFile(jar) -> {
                 log.error("Package of module {} not found at {}; reinstall the module.", moduleId, jar)
+                emptyList()
+            }
+            checked is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Refused -> {
+                log.error("Package of module {} was NOT loaded: {}. Reinstall the module.", moduleId, checked.reason)
                 emptyList()
             }
             else -> try {
@@ -750,11 +876,17 @@ private fun loadPackagedModules(
 
 // systemd (Restart=on-failure) starts the server again within seconds and the new package loads.
 // Jar of an optional module built on this server, which extension packages compile against; null for base modules.
-private fun installedModuleJar(central: DataSource, moduleId: String): Path? = try {
+private fun installedModuleJar(central: DataSource, moduleId: String, packagesRoot: Path): Path? = try {
     central.connection.use { connection ->
-        connection.prepareStatement("SELECT installed_package_path FROM server_modules WHERE module_id = ? AND installed_package_path LIKE '%.jar'").use { query ->
+        connection.prepareStatement("SELECT installed_package_path, package_sha256 FROM server_modules WHERE module_id = ? AND installed_package_path LIKE '%.jar'").use { query ->
             query.setString(1, moduleId)
-            query.executeQuery().use { rows -> if (rows.next()) Path.of(rows.getString(1)).takeIf { Files.isRegularFile(it) } else null }
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+        }
+    }?.let { (path, sha256) ->
+        // The same check as loading it (B8): extensions compile against a verified jar only.
+        when (val checked = com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.check(moduleId, path, sha256, packagesRoot) { false }) {
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Verified -> checked.jar
+            else -> null
         }
     }
 } catch (_: SQLException) {
@@ -822,5 +954,8 @@ private fun Application.companyProvisioningConfig(): CompanyProvisioningConfig {
             ?: databaseUrl.substringBeforeLast('/') + "/",
         migrationsRoot = environment.config.propertyOrNull("provisioning.migrationsRoot")?.getString()
             ?: ".",
+        // Separate login for provisioning (DB_PROVISIONING_USER/PASSWORD, written by install.sh and update.sh).
+        provisioningUser = environment.config.propertyOrNull("provisioning.user")?.getString()?.trim()?.takeIf { it.isNotEmpty() },
+        provisioningPassword = environment.config.propertyOrNull("provisioning.password")?.getString(),
     )
 }

@@ -53,6 +53,14 @@ ensure_packages() {
 }
 
 [[ $EUID -eq 0 ]] || die 'Ejecuta con sudo bash install.sh.'
+# --harden-host: al final instala ufw, fail2ban y unattended-upgrades (harden-host.sh, con confirmacion).
+HARDEN_HOST=false
+for argument in "$@"; do
+    case "$argument" in
+        --harden-host) HARDEN_HOST=true ;;
+        *) die "Argumento desconocido: $argument" ;;
+    esac
+done
 [[ -r /etc/os-release ]] || die 'No se pudo identificar Ubuntu.'
 source /etc/os-release
 [[ $ID == ubuntu && ($VERSION_ID == 24.04 || $VERSION_ID == 26.04) ]] ||
@@ -83,6 +91,12 @@ readonly REPO_RAW_BASE=https://raw.githubusercontent.com/alexcalbri/BMS
 # server is modified and again after cloning.
 readonly REQUIRED_FILES=(
     scripts/ubuntu/migrations.sh
+    scripts/ubuntu/db-roles.sh
+    scripts/ubuntu/nginx-site.sh
+    scripts/ubuntu/units.sh
+    scripts/ubuntu/dist.sh
+    scripts/ubuntu/backup.sh
+    scripts/ubuntu/harden-host.sh
     scripts/ubuntu/domains-sync.sh
     scripts/ubuntu/core-update.sh
     scripts/ubuntu/mirror.sh
@@ -107,6 +121,11 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V013__create_company_links.sql
     database/control/migrations/V014__add_company_default_language.sql
     database/control/migrations/V015__create_server_admins.sql
+    database/control/migrations/V016__core_update_commit_pin.sql
+    database/control/migrations/V017__create_two_factor.sql
+    database/control/migrations/V018__create_two_factor_email_recovery.sql
+    database/control/migrations/V019__session_second_factor_mark.sql
+    database/control/migrations/V020__two_factor_replace.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -124,6 +143,15 @@ readonly MODULE_PACKAGES_DIR=$APP_DIR/server-modules
 # El servidor guarda los paquetes de extension junto a los de modulos (carpeta hermana server-extensions).
 readonly EXTENSION_PACKAGES_DIR=$APP_DIR/server-extensions
 readonly DEFAULT_MODULE_CATALOG_URL=https://github.com/alexcalbri/BMS/tree/master/modules
+# Todo lo que root ejecuta o lee (scripts, SQL) sale de este espejo de root, nunca de /opt/bms/source (de bms).
+readonly ROOT_STATE_DIR=/var/lib/bms
+readonly MIRROR_DIR=$ROOT_STATE_DIR/mirror
+# El codigo se compila como otro usuario que el del servicio (bms): la compilacion no ve el servidor en marcha.
+readonly BUILD_USER=bms-build
+readonly BUILD_HOME=$APP_DIR/build-home
+readonly BUILD_TREE=$APP_DIR/build-tree
+# Login propio del aprovisionamiento de empresas (SELF_HOSTING.md, Roles de PostgreSQL).
+readonly PROVISIONER=bms_provisioner
 INSTALL_SWAP_CREATED=false
 
 cleanup_install_swap() {
@@ -182,18 +210,61 @@ ensure_install_swap() {
     INSTALL_SWAP_CREATED=true
 }
 
+# The build user's environment is clean (nothing of root's) and the build uses no local build cache (update.sh does
+# the same); stop_build_user_processes runs before root reads anything the build produced.
 run_gradle() {
-    runuser -u bms -- env \
+    runuser -u "$BUILD_USER" -- env -i \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        HOME="$BUILD_HOME" \
+        GRADLE_USER_HOME="$BUILD_HOME/.gradle" \
         JAVA_HOME="$JAVA_HOME" \
         NODE_OPTIONS="$NODE_OPTIONS_VALUE" \
         bash ./gradlew \
         --no-daemon \
         --no-configuration-cache \
+        --no-build-cache \
         --max-workers=1 \
         --console=plain \
         "-Dorg.gradle.jvmargs=$GRADLE_JVM_ARGS" \
         "-Pkotlin.compiler.execution.strategy=in-process" \
         "$@"
+}
+
+stop_build_user_processes() {
+    pkill -KILL -u "$BUILD_USER" 2>/dev/null || true
+    for _ in {1..100}; do
+        pgrep -u "$BUILD_USER" >/dev/null 2>&1 || return 0
+        sleep 0.1
+    done
+    die "Siguen corriendo procesos de $BUILD_USER despues de la compilacion."
+}
+
+# Root mirror of the repository (the same as mirror.sh, which may not be next to this file): cloned and moved to
+# <ref> by root, hooks off; prints the commit.
+mirror_git() {
+    GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$MIRROR_DIR" "$@"
+}
+install_sync_mirror() {
+    local ref=$1
+    install -d -m 700 -o root -g root "$ROOT_STATE_DIR" || return 1
+    if [[ ! -d $MIRROR_DIR/.git ]]; then
+        rm -rf --one-file-system -- "$MIRROR_DIR" || return 1
+        GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --quiet "$REPO_URL" "$MIRROR_DIR" || return 1
+    fi
+    chown root:root "$MIRROR_DIR" && chmod 700 "$MIRROR_DIR" || return 1
+    [[ $(mirror_git remote get-url origin) == "$REPO_URL" ]] || return 1
+    mirror_git fetch --quiet --no-tags origin "$ref" || return 1
+    mirror_git checkout --quiet --force --detach FETCH_HEAD || return 1
+    mirror_git clean -ffdxq || return 1
+    mirror_git rev-parse HEAD
+}
+
+# psql as the PostgreSQL superuser for db-roles.sh; SQL on stdin.
+bms_pg_super() {
+    local database=$1
+    shift
+    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d "$database" "$@"
 }
 
 # Checks over HTTPS that the selected branch has every file the installer needs, before
@@ -231,7 +302,7 @@ verify_branch_files() {
 verify_web_index() {
     local scheme=$1 port=$2 response status body expected
     expected=$(cat "$APP_DIR/web/index.html")
-    for attempt in {1..10}; do
+    for _ in {1..10}; do
         response=$(curl --noproxy '*' --silent --show-error --max-time 15 \
             --resolve "$DOMAIN:$port:127.0.0.1" --write-out '\n%{http_code}' \
             "$scheme://$DOMAIN/") || response=$'\n000'
@@ -283,10 +354,22 @@ clean_files_and_services() {
     rm -f /etc/systemd/system/bms-core-update.{service,timer} /usr/local/sbin/bms-core-update
     rm -f /etc/nginx/sites-enabled/bms "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/bms-domain-* /etc/nginx/sites-available/bms-domain-*
+    rm -f /etc/nginx/sites-enabled/bms-default /etc/nginx/sites-available/bms-default /etc/nginx/conf.d/bms-limits.conf
+    systemctl disable --now bms-backup.timer >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/bms-backup.{service,timer} /usr/local/sbin/bms-backup
+    rm -rf /etc/systemd/system/bms.service.d /etc/systemd/system/bms-domains.service.d \
+        /etc/systemd/system/bms-domains-renew.service.d /etc/systemd/system/bms-backup.service.d /etc/systemd/system/bms-certbot.service.d
     recover_stale_swaps
-    rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT" /var/log/bms-update /var/lib/bms
+    # The daily backups (/var/lib/bms/db-backups) are kept: a clean install must not take the last copies with it.
+    rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT" /var/log/bms-update
+    if [[ -d /var/lib/bms ]]; then
+        find /var/lib/bms -mindepth 1 -maxdepth 1 ! -name db-backups -exec rm -rf --one-file-system -- {} +
+    fi
     if getent passwd bms >/dev/null; then
         userdel -r bms >/dev/null 2>&1 || userdel bms >/dev/null 2>&1 || true
+    fi
+    if getent passwd "$BUILD_USER" >/dev/null; then
+        userdel "$BUILD_USER" >/dev/null 2>&1 || true
     fi
     systemctl daemon-reload >/dev/null 2>&1 || true
 }
@@ -333,6 +416,12 @@ DROP OWNED BY :"server_owner" CASCADE;
 DROP ROLE :"server_owner";
 SQL
     fi
+    if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$PROVISIONER'") != 0 ]]; then
+        pg_admin -v provisioner="$PROVISIONER" <<'SQL'
+DROP OWNED BY :"provisioner" CASCADE;
+DROP ROLE :"provisioner";
+SQL
+    fi
     if [[ -s $tenant_roles_file ]]; then
         tenant_roles_count=$( (sort -u "$tenant_roles_file" | grep -Ev "^(${db_user}|${server_owner})$" || true) | wc -l | tr -d ' ')
         if [[ $tenant_roles_count != 0 ]]; then
@@ -369,6 +458,7 @@ assert_no_existing_install() {
         die 'Ya existe configuracion Nginx de BMS. Usa instalacion limpia si quieres reemplazarla.'
     ! getent passwd bms >/dev/null || die 'El usuario Linux bms ya existe. Usa instalacion limpia si pertenece a BMS.'
     ! getent group bms >/dev/null || die 'El grupo Linux bms ya existe. Usa instalacion limpia si pertenece a BMS.'
+    ! getent passwd "$BUILD_USER" >/dev/null || die "El usuario Linux $BUILD_USER ya existe. Usa instalacion limpia si pertenece a BMS."
     [[ $(systemctl show bms.service --property=LoadState --value) == not-found ]] ||
         die 'Ya existe un servicio bms. Usa instalacion limpia si quieres reemplazarlo.'
 }
@@ -425,8 +515,9 @@ NGINX
 RESUME_ACME=false
 if [[ $PUBLIC_SCHEME == https ]]; then
     if [[ -e $NGINX_SITE || -L $NGINX_SITE ]]; then
-        [[ -f $NGINX_SITE && ! -L $NGINX_SITE ]] && cmp -s "$NGINX_SITE" <(acme_site_config) ||
+        if ! { [[ -f $NGINX_SITE && ! -L $NGINX_SITE ]] && cmp -s "$NGINX_SITE" <(acme_site_config); }; then
             die 'La configuracion Nginx existente no es el sitio temporal de este dominio; no se modificara.'
+        fi
         RESUME_ACME=true
         printf 'Se reanudara la preparacion HTTPS del dominio %s.\n' "$DOMAIN"
     fi
@@ -444,6 +535,8 @@ else
 fi
 ask DB_NAME 'Base central nueva de BMS' bms_control
 ask DB_USER 'Usuario PostgreSQL nuevo para la aplicación' bms_app
+# DB_NAME, DB_USER and SERVER_OWNER are set by ask (printf -v).
+# shellcheck disable=SC2153
 for identifier in "$DB_NAME" "$DB_USER"; do
     [[ $identifier =~ ^[a-z][a-z0-9_]{0,62}$ && $identifier != pg_* && $identifier != postgres ]] ||
         die 'Usa nombres de hasta 63 caracteres: letras minúsculas, números y guion bajo; no nombres reservados.'
@@ -463,10 +556,9 @@ while true; do
 done
 unset DB_PASSWORD_AGAIN
 ask SERVER_OWNER 'Usuario de login del propietario del servidor' server_owner
-for identifier in "$SERVER_OWNER"; do
-    [[ $identifier =~ ^[a-z][a-z0-9_]{0,62}$ && $identifier != pg_* && $identifier != postgres ]] ||
-        die 'Identificador invalido: usa letras minusculas, numeros y guion bajo.'
-done
+# shellcheck disable=SC2153
+[[ $SERVER_OWNER =~ ^[a-z][a-z0-9_]{0,62}$ && $SERVER_OWNER != pg_* && $SERVER_OWNER != postgres ]] ||
+    die 'Identificador invalido: usa letras minusculas, numeros y guion bajo.'
 [[ $SERVER_OWNER != "$DB_USER" ]] || die 'La cuenta del propietario debe ser distinta del usuario interno de la aplicación.'
 # Every change is recorded with the owner's name, and the email receives password reset codes.
 ask SERVER_OWNER_NAME 'Nombre completo del propietario del servidor' ''
@@ -500,7 +592,7 @@ ask CONFIRM '¿Continuar? Escribe si' no
 
 # 1. Ubuntu packages. Ktor is downloaded by Gradle as an application dependency.
 ensure_packages ca-certificates curl git openjdk-21-jdk-headless \
-    postgresql postgresql-client python3 bind9-dnsutils nginx openssl
+    postgresql postgresql-client python3 bind9-dnsutils nginx openssl openssh-client
 for executable in curl git python3 dig nginx openssl psql pg_isready runuser useradd systemd-analyze; do
     command -v "$executable" >/dev/null 2>&1 || die "Falta el ejecutable $executable después de comprobar los paquetes."
 done
@@ -582,64 +674,91 @@ fi
 [[ $(pg_admin -Atc "SELECT count(*) FROM pg_database WHERE datname = '$DB_NAME'") == 0 ]] ||
     die 'La base de datos ya existe. No se modificará.'
 [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$SERVER_OWNER'") == 0 ]] || die "El rol $SERVER_OWNER ya existe."
+[[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$PROVISIONER'") == 0 ]] || die "El rol $PROVISIONER ya existe."
+[[ $DB_USER != "$PROVISIONER" && $SERVER_OWNER != "$PROVISIONER" ]] || die "$PROVISIONER es el nombre del rol de aprovisionamiento; elige otro nombre."
 
-# 2. Build without root privileges or Android SDK. The wrapper pins Gradle.
+# 2. Build without root privileges or Android SDK, as the build user, from a tree of the root mirror (A4: root never
+# runs or reads code from /opt/bms/source, which bms can write). The wrapper pins Gradle.
 # APP_DIR belongs to root: bms only owns its home and the directories created for it below,
 # so it cannot plant symlinks where root writes.
 install -d -m 755 -o root -g root "$APP_DIR"
 useradd --system --user-group --create-home --home-dir "$APP_DIR/home" --shell /usr/sbin/nologin bms
 chmod 700 "$APP_DIR/home"
+useradd --system --user-group --no-create-home --home-dir "$BUILD_HOME" --shell /usr/sbin/nologin "$BUILD_USER"
+install -d -m 700 -o "$BUILD_USER" -g "$BUILD_USER" "$BUILD_HOME"
 chown root:root "$APP_DIR"
 chmod 755 "$APP_DIR"
-install -d -m 755 -o bms -g bms "$APP_DIR/source"
 JAVA_HOME="/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture)"
 [[ -x $JAVA_HOME/bin/java ]] || die 'No se encontró el JDK 21 instalado.'
-runuser -u bms -- git clone --depth 1 --branch "$GIT_REF" -- "$REPO_URL" "$APP_DIR/source"
-cd "$APP_DIR/source"
-ensure_install_swap
+printf 'Descargando %s al espejo de root %s...\n' "$GIT_REF" "$MIRROR_DIR"
+BUILD_SHA=$(install_sync_mirror "$GIT_REF") || die "No se pudo descargar $GIT_REF desde GitHub."
+[[ $BUILD_SHA =~ ^[0-9a-f]{40}$ ]] || die 'No se pudo leer el commit descargado.'
+readonly TRUSTED_DIR=$MIRROR_DIR
 for required_file in "${REQUIRED_FILES[@]}"; do
-    [[ -f $required_file ]] || die "La rama descargada no incluye $required_file. Publica los cambios antes de instalar."
+    [[ -f $TRUSTED_DIR/$required_file ]] || die "La rama descargada no incluye $required_file. Publica los cambios antes de instalar."
 done
-runuser -u bms -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
+# shellcheck source=db-roles.sh
+source "$TRUSTED_DIR/scripts/ubuntu/db-roles.sh"
+# shellcheck source=nginx-site.sh
+source "$TRUSTED_DIR/scripts/ubuntu/nginx-site.sh"
+# shellcheck source=units.sh
+source "$TRUSTED_DIR/scripts/ubuntu/units.sh"
+# shellcheck source=dist.sh
+source "$TRUSTED_DIR/scripts/ubuntu/dist.sh"
+# /opt/bms/source: a clone of bms at the same commit for the operator (the server reads its migrations from the
+# root-owned copy in $APP_DIR/app/migrations, MIGRATIONS_ROOT, below).
+install -d -m 755 -o bms -g bms "$APP_DIR/source"
+runuser -u bms -- git clone --depth 1 --branch "$GIT_REF" -- "$REPO_URL" "$APP_DIR/source"
+if [[ $(runuser -u bms -- git -C "$APP_DIR/source" rev-parse HEAD) != "$BUILD_SHA" ]]; then
+    { runuser -u bms -- git -C "$APP_DIR/source" fetch --depth 1 origin "$BUILD_SHA" &&
+        runuser -u bms -- git -C "$APP_DIR/source" checkout --quiet --detach "$BUILD_SHA"; } ||
+        printf 'AVISO: %s no quedo en el commit %s.\n' "$APP_DIR/source" "$BUILD_SHA" >&2
+fi
+rm -rf --one-file-system -- "$BUILD_TREE"
+install -d -m 755 -o "$BUILD_USER" -g "$BUILD_USER" "$BUILD_TREE"
+git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$TRUSTED_DIR" archive "$BUILD_SHA" |
+    runuser -u "$BUILD_USER" -- tar -x -C "$BUILD_TREE" --no-same-owner
+cd "$BUILD_TREE"
+ensure_install_swap
+runuser -u "$BUILD_USER" -- env -i PATH=/usr/bin:/bin HOME="$BUILD_HOME" JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
 run_gradle -PserverOnly=true :server:tasks --all
 run_gradle -PserverOnly=true :server:test :server:installDist
+stop_build_user_processes
 [[ -x server/build/install/server/bin/server ]] || die 'No se encontró la distribución del servidor.'
 install -d -m 755 "$APP_DIR/app"
-# Streamed as bms: root never reads the bms tree directly (symlinks could leak root files).
-runuser -u bms -- tar -C server/build/install/server -cf - . | tar -C "$APP_DIR/app" -xf - --no-same-owner --no-same-permissions
+# Read as the build user and checked before root extracts it (dist.sh): no links, no special files.
+copy_dist_as_bms "$BUILD_TREE/server/build/install/server" "$APP_DIR/app" "$BUILD_USER"
+# The company migrations the server applies, root-owned in the distribution (MIGRATIONS_ROOT), never /opt/bms/source.
+install -d -m 755 "$APP_DIR/app/migrations"
+bms_release_migrations "$TRUSTED_DIR" "$BUILD_SHA" "$APP_DIR/app/migrations" || die 'No se pudieron copiar las migraciones a la distribucion.'
 chown -R root:root "$APP_DIR/app"
 chmod -R a+rX "$APP_DIR/app"
 chmod -R go-w "$APP_DIR/app"
 
 # Build the browser app without mobile SDKs. Gradle supplies Node and Yarn.
 run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution
-WEB_DIST="$APP_DIR/source/app/webApp/build/dist/js/productionExecutable"
+stop_build_user_processes
+WEB_DIST="$BUILD_TREE/app/webApp/build/dist/js/productionExecutable"
 [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se encontro la distribucion web completa.'
 install -d -m 755 "$APP_DIR/web"
-runuser -u bms -- tar -C "$WEB_DIST" -cf - . | tar -C "$APP_DIR/web" -xf - --no-same-owner --no-same-permissions
+copy_dist_as_bms "$WEB_DIST" "$APP_DIR/web" "$BUILD_USER"
 chown -R root:root "$APP_DIR/web"
 chmod -R a+rX "$APP_DIR/web"
 chmod -R go-w "$APP_DIR/web"
+cd "$TRUSTED_DIR"
+rm -rf --one-file-system -- "$BUILD_TREE"
 
-# 3. SCRAM verifier: the plaintext password never becomes an SQL statement
-# or a command argument. Printable ASCII avoids SASLprep ambiguities.
-scram_verifier() { python3 -c '
-import base64, hashlib, hmac, os, sys
-b64 = lambda data: base64.b64encode(data).decode("ascii")
-salt = os.urandom(16)
-key = hashlib.pbkdf2_hmac("sha256", sys.stdin.buffer.read(), salt, 4096)
-stored = hashlib.sha256(hmac.digest(key, b"Client Key", "sha256")).digest()
-server = hmac.digest(key, b"Server Key", "sha256")
-print("SCRAM-SHA-256$4096:" + b64(salt) + "$" + b64(stored) + ":" + b64(server))
-'; }
-SCRAM_VERIFIER=$(printf '%s' "$DB_PASSWORD" | scram_verifier)
-pg_admin --set=db_user="$DB_USER" --set=db_name="$DB_NAME" --set=verifier="$SCRAM_VERIFIER" <<'SQL'
-CREATE ROLE :"db_user" LOGIN PASSWORD :'verifier';
+# 3. PostgreSQL roles (SELF_HOSTING.md, Roles de PostgreSQL). Passwords only as SCRAM verifiers, computed from stdin
+# and sent inside the SQL on psql's stdin: never an SQL statement in a log or a command argument (db-roles.sh).
+printf '%s' "$DB_PASSWORD" | bms_role_set_password "$DB_USER" "$BMS_RUNTIME_ATTRIBUTES" || die "No se pudo crear el rol $DB_USER."
+PROVISIONER_PASSWORD=$(openssl rand -hex 32)
+printf '%s' "$PROVISIONER_PASSWORD" | bms_role_set_password "$PROVISIONER" "$BMS_PROVISIONER_ATTRIBUTES" || die "No se pudo crear el rol $PROVISIONER."
+pg_admin --set=db_user="$DB_USER" --set=db_name="$DB_NAME" --set=provisioner="$PROVISIONER" <<'SQL'
 CREATE DATABASE :"db_name";
 REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
-GRANT CONNECT ON DATABASE :"db_name" TO :"db_user";
+GRANT CONNECT ON DATABASE :"db_name" TO :"db_user", :"provisioner";
 SQL
-unset SCRAM_VERIFIER
+# shellcheck source=migrations.sh
 source scripts/ubuntu/migrations.sh
 apply_migration "$DB_NAME" core database/core/migrations/V001__create_application_users.sql
 apply_migration "$DB_NAME" core database/core/migrations/V002__create_application_sessions.sql
@@ -661,13 +780,20 @@ apply_migration "$DB_NAME" control database/control/migrations/V012__extension_z
 apply_migration "$DB_NAME" control database/control/migrations/V013__create_company_links.sql
 apply_migration "$DB_NAME" control database/control/migrations/V014__add_company_default_language.sql
 apply_migration "$DB_NAME" control database/control/migrations/V015__create_server_admins.sql
-verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
-pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
-CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
+apply_migration "$DB_NAME" control database/control/migrations/V016__core_update_commit_pin.sql
+apply_migration "$DB_NAME" control database/control/migrations/V017__create_two_factor.sql
+apply_migration "$DB_NAME" control database/control/migrations/V018__create_two_factor_email_recovery.sql
+apply_migration "$DB_NAME" control database/control/migrations/V019__session_second_factor_mark.sql
+apply_migration "$DB_NAME" control database/control/migrations/V020__two_factor_replace.sql
+# The server owner's role owns the company databases and creates them and their business owner roles. The runtime
+# role is NOT a member of it; the provisioning login may SET ROLE to it (and to the runtime role), never inherits.
+printf '%s' "$SERVER_PASSWORD" | bms_role_set_password "$SERVER_OWNER" 'INHERIT NOSUPERUSER CREATEDB CREATEROLE' ||
+    die "No se pudo crear el rol $SERVER_OWNER."
+pg_admin -v login_role="$SERVER_OWNER" -v db_name="$DB_NAME" <<'SQL'
 GRANT CONNECT ON DATABASE :"db_name" TO :"login_role";
-GRANT :"login_role" TO :"db_user";
 SQL
-unset verifier
+bms_grant_set_only "$SERVER_OWNER" "$PROVISIONER" || die 'No se pudo dar al aprovisionamiento el rol del server owner.'
+bms_grant_set_only "$DB_USER" "$PROVISIONER" || die 'No se pudo dar al aprovisionamiento el rol del runtime.'
 runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
     -v db_user="$DB_USER" -v server_owner="$SERVER_OWNER" -v owner_name="$SERVER_OWNER_NAME" -v owner_email="$SERVER_OWNER_EMAIL" <<'SQL'
 BEGIN;
@@ -694,13 +820,20 @@ GRANT INSERT (id, postgres_role, is_active, display_name, email) ON application_
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_admins, server_admin_permissions, server_admin_companies, server_workspace_staff TO :"db_user";
 REVOKE INSERT ON core_update_requests FROM :"db_user";
 GRANT SELECT ON core_update_requests TO :"db_user";
-GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";
+GRANT INSERT (target_version, from_version, requested_by, target_commit) ON core_update_requests TO :"db_user";
 GRANT USAGE ON SEQUENCE core_update_requests_id_seq TO :"db_user";
 GRANT SELECT, INSERT, UPDATE ON server_extensions, extension_operations, extension_operation_targets TO :"db_user";
 GRANT SELECT, INSERT ON extension_unsigned_authorizations TO :"db_user";
 GRANT USAGE ON SEQUENCE extension_unsigned_authorizations_id_seq, extension_operations_id_seq TO :"db_user";
+-- Two-step verification of the server owner and administrators (control V017, TWO_FACTOR.md): the data key that seals
+-- their secrets is only read and created (never replaced or deleted) by the runtime role.
+GRANT SELECT, INSERT ON tenant_data_keys TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
+-- Delayed recovery by email (control V018): the record of every process, never deleted by the runtime role.
+GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user";
 COMMIT;
 SQL
+bms_check_role_layout "$DB_NAME" "$DB_USER" "$PROVISIONER" || die 'La organizacion de roles de PostgreSQL no quedo como se esperaba.'
 PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
     -v ON_ERROR_STOP=1 -c 'SELECT count(*) AS usuarios_iniciales FROM application_users;'
 
@@ -717,9 +850,11 @@ install -d -m 700 "$CONFIG_DIR"
     printf '%s' "$DB_PASSWORD" | python3 -c \
         'import json, sys; print("DB_PASSWORD=" + json.dumps(sys.stdin.read()))'
     printf 'DB_POOL_SIZE=10\n'
+    # Login used only for creating, migrating and deleting companies (never by the pooled connections).
+    printf 'DB_PROVISIONING_USER=%s\nDB_PROVISIONING_PASSWORD=%s\n' "$PROVISIONER" "$PROVISIONER_PASSWORD"
     printf 'TENANT_DATABASES_JSON=[]\n'
     printf 'TENANT_JDBC_URL_PREFIX=jdbc:postgresql://127.0.0.1:5432/\n'
-    printf 'MIGRATIONS_ROOT=%s/source\n' "$APP_DIR"
+    printf 'MIGRATIONS_ROOT=%s/app/migrations\n' "$APP_DIR"
     printf 'COMPANY_BACKUPS_ROOT=%s\n' "$COMPANY_BACKUPS_DIR"
     printf 'COMPANY_FILES_ROOT=%s\n' "$COMPANY_FILES_DIR"
     printf 'MODULE_CATALOG_URL=%s\n' "$DEFAULT_MODULE_CATALOG_URL"
@@ -743,8 +878,8 @@ install -d -m 700 "$CONFIG_DIR"
     printf 'SMTP_HOST=\nSMTP_PORT=587\nSMTP_USERNAME=\nSMTP_PASSWORD=\nSMTP_FROM=\nSMTP_SECURITY=starttls\n'
 } > "$CONFIG_DIR/server.env"
 chmod 600 "$CONFIG_DIR/server.env"
-printf 'Respalda BMS_MASTER_KEY (%s/server.env): sin ella no se pueden leer los secretos guardados.\n' "$CONFIG_DIR"
-unset DB_PASSWORD
+printf 'Respalda BMS_MASTER_KEY (%s/server.env) fuera del servidor: sin ella no se pueden leer los secretos guardados (SELF_HOSTING.md, seccion 14).\n' "$CONFIG_DIR"
+unset DB_PASSWORD PROVISIONER_PASSWORD
 
 # The service runs with ProtectSystem=strict; these are its only writable paths.
 install -d -m 700 -o bms -g bms "$COMPANY_BACKUPS_DIR" "$COMPANY_FILES_DIR" "$MODULE_PACKAGES_DIR" "$EXTENSION_PACKAGES_DIR"
@@ -776,13 +911,15 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
 chmod 644 "$SERVICE_FILE"
+# A6: sandbox as a drop-in (scripts/ubuntu/units.sh); update.sh keeps it current.
+bms_service_hardening false "$(bms_default_memory_max)" | bms_write_dropin bms.service >/dev/null
 systemd-analyze verify "$SERVICE_FILE"
 systemctl daemon-reload
 systemctl enable --now bms.service
 
 # The HTTP route is installed only after the backend's SELECT 1 succeeds.
 BACKEND_READY=false
-for attempt in {1..30}; do
+for _ in {1..30}; do
     if systemctl is-active --quiet bms.service && \
         curl --noproxy '*' --fail --silent --max-time 2 "http://127.0.0.1:$APP_PORT/" >/dev/null; then
         BACKEND_READY=true
@@ -813,109 +950,33 @@ runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
 printf 'Login del propietario del servidor verificado.\n'
 
 # 5. Public access terminates at Nginx; Ktor is reachable only on loopback.
-if [[ $PUBLIC_SCHEME == http ]]; then
-    cat > "$NGINX_SITE" <<NGINX
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN;
-    root $APP_DIR/web;
-    index index.html;
-    server_tokens off;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "frame-ancestors 'none'" always;
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header Alt-Svc 'h3=":443"; ma=86400' always;
-    location /auth/ {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    location /companies {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    location /server {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # Version del Core y de los modulos (aviso de actualizaciones de la app).
-    location = /version {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # Centro de notificaciones de la app.
-    location /notifications {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # OAuth discovery for AI agents (claude.ai custom connectors); the module answers 404 when not installed.
-    location /.well-known/oauth- {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    location /modules {
-        # Sin tope de tamano: los modulos reciben adjuntos y cada uno decide su limite.
-        client_max_body_size 0;
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # No publicar los source maps: exponen la estructura del codigo fuente.
-    location ~ \.map\$ {
-        return 404;
-    }
-    location / {
-        try_files \$uri \$uri/ /index.html;
-        # Se repiten aqui porque un add_header en el location anula la herencia del server.
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "frame-ancestors 'none'" always;
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Alt-Svc 'h3=":443"; ma=86400' always;
-        add_header Cache-Control "no-cache" always;
-    }
+# A5: one generator for install.sh and update.sh (scripts/ubuntu/nginx-site.sh): 2 MB bodies except the upload
+# routes, per-address limits, catch-all server for unknown names, headers and CSP.
+BMS_NGINX_HTTP2_DIRECTIVE=no
+bms_nginx_has_http2_directive && BMS_NGINX_HTTP2_DIRECTIVE=yes
+NGINX_HTTP3=no
+bms_nginx_has_http3 && NGINX_HTTP3=yes
+install -d -m 755 -o root -g root "$BMS_NGINX_LOCAL_DIR"
+bms_nginx_limits > "$BMS_NGINX_LIMITS_FILE"
+chmod 644 "$BMS_NGINX_LIMITS_FILE"
+# The catch-all only takes the ports no other site already serves as default_server (Ubuntu's "default" site).
+write_nginx_catchall() {
+    local taken ports=''
+    taken=$(nginx -T 2>/dev/null | bms_nginx_taken_default_ports) || taken='80 443'
+    [[ " $taken " == *' 80 '* ]] || ports='80'
+    [[ $PUBLIC_SCHEME != https || " $taken " == *' 443 '* ]] || ports+=' 443'
+    if [[ -n ${ports// /} ]]; then
+        bms_nginx_catchall "$ports" > "$BMS_NGINX_CATCHALL_SITE"
+        chmod 644 "$BMS_NGINX_CATCHALL_SITE"
+        ln -sfn "$BMS_NGINX_CATCHALL_SITE" /etc/nginx/sites-enabled/bms-default
+    fi
 }
-NGINX
+if [[ $PUBLIC_SCHEME == http ]]; then
+    bms_nginx_site http "$DOMAIN" - "$APP_DIR/web" "$ACME_ROOT" "$APP_PORT" > "$NGINX_SITE"
     chmod 644 "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/bms
     ln -s "$NGINX_SITE" /etc/nginx/sites-enabled/bms
+    write_nginx_catchall
     nginx -t
     systemctl enable --now nginx
     systemctl reload nginx
@@ -932,122 +993,11 @@ NGINX
     printf 'PostgreSQL, backend y publicacion HTTP verificados. Lets Encrypt fue omitido.\n'
     printf 'Cuando el bloqueo termine, configura HTTPS antes de usarlo en produccion.\n'
 else
-    cat > "$NGINX_SITE" <<NGINX
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN;
-    location /.well-known/acme-challenge/ { root $ACME_ROOT; }
-    location / { return 301 https://$DOMAIN\$request_uri; }
-}
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    listen 443 quic reuseport;
-    listen [::]:443 quic reuseport;
-    http2 on;
-    http3 on;
-    server_name $DOMAIN;
-    ssl_certificate /etc/letsencrypt/live/$CERT_NAME/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$CERT_NAME/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    root $APP_DIR/web;
-    index index.html;
-    server_tokens off;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "frame-ancestors 'none'" always;
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header Alt-Svc 'h3=":443"; ma=86400' always;
-    location /auth/ {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    location /companies {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    location /server {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # Version del Core y de los modulos (aviso de actualizaciones de la app).
-    location = /version {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # Centro de notificaciones de la app.
-    location /notifications {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # OAuth discovery for AI agents (claude.ai custom connectors); the module answers 404 when not installed.
-    location /.well-known/oauth- {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    location /modules {
-        # Sin tope de tamano: los modulos reciben adjuntos y cada uno decide su limite.
-        client_max_body_size 0;
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-    }
-    # No publicar los source maps: exponen la estructura del codigo fuente.
-    location ~ \.map\$ {
-        return 404;
-    }
-    location / {
-        try_files \$uri \$uri/ /index.html;
-        # Se repiten aqui porque un add_header en el location anula la herencia del server.
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "frame-ancestors 'none'" always;
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Alt-Svc 'h3=":443"; ma=86400' always;
-        add_header Cache-Control "no-cache" always;
-    }
-}
-NGINX
+    bms_nginx_site https "$DOMAIN" "$CERT_NAME" "$APP_DIR/web" "$ACME_ROOT" "$APP_PORT" "$NGINX_HTTP3" > "$NGINX_SITE"
     chmod 644 "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/bms
     ln -s "$NGINX_SITE" /etc/nginx/sites-enabled/bms
+    write_nginx_catchall
     nginx -t
     systemctl reload nginx
 
@@ -1071,6 +1021,7 @@ Persistent=true
 WantedBy=timers.target
 UNIT
     chmod 644 /etc/systemd/system/bms-certbot.{service,timer}
+    bms_helper_hardening | bms_write_dropin bms-certbot.service >/dev/null
     systemctl daemon-reload
     systemctl enable --now bms-certbot.timer
     verify_web_index https 443
@@ -1096,11 +1047,19 @@ UNIT
         printf 'Renovacion automatica configurada; prueba de renovacion PENDIENTE. No vuelvas a ejecutar todo el instalador.\n'
     fi
 fi
-bash "$APP_DIR/source/scripts/ubuntu/domains-sync.sh" --install
-bash "$APP_DIR/source/scripts/ubuntu/core-update.sh" --install
+bash "$TRUSTED_DIR/scripts/ubuntu/domains-sync.sh" --install
+bash "$TRUSTED_DIR/scripts/ubuntu/core-update.sh" --install
+bash "$TRUSTED_DIR/scripts/ubuntu/backup.sh" --install
+# What the root helper compares app update requests with (only later versions are accepted).
+printf '%s\n' "$BUILD_SHA" > "$ROOT_STATE_DIR/deployed-commit"
+chmod 600 "$ROOT_STATE_DIR/deployed-commit"
+if [[ $HARDEN_HOST == true ]]; then
+    bash "$TRUSTED_DIR/scripts/ubuntu/harden-host.sh"
+fi
 printf 'Configuracion: /etc/bms/server.env\nLogs: sudo journalctl -u bms -f\n'
 printf 'Correo SMTP del servidor: completa SMTP_* en server.env y ejecuta sudo systemctl restart bms.\n'
 printf 'Login disponible: POST %s://%s/auth/login\n' "$PUBLIC_SCHEME" "$DOMAIN"
 printf 'Aplicacion web disponible: %s://%s/\n' "$PUBLIC_SCHEME" "$DOMAIN"
 printf 'Propietario del servidor: %s\n' "$SERVER_OWNER"
 printf 'Empresas iniciales: ninguna. Crea la primera desde la app con el usuario server owner.\n'
+printf 'Respaldo diario: /var/lib/bms/db-backups (bms-backup.timer). Guarda BMS_MASTER_KEY fuera del servidor.\n'

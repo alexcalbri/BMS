@@ -9,6 +9,10 @@ import java.time.format.DateTimeFormatter
 import java.util.zip.ZipInputStream
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.stream.XMLInputFactory
+import javax.xml.stream.XMLStreamConstants
+import javax.xml.stream.XMLStreamException
+import javax.xml.stream.XMLStreamReader
 
 class CrmImportException(message: String) : Exception(message)
 
@@ -20,6 +24,15 @@ data class CrmTable(val columns: List<String>, val rows: List<Map<String, String
 object CrmImportParse {
     const val MaxRows = 20_000
     private const val MaxBytes = 20 * 1024 * 1024
+    const val MaxColumns = 200
+    const val MaxCellChars = 32_768
+    private const val MaxCells = 1_000_000
+    private const val MaxTextChars = 32L * 1024 * 1024
+    private const val MaxSharedStrings = 500_000
+    private const val MaxZipEntries = 2_000
+    private const val MaxPartBytes = 40L * 1024 * 1024
+    private const val MaxSmallPartBytes = 1L * 1024 * 1024
+    private const val MaxExpandedBytes = 80L * 1024 * 1024
 
     // CRM fields a column can feed, with the labels shown in the mapping.
     val fields = linkedMapOf(
@@ -61,14 +74,20 @@ object CrmImportParse {
             when {
                 quoted && char == '"' && clean.getOrNull(index + 1) == '"' -> { cell.append('"'); index++ }
                 char == '"' && (quoted || cell.isEmpty()) -> quoted = !quoted
-                !quoted && char == separator -> { row += cell.toString(); cell.clear() }
+                !quoted && char == separator -> {
+                    row += cell.toString(); cell.clear()
+                    if (row.size > MaxColumns) throw CrmImportException(tr("El archivo tiene mas de {0} columnas.", MaxColumns))
+                }
                 !quoted && (char == '\n' || char == '\r') -> {
                     if (char == '\r' && clean.getOrNull(index + 1) == '\n') index++
                     row += cell.toString(); cell.clear()
                     records += row; row = mutableListOf()
                     if (records.size > MaxRows + 1) throw CrmImportException(tr("El archivo tiene mas de {0} filas.", MaxRows))
                 }
-                else -> cell.append(char)
+                else -> {
+                    cell.append(char)
+                    if (cell.length > MaxCellChars) throw CrmImportException(tr("Una celda del archivo es demasiado larga."))
+                }
             }
             index++
         }
@@ -78,6 +97,7 @@ object CrmImportParse {
 
     // ---- XLSX ----
 
+    // Small package parts (workbook, relationships) go through DOM; sheets and shared strings are streamed.
     private fun secureXml() = DocumentBuilderFactory.newInstance().apply {
         setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
         setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
@@ -86,26 +106,51 @@ object CrmImportParse {
         isNamespaceAware = false
     }.newDocumentBuilder()
 
-    /** First sheet of an XLSX file (shared strings, inline strings, numbers; DTDs rejected; sizes limited). */
+    private fun secureStream(bytes: ByteArray, name: String): XMLStreamReader {
+        val factory = XMLInputFactory.newInstance().apply {
+            setProperty(XMLInputFactory.SUPPORT_DTD, false)
+            setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false)
+            setProperty(XMLInputFactory.IS_NAMESPACE_AWARE, false)
+            setProperty(XMLInputFactory.IS_COALESCING, false)
+        }
+        return try {
+            factory.createXMLStreamReader(ByteArrayInputStream(bytes))
+        } catch (failure: Exception) {
+            throw CrmImportException(tr("El XLSX no es valido ({0}).", name))
+        }
+    }
+
+    private fun tooBig(): Nothing = throw CrmImportException(tr("El archivo XLSX es demasiado grande al descomprimirlo."))
+
+    /** First sheet of an XLSX file (shared strings, inline strings, numbers; DTDs rejected; rows, columns, cells, text and decompressed size limited). */
     fun xlsx(bytes: ByteArray): CrmTable {
         if (bytes.size > MaxBytes) throw CrmImportException(tr("El archivo supera los 20 MB."))
         val entries = mutableMapOf<String, ByteArray>()
         var expanded = 0L
+        var count = 0
+        val buffer = ByteArray(16 * 1024)
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             generateSequence { zip.nextEntry }.forEach { entry ->
-                if (entry.name in setOf("xl/sharedStrings.xml", "xl/workbook.xml", "xl/_rels/workbook.xml.rels") || entry.name.startsWith("xl/worksheets/sheet")) {
-                    val content = zip.readNBytes(MaxBytes + 1)
-                    expanded += content.size
-                    if (content.size > MaxBytes || expanded > 4L * MaxBytes) throw CrmImportException(tr("El archivo XLSX es demasiado grande al descomprimirlo."))
-                    entries[entry.name] = content
+                if (++count > MaxZipEntries) tooBig()
+                val wanted = entry.name in setOf("xl/sharedStrings.xml", "xl/workbook.xml", "xl/_rels/workbook.xml.rels") || entry.name.startsWith("xl/worksheets/sheet")
+                val limit = if (entry.name.endsWith("workbook.xml") || entry.name.endsWith("workbook.xml.rels")) MaxSmallPartBytes else MaxPartBytes
+                val content = if (wanted) java.io.ByteArrayOutputStream() else null
+                var part = 0L
+                // Every entry is inflated through this loop, the ones we ignore too: the total is what is bounded.
+                while (true) {
+                    val read = zip.read(buffer)
+                    if (read < 0) break
+                    part += read
+                    expanded += read
+                    if (expanded > MaxExpandedBytes || (wanted && part > limit)) tooBig()
+                    content?.write(buffer, 0, read)
                 }
+                if (content != null) entries[entry.name] = content.toByteArray()
             }
         }
         val builder = secureXml()
         fun parse(name: String) = entries[name]?.let { runCatching { builder.parse(ByteArrayInputStream(it)) }.getOrElse { throw CrmImportException(tr("El XLSX no es valido ({0}).", name)) } }
-        val shared = parse("xl/sharedStrings.xml")?.getElementsByTagName("si")?.let { nodes ->
-            (0 until nodes.length).map { nodes.item(it).textContent }
-        }.orEmpty()
+        val shared = sharedStrings(entries["xl/sharedStrings.xml"])
         // The first sheet of the workbook, through its relationship id.
         val firstSheet = parse("xl/workbook.xml")?.getElementsByTagName("sheet")?.item(0) as? Element
         val relId = firstSheet?.getAttribute("r:id").orEmpty()
@@ -115,32 +160,116 @@ object CrmImportParse {
         val sheetName = target?.removePrefix("/xl/")?.removePrefix("xl/")?.let { "xl/$it" }?.takeIf { it in entries }
             ?: entries.keys.filter { it.startsWith("xl/worksheets/sheet") }.minOrNull()
             ?: throw CrmImportException(tr("El XLSX no tiene hojas."))
-        val sheet = parse(sheetName)!!
-        val rows = sheet.getElementsByTagName("row")
-        if (rows.length > MaxRows + 1) throw CrmImportException(tr("El archivo tiene mas de {0} filas.", MaxRows))
-        val records = (0 until rows.length).map { r ->
-            val cells = (rows.item(r) as Element).getElementsByTagName("c")
-            val values = sortedMapOf<Int, String>()
-            (0 until cells.length).forEach { c ->
-                val cell = cells.item(c) as Element
-                val column = columnIndex(cell.getAttribute("r")).takeIf { it >= 0 } ?: values.size
-                val raw = cell.getElementsByTagName("v").item(0)?.textContent.orEmpty()
-                values[column] = when (cell.getAttribute("t")) {
-                    "s" -> shared.getOrNull(raw.toIntOrNull() ?: -1).orEmpty()
-                    "inlineStr" -> cell.getElementsByTagName("is").item(0)?.textContent.orEmpty()
-                    else -> raw
-                }
-            }
-            val width = (values.keys.maxOrNull() ?: -1) + 1
-            (0 until width).map { values[it].orEmpty() }
-        }
-        return table(records.filter { record -> record.any { it.isNotBlank() } })
+        return table(sheetRecords(entries.getValue(sheetName), sheetName, shared))
     }
 
-    // "C12" -> 2.
+    // Text of every <si>, in order. Count and sizes are bounded, so a crafted table cannot exhaust memory.
+    private fun sharedStrings(bytes: ByteArray?): List<String> {
+        if (bytes == null) return emptyList()
+        val reader = secureStream(bytes, "xl/sharedStrings.xml")
+        val strings = ArrayList<String>()
+        var total = 0L
+        try {
+            var current: StringBuilder? = null
+            var depth = 0
+            while (reader.hasNext()) {
+                when (reader.next()) {
+                    XMLStreamConstants.DTD -> throw CrmImportException(tr("El XLSX no es valido ({0}).", "xl/sharedStrings.xml"))
+                    XMLStreamConstants.START_ELEMENT -> if (reader.localName == "si") { current = StringBuilder(); depth = 1 } else if (current != null) depth++
+                    XMLStreamConstants.CHARACTERS, XMLStreamConstants.CDATA -> current?.let {
+                        it.append(reader.text)
+                        if (it.length > MaxCellChars) tooBig()
+                    }
+                    XMLStreamConstants.END_ELEMENT -> if (current != null && --depth == 0) {
+                        total += current.length
+                        if (strings.size >= MaxSharedStrings || total > MaxTextChars) tooBig()
+                        strings += current.toString()
+                        current = null
+                    }
+                }
+            }
+        } catch (failure: XMLStreamException) {
+            throw CrmImportException(tr("El XLSX no es valido ({0}).", "xl/sharedStrings.xml"))
+        } finally {
+            reader.close()
+        }
+        return strings
+    }
+
+    // Rows of a sheet as lists of cells, streamed. Bounds: rows, columns per row, non-empty cells, characters per cell and in total.
+    private fun sheetRecords(bytes: ByteArray, name: String, shared: List<String>): List<List<String>> {
+        val reader = secureStream(bytes, name)
+        val records = ArrayList<List<String>>()
+        var cells = 0
+        var total = 0L
+        try {
+            var rows = 0
+            var values: java.util.TreeMap<Int, String>? = null
+            var type = ""
+            var column = -1
+            var inValue = false
+            var inInline = false
+            val text = StringBuilder()
+            while (reader.hasNext()) {
+                when (reader.next()) {
+                    XMLStreamConstants.DTD -> throw CrmImportException(tr("El XLSX no es valido ({0}).", name))
+                    XMLStreamConstants.START_ELEMENT -> when (reader.localName) {
+                        "row" -> {
+                            if (++rows > MaxRows + 1) throw CrmImportException(tr("El archivo tiene mas de {0} filas.", MaxRows))
+                            values = java.util.TreeMap()
+                        }
+                        "c" -> if (values != null) {
+                            type = reader.getAttributeValue(null, "t").orEmpty()
+                            column = columnIndex(reader.getAttributeValue(null, "r").orEmpty()).takeIf { it >= 0 } ?: values.size
+                            if (column >= MaxColumns) throw CrmImportException(tr("El archivo tiene mas de {0} columnas.", MaxColumns))
+                            text.setLength(0)
+                        }
+                        "v" -> inValue = true
+                        "is" -> inInline = true
+                    }
+                    XMLStreamConstants.CHARACTERS, XMLStreamConstants.CDATA -> if (inValue || inInline) {
+                        text.append(reader.text)
+                        if (text.length > MaxCellChars) throw CrmImportException(tr("Una celda del archivo es demasiado larga."))
+                    }
+                    XMLStreamConstants.END_ELEMENT -> when (reader.localName) {
+                        "v" -> inValue = false
+                        "is" -> inInline = false
+                        "c" -> if (values != null && column >= 0) {
+                            val value = when (type) {
+                                "s" -> shared.getOrNull(text.toString().trim().toIntOrNull() ?: -1).orEmpty()
+                                else -> text.toString()
+                            }
+                            if (value.isNotEmpty()) {
+                                total += value.length
+                                if (++cells > MaxCells || total > MaxTextChars) tooBig()
+                            }
+                            values[column] = value
+                            column = -1
+                            text.setLength(0)
+                        }
+                        "row" -> if (values != null) {
+                            val width = (values.lastEntryOrNull()?.key ?: -1) + 1
+                            records += (0 until width).map { values[it].orEmpty() }
+                            values = null
+                        }
+                    }
+                }
+            }
+        } catch (failure: XMLStreamException) {
+            throw CrmImportException(tr("El XLSX no es valido ({0}).", name))
+        } finally {
+            reader.close()
+        }
+        return records.filter { record -> record.any { it.isNotBlank() } }
+    }
+
+    private fun java.util.TreeMap<Int, String>.lastEntryOrNull() = if (isEmpty()) null else lastEntry()
+
+    // "C12" -> 2. Values past the column limit are returned as-is so the caller can refuse them without overflow.
     private fun columnIndex(reference: String): Int {
         val letters = reference.takeWhile { it.isLetter() }.uppercase()
         if (letters.isEmpty()) return -1
+        if (letters.length > 3) return MaxColumns
         return letters.fold(0) { total, letter -> total * 26 + (letter - 'A' + 1) } - 1
     }
 
