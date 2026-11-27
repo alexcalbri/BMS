@@ -248,6 +248,7 @@ private fun TwoFactorEnableDialog(
     var setup by remember { mutableStateOf<TwoFactorSetup?>(null) }
     var code by remember { mutableStateOf("") }
     var recoveryCodes by remember { mutableStateOf<List<String>?>(null) }
+    var enableNotice by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -280,7 +281,7 @@ private fun TwoFactorEnableDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (codes != null) {
-                    RecoveryCodesContent(codes = codes, saved = saved, onSavedChange = { saved = it })
+                    RecoveryCodesContent(codes = codes, saved = saved, onSavedChange = { saved = it }, notice = enableNotice)
                 } else if (currentSetup == null) {
                     Text(
                         tr("Necesitas una aplicacion de autenticacion (Google Authenticator, Microsoft Authenticator, Aegis, 1Password...). Primero confirma tu contrasena."),
@@ -346,7 +347,9 @@ private fun TwoFactorEnableDialog(
                     enabled = !busy && code.length == 6,
                     onClick = {
                         perform { api ->
-                            recoveryCodes = api.twoFactorEnable(session.accessToken, session.companyCode, code)
+                            val enabled = api.twoFactorEnable(session.accessToken, session.companyCode, code)
+                            enableNotice = enabled.notice?.takeIf { it.isNotBlank() }
+                            recoveryCodes = enabled.recoveryCodes
                             code = ""
                         }
                     },
@@ -461,8 +464,10 @@ private fun utcText(iso: String): String = iso.replace('T', ' ').removeSuffix("Z
 
 // Los 10 codigos de recuperacion con aviso, boton para copiarlos y la casilla que confirma que se guardaron.
 @Composable
-private fun RecoveryCodesContent(codes: List<String>, saved: Boolean, onSavedChange: (Boolean) -> Unit) {
+private fun RecoveryCodesContent(codes: List<String>, saved: Boolean, onSavedChange: (Boolean) -> Unit, notice: String? = null) {
     val colors = AppTheme.colors
+    // Aviso del servidor al activar (p. ej. se cerraron otras sesiones y se desconectaron los agentes de IA); los codigos siguen a la vista.
+    notice?.let { Text(it, color = colors.warning) }
     Text(tr("Codigos de recuperacion"), style = MaterialTheme.typography.titleSmall, color = colors.accentText)
     Text(
         tr("Guardalos ahora en un lugar seguro. No se vuelven a mostrar y cada uno sirve una sola vez si pierdes el acceso a tu aplicacion."),

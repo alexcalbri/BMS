@@ -3,6 +3,9 @@ package com.ideasdeveloper.bms
 import com.ideasdeveloper.bms.app.core.i18n.AppLanguage
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.Composable
@@ -34,6 +37,7 @@ import com.ideasdeveloper.bms.app.features.auth.data.isServerAdmin
 import com.ideasdeveloper.bms.app.features.auth.data.isServerLevel
 import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import com.ideasdeveloper.bms.app.features.company.data.CompanySwitch
 import com.ideasdeveloper.bms.app.features.serveradmin.data.PasswordChangeRequiredCode
 import com.ideasdeveloper.bms.app.features.serveradmin.data.TwoFactorSetupRequiredCode
 import com.ideasdeveloper.bms.app.features.serveradmin.data.ServerAdminApi
@@ -425,6 +429,23 @@ fun App(initialServerUrl: String = "") {
             RecoveryCodeUsedDialog(
                 codesLeft = used.recoveryCodesLeft,
                 onDismiss = { SessionStore.update { it.copy(recoveryCodeUsed = false, recoveryCodesLeft = null) } },
+            )
+        }
+
+        // El servidor exige haber iniciado sesion con el codigo de dos pasos para cambiar de empresa o volver al servidor.
+        val reauthMessage by CompanySwitch.reauthRequired.collectAsState()
+        reauthMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = { CompanySwitch.clearReauthRequired() },
+                title = { Text(tr("Vuelve a iniciar sesion")) },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        CompanySwitch.clearReauthRequired()
+                        logout()
+                    }) { Text(tr("Cerrar sesion e iniciar de nuevo")) }
+                },
+                dismissButton = { TextButton(onClick = { CompanySwitch.clearReauthRequired() }) { Text(tr("Cancelar")) } },
             )
         }
 

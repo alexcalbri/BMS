@@ -69,7 +69,9 @@ internal fun englishSecurityPart(): Map<String, String> = mapOf(
     "Entraste con el codigo de recuperacion por correo, asi que la verificacion en dos pasos de tu cuenta quedo desactivada." to "You signed in with the recovery code sent by email, so two-step verification on your account is now off.",
     "Activala de nuevo cuanto antes en Ajustes, en Verificacion en dos pasos." to "Turn it on again as soon as possible in Settings, under Two-step verification.",
     "Se cancelo la recuperacion por correo que estaba en curso, porque entraste con normalidad." to "The recovery by email that was in progress was cancelled because you signed in normally.",
-    // Politica del dueno del servidor
+    // Cambio de empresa y aviso al activar
+    "Vuelve a iniciar sesion" to "Sign in again",
+    "Cerrar sesion e iniciar de nuevo" to "Sign out and sign in again",
     "Exigir verificacion en dos pasos a los administradores de servidor" to "Require two-step verification for server administrators",
     "Cada administrador activa la verificacion con una aplicacion de autenticacion; hasta entonces solo puede activarla." to "Each administrator turns it on with an authenticator app; until then they can only turn it on.",
     "Exigir verificacion en dos pasos" to "Require two-step verification",

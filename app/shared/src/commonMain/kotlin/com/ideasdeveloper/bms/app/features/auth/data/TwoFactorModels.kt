@@ -62,6 +62,8 @@ data class TwoFactorSetup(
 // POST /auth/two-factor/enable y /recovery-codes: los 10 codigos de recuperacion, que no se pueden volver a leer.
 data class TwoFactorRecoveryCodes(
     val recoveryCodes: List<String> = emptyList(),
+    // Solo al activar: aviso del servidor (otras sesiones cerradas, agentes de IA desconectados); null si no hay nada que avisar.
+    val notice: String? = null,
 )
 
 @Serializable

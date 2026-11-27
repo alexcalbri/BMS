@@ -188,14 +188,14 @@ class AccountApi(serverUrl: String) {
     }
 
     // Confirma la activacion con un codigo; devuelve los codigos de recuperacion (solo se ven esta vez).
-    suspend fun twoFactorEnable(accessToken: String, companyCode: String?, code: String): List<String> = call<TwoFactorRecoveryCodes> {
+    suspend fun twoFactorEnable(accessToken: String, companyCode: String?, code: String): TwoFactorRecoveryCodes = call<TwoFactorRecoveryCodes> {
         client.post("$baseUrl/auth/two-factor/enable") {
             bearerAuth(accessToken)
             companyCode?.let { header("X-Company-Code", it) }
             contentType(ContentType.Application.Json)
             setBody(TwoFactorCodeBody(code.trim()))
         }
-    }.recoveryCodes
+    }
 
     // Genera 10 codigos nuevos (los anteriores dejan de valer); [code] es el de la aplicacion, no uno de recuperacion.
     suspend fun twoFactorRegenerateRecoveryCodes(accessToken: String, companyCode: String?, currentPassword: String, code: String): List<String> =
