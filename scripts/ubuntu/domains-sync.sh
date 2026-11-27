@@ -26,6 +26,8 @@ die() { log "ERROR: $*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 # Installs this script and its systemd units; called from install.sh and update.sh.
 if [[ ${1:-} == --install ]]; then
     install -m 755 "${BASH_SOURCE[0]}" /usr/local/sbin/bms-domains-sync
+    install -d -m 755 -o root -g root /usr/local/lib/bms
+    install -o root -g root -m 644 "$(dirname -- "${BASH_SOURCE[0]}")/pg-safe.sh" /usr/local/lib/bms/pg-safe.sh
     cat > /etc/systemd/system/bms-domains.service <<'UNIT'
 [Unit]
 Description=Publish BMS module domains in Nginx
@@ -93,8 +95,15 @@ if [[ ${1:-} == --renew ]]; then
     exit 0
 fi
 
+# The superuser in the control database only through pg-safe.sh (pinned role and search path, settings
+# checked, the database checked to belong to the superuser alone).
+PG_SAFE_LIB=/usr/local/lib/bms/pg-safe.sh
+[[ -f $PG_SAFE_LIB ]] || PG_SAFE_LIB=$(dirname -- "${BASH_SOURCE[0]}")/pg-safe.sh
+[[ -f $PG_SAFE_LIB ]] || die "No se encontro pg-safe.sh; ejecuta update.sh de nuevo."
+# shellcheck source=pg-safe.sh
+source "$PG_SAFE_LIB"
 central_psql() {
-    runuser -u postgres -- psql -X -q -d "$DB_NAME" -v ON_ERROR_STOP=1 "$@"
+    pg_control "$DB_NAME" "$@"
 }
 
 # Skip quietly until the control migration that creates public_domains is applied.

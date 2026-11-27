@@ -55,6 +55,47 @@ class ActivitySecurityTest {
     }
 
     @Test
+    fun lookAlikeLettersAndTheLogsOwnActorNamesAreRefusedForPeople() {
+        // Cyrillic, Greek and fullwidth letters that look Latin fold to the marker they imitate.
+        listOf("\u0410gente de Ana", "Аgеntе dе Ana", "Ag\u0435nte de Ana", "Luis (d\u0435sd\u0435 \u0435l servidor)", "Ａｇｅｎｔｅ de Ana",
+            "Imp\u043Ertacion (Ana)", "Αutomatización Diaria")
+            .forEach { name -> assertNotNull(UserProfileRules.problem(name, "x@example.com"), name) }
+        // The names of the log's own actors, however written, are not a person's or an agent's name.
+        listOf("Sistema", "  sistema ", "S\u0456stema", "Importación", "Importacion", "Automatizacion", "Automatización", "Cloudbeds",
+            "Sitio web", "sitio-web", "Portal WiFi", "monday", "MONDAY", "Tarea programada")
+            .forEach { name -> assertTrue(ActivityNames.hasMarker(name), name); assertNotNull(UserProfileRules.problem(name, "x@example.com"), name) }
+        listOf("Sistemas Ruiz", "Ana Monday", "Cloudbeds Fan Club", "Ana Ruiz", "Сергей Петров", "Αλέξανδρος").forEach { name ->
+            assertNull(UserProfileRules.problem(name, "x@example.com"), name)
+        }
+        // Shown quoted when they reach a display anyway, as a person; an integration keeps its own name.
+        assertEquals("«Sistema»", ActivityActor.user(ana, "Sistema").display)
+        assertEquals("«\u0410gente de Ana»", ActivityActor.user(ana, "\u0410gente de Ana").display)
+        assertEquals("Agente de Ana Ruiz", ActivityActor.user(ana, "Ana Ruiz").viaAgent("Cloudbeds").display)
+        assertEquals("«Cloudbeds»", ActivityActor.user(ana, "Ana Ruiz").viaAgent("Cloudbeds").agentName)
+        assertEquals("Cloudbeds", ActivityActor.integration("Cloudbeds").display)
+        assertEquals("Sistema", ActivityActor.system().display)
+        assertEquals("Importacion (Ana Ruiz)", ActivityActor.import(ActivityActor.import(ActivityActor.user(ana, "Ana Ruiz"))).display)
+        assertEquals(ActivityActor.import(ActivityActor.user(ana, "Ana Ruiz")), ActivityActor.import(ActivityActor.import(ActivityActor.user(ana, "Ana Ruiz"))))
+    }
+
+    @Test
+    fun theHashesTheVerificationExpectsAreTheOnesTheMigrationAndTheHardeningCreate() {
+        val root = com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck.repoRoot()
+        val migration = java.io.File(root, "database/tenant/migrations/V011__create_activity_log.sql").readText()
+        val bodies = Regex("CREATE OR REPLACE FUNCTION public\\.(\\w+)\\(\\).*?AS \\$\\$(.*?)\\$\\$;", RegexOption.DOT_MATCHES_ALL)
+            .findAll(migration).associate { it.groupValues[1] to ActivityIntegrity.sha256(it.groupValues[2]) }
+        assertEquals(bodies, ActivityIntegrity.versions.single { it.migration == ActivityIntegrity.Migration }.functions)
+        val harden = java.io.File(root, "scripts/ubuntu/activity-harden.sql").readText()
+        val guard = Regex("\\\$guard_body\\\$(.*?)\\\$guard_body\\\$", RegexOption.DOT_MATCHES_ALL).find(harden)!!.groupValues[1]
+        assertEquals(ActivityIntegrity.sha256(guard), ActivityIntegrity.GuardSha256)
+        // activity-harden.sh splices the migration where this line is, and installs the deviation query the server uses.
+        assertEquals(1, harden.lines().count { it == "-- @canonical@" })
+        val script = java.io.File(root, "scripts/ubuntu/activity-harden.sh").readText()
+        assertTrue(script.contains("server/src/main/resources/activity/activity-deviations.sql"))
+        assertTrue(ActivityIntegrity.deviationQuery.contains("bms.audit_functions"))
+    }
+
+    @Test
     fun aStoredActorIsValidatedAndOnlyUsedAsAnImport() {
         fun stored(json: String) = ActivityActor.restoreImport(json)
         // Unknown real kind or origin: nothing usable (anonymous import).

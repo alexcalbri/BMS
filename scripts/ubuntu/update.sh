@@ -467,7 +467,7 @@ apply_migration "$db_name" control database/control/migrations/V015__create_serv
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
     apply_migration "$db_name" core database/core/migrations/V006__add_application_user_language.sql
-    runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
+    pg_control "$db_name" -v db_user="$db_user" <<'SQL'
 GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
 GRANT SELECT, UPDATE (user_code) ON application_users TO :"db_user";
 GRANT UPDATE (language) ON application_users TO :"db_user";
@@ -500,15 +500,28 @@ SQL
         die 'No se encontro modules/clientes/migrations/V003__add_customer_type.sql.'
     [[ -f modules/clientes/migrations/V004__add_customer_code.sql ]] ||
         die 'No se encontro modules/clientes/migrations/V004__add_customer_code.sql.'
-    local tenant_list
-    tenant_list=$(runuser -u postgres -- psql -X -d "$db_name" -At -c "SELECT database_name FROM companies ORDER BY code") ||
+    local tenant_list tenant_owner
+    tenant_list=$(pg_control "$db_name" -At -c "SELECT database_name FROM public.companies ORDER BY code") ||
         die 'No se pudo leer la lista de empresas (companies); no se migro ninguna base.'
+    # Company databases belong to the server owner's role, which may have planted triggers, functions or
+    # settings in them: they are migrated as that role (through the runtime login), never as the superuser.
+    pg_owner_prepare "$CONFIG_FILE" || die 'No se pudo leer el acceso del rol de la aplicacion (server.env).'
+    trap 'pg_owner_cleanup; cleanup_update_swap' EXIT
     while IFS= read -r tenant_db; do
         [[ -n $tenant_db ]] || continue
         if [[ ! $tenant_db =~ ^[a-z][a-z0-9_]{0,62}$ ]]; then
             printf 'AVISO: se omite la base "%s": nombre de base no valido.\n' "$tenant_db" >&2
             continue
         fi
+        tenant_owner=$(pg_owner_role_of "$tenant_db" "$db_user") || die "No se pudo leer el dueno de la base $tenant_db."
+        if [[ -z $tenant_owner ]]; then
+            printf 'AVISO: se omite la base "%s": no existe o no pertenece a un rol del que el rol de la aplicacion sea miembro.\n' "$tenant_db" >&2
+            continue
+        fi
+        TENANT_OWNER_ROLE=$tenant_owner
+        # Read by apply_migration (migrations.sh).
+        # shellcheck disable=SC2034
+        MIGRATION_RUNNER=tenant_migration_runner
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V002__require_customer_contact_fields.sql
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V003__add_customer_type.sql
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V004__add_customer_code.sql
@@ -522,8 +535,11 @@ SQL
         apply_migration "$tenant_db" tenant database/tenant/migrations/V008__account_reset_throttle.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V009__outbound.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V010__create_text_translations.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V011__create_activity_log.sql
-        runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
+        # The log's own migrations go to a log already given to bms_audit only through activity-harden.sh (below).
+        if ! tenant_log_hardened "$tenant_db"; then
+            apply_migration "$tenant_db" tenant database/tenant/migrations/V011__create_activity_log.sql
+        fi
+        tenant_migration_runner "$tenant_db" -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
@@ -537,13 +553,34 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON account_reset_throttle TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON outbound_events, outbound_links, integration_connections TO :"db_user";
 GRANT USAGE, SELECT ON SEQUENCE outbound_events_id_seq TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
--- Activity log (tenant V011): append-only, the runtime user only reads and inserts.
+-- Activity log (tenant V011): append-only, the runtime user only reads and inserts. Once hardened
+-- (bms_audit owns it) activity-harden.sh keeps these grants.
+SELECT c.relowner <> (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = 'bms_audit') IS NOT FALSE AS log_owned
+FROM pg_catalog.pg_class c WHERE c.oid = 'public.activity_log'::pg_catalog.regclass \gset
+\if :log_owned
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON activity_log FROM :"db_user";
 GRANT SELECT, INSERT ON activity_log TO :"db_user";
 GRANT USAGE, SELECT ON SEQUENCE activity_log_id_seq TO :"db_user";
+GRANT SELECT ON activity_log_chain, activity_log_chain_head TO :"db_user";
+\endif
 SQL
     done <<< "$tenant_list"
+    # shellcheck disable=SC2034
+    MIGRATION_RUNNER=
+    pg_owner_cleanup
     cd /
+}
+
+# psql in a company database as its owner role (pg-safe.sh pg_owner), for apply_migration.
+tenant_migration_runner() {
+    local database=$1
+    shift
+    pg_owner "$database" "$TENANT_OWNER_ROLE" "$@"
+}
+
+# Whether the activity log of a company database already belongs to bms_audit.
+tenant_log_hardened() {
+    [[ $(tenant_migration_runner "$1" -At -c "SELECT pg_catalog.pg_get_userbyid(c.relowner) FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass('public.activity_log')") == bms_audit ]]
 }
 
 # Instalaciones anteriores dejaban /opt/bms como home de bms: ese usuario podia plantar enlaces
@@ -788,7 +825,9 @@ if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     bash "$TRUSTED_DIR/scripts/ubuntu/domains-sync.sh" --install
     bash "$TRUSTED_DIR/scripts/ubuntu/core-update.sh" --install
     # Every company's activity log (V011 applied above) goes to bms_audit; the timer hardens new ones hourly.
-    bash "$TRUSTED_DIR/scripts/ubuntu/activity-harden.sh" --install
+    # A failure here (systemd, a busy company) must not stop the update between the migrations and the build.
+    bash "$TRUSTED_DIR/scripts/ubuntu/activity-harden.sh" --install ||
+        printf 'AVISO: no se pudo instalar bms-activity-harden.timer; ejecuta despues: sudo bash %s --install\n' "$TRUSTED_DIR/scripts/ubuntu/activity-harden.sh" >&2
     bash "$TRUSTED_DIR/scripts/ubuntu/activity-harden.sh" ||
         printf 'AVISO: no se pudo proteger el registro de actividad de alguna empresa (ver /var/log/bms-activity-harden.log).\n' >&2
 fi

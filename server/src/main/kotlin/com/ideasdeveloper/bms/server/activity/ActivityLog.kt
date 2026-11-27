@@ -33,7 +33,7 @@ data class ActivityActor(
 ) {
     /** The same person acting through the AI agent (or OAuth connection) [agentName]: "Agente de <usuario>". */
     fun viaAgent(agentName: String): ActivityActor = copy(
-        agentName = ActivityNames.neutral(clean(agentName)).ifEmpty { "Agente" },
+        agentName = ActivityNames.neutralPerson(clean(agentName)).ifEmpty { "Agente" },
         origin = Origins.Agent,
     ).rebuilt()
 
@@ -93,7 +93,7 @@ data class ActivityActor(
          */
         fun groupAgent(target: ActivityActor, origin: ActivityActor, originCompany: String, agentName: String): ActivityActor = ActivityActor(
             target.kind, target.userId, target.name, "",
-            agentName = ActivityNames.neutral(clean(agentName)).ifEmpty { "Agente" },
+            agentName = ActivityNames.neutralPerson(clean(agentName)).ifEmpty { "Agente" },
             realKind = origin.realKind ?: origin.kind,
             realUserId = origin.realUserId ?: origin.userId,
             realName = "${origin.realName ?: origin.name} (empresa ${clean(originCompany)})",
@@ -107,18 +107,25 @@ data class ActivityActor(
         /** A scheduled job of the server or a module. */
         fun job(name: String): ActivityActor = ActivityActor(Kinds.Job, null, clean(name).ifEmpty { "Tarea" }, "", origin = Origins.Automation).rebuilt()
 
-        /** An import started by [startedBy]: "Importacion (Ana Ruiz)". */
-        fun import(startedBy: ActivityActor?): ActivityActor = started(Kinds.Import, "Importacion", startedBy, Origins.Import)
+        /** An import started by [startedBy]: "Importacion (Ana Ruiz)". An import given again stays that import. */
+        fun import(startedBy: ActivityActor?): ActivityActor =
+            if (startedBy?.kind == Kinds.Import) startedBy.rebuilt() else started(Kinds.Import, "Importacion", startedBy, Origins.Import)
 
         /**
-         * The actor stored with [toStoredJson]; null when [stored] is null, blank or not one of ours (an old job that
-         * kept nothing). Validated like [restoreImport]; the stored display is never trusted.
+         * Kept only so callers not migrated yet compile: it returns the same as [restoreImportOrNull] (always an import,
+         * never the stored person itself). Use [restoreImport] or [restoreImportOrNull].
          */
         @Deprecated(
-            "A stored actor is only ever the starter of an import: use restoreImport, which always wraps it.",
-            ReplaceWith("ActivityActor.restoreImport(stored)"),
+            "A stored actor is only ever the starter of an import: use restoreImport / restoreImportOrNull, which always wrap it.",
+            ReplaceWith("ActivityActor.restoreImportOrNull(stored)"),
         )
-        fun restore(stored: String?): ActivityActor? = parseStored(stored)
+        fun restore(stored: String?): ActivityActor? = restoreImportOrNull(stored)
+
+        /**
+         * The import started by the actor stored with [toStoredJson]; null when [stored] is null, blank or not one of
+         * ours (an old job that kept nothing), so the caller can fall back to what it knows. Validated like [restoreImport].
+         */
+        fun restoreImportOrNull(stored: String?): ActivityActor? = parseStored(stored)?.let(::import)
 
         /**
          * The import started by the actor stored with [toStoredJson], or by what [fallback] gives (an old job that
@@ -378,9 +385,13 @@ object ActivityChanges {
 
 /**
  * The markers the log itself adds to a name ("Agente de", "(desde el servidor)", "Importacion (",
- * "Automatizacion ", "Tarea programada "). A person, agent, automation or board name that contains one
- * could pass for something it is not, so names are checked with [hasMarker] (refused where users type
- * them) and shown through [neutral] (quoted) everywhere else, including rows stored before the check.
+ * "Automatizacion ", "Tarea programada ") and the names of the log's own actors ("Sistema", "Importacion",
+ * "Automatizacion", the integrations "Cloudbeds", "Sitio web", "Portal WiFi", "monday"). A person, agent,
+ * automation or board name that contains a marker, or a person or agent named like one of those actors, could
+ * pass for something it is not, so names are checked with [hasMarker] (refused where users type them) and shown
+ * through [neutral] / [neutralPerson] (quoted) everywhere else, including rows stored before the check. Accents,
+ * width, invisible characters and Latin look-alikes from Cyrillic and Greek ("Аgente" with a Cyrillic А) are
+ * folded away first.
  */
 object ActivityNames {
     private val markers = listOf(
@@ -390,19 +401,50 @@ object ActivityNames {
         Regex("(?U)automatizacion(\\s|$)"),
         Regex("(?U)tarea\\s+programada(\\s|$)"),
     )
+    // Display names of the log's own actors: a person or an agent may not be called exactly that.
+    private val reserved = setOf("sistema", "importacion", "automatizacion", "tarea programada", "cloudbeds", "sitio web", "portal wifi", "monday")
     private val marks = Regex("\\p{M}+")
-    // Zero-width and other format characters would let "Agen​te de" slip through.
+    // Zero-width and other format characters would let "Agen\u200bte de" slip through.
     private val invisible = Regex("[\\p{Cf}\\p{Cc}]+")
+    private val separators = Regex("[^\\p{L}\\p{N}]+")
 
-    private fun folded(text: String): String =
-        java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKD).replace(marks, "").replace(invisible, "").lowercase()
+    // Cyrillic and Greek letters that look like Latin ones (Unicode confusables, the letters that matter here),
+    // by their own case: "Н" looks like "H", "н" does not. Fullwidth and other compatibility forms go with NFKD.
+    private val lookAlikes: Map<Char, Char> = buildMap {
+        // Pairs "<look-alike><latin>", separated by spaces.
+        fun add(pairs: String) = pairs.split(' ').forEach { pair -> put(pair[0], pair[1]) }
+        add("Аa Вb Еe Ѕs Іi Јj Кk Мm Нh Оo Рp Сc Тt Уy Хx Ӏl Ԛq Ԝw Үy") // Cyrillic capitals
+        add("аa еe ѕs іi јj оo рp сc уy хx һh ӏl ԁd ԛq ԝw ѵv үy") // Cyrillic small letters
+        add("Αa Βb Εe Ζz Ηh Ιi Κk Μm Νn Οo Ρp Τt Υy Χx Ϲc Ϳj") // Greek capitals
+        add("αa εe ιi κk νv οo ρp τt υu χx ϲc ϳj") // Greek small letters
+        add("ıi ȷj łl øo đd ħh ŧt ƀb ɑa ɡg ɩi ʟl") // Latin letters without a decomposition
+    }
 
-    /** Whether [name] contains a marker the log adds itself (accents, width and invisible characters ignored). */
-    fun hasMarker(name: String): Boolean = folded(name).let { text -> markers.any { it.containsMatchIn(text) } }
+    private fun folded(text: String): String {
+        val decomposed = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKD).replace(marks, "").replace(invisible, "")
+        val latin = buildString(decomposed.length) { decomposed.forEach { append(lookAlikes[it] ?: it) } }
+        // Look-alikes may carry marks of their own once mapped ("ё"); a second pass drops them.
+        return java.text.Normalizer.normalize(latin, java.text.Normalizer.Form.NFKD).replace(marks, "").lowercase()
+    }
+
+    private fun containsMarker(name: String): Boolean = folded(name).let { text -> markers.any { it.containsMatchIn(text) } }
+
+    /** Whether [name] is exactly ("Sistema", "Sitio web"...) the display name of one of the log's own actors. */
+    fun isReserved(name: String): Boolean = folded(name).replace(separators, " ").trim() in reserved
+
+    /**
+     * Whether a person or agent may not be called [name]: it contains a marker the log adds itself, or is the name
+     * of one of the log's own actors (accents, width, look-alike and invisible characters ignored).
+     */
+    fun hasMarker(name: String): Boolean = containsMarker(name) || isReserved(name)
 
     /** [name] as a display shows it: in quotes when it contains a marker, so it never reads as one. */
-    fun neutral(name: String): String =
-        if (hasMarker(name)) "«" + name.replace("«", "").replace("»", "").trim() + "»" else name
+    fun neutral(name: String): String = if (containsMarker(name)) quoted(name) else name
+
+    /** A person's or agent's [name] as a display shows it: also quoted when it is the name of one of the log's own actors. */
+    fun neutralPerson(name: String): String = if (hasMarker(name)) quoted(name) else name
+
+    private fun quoted(name: String) = "«" + name.replace("«", "").replace("»", "").trim() + "»"
 }
 
 /**
@@ -421,8 +463,9 @@ data class ActivityDisplay(
             val viaAgent = !agentName.isNullOrBlank()
             val serverKinds = ActivityActor.Kinds.server
             val fromServer = kind in serverKinds || realKind in serverKinds
-            val ownName = ActivityNames.neutral(ActivityActor.clean(name).ifEmpty { "Desconocido" })
-            val real = realName?.let(ActivityActor::clean)?.takeIf { it.isNotEmpty() }?.let(ActivityNames::neutral)
+            val cleanName = ActivityActor.clean(name).ifEmpty { "Desconocido" }
+            val ownName = ActivityNames.neutral(cleanName)
+            val real = realName?.let(ActivityActor::clean)?.takeIf { it.isNotEmpty() }?.let(ActivityNames::neutralPerson)
             // A person (or the person who started an import or automation), with the agent and server markers.
             fun person(who: String) = (if (viaAgent) "Agente de " else "") + who + (if (fromServer) " (desde el servidor)" else "")
             val starter = if (real != null || viaAgent) person(real ?: "Desconocido") else null
@@ -432,7 +475,7 @@ data class ActivityDisplay(
                 ActivityActor.Kinds.Job -> "Tarea programada $ownName"
                 ActivityActor.Kinds.Integration -> ownName
                 ActivityActor.Kinds.System -> "Sistema"
-                else -> person(if (realKind != null && real != null) real else ownName)
+                else -> person(if (realKind != null && real != null) real else ActivityNames.neutralPerson(cleanName))
             }
             val labels = buildList {
                 when (kind) {

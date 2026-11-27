@@ -124,7 +124,7 @@ object EventosImportApply {
      */
     fun importActor(tenant: Connection, startedBy: UUID?, stored: String? = null): ActivityActor {
         // The actor kept with the job when it started (an AI agent, a server owner...): rebuilt exactly; old jobs fall back to the user id.
-        ActivityActor.restore(stored)?.let { return ActivityActor.import(it) }
+        ActivityActor.restoreImportOrNull(stored)?.let { return it }
         if (startedBy == null) return ActivityActor.import(null)
         val name = tenant.rows("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?", listOf(startedBy)) { it.getString(1) }.firstOrNull()
         return ActivityActor.import(ActivityActor.user(startedBy, name?.takeIf { it.isNotBlank() } ?: "Usuario desconocido"))
