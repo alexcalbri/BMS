@@ -46,8 +46,20 @@ object CrmNotify {
             }
         }
 
-    fun saveUserSettings(tenant: Connection, settings: CrmUserSettings) {
+    private val UserLabels = linkedMapOf(
+        "email" to "Correo de avisos", "notifyNewLeads" to "Avisar de leads nuevos", "notifyAssigned" to "Avisar de asignaciones", "dailyDigest" to "Resumen diario",
+        "notifyMentioned" to "Avisar de menciones", "notifyNewMessage" to "Avisar de mensajes nuevos", "notifyFollowUp" to "Avisar de seguimientos",
+    )
+
+    private fun userValues(settings: CrmUserSettings?) = mapOf(
+        "email" to settings?.email, "notifyNewLeads" to settings?.notifyNewLeads, "notifyAssigned" to settings?.notifyAssigned, "dailyDigest" to settings?.dailyDigest,
+        "notifyMentioned" to settings?.notifyMentioned, "notifyNewMessage" to settings?.notifyNewMessage, "notifyFollowUp" to settings?.notifyFollowUp,
+    )
+
+    /** [userName]: the user the notices are for, for the activity log. */
+    fun saveUserSettings(tenant: Connection, settings: CrmUserSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor, userName: String = "") = CrmAudit.atomically(tenant) {
         if (settings.email.isNotEmpty() && !CrmContacts.isEmail(settings.email)) throw CrmValidationException(tr("Escribe un correo valido o dejalo vacio."))
+        val before = userSettings(tenant)[settings.userId]
         tenant.prepareStatement(
             """
             INSERT INTO crm_user_settings (user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned, notify_new_message, notify_followup)
@@ -67,6 +79,17 @@ object CrmNotify {
             upsert.setBoolean(8, settings.notifyFollowUp)
             upsert.executeUpdate()
         }
+        val who = userName.ifBlank { "un usuario" }
+        // A user without saved settings starts from the defaults (what the screens show), so the first save logs only what they changed.
+        val start = before ?: CrmUserSettings(settings.userId, "", false, true, false)
+        CrmAudit.settingsChanged(tenant, actor, "Avisos de $who", "Cambio los avisos del CRM de $who.", userValues(start), userValues(settings), UserLabels)
+    }
+
+    /** The hour the daily digest goes out (0-23). */
+    fun setDigestHour(tenant: Connection, hour: Int, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = tenant.prepareStatement("SELECT digest_hour FROM crm_settings WHERE id = 1").use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else null } }
+        tenant.prepareStatement("UPDATE crm_settings SET digest_hour = ? WHERE id = 1").use { it.setInt(1, hour); it.executeUpdate() }
+        CrmAudit.settingsChanged(tenant, actor, "Resumen diario", "Cambio la hora del resumen diario.", mapOf("hour" to before), mapOf("hour" to hour), mapOf("hour" to "Hora del resumen"))
     }
 
     // Staff emails and notices are written in the language of each recipient (user, else company, else Spanish).

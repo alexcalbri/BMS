@@ -97,8 +97,34 @@ object CrmFields {
         }
     }
 
+    private val FieldLabels = linkedMapOf(
+        "label" to "Nombre", "type" to "Tipo", "options" to "Opciones", "multiple" to "Varias opciones", "required" to "Obligatorio", "position" to "Posicion",
+        "section" to "Seccion", "config" to "Accion del boton",
+    )
+
+    private fun fieldValues(field: CrmField, sections: Map<UUID, String>) = mapOf(
+        "label" to field.label, "type" to field.type.label, "options" to field.options, "multiple" to field.multiple, "required" to field.required,
+        "position" to field.position, "section" to (field.sectionId?.let { sections[it] } ?: Section),
+        "config" to field.config.takeIf { it.isNotEmpty() }?.toString(),
+    )
+
+    private fun sectionNames(tenant: Connection): Map<UUID, String> =
+        tenant.prepareStatement("SELECT id, name FROM crm_field_sections").use { query ->
+            query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getObject(1, UUID::class.java), rows.getString(2)) } }
+        }
+
     /** Creates ([id] null) or edits a field. The type of an existing field never changes. */
-    fun save(tenant: Connection, id: UUID?, input: CrmFieldInput, existing: List<CrmField>): CrmField {
+    fun save(tenant: Connection, id: UUID?, input: CrmFieldInput, existing: List<CrmField>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): CrmField = CrmAudit.atomically(tenant) {
+        val saved = write(tenant, id, input, existing)
+        val sections = sectionNames(tenant)
+        CrmAudit.saved(
+            tenant, actor, "field", saved.id.toString(), saved.label, "el campo personalizado",
+            id?.let { existing.firstOrNull { field -> field.id == it } }?.let { fieldValues(it, sections) }, fieldValues(saved, sections), FieldLabels,
+        )
+        saved
+    }
+
+    private fun write(tenant: Connection, id: UUID?, input: CrmFieldInput, existing: List<CrmField>): CrmField {
         if (existing.any { it.label.equals(input.label, ignoreCase = true) && it.id != id }) throw CrmValidationException(tr("Ya existe el campo {0}.", input.label))
         val options = JsonArray(input.options.map { JsonPrimitive(it) }).toString()
         if (id == null) {
@@ -142,11 +168,11 @@ object CrmFields {
     }
 
     /** Deletes the field with its values in every lead (and its files). Returns how many leads lost their stay dates. */
-    fun delete(tenant: Connection, field: CrmField): Int {
+    fun delete(tenant: Connection, field: CrmField, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Int {
         val autoCommit = tenant.autoCommit
         tenant.autoCommit = false
         try {
-            val lost = remove(tenant, field)
+            val lost = remove(tenant, field, actor)
             tenant.commit()
             return lost
         } catch (failure: Exception) {
@@ -158,7 +184,9 @@ object CrmFields {
     }
 
     /** [delete] without managing the transaction: for callers that already run inside a transaction. */
-    fun remove(tenant: Connection, field: CrmField): Int {
+    fun remove(tenant: Connection, field: CrmField, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Int {
+        // The row goes first: the values of the field disappear from every lead.
+        CrmAudit.removed(tenant, actor, "field", field.id.toString(), field.label, "el campo personalizado", fieldValues(field, sectionNames(tenant)), FieldLabels)
         tenant.prepareStatement("UPDATE crm_leads SET custom_fields = custom_fields - ? WHERE jsonb_exists(custom_fields, ?)").use { update ->
             update.setString(1, field.key)
             update.setString(2, field.key)
@@ -303,6 +331,14 @@ object CrmFields {
     }
 
     fun parseStored(text: String?): JsonObject = text?.let { runCatching { Json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: JsonObject(emptyMap())
+
+    /** The custom fields that changed, as old → new for the activity log (values cut by Core). */
+    fun activityChanges(fields: List<CrmField>, before: JsonObject, after: JsonObject): List<com.ideasdeveloper.bms.server.activity.ActivityChange> =
+        fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }.mapNotNull { field ->
+            val old = display(before[field.key])
+            val new = display(after[field.key])
+            if (old == new) null else com.ideasdeveloper.bms.server.activity.ActivityChange.of("custom.${field.key}", field.label, old.ifEmpty { null }, new.ifEmpty { null })
+        }
 
     /** "Campo: antes -> despues" for each custom field that changed. */
     fun changes(fields: List<CrmField>, before: JsonObject, after: JsonObject): List<String> = fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }.mapNotNull { field ->

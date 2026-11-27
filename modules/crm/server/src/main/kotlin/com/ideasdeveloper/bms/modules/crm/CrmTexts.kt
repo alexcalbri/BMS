@@ -54,11 +54,21 @@ object CrmTexts {
     }
 
     /** Stores (or, when [translated] is blank, removes) the manual translation of [name] into [language]. */
-    fun saveManual(tenant: Connection, name: String, language: String, translated: String) {
+    fun saveManual(tenant: Connection, name: String, language: String, translated: String, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) {
         val access = CrmCustomerEvents.access ?: return
-        runCatching {
+        val previous = runCatching { access.textTranslation.manualTranslations(tenant, listOf(name), language)[name].orEmpty() }.getOrDefault("")
+        if (previous.trim() == translated.trim()) return
+        val stored = runCatching {
             if (translated.isBlank()) access.textTranslation.removeManual(tenant, name, language)
             else access.textTranslation.setManual(tenant, name, language, translated)
+        }.isSuccess
+        // Only what was really stored is logged; the log row itself is never swallowed.
+        if (stored) {
+            CrmAudit.record(
+                tenant, actor, CrmAudit.Settings, "translation:$language:$name", "Traduccion de $name", com.ideasdeveloper.bms.server.activity.ActivityActions.SettingsChanged,
+                if (translated.isBlank()) "Quito la traduccion manual de $name al idioma $language." else "Guardo la traduccion manual de $name al idioma $language.",
+                listOf(com.ideasdeveloper.bms.server.activity.ActivityChange.of("translation.$language", "Traduccion al idioma $language", null, translated.ifBlank { null })),
+            )
         }
     }
 

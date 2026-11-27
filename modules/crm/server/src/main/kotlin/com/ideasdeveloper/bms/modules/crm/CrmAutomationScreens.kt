@@ -232,7 +232,7 @@ object CrmAutomationScreens {
         if (id != null && current == null) throw CrmValidationException(tr("Esa automatizacion ya no existe."))
         val automation = CrmAutomationForm.parse(values, refs, current?.id ?: UUID.randomUUID(), current?.position ?: CrmAutomationStore.nextPosition(tenant))
         CrmAutomationRules.validate(automation, refs, existing)
-        CrmAutomationStore.save(tenant, automation, exists = current != null)
+        CrmAutomationStore.save(tenant, automation, exists = current != null, actor = context.permissions.activityActor)
         return saved(context, automation, tr("Automatizacion {0} guardada.", automation.name))
     }
 
@@ -240,7 +240,7 @@ object CrmAutomationScreens {
     fun setEnabled(context: CrmScreens.Context, automation: CrmAutomation, enabled: Boolean): Saved {
         val changed = automation.copy(enabled = enabled)
         if (enabled) CrmAutomationRules.validate(changed, refsOf(context), CrmAutomationStore.all(context.tenant))
-        if (!CrmAutomationStore.setEnabled(context.tenant, automation.id, enabled)) throw CrmValidationException(tr("Esa automatizacion ya no existe."))
+        if (!CrmAutomationStore.setEnabled(context.tenant, automation.id, enabled, context.permissions.activityActor)) throw CrmValidationException(tr("Esa automatizacion ya no existe."))
         return saved(context, changed, tr("Automatizacion {0} {1}.", automation.name, if (enabled) "activada" else "apagada"))
     }
 

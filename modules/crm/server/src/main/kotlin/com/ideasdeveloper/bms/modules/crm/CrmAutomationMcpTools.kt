@@ -152,7 +152,7 @@ object CrmAutomationMcpTools {
     // The user, marked as acting through an agent in the lead's activity.
     private fun actor(call: McpToolCall): CrmActor {
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
-        return actor.copy(name = "${actor.name} (agente ${call.agentName})")
+        return actor.copy(name = "${actor.name} (agente ${call.agentName})", activity = call.activityActor)
     }
 
     private fun automation(call: McpToolCall, key: String = "id"): CrmAutomation =
@@ -318,7 +318,7 @@ object CrmAutomationMcpTools {
                 position = current?.position ?: CrmAutomationStore.nextPosition(call.tenant),
             ).normalized()
             CrmAutomationRules.validate(automation, refs, existing)
-            CrmAutomationStore.save(call.tenant, automation, exists = current != null)
+            CrmAutomationStore.save(call.tenant, automation, exists = current != null, actor = call.activityActor)
             automation
         }
         val duplicate = CrmAutomationRules.duplicatesCloudbedsWelcome(
@@ -343,7 +343,7 @@ object CrmAutomationMcpTools {
 
     private fun delete(call: McpToolCall): JsonElement {
         val automation = automation(call)
-        CrmAutomationStore.delete(call.tenant, automation.id)
+        CrmAutomationStore.delete(call.tenant, automation.id, call.activityActor)
         return buildJsonObject {
             put("id", automation.id.toString())
             put("result", "Automatizacion ${automation.name} eliminada.")
