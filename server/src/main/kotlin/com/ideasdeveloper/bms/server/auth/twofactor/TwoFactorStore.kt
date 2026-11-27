@@ -147,6 +147,62 @@ class TwoFactorStore(private val secrets: SecretBox, private val clock: () -> In
         }
     }
 
+    /**
+     * Starts replacing the authenticator of an account that has it on (TWO_FACTOR.md §9): a new secret is kept
+     * apart (pending) until [confirmReplace]; the current one keeps working meanwhile. Returns it in Base32.
+     */
+    fun startReplace(connection: Connection, userId: UUID): String {
+        if (!available(connection) || !secrets.available) throw TwoFactorException.unavailable()
+        if (!isEnabled(connection, userId)) throw notEnabled()
+        val secret = Totp.base32(Totp.newSecret())
+        val sealed = try {
+            secrets.seal(connection, secret)
+        } catch (_: SecretsUnavailableException) {
+            throw TwoFactorException.unavailable()
+        }
+        connection.prepareStatement("UPDATE $Table SET pending_secret_sealed = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND enabled_at IS NOT NULL").use { update ->
+            update.setString(1, sealed)
+            update.setObject(2, userId)
+            if (update.executeUpdate() != 1) throw notEnabled()
+        }
+        return secret
+    }
+
+    /**
+     * Confirms the replacement with a code of the NEW authenticator: the new secret becomes the secret, the old
+     * one and every recovery code stop working, and new recovery codes are returned; [inTransaction] runs before
+     * the commit. Wrong codes count in the account's limit.
+     */
+    fun confirmReplace(connection: Connection, userId: UUID, code: String, inTransaction: (Connection) -> Unit = {}): List<String> {
+        if (!available(connection)) throw TwoFactorException.unavailable()
+        val pending = connection.prepareStatement("SELECT pending_secret_sealed FROM $Table WHERE user_id = ? AND enabled_at IS NOT NULL").use { q ->
+            q.setObject(1, userId)
+            q.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: throw TwoFactorException(TwoFactorException.NotPending, tr("Primero configura el nuevo autenticador."))
+        if (!claimAttempt(connection, userId)) throw TwoFactorException.tooManyAttempts()
+        val secret = try {
+            Totp.decodeBase32(secrets.open(connection, pending))
+        } catch (_: SecretsUnavailableException) {
+            throw TwoFactorException.unavailable()
+        } catch (_: SecretDecryptionException) {
+            throw TwoFactorException.unavailable()
+        }
+        val step = Totp.matchingStep(secret, code, Totp.step(clock().epochSecond), 0)
+        secret.fill(0)
+        if (step == null) throw TwoFactorException.invalidCode()
+        return transaction(connection) {
+            connection.prepareStatement(
+                "UPDATE $Table SET secret_sealed = pending_secret_sealed, pending_secret_sealed = NULL, last_used_step = ?, failed_attempts = 0, failure_window_start = NULL, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND pending_secret_sealed = ?"
+            ).use { update ->
+                update.setLong(1, step); update.setObject(2, userId); update.setString(3, pending)
+                if (update.executeUpdate() != 1) throw TwoFactorException(TwoFactorException.NotPending, tr("Primero configura el nuevo autenticador."))
+            }
+            val codes = replaceRecoveryCodes(connection, userId)
+            inTransaction(connection)
+            codes
+        }
+    }
+
     /** New recovery codes; the old ones stop working. */
     fun regenerate(connection: Connection, userId: UUID, inTransaction: (Connection) -> Unit = {}): List<String> {
         if (!isEnabled(connection, userId)) throw notEnabled()

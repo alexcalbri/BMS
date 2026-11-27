@@ -37,6 +37,15 @@ import java.util.Base64
 import java.util.HexFormat
 import java.util.UUID
 import kotlin.test.AfterTest
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.contentType
+import io.ktor.server.application.install
+import io.ktor.server.routing.routing
+import io.ktor.serialization.kotlinx.json.json
+import com.ideasdeveloper.bms.server.auth.api.twoFactorResetRoutes
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -117,7 +126,7 @@ class TwoFactorPostgresTest {
                     .forEach { db.run(migration("database/core/migrations/$it.sql")) }
                 listOf("V001__create_business_owner", "V003__create_tenant_modules", "V004__create_application_permissions", "V005__create_application_user_credentials",
                     "V006__create_extensions", "V008__account_reset_throttle", "V011__create_activity_log", "V012__create_two_factor",
-                    "V013__create_two_factor_email_recovery", "V014__session_second_factor_mark", "V015__session_switch_origin")
+                    "V013__create_two_factor_email_recovery", "V014__session_second_factor_mark", "V015__session_switch_origin", "V016__two_factor_replace")
                     .forEach { db.run(migration("database/tenant/migrations/$it.sql")) }
                 val owner = UUID.randomUUID()
                 db.run("INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES ('$owner', 'tf_${code}_owner', TRUE, 'Dueno $code', '$code@example.com')")
@@ -167,6 +176,7 @@ class TwoFactorPostgresTest {
         assertTrue(setup.otpauthUri.startsWith("otpauth://totp/"))
         assertFailsWith<TwoFactorException> { service.enable(session.accessToken, company, "000000".takeIf { it != codeAt(setup.secret) } ?: "111111") }
         val codes = service.enable(session.accessToken, company, codeAt(setup.secret, -1)).recoveryCodes
+        enrolledSecret = setup.secret
         assertEquals(10, codes.size)
         assertTrue(service.status(session.accessToken, company).enabled)
         return setup.secret to codes
@@ -458,6 +468,193 @@ class TwoFactorPostgresTest {
         assertTrue(response.notice!!.contains("no se pudieron", ignoreCase = true), response.notice)
         val audit = scalar(central, "SELECT details::text FROM provisioning_audit_log WHERE action = 'security.agents_not_disconnected' AND company_code = 'acme'")!!
         assertTrue(audit.contains("\"attention\": true") && audit.contains("test"), audit)
+    }
+
+    private fun resets(db: LoginDatabases, clock: () -> Instant = Instant::now) = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService(db, clock = clock)
+
+    private fun selfService(db: LoginDatabases) = com.ideasdeveloper.bms.server.company.application.CompanySelfService(
+        source(central), db, com.ideasdeveloper.bms.server.modules.ModuleRegistry(emptyList()), java.nio.file.Files.createTempDirectory("tf-backups"),
+        twoFactorResets = resets(db),
+    )
+
+    private fun events(block: () -> Unit): List<com.ideasdeveloper.bms.server.auth.application.CredentialsChanged> {
+        val seen = mutableListOf<com.ideasdeveloper.bms.server.auth.application.CredentialsChanged>()
+        com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.subscribe("test") { seen += it; 1 }
+        try { block() } finally { com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.unsubscribe("test") }
+        return seen
+    }
+
+    // TWO_FACTOR.md §8: the business owner turns a user's two-step verification off.
+    @Test
+    fun theBusinessOwnerResetsAUserOfTheCompanyOnly() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        enrol(db, "luis", userPassword, "acme")
+        val luisSession = db.completeTwoFactor(challenge { login(db, "luis", userPassword, "acme") }.token, codeAt(enrolledSecret!!), "10.0.0.1")
+        val self = selfService(db)
+        val owner = login(db, "tf_acme_owner", ownerPassword, "acme")!!
+        val luis = userId("bms_tf_acme", "luis")
+        // Staff cannot, the owner of another company cannot, and nobody resets themself this way.
+        val eva = login(db, "eva", userPassword, "acme")!!
+        assertFailsWith<com.ideasdeveloper.bms.server.company.application.CompanySelfException> { self.disableUserTwoFactor("acme", eva.accessToken, luis, userPassword) }
+        val betaOwner = login(db, "tf_beta_owner", ownerPassword, "beta")!!
+        assertFailsWith<com.ideasdeveloper.bms.server.company.application.CompanySelfException> { self.disableUserTwoFactor("acme", betaOwner.accessToken, luis, ownerPassword) }
+        assertFailsWith<com.ideasdeveloper.bms.server.company.application.CompanySelfException> { self.disableUserTwoFactor("acme", owner.accessToken, userId("bms_tf_acme", "tf_acme_owner"), ownerPassword) }
+        assertFailsWith<AccountException> { self.disableUserTwoFactor("acme", owner.accessToken, luis, null) }
+        val seen = events {
+            val answer = self.disableUserTwoFactor("acme", owner.accessToken, luis, ownerPassword)
+            assertFalse(answer.twoFactorEnabled)
+            assertTrue(answer.sessionsClosed >= 1)
+        }
+        assertEquals(listOf(com.ideasdeveloper.bms.server.auth.application.CredentialsChanged("acme", luis, "two_factor_reset")), seen)
+        // Off, every session of the target closed, recorded in the company and the server audit.
+        assertEquals("0", scalar("bms_tf_acme", "SELECT count(*) FROM application_user_two_factor WHERE user_id = '$luis'"))
+        assertEquals("0", scalar("bms_tf_acme", "SELECT count(*) FROM application_user_recovery_codes WHERE user_id = '$luis'"))
+        assertEquals("t", scalar("bms_tf_acme", "SELECT revoked_at IS NOT NULL FROM application_sessions WHERE token_hash = '${SessionTokenGenerator().hash(luisSession.accessToken)}'"))
+        assertEquals("1", scalar("bms_tf_acme", "SELECT count(*) FROM activity_log WHERE summary LIKE 'Desactivo la verificacion en dos pasos de luis%'"))
+        assertTrue(scalar(central, "SELECT details::text FROM provisioning_audit_log WHERE action = 'two_factor.reset_by_other' AND company_code = 'acme'")!!.contains("business_owner"))
+        // The listing shows it, and a second reset finds nothing to do.
+        assertEquals(false, self.users("acme", owner.accessToken).users.single { it.username == "luis" }.twoFactorEnabled)
+        val again = assertFailsWith<com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetException> { self.disableUserTwoFactor("acme", owner.accessToken, luis, ownerPassword) }
+        assertEquals(409, again.status)
+        assertNotNull(login(db, "luis", userPassword, "acme"))
+    }
+
+    private var enrolledSecret: String? = null
+
+    private fun serverApp(db: LoginDatabases, block: suspend (suspend (String, String, String) -> Pair<Int, String>) -> Unit) = io.ktor.server.testing.testApplication {
+        val data = source(central)
+        val exposed = Database.connect(data)
+        val actors = ServerOwnerAuthorizer(data, SessionService(ApplicationSessionRepository(exposed), ApplicationUserRepository(exposed), SessionTokenGenerator(), 3600))
+        application {
+            install(io.ktor.server.plugins.contentnegotiation.ContentNegotiation) { json() }
+            routing {
+                twoFactorResetRoutes(actors, com.ideasdeveloper.bms.server.auth.api.ServerTwoFactorResets(
+                    resets(db), db::ownerGroupOf, { db.businessOwnerId(it) }, { id -> db.admins.find(id)?.usable == true },
+                ))
+            }
+        }
+        block { token, path, password ->
+            val response = client.post(path) {
+                header("Authorization", "Bearer $token")
+                contentType(io.ktor.http.ContentType.Application.Json)
+                setBody("""{"currentPassword":"$password"}""")
+            }
+            response.status.value to response.bodyAsText()
+        }
+    }
+
+    // TWO_FACTOR.md §8: the server owner and administrators with the permission and the scope.
+    @Test
+    fun serverPeopleResetWithPermissionScopeAndASecondStep() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        enrol(db, "luis", userPassword, "acme")
+        enrol(db, "tf_beta_owner", ownerPassword, "beta")
+        val luis = userId("bms_tf_acme", "luis")
+        val betaOwner = userId("bms_tf_beta", "tf_beta_owner")
+        val ownerId = scalar(central, "SELECT id FROM application_users WHERE postgres_role = 'tf_acme_owner'")!!
+        serverApp(db) { post ->
+            val ana = login(db, "tf_ana", adminPassword, null)!!.accessToken
+            // Without the permission.
+            assertEquals(403, post(ana, "/server/companies/acme/users/$luis/two-factor/disable", adminPassword).first)
+            connect(central).use { it.run("INSERT INTO server_admin_permissions (user_id, permission) VALUES ('$adminId', 'server.users.two_factor_reset')") }
+            // Scope: only acme; the beta business owner (group acme+beta) is out of reach, and so is beta.
+            connect(central).use { c ->
+                c.run("UPDATE server_admins SET all_companies = FALSE WHERE user_id = '$adminId'")
+                c.run("INSERT INTO server_admin_companies (user_id, company_code) VALUES ('$adminId', 'acme')")
+            }
+            assertEquals(403, post(ana, "/server/companies/beta/users/$betaOwner/two-factor/disable", adminPassword).first)
+            // Wrong password, then right.
+            assertEquals(400, post(ana, "/server/companies/acme/users/$luis/two-factor/disable", "mala-clave-123").first)
+            val ok = post(ana, "/server/companies/acme/users/$luis/two-factor/disable", adminPassword)
+            assertEquals(200, ok.first, ok.second)
+            assertTrue(scalar(central, "SELECT details::text FROM provisioning_audit_log WHERE action = 'two_factor.reset_by_other' AND actor_role = 'tf_ana'")!!.contains("server_admin"))
+            // An administrator never resets an administrator (owner-only route), nor the owner.
+            assertEquals(403, post(ana, "/server/admins/$adminId/two-factor/disable", adminPassword).first)
+            // With all companies, the beta business owner can be reset.
+            connect(central).use { it.run("UPDATE server_admins SET all_companies = TRUE WHERE user_id = '$adminId'") }
+            assertEquals(200, post(ana, "/server/companies/beta/users/$betaOwner/two-factor/disable", adminPassword).first)
+
+            // An actor that uses it must have passed a second step in THIS session.
+            enrol(db, "luis", userPassword, "acme")
+            val unmarked = login(db, "tf_ana", adminPassword, null)!!.accessToken
+            val anaService = TwoFactorAccountService(db)
+            val anaSecret = anaService.setup(unmarked, null, adminPassword).secret
+            anaService.enable(unmarked, null, codeAt(anaSecret, -1))
+            val refusal = post(unmarked, "/server/companies/acme/users/$luis/two-factor/disable", adminPassword)
+            assertEquals(403, refusal.first)
+            assertTrue(refusal.second.contains("TWO_FACTOR_REAUTH_REQUIRED"), refusal.second)
+            val marked = db.completeTwoFactor(challenge { login(db, "tf_ana", adminPassword, null) }.token, codeAt(anaSecret), "10.0.0.1").accessToken
+            assertEquals(200, post(marked, "/server/companies/acme/users/$luis/two-factor/disable", adminPassword).first)
+
+            // The owner resets the administrator; nobody resets the owner.
+            val owner = login(db, "tf_acme_owner", ownerPassword, null)!!.accessToken
+            val anaSessions = scalar(central, "SELECT count(*) FROM application_sessions WHERE user_id = '$adminId' AND revoked_at IS NULL")!!.toInt()
+            assertTrue(anaSessions > 0)
+            assertEquals(403, post(owner, "/server/admins/$ownerId/two-factor/disable", ownerPassword).first)
+            assertEquals(200, post(owner, "/server/admins/$adminId/two-factor/disable", ownerPassword).first)
+            assertEquals("0", scalar(central, "SELECT count(*) FROM application_sessions WHERE user_id = '$adminId' AND revoked_at IS NULL"))
+            assertEquals("0", scalar(central, "SELECT count(*) FROM application_user_two_factor WHERE user_id = '$adminId'"))
+        }
+    }
+
+    // TWO_FACTOR.md §9: the last recovery code no longer leaves the person stuck.
+    @Test
+    fun aSessionOpenedWithTheLastRecoveryCodeReplacesTheAuthenticator() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        val (oldSecret, codes) = enrol(db, "luis", userPassword, "acme")
+        val luis = userId("bms_tf_acme", "luis")
+        // Only one recovery code left.
+        connect("bms_tf_acme").use { it.run("UPDATE application_user_recovery_codes SET used_at = now() WHERE user_id = '$luis'") }
+        connect("bms_tf_acme").use { it.run("UPDATE application_user_recovery_codes SET used_at = NULL WHERE code_hash = (SELECT code_hash FROM application_user_recovery_codes WHERE user_id = '$luis' LIMIT 1)") }
+        val lastHash = scalar("bms_tf_acme", "SELECT code_hash FROM application_user_recovery_codes WHERE used_at IS NULL")!!
+        val last = codes.first { com.ideasdeveloper.bms.server.auth.twofactor.RecoveryCodes.hash(luis, com.ideasdeveloper.bms.server.auth.twofactor.RecoveryCodes.normalize(it)!!) == lastHash.trim() }
+        val signed = db.completeTwoFactor(challenge { login(db, "luis", userPassword, "acme") }.token, last, "10.0.0.1")
+        assertTrue(signed.lastRecoveryCodeUsed)
+        assertEquals(0, signed.recoveryCodesLeft)
+        val other = login(db, "eva", userPassword, "acme")!!
+        assertNotNull(other)
+        val service = TwoFactorAccountService(db)
+        val status = service.status(signed.accessToken, "acme")
+        assertEquals("recovery_code", status.secondFactorMethod)
+        assertNotNull(status.replaceWindowUntil)
+        // Still: new recovery codes need an authenticator code.
+        assertFailsWith<TwoFactorException> { service.regenerate(signed.accessToken, "acme", userPassword, last) }
+        // Within the window, the password alone starts the replacement; a code of the NEW authenticator confirms it.
+        val setup = service.replaceSetup(signed.accessToken, "acme", userPassword, null)
+        assertFailsWith<TwoFactorException> { service.replaceConfirm(signed.accessToken, "acme", codeAt(oldSecret)) }
+        val seen = events {
+            val replaced = service.replaceConfirm(signed.accessToken, "acme", codeAt(setup.secret))
+            assertEquals(10, replaced.recoveryCodes.size)
+        }
+        assertEquals("two_factor_replaced", seen.single().reason)
+        assertEquals("1", scalar("bms_tf_acme", "SELECT count(*) FROM activity_log WHERE summary = 'Cambio el autenticador de la verificacion en dos pasos.'"))
+        // The old authenticator no longer works; the new one does.
+        assertFailsWith<TwoFactorSignInException> { db.completeTwoFactor(challenge { login(db, "luis", userPassword, "acme") }.token, codeAt(oldSecret, 1), "10.0.0.1") }
+        // (A code of the new one that was not used yet: the next step.)
+        assertNotNull(db.completeTwoFactor(challenge { login(db, "luis", userPassword, "acme") }.token, codeAt(setup.secret, 1), "10.0.0.1"))
+    }
+
+    @Test
+    fun outsideTheWindowReplacingNeedsACode() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        val (secret, codes) = enrol(db, "luis", userPassword, "acme")
+        val signed = db.completeTwoFactor(challenge { login(db, "luis", userPassword, "acme") }.token, codes[0], "10.0.0.1")
+        val later = TwoFactorAccountService(db, clock = { Instant.now().plus(TwoFactorAccountService.ReplaceWindow).plusSeconds(5) })
+        assertNull(later.status(signed.accessToken, "acme").replaceWindowUntil)
+        val refused = assertFailsWith<TwoFactorException> { later.replaceSetup(signed.accessToken, "acme", userPassword, null) }
+        assertEquals("TWO_FACTOR_CODE_REQUIRED", refused.code)
+        // A session opened with the authenticator always needs one too.
+        val withTotp = db.completeTwoFactor(challenge { login(db, "luis", userPassword, "acme") }.token, codeAt(secret), "10.0.0.1")
+        assertFailsWith<TwoFactorException> { TwoFactorAccountService(db).replaceSetup(withTotp.accessToken, "acme", userPassword, null) }
+        assertNotNull(later.replaceSetup(signed.accessToken, "acme", userPassword, codes[1]))
     }
 }
 

@@ -27,6 +27,8 @@ class ServerAdminService(
     // Deactivates the workspace staff accounts whose credentials the administrator knows and revokes
     // their sessions (CompanySelfService.deactivateWorkspaceStaffOf), audited as the owner.
     private val deactivateWorkspaceStaff: (adminUserId: UUID, by: AuditActor, reason: String) -> Unit = { _, _, _ -> },
+    // Whether an administrator has two-step verification on, for the listings (null: unknown).
+    private val twoFactorEnabled: (UUID) -> Boolean? = { null },
 ) {
     private val loginPattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val tokens = SessionTokenGenerator()
@@ -205,5 +207,6 @@ class ServerAdminService(
         companies = companies.sorted(),
         createdAt = createdAt.toString(),
         updatedAt = updatedAt.toString(),
+        twoFactorEnabled = runCatching { twoFactorEnabled(userId) }.getOrNull(),
     )
 }

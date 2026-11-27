@@ -3,6 +3,7 @@ package com.ideasdeveloper.bms.server.admins
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
 import com.ideasdeveloper.bms.server.company.api.storageRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorResetRoutes
 import com.ideasdeveloper.bms.server.extensions.ExtensionActors
 import com.ideasdeveloper.bms.server.extensions.ExtensionConnections
 import com.ideasdeveloper.bms.server.extensions.ExtensionNotifier
@@ -150,6 +151,7 @@ class ServerRouteMatrixTest {
                 serverAdminRoutes(resolver, admins = null, audit = null)
                 storageRoutes(resolver, storage = null)
                 twoFactorPolicyRoutes(resolver, central = null)
+                twoFactorResetRoutes(resolver, resets = null)
             }
         }
         startApplication()
@@ -237,7 +239,7 @@ class ServerRouteMatrixTest {
         assertEquals(
             setOf(
                 "server.companies.owner_password", "server.companies.enter", "server.modules.authorize_unsigned",
-                "server.extensions.authorize_unsigned", "server.workspace", "server.core.update",
+                "server.extensions.authorize_unsigned", "server.workspace", "server.core.update", "server.users.two_factor_reset",
             ),
             infos.filter { it.risk == "high" }.map { it.id }.toSet(),
         )

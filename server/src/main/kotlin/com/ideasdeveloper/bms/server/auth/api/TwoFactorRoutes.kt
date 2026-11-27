@@ -40,6 +40,9 @@ data class TwoFactorCodeRequest(val code: String = "")
 data class TwoFactorPasswordCodeRequest(val currentPassword: String? = null, val code: String = "")
 
 @Serializable
+data class TwoFactorReplaceRequest(val currentPassword: String? = null, val code: String? = null)
+
+@Serializable
 data class TwoFactorPolicyRequest(val requireForAdmins: Boolean)
 
 @Serializable
@@ -69,6 +72,17 @@ fun Route.twoFactorRoutes(service: TwoFactorAccountService) {
     delete("/auth/two-factor/email-recovery") {
         val token = call.twoFactorSession() ?: return@delete
         call.twoFactorAnswer(HttpStatusCode.NoContent) { service.cancelEmailRecovery(token, call.companyHeader()) }
+    }
+    // Replacing the authenticator (TWO_FACTOR.md §9).
+    post("/auth/two-factor/replace/setup") {
+        val token = call.twoFactorSession() ?: return@post
+        val request = call.twoFactorBody<TwoFactorReplaceRequest>() ?: return@post
+        call.twoFactorAnswer { service.replaceSetup(token, call.companyHeader(), request.currentPassword, request.code?.take(64)) }
+    }
+    post("/auth/two-factor/replace/confirm") {
+        val token = call.twoFactorSession() ?: return@post
+        val request = call.twoFactorBody<TwoFactorCodeRequest>() ?: return@post
+        call.twoFactorAnswer { service.replaceConfirm(token, call.companyHeader(), request.code.take(64)) }
     }
     post("/auth/two-factor/disable") {
         val token = call.twoFactorSession() ?: return@post
@@ -134,6 +148,7 @@ private suspend inline fun <reified T : Any> ApplicationCall.twoFactorAnswer(sta
             TwoFactorException.TooManyAttempts -> HttpStatusCode.TooManyRequests
             TwoFactorException.AlreadyEnabled, TwoFactorException.NotPending, TwoFactorException.NotEnabled, "EMAIL_RECOVERY_NOT_PENDING" -> HttpStatusCode.Conflict
             TwoFactorException.RequiredByServer -> HttpStatusCode.Forbidden
+            "TWO_FACTOR_CODE_REQUIRED" -> HttpStatusCode.BadRequest
             else -> HttpStatusCode.BadRequest
         }
         return respond(code, AuthErrorResponse(failure.code, failure.message.orEmpty()))

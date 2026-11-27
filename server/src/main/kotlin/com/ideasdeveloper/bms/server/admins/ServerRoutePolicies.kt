@@ -132,6 +132,10 @@ object ServerRoutePolicies {
         // Two-step verification rule for administrators (TWO_FACTOR.md §5): the owner only.
         put("GET /server/two-factor-policy", owner)
         put("PUT /server/two-factor-policy", owner)
+        // Turning another account's two-step verification off (TWO_FACTOR.md §8): company users by permission and scope,
+        // administrators by the owner only.
+        put("POST /server/companies/{code}/users/{userId}/two-factor/disable", scoped(ServerPermission.UsersTwoFactorReset))
+        put("POST /server/admins/{id}/two-factor/disable", owner)
         // The caller itself
         put("GET /server/me", RoutePolicy.AnyServerUser(duringPasswordChange = true))
         put("PUT /auth/password", RoutePolicy.AnyServerUser(duringPasswordChange = true))

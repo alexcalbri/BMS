@@ -95,6 +95,8 @@ class CompanySelfService(
     private val serverActors: ServerActorResolver? = null,
     // Quota, free-disk floor and uploads in progress of the company (STORAGE_QUOTA.md); imported backups count too.
     private val storage: com.ideasdeveloper.bms.server.modules.StorageGuard? = null,
+    // Turning a user's two-step verification off (TWO_FACTOR.md §8).
+    private val twoFactorResets: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService? = null,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
     private val tokenGenerator = SessionTokenGenerator()
@@ -346,6 +348,28 @@ class CompanySelfService(
             LoggerFactory.getLogger(CompanySelfService::class.java).error("No se pudo guardar el correo de la empresa {}", companyCode, failure)
             throw CompanyMailStorageException(tr("No se pudo guardar el correo de la empresa."))
         }
+    }
+
+    /**
+     * The business owner turns off the two-step verification of another user of the company (TWO_FACTOR.md §8):
+     * only with their own session (never one opened from the server switcher, nor in the server workspace) and
+     * never for themself.
+     */
+    fun disableUserTwoFactor(companyCode: String, accessToken: String, userId: UUID, currentPassword: String?): com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetResponse {
+        val resets = twoFactorResets ?: throw CompanySelfException(tr("La verificacion en dos pasos no esta disponible en este servidor."))
+        if (companyCode.trim() == ServerWorkspace.Code) throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        if (loginDatabases.companySessionOpener(context.companyCode, accessToken) != null) {
+            throw CompanySelfException(tr("Desde el selector del servidor usa la opcion del servidor para desactivarla."))
+        }
+        val ownerId = context.businessOwnerUserId ?: throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
+        if (ownerId == userId) throw CompanySelfException(tr("No puedes desactivar asi tu propia verificacion en dos pasos."))
+        val role = context.businessOwnerRole.orEmpty()
+        val actor = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(
+            AuditActor.businessOwner(role), ownerId, role, context.activity.name, context.companyCode, context.activity,
+        )
+        resets.checkActor(actor, accessToken, currentPassword)
+        return resets.reset(actor, context.companyCode, userId)
     }
 
     fun users(companyCode: String, accessToken: String): CompanyUsersResponse {
@@ -911,6 +935,7 @@ class CompanySelfService(
             email = user.third.second,
             userCode = ApplicationUserCodes.ensure(connection, userId),
             isBusinessOwner = connection.isBusinessOwner(userId),
+            twoFactorEnabled = runCatching { loginDatabases.twoFactor.takeIf { it.available(connection) }?.isEnabled(connection, userId) }.getOrNull(),
         )
     }
 

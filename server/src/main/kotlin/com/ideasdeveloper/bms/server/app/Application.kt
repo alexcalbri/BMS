@@ -14,6 +14,7 @@ import com.ideasdeveloper.bms.server.auth.api.accountProfileRoutes
 import com.ideasdeveloper.bms.server.auth.api.passwordResetRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorResetRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorRecoveryLinkRoutes
 import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountPasswords
@@ -325,13 +326,8 @@ fun Application.module() {
         moduleNames = { id -> moduleRegistry.availableDefinition(id)?.displayName },
     ).also { moduleAccessRef = it }
     // Delayed recovery of two-step verification by email (TWO_FACTOR.md §7) and its job (every 10 minutes).
-    val emailRecovery = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorEmailRecovery(
-        central = DatabaseFactory.getDataSource(),
-        sources = loginDatabases::accountSource,
-        companies = loginDatabases::activeCompanyCodes,
-        mail = serverMailSettings().let { settings -> { settings } },
-        twoFactor = loginDatabases.twoFactor,
-        notify = { companyCode, userId, title, text ->
+    // In-app notice to an account (company: its company; server account: the server workspace).
+    val notifyAccount: (String?, java.util.UUID, String, String) -> Unit = { companyCode, userId, title, text ->
             val tenant = if (companyCode != null) moduleAccessService.tenantConnectionForCompany(companyCode) else {
                 DatabaseFactory.getDataSource().connection.use { connection ->
                     connection.prepareStatement("SELECT database_name FROM companies WHERE is_server_workspace AND is_active").use { query ->
@@ -340,7 +336,14 @@ fun Application.module() {
                 }?.let { moduleAccessService.tenantConnectionForDatabase(it) }
             }
             tenant?.use { moduleAccessService.notifications.notify(it, com.ideasdeveloper.bms.server.modules.NewNotification(userId, com.ideasdeveloper.bms.server.activity.CoreModuleId, title, text)) }
-        },
+    }
+    val emailRecovery = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorEmailRecovery(
+        central = DatabaseFactory.getDataSource(),
+        sources = loginDatabases::accountSource,
+        companies = loginDatabases::activeCompanyCodes,
+        mail = serverMailSettings().let { settings -> { settings } },
+        twoFactor = loginDatabases.twoFactor,
+        notify = notifyAccount,
     ).also { loginDatabases.emailRecovery = it }
     val emailRecoveryJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "two-factor-email-recovery").apply { isDaemon = true } }
     emailRecoveryJob.scheduleWithFixedDelay({
@@ -447,6 +450,7 @@ fun Application.module() {
         audit = { actor, action, details -> companyProvisioning.recordAudit(actor, action, null, null, details) },
         passwordAttempts = passwordAttempts,
         deactivateWorkspaceStaff = { adminUserId, by, reason -> companySelfServiceRef.deactivateWorkspaceStaffOf(adminUserId, by, reason) },
+        twoFactorEnabled = { id -> com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy.enabledOnServer(DatabaseFactory.getDataSource(), id) },
     )
     val accountService = AccountService(
         central = DatabaseFactory.getDataSource(),
@@ -480,6 +484,10 @@ fun Application.module() {
     )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.
     val moduleJobs = ModuleJobScheduler(moduleRegistry, moduleAccessService).also { it.start() }
+    // Turning another account's two-step verification off (TWO_FACTOR.md §8).
+    val twoFactorResets = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService(
+        loginDatabases, passwordAttempts, mail = serverMailSettings().let { settings -> { settings } }, notify = notifyAccount,
+    )
     val companySelfService = CompanySelfService(
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,
@@ -491,6 +499,7 @@ fun Application.module() {
         secrets = secretBox,
         serverActors = serverActors,
         storage = storageGuard,
+        twoFactorResets = twoFactorResets,
     ).also { companySelfServiceRef = it }
     // Hourly: every company's chain verified and anchored in provisioning_audit_log, after the startup catch-up.
     val integrityJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "activity-integrity").apply { isDaemon = true } }
@@ -565,7 +574,11 @@ fun Application.module() {
             )
             accountProfileRoutes(accountService)
             // The user's own two-step verification (TWO_FACTOR.md §3).
-            twoFactorRoutes(com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorAccountService(loginDatabases, passwordAttempts = passwordAttempts))
+            twoFactorRoutes(
+                com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorAccountService(
+                    loginDatabases, passwordAttempts = passwordAttempts, mail = serverMailSettings().let { settings -> { settings } }, notify = notifyAccount,
+                ),
+            )
         }
         rateLimit(RateLimitName("admin")) {
             // Registra rutas de provisioning server_owner y autoservicio business_owner.
@@ -590,6 +603,15 @@ fun Application.module() {
             serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity, activityIntegrity)
             // Storage quotas of the companies (STORAGE_QUOTA.md), owner only.
             twoFactorPolicyRoutes(serverActors, DatabaseFactory.getDataSource())
+            twoFactorResetRoutes(
+                serverActors,
+                com.ideasdeveloper.bms.server.auth.api.ServerTwoFactorResets(
+                    twoFactorResets,
+                    ownerGroupOf = loginDatabases::ownerGroupOf,
+                    businessOwnerOf = { code -> runCatching { loginDatabases.businessOwnerId(code) }.getOrNull() },
+                    isAdmin = { id -> loginDatabases.admins.find(id)?.usable == true },
+                ),
+            )
             storageRoutes(serverActors, StorageAdmin(DatabaseFactory.getDataSource(), storageQuotas, storageGuard, companyFilesRoot))
             // The company's own activity log (ACTIVITY_LOG.md §3).
             companyActivityRoutes(moduleAccessService, activityModuleName)

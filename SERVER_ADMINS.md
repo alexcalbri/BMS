@@ -78,6 +78,7 @@ Principles (security requirements, not suggestions):
 | `server.logs.view` | See recent server errors | – |
 | `server.audit.view` | See the audit log (new screen and route, §5) | yes (rows of scoped companies + own rows; server-wide rows only with all companies) |
 | `server.settings` | Rename the server | – |
+| `server.users.two_factor_reset` | Turn two-step verification off for a user of a company in scope who lost the authenticator and codes, its business owner included (only when the whole owner group is in scope); re-authentication and a passed second step required (TWO_FACTOR.md §8). **High risk: whoever knows that account's password can then sign in with it alone.** Resetting an administrator is owner only; the server owner cannot be reset this way. | yes |
 | `server.workspace` | Create the server workspace, turn its modules on/off, manage its profile, mail settings and staff users. **High risk: allows creating workspace staff accounts** (closed when the administrator is deactivated, deleted or loses the permission) | – |
 
 A company created by a scoped administrator is added to that administrator's scope.

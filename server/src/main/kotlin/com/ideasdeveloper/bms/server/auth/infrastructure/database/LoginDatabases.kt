@@ -267,6 +267,36 @@ class LoginDatabases(
         else -> false
     }
 
+    /** How and when the session [token] of [companyCode] (null: a server session) passed its second step. */
+    fun sessionSecondFactor(companyCode: String?, token: String): SessionSecondFactor? {
+        val scope = if (companyCode == null) serverScope else {
+            central.connection.use { connection ->
+                connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active = TRUE").use { query ->
+                    query.setString(1, companyCode)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            }?.let { tenantScope(it) } ?: return null
+        }
+        return scope.secondFactorOf(token)
+    }
+
+    /** The business owner user id of the active company [companyCode], or null. */
+    fun businessOwnerId(companyCode: String): java.util.UUID? =
+        activeDatabase(companyCode)?.let { tenantScope(it) }?.businessOwner()?.let { java.util.UUID.fromString(it.id.toString()) }
+
+    /** Whether the session [token] of [companyCode] (null: a server session) passed a second step. */
+    fun sessionPassedSecondFactor(companyCode: String?, token: String): Boolean {
+        val scope = if (companyCode == null) serverScope else {
+            central.connection.use { connection ->
+                connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active = TRUE").use { query ->
+                    query.setString(1, companyCode)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            }?.let { tenantScope(it) } ?: return false
+        }
+        return scope.passedSecondFactor(token)
+    }
+
     /** Drops a challenge that will not be used (a caller that cannot ask for the code now). */
     fun finishTwoFactor(challengeToken: String) = challenges.finish(challengeToken)
 
@@ -826,18 +856,42 @@ class LoginDatabases(
         }
 
         /** Marks [token] as having passed a second step; without the column (before the migration) it is not marked. */
-        fun markSecondFactor(token: String) {
+        fun markSecondFactor(token: String, method: String = SecondFactorInherited) {
             try {
                 source.connection.use { connection ->
                     connection.prepareStatement("UPDATE application_sessions SET second_factor_at = CURRENT_TIMESTAMP WHERE token_hash = ?").use { update ->
                         update.setString(1, tokens.hash(token))
                         update.executeUpdate()
                     }
+                    // How it was passed (V020/V016); without the column the mark alone is kept.
+                    try {
+                        connection.prepareStatement("UPDATE application_sessions SET second_factor_method = ? WHERE token_hash = ?").use { update ->
+                            update.setString(1, method)
+                            update.setString(2, tokens.hash(token))
+                            update.executeUpdate()
+                        }
+                    } catch (failure: java.sql.SQLException) {
+                        if (failure.sqlState != "42703") throw failure
+                    }
                 }
             } catch (failure: java.sql.SQLException) {
                 if (failure.sqlState != "42703") throw failure
                 logger.warn("Sessions have no second_factor_at yet (migration pending): the session is not marked")
             }
+        }
+
+        /** How and when the session [token] passed its second step, or null (none, or before the migration). */
+        fun secondFactorOf(token: String): SessionSecondFactor? = try {
+            source.connection.use { connection ->
+                connection.prepareStatement("SELECT second_factor_method, second_factor_at FROM application_sessions WHERE token_hash = ? AND revoked_at IS NULL AND second_factor_at IS NOT NULL").use { query ->
+                    query.setString(1, tokens.hash(token))
+                    query.executeQuery().use { rows ->
+                        if (rows.next()) SessionSecondFactor(rows.getString(1) ?: SecondFactorInherited, rows.getObject(2, java.time.OffsetDateTime::class.java).toInstant()) else null
+                    }
+                }
+            }
+        } catch (failure: java.sql.SQLException) {
+            if (failure.sqlState == "42703") null else throw failure
         }
 
         fun twoFactorEnabled(user: ApplicationUser): Boolean =
@@ -853,7 +907,7 @@ class LoginDatabases(
                 runCatching { revoke(response.accessToken) }
                 throw failure
             }
-            return if (recovery == null) response else response.copy(recoveryCodeUsed = true, recoveryCodesLeft = recovery.left)
+            return if (recovery == null) response else response.copy(recoveryCodeUsed = true, recoveryCodesLeft = recovery.left, lastRecoveryCodeUsed = recovery.left == 0)
         }
 
         /** Step 2 of a sign-in of this database (see [completeTwoFactor]). */
@@ -887,7 +941,7 @@ class LoginDatabases(
                     val opened = open(user, challenge.companyCode, challenge.clientAddress, result as? CodeCheck.Recovery)
                         ?: throw TwoFactorSignInException.expired()
                     // This session passed a second step: it may switch into accounts that use one.
-                    markSecondFactor(opened.accessToken)
+                    markSecondFactor(opened.accessToken, if (result is CodeCheck.Recovery) SecondFactorRecoveryCode else SecondFactorTotp)
                     // The owner of the account clearly still has access: a pending recovery by email ends (§7.5).
                     val cancelled = emailRecovery?.let { recovery ->
                         runCatching { source.connection.use { recovery.cancelOpen(it, challenge.companyCode, challenge.userId, "sign_in", notifyByMail = true) } }
@@ -1280,6 +1334,13 @@ class LoginDatabases(
 }
 
 const val ServerNameSetting = "server.name"
+
+const val SecondFactorTotp = "totp"
+const val SecondFactorRecoveryCode = "recovery_code"
+const val SecondFactorInherited = "inherited"
+
+/** How ([method]: totp, recovery_code, inherited) and when a session passed its second step. */
+data class SessionSecondFactor(val method: String, val at: java.time.Instant)
 
 /** Who really opened a session: [Server] (central user [userId]) or [Company] (owner [userId] of [companyCode]). */
 data class SessionOpener(val kind: String, val userId: java.util.UUID, val companyCode: String?) {

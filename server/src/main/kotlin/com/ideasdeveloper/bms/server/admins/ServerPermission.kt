@@ -36,7 +36,8 @@ enum class ServerPermission(
     LogsView(ServerPermissionIds.LogsView, "server", msg("Ver errores del servidor"), msg("Ver los errores recientes del servidor."), false, false),
     AuditView(ServerPermissionIds.AuditView, "server", msg("Ver el registro de auditoria"), msg("Ver el registro de auditoria: las filas de sus empresas y las propias; las del servidor solo con todas las empresas."), false, true),
     Settings(ServerPermissionIds.Settings, "server", msg("Ajustes del servidor"), msg("Cambiar el nombre del servidor."), false, false),
-    Workspace(ServerPermissionIds.Workspace, "server", msg("Espacio del servidor"), msg("Crear el espacio del servidor, activar sus modulos y administrar su perfil, correo y usuarios. Riesgo alto: permite crear cuentas de personal del espacio con cualquier permiso de sus modulos (se desactivan si el administrador se desactiva, se borra o pierde este permiso)."), true, false);
+    Workspace(ServerPermissionIds.Workspace, "server", msg("Espacio del servidor"), msg("Crear el espacio del servidor, activar sus modulos y administrar su perfil, correo y usuarios. Riesgo alto: permite crear cuentas de personal del espacio con cualquier permiso de sus modulos (se desactivan si el administrador se desactiva, se borra o pierde este permiso)."), true, false),
+    UsersTwoFactorReset(ServerPermissionIds.UsersTwoFactorReset, "companies", msg("Desactivar la verificacion en dos pasos de usuarios"), msg("Desactivar la verificacion en dos pasos de un usuario de una empresa de su alcance (tambien de su business owner) que perdio su autenticador y sus codigos. Riesgo alto: quien conozca la contrasena de esa cuenta podra entrar solo con ella."), true, true);
 
     fun info(): ServerPermissionInfo = ServerPermissionInfo(id, tr(GroupTitles.getValue(group)), tr(title), tr(description), if (highRisk) "high" else "normal", scoped)
 

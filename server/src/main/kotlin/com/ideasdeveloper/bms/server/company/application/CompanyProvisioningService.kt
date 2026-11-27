@@ -910,7 +910,12 @@ class CompanyProvisioningService(
     /** User, name and email of the business owner of [companyCode]. */
     fun businessOwner(companyCode: String): BusinessOwnerResponse {
         val owner = ownerOf(companyCode.trim())
-        return BusinessOwnerResponse(owner.role, owner.displayName.orEmpty(), owner.email.orEmpty())
+        val twoFactor = runCatching {
+            loginDatabases.accountSource(companyCode.trim())?.connection?.use { connection ->
+                loginDatabases.twoFactor.takeIf { it.available(connection) }?.isEnabled(connection, owner.id)
+            }
+        }.getOrNull()
+        return BusinessOwnerResponse(owner.role, owner.displayName.orEmpty(), owner.email.orEmpty(), twoFactor)
     }
 
     /**
@@ -1992,6 +1997,9 @@ class CompanyProvisioningService(
         // Who is behind a business-owner switch session (tenant V015), for the agents opened from it.
         val switchOrigin = "database/tenant/migrations/V015__session_switch_origin.sql"
         applyMigration(connection, "tenant", switchOrigin, Files.readString(Path.of(config.migrationsRoot).resolve(switchOrigin)))
+        // How a session passed its second step and the authenticator being replaced (tenant V016, TWO_FACTOR.md §9).
+        val replace = "database/tenant/migrations/V016__two_factor_replace.sql"
+        applyMigration(connection, "tenant", replace, Files.readString(Path.of(config.migrationsRoot).resolve(replace)))
     }
 
     /**

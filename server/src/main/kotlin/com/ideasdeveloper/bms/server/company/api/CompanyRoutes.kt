@@ -18,6 +18,7 @@ import com.ideasdeveloper.bms.server.admins.ServerPermission
 import com.ideasdeveloper.bms.server.admins.ServerPermissionException
 import com.ideasdeveloper.bms.server.admins.serverActor
 import com.ideasdeveloper.bms.server.auth.application.EmailChangeRule
+import com.ideasdeveloper.bms.server.auth.api.twoFactorResetAnswer
 import com.ideasdeveloper.bms.server.app.RecentServerErrors
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
 import com.ideasdeveloper.bms.server.app.ServerLogsResponse
@@ -167,6 +168,28 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.users(context.companyCode, context.token) })
         } catch (exception: CompanySelfException) {
             call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_USERS_UNAVAILABLE", exception.message ?: tr("No se pudieron cargar usuarios.")))
+        }
+    }
+
+    // The business owner turns off a user's two-step verification (TWO_FACTOR.md §8).
+    post("/companies/me/users/{userId}/two-factor/disable") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val context = call.businessOwnerContext()
+        val service = selfService
+        if (context == null || service == null) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
+            return@post
+        }
+        val userId = runCatching { java.util.UUID.fromString(call.parameters["userId"]) }.getOrNull()
+            ?: return@post call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("USER_NOT_FOUND", tr("Usuario no encontrado.")))
+        val request = runCatching { call.receive<com.ideasdeveloper.bms.server.auth.api.TwoFactorPasswordRequest>() }.getOrNull()
+            ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
+        call.twoFactorResetAnswer {
+            try {
+                service.disableUserTwoFactor(context.companyCode, context.token, userId, request.currentPassword)
+            } catch (refused: CompanySelfException) {
+                throw com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetException("BUSINESS_OWNER_REQUIRED", 403, refused.message.orEmpty())
+            }
         }
     }
 

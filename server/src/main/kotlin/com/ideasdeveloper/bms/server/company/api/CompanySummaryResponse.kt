@@ -83,6 +83,8 @@ data class BusinessOwnerResponse(
     val username: String,
     val displayName: String = "",
     val email: String = "",
+    // Two-step verification on (TWO_FACTOR.md §8.4); null when it cannot be told.
+    val twoFactorEnabled: Boolean? = null,
 )
 
 /** New data of a business owner. [password] blank keeps it; renaming the user requires one. */

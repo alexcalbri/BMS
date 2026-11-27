@@ -13,6 +13,10 @@ data class CredentialsChanged(val companyCode: String?, val userId: UUID, val re
     companion object {
         const val TwoFactorEnabled = "two_factor_enabled"
         const val PasswordReset = "password_reset"
+        // Someone else turned the account's two-step verification off (TWO_FACTOR.md §8).
+        const val TwoFactorReset = "two_factor_reset"
+        // The account replaced its authenticator (TWO_FACTOR.md §9).
+        const val TwoFactorReplaced = "two_factor_replaced"
     }
 }
 
