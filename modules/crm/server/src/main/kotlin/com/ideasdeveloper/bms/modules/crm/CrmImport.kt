@@ -447,7 +447,7 @@ object CrmImport {
     fun startedBy(tenant: Connection, jobId: UUID): ActivityActor? {
         val user = tenant.prepareStatement(
             """
-            SELECT j.created_by, u.postgres_role, EXISTS (SELECT 1 FROM business_owner o WHERE o.user_id = u.id)
+            SELECT j.created_by, COALESCE(NULLIF(u.display_name, ''), u.postgres_role), EXISTS (SELECT 1 FROM business_owner o WHERE o.user_id = u.id)
             FROM crm_import_jobs j JOIN application_users u ON u.id = j.created_by WHERE j.id = ?
             """.trimIndent()
         ).use { query ->

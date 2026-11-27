@@ -650,10 +650,10 @@ object CrmServerModule : ServerModule {
                     val body = email.text
                     try {
                         val externalId = channel.send(CrmChannelContext(tenant, serverMail), lead, email)
-                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, externalId, "sent", "", actor.userId, actor.name, actor.activity)
+                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, externalId, "sent", "", actor.userId, actor.name, actor.activity, template = chosenTemplate(values), to = recipient(channel, lead))
                         show("lead", UiNotice(tr("Mensaje enviado por {0}.", channel.label), UiTone.Success))
                     } catch (failure: CrmChannelException) {
-                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, null, "failed", failure.message.orEmpty(), actor.userId, actor.name, actor.activity)
+                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, null, "failed", failure.message.orEmpty(), actor.userId, actor.name, actor.activity, template = chosenTemplate(values), to = recipient(channel, lead))
                         show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
                     }
                 }
@@ -1214,6 +1214,11 @@ object CrmServerModule : ServerModule {
             show(screen, UiNotice(failure.message.orEmpty(), UiTone.Danger))
         }
     }
+
+    // The template chosen in the reply form and who an email goes to, for the activity log of the message (never its text).
+    private fun chosenTemplate(values: Map<String, String>): String? = values["template"]?.takeIf { it.isNotBlank() && it != CrmAdminScreens.NoTemplate }
+
+    private fun recipient(channel: CrmChannel, lead: CrmLead): String? = lead.email.takeIf { channel.id == "email" && it.isNotBlank() }
 
     // Numbers of the WhatsApp account for the screen (id|number|name|platform;...), so the CRM number can be chosen.
     private fun metaNumbers(setup: MetaSetup): Map<String, String> =

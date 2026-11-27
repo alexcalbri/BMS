@@ -67,7 +67,7 @@ object CrmRepository {
 
     private val StageLabels = linkedMapOf("name" to "Nombre", "kind" to "Tipo", "tone" to "Color", "position" to "Posicion")
 
-    private fun stageValues(stage: CrmStage) = mapOf("name" to stage.name, "kind" to stage.kind.id, "tone" to stage.tone.id, "position" to stage.position)
+    private fun stageValues(stage: CrmStage) = mapOf("name" to stage.name, "kind" to stage.kind.label, "tone" to stage.tone.label, "position" to stage.position)
 
     fun saveStage(tenant: Connection, id: UUID?, input: CrmStageInput, actor: ActivityActor) = CrmAudit.atomically(tenant) {
         val before = id?.let { stages(tenant).firstOrNull { stage -> stage.id == it } }
@@ -87,7 +87,7 @@ object CrmRepository {
         }
         CrmAudit.saved(
             tenant, actor, "stage", savedId.toString(), input.name, "la etapa", before?.let(::stageValues),
-            mapOf("name" to input.name, "kind" to input.kind.id, "tone" to input.tone.id, "position" to input.position), StageLabels,
+            mapOf("name" to input.name, "kind" to input.kind.label, "tone" to input.tone.label, "position" to input.position), StageLabels,
         )
         // Leads keep their closing date in line with the kind of the stage they are in.
         if (id != null) tenant.prepareStatement(

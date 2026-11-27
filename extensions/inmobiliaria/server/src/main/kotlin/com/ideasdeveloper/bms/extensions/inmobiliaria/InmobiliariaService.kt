@@ -405,7 +405,15 @@ object InmobiliariaService {
                 throw InmobiliariaException(tr("No se puede abrir una transaccion de una propiedad {0}.", property.status.display.lowercase()))
             }
             val stages = InmobiliariaStore.stages(s.tenant).ifEmpty {
-                InmobiliariaStore.seedTemplate(s.tenant)
+                // The first deal of a company creates the stages of the template: that is a change of the configuration too.
+                if (InmobiliariaStore.seedTemplate(s.tenant)) {
+                    val seeded = InmobiliariaStore.stages(s.tenant)
+                    CrmAudit.record(
+                        s.tenant, s.actor.activity, CrmAudit.Settings, "Etapas de las transacciones", "Etapas de las transacciones", ActivityActions.SettingsChanged,
+                        "Creo las etapas de la plantilla de corretaje al abrir la primera transaccion.",
+                        listOf(ActivityChange("stages", "Etapas", null, seeded.joinToString(", ") { "${it.name} (${it.outcome.label})" })),
+                    )
+                }
                 InmobiliariaStore.stages(s.tenant)
             }
             val stage = if (draft.stageId != null) {
@@ -526,7 +534,7 @@ object InmobiliariaService {
                 // La fecha de venta de la propiedad sigue a la fecha de cierre de su venta.
                 val property = InmobiliariaStore.findProperty(s.tenant, current.propertyId)
                 if (applyPropertyEffects && property != null && property.status == PropertyStatus.Sold && property.soldOn != closedOn) {
-                    if (s.access.canEditProperty(property)) InmobiliariaStore.changeStatus(s.tenant, property.id, PropertyStatus.Sold, closedOn)
+                    if (s.access.canEditProperty(property)) setPropertyStatus(s, property, PropertyStatus.Sold, closedOn)
                     else effects.warnings += tr(PropertyNotUpdatedWarning)
                 }
             }
@@ -566,7 +574,7 @@ object InmobiliariaService {
             DealOutcome.Won -> {
                 val closed = requestedClose ?: deal.closedOn ?: LocalDate.now()
                 InmobiliariaStore.setClosedOn(tenant, deal.id, closed)
-                if (newStatus != null || property.soldOn != closed) onProperty { InmobiliariaStore.changeStatus(tenant, property.id, PropertyStatus.Sold, closed) }
+                if (newStatus != null || property.soldOn != closed) onProperty { setPropertyStatus(s, property, PropertyStatus.Sold, closed) }
                 if (lead != null) {
                     setLeadItem(s, lead, property, "sold", deal.agreedPrice, "Venta cerrada: ${itemTitle(property)}.")
                     addLeadActivity(s, lead, "Transaccion cerrada en la etapa ${stage.name}.")
@@ -577,7 +585,7 @@ object InmobiliariaService {
             }
             DealOutcome.Lost, DealOutcome.Open -> {
                 undoSale(s, deal, property, previous, effects)
-                newStatus?.let { status -> onProperty { InmobiliariaStore.changeStatus(tenant, property.id, status) } }
+                newStatus?.let { status -> onProperty { setPropertyStatus(s, property, status) } }
                 if (lead != null) {
                     if (stage.outcome == DealOutcome.Lost) setLeadItem(s, lead, property, "discarded", null, "Transaccion cancelada: ${itemTitle(property)}.", onlyIfLinked = true)
                     else setLeadItem(s, lead, property, "chosen", deal.agreedPrice, "Transaccion abierta (${stage.name}): ${itemTitle(property)}.")
@@ -585,6 +593,22 @@ object InmobiliariaService {
             }
         }
         if (effects.propertyDenied) effects.warnings += tr(PropertyNotUpdatedWarning)
+    }
+
+    // The status of the property changes as an effect of its deal: the property gets its own row, next to the one of the deal.
+    private fun setPropertyStatus(s: InmobiliariaSession, property: Property, status: PropertyStatus, soldOn: LocalDate? = null) {
+        InmobiliariaStore.changeStatus(s.tenant, property.id, status, soldOn)
+        val after = InmobiliariaStore.findProperty(s.tenant, property.id) ?: return
+        val changes = ActivityChanges.diff(
+            InmobiliariaAudit.propertyValues(s.tenant, property), InmobiliariaAudit.propertyValues(s.tenant, after),
+            InmobiliariaAudit.PropertyLabels.filterKeys { it in setOf("status", "soldOn", "publishedOn") },
+        )
+        if (changes.isNotEmpty()) {
+            InmobiliariaAudit.status(
+                s.tenant, s.actor.activity, InmobiliariaAudit.PropertyType, property.id, InmobiliariaAudit.propertyLabel(after),
+                "El estado de la propiedad ${InmobiliariaAudit.propertyLabel(after)} paso a ${status.label} por una transaccion.", changes,
+            )
+        }
     }
 
     private val PropertyNotUpdatedWarning = msg("La propiedad no se actualizo: solo su agente del listado o un gerente pueden cambiar su estado.")

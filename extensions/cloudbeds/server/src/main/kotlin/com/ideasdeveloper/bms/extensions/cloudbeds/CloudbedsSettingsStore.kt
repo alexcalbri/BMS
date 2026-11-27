@@ -44,7 +44,7 @@ object CloudbedsSettingsStore {
         "welcomeHour" to "Hora de envio", "archiveOnCheckout" to "Archivar al hacer check-out", "defaultCountry" to "Pais por defecto del huesped",
     )
 
-    private fun values(s: CrmCloudbedsSettings, templates: List<CrmTemplate>) = mapOf(
+    private fun valuesOf(s: CrmCloudbedsSettings, templates: List<CrmTemplate>) = mapOf(
         "enabled" to s.enabled, "apiKey" to s.apiKey, "propertyId" to s.propertyId, "paymentMethod" to s.paymentMethod, "welcomeEnabled" to s.welcomeEnabled,
         "welcomeTemplate" to templates.firstOrNull { it.id == s.welcomeTemplateId }?.name, "welcomeDaysBefore" to s.welcomeDaysBefore, "welcomeHour" to s.welcomeHour,
         "archiveOnCheckout" to s.archiveOnCheckout, "defaultCountry" to s.defaultCountry.ifEmpty { null },
@@ -93,8 +93,12 @@ object CloudbedsSettingsStore {
             update.setString(10, country)
             update.executeUpdate()
         }
+        val saved = current.copy(
+            enabled = enabled, apiKey = key, propertyId = property, paymentMethod = payment, welcomeEnabled = welcome, welcomeTemplateId = template,
+            welcomeDaysBefore = days, welcomeHour = hour, archiveOnCheckout = values["archiveOnCheckout"] == "true", defaultCountry = country,
+        )
         CrmAudit.settingsChanged(
-            tenant, actor, "Cloudbeds", "Cambio los ajustes de Cloudbeds.", values(current, templates), values(load(host, tenant), templates), FormLabels, secrets = setOf("apiKey"),
+            tenant, actor, "Cloudbeds", "Cambio los ajustes de Cloudbeds.", valuesOf(current, templates), valuesOf(saved, templates), FormLabels, secrets = setOf("apiKey"),
         )
     }
 

@@ -26,7 +26,7 @@ import java.util.UUID
 /** Conversation, assignments and the mail, templates, anti-spam and team settings of the CRM. */
 object CrmAdminScreens {
     private const val UiRoute = CrmScreens.UiRoute
-    private val NoTemplate = msg("Sin plantilla")
+    internal val NoTemplate = msg("Sin plantilla")
     private val timeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
     private fun time(instant: java.time.Instant) = timeFormat.format(instant.atZone(ZoneId.systemDefault()))

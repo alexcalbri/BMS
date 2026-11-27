@@ -670,9 +670,13 @@ object CrmMcpTools {
         val actor = actor(call)
         try {
             val externalId = channel.send(CrmChannelContext(call.tenant, call.access.serverMail), lead, email)
-            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, externalId, "sent", "", actor.userId, actor.name, actor.activity)
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, externalId, "sent", "", actor.userId, actor.name, actor.activity,
+                template = values["template"]?.takeIf { it.isNotBlank() }, to = lead.email.takeIf { channel.id == "email" && it.isNotBlank() },
+            )
         } catch (failure: CrmChannelException) {
-            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, null, "failed", failure.message.orEmpty(), actor.userId, actor.name, actor.activity)
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, null, "failed", failure.message.orEmpty(), actor.userId, actor.name, actor.activity,
+                template = values["template"]?.takeIf { it.isNotBlank() }, to = lead.email.takeIf { channel.id == "email" && it.isNotBlank() },
+            )
             throw McpToolException("No se pudo enviar por ${channel.label}: ${failure.message.orEmpty()}")
         }
         return buildJsonObject {

@@ -169,27 +169,30 @@ object WordPressSettingsStore {
     /** El usuario de BMS del agente del sitio; los agentes vistos por primera vez se anotan para poder vincularlos en Integraciones. */
     fun userForAgent(tenant: Connection, wpUserId: Long?, name: String, email: String): UUID? {
         if (wpUserId == null || wpUserId <= 0) return null
-        tenant.prepareStatement(
-            """
-            INSERT INTO $AgentsTable (wp_user_id, name, email) VALUES (?, ?, ?)
-            ON CONFLICT (wp_user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email
-            RETURNING user_id, (xmax = 0)
-            """.trimIndent()
-        ).use { upsert ->
-            upsert.setLong(1, wpUserId)
-            upsert.setString(2, name.take(200))
-            upsert.setString(3, email.take(254))
-            upsert.executeQuery().use { rows ->
-                if (!rows.next()) return null
-                // A site agent seen for the first time is kept: the website sent it.
-                if (rows.getBoolean(2)) {
-                    CrmAudit.record(
-                        tenant, ActivityActor.integration("Sitio web"), "wp_agent", wpUserId.toString(), name.take(200), ActivityActions.Created,
-                        "Registro al agente del sitio ${name.take(200)} (visto por primera vez en un evento del sitio).",
-                        listOf(ActivityChange("name", "Nombre", null, name.take(200)), ActivityChange("email", "Correo", null, email.take(254))),
-                    )
+        // The agent row and its log row are saved together.
+        return CrmAudit.atomically(tenant) {
+            tenant.prepareStatement(
+                """
+                INSERT INTO $AgentsTable (wp_user_id, name, email) VALUES (?, ?, ?)
+                ON CONFLICT (wp_user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email
+                RETURNING user_id, (xmax = 0)
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setLong(1, wpUserId)
+                upsert.setString(2, name.take(200))
+                upsert.setString(3, email.take(254))
+                upsert.executeQuery().use { rows ->
+                    if (!rows.next()) return@use null
+                    // A site agent seen for the first time is kept: the website sent it.
+                    if (rows.getBoolean(2)) {
+                        CrmAudit.record(
+                            tenant, ActivityActor.integration("Sitio web"), "wp_agent", wpUserId.toString(), name.take(200), ActivityActions.Created,
+                            "Registro al agente del sitio ${name.take(200)} (visto por primera vez en un evento del sitio).",
+                            listOf(ActivityChange("name", "Nombre", null, name.take(200)), ActivityChange("email", "Correo", null, email.take(254))),
+                        )
+                    }
+                    rows.getObject(1, UUID::class.java)
                 }
-                return rows.getObject(1, UUID::class.java)
             }
         }
     }
