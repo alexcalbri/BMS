@@ -75,6 +75,10 @@ private data class TwoFactorPasswordBody(val currentPassword: String)
 @Serializable
 private data class TwoFactorCodeBody(val code: String)
 
+// [code] solo se envia fuera de la ventana de cambio (autenticador actual o un codigo de recuperacion).
+@Serializable
+private data class TwoFactorReplaceSetupBody(val currentPassword: String, val code: String? = null)
+
 @Serializable
 private data class TwoFactorPasswordCodeBody(val currentPassword: String, val code: String)
 
@@ -190,6 +194,27 @@ class AccountApi(serverUrl: String) {
     // Confirma la activacion con un codigo; devuelve los codigos de recuperacion (solo se ven esta vez).
     suspend fun twoFactorEnable(accessToken: String, companyCode: String?, code: String): TwoFactorRecoveryCodes = call<TwoFactorRecoveryCodes> {
         client.post("$baseUrl/auth/two-factor/enable") {
+            bearerAuth(accessToken)
+            companyCode?.let { header("X-Company-Code", it) }
+            contentType(ContentType.Application.Json)
+            setBody(TwoFactorCodeBody(code.trim()))
+        }
+    }
+
+    // Cambio de autenticador (TWO_FACTOR.md 9): el actual sigue valiendo hasta confirmar. Sin [code] fuera de la ventana el
+    // servidor responde 400 TWO_FACTOR_CODE_REQUIRED.
+    suspend fun twoFactorReplaceSetup(accessToken: String, companyCode: String?, currentPassword: String, code: String?): TwoFactorSetup = call<TwoFactorSetup> {
+        client.post("$baseUrl/auth/two-factor/replace/setup") {
+            bearerAuth(accessToken)
+            companyCode?.let { header("X-Company-Code", it) }
+            contentType(ContentType.Application.Json)
+            setBody(TwoFactorReplaceSetupBody(currentPassword, code?.trim()?.takeIf { it.isNotEmpty() }))
+        }
+    }
+
+    // Confirma el autenticador nuevo con un codigo suyo; devuelve los 10 codigos de recuperacion nuevos y el aviso.
+    suspend fun twoFactorReplaceConfirm(accessToken: String, companyCode: String?, code: String): TwoFactorRecoveryCodes = call<TwoFactorRecoveryCodes> {
+        client.post("$baseUrl/auth/two-factor/replace/confirm") {
             bearerAuth(accessToken)
             companyCode?.let { header("X-Company-Code", it) }
             contentType(ContentType.Application.Json)

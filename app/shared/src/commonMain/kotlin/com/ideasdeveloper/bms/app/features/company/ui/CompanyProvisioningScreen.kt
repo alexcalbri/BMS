@@ -30,6 +30,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -58,6 +59,7 @@ import com.ideasdeveloper.bms.app.features.company.data.BusinessOwnerResponse
 import com.ideasdeveloper.bms.app.features.company.data.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
 import com.ideasdeveloper.bms.app.features.company.data.CompanyStorageResponse
+import com.ideasdeveloper.bms.app.features.company.data.TwoFactorResetResponse
 import com.ideasdeveloper.bms.app.features.company.data.CompanySummaryResponse
 import com.ideasdeveloper.bms.app.features.company.data.CreateCompanyRequest
 import com.ideasdeveloper.bms.app.features.company.data.UpdateCompanyRequest
@@ -89,6 +91,7 @@ fun CompanyProvisioningScreen(
     val canChangeModules = session.can(ServerPermission.CompaniesModules)
     val canManageExtensions = session.can(ServerPermission.CompaniesExtensions)
     val canOwnerPassword = session.can(ServerPermission.CompaniesOwnerPassword)
+    val canResetTwoFactor = session.can(ServerPermission.UsersTwoFactorReset)
     // Borrar y vincular empresas es solo del dueno del servidor.
     val isOwner = session.isServerOwner
 
@@ -503,6 +506,7 @@ fun CompanyProvisioningScreen(
                             canChangeModules = canChangeModules,
                             canManageExtensions = canManageExtensions,
                             canOwnerPassword = canOwnerPassword,
+                            canResetOwnerTwoFactor = canResetTwoFactor,
                             canDuplicate = canCreate,
                             isOwner = isOwner,
                             enabled = !isLoading && !isRefreshing && serverUrl != null && session?.accessToken?.isNotBlank() == true,
@@ -646,6 +650,16 @@ fun CompanyProvisioningScreen(
                                 val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
                                 CompanyApi(activeServerUrl).use { api -> api.businessOwner(activeSession.accessToken, company.code) }
                             },
+                            resetOwnerTwoFactor = { ownerUserId, currentPassword ->
+                                val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
+                                val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
+                                CompanyApi(activeServerUrl).use { api ->
+                                    // El id viene con el business owner; con un servidor anterior se busca en la lista de la empresa.
+                                    val userId = ownerUserId ?: api.companyUsers(activeSession.accessToken, company.code).users.firstOrNull { it.isBusinessOwner }?.userId
+                                        ?: throw CompanyException(tr("No se encontro al business owner de la empresa."))
+                                    api.resetUserTwoFactor(activeSession.accessToken, company.code, userId, currentPassword, true)
+                                }
+                            },
                             loadStorage = {
                                 val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
                                 val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
@@ -724,6 +738,7 @@ private fun CompanyModulesRow(
     canChangeModules: Boolean,
     canManageExtensions: Boolean,
     canOwnerPassword: Boolean,
+    canResetOwnerTwoFactor: Boolean,
     canDuplicate: Boolean,
     isOwner: Boolean,
     enabled: Boolean,
@@ -753,6 +768,7 @@ private fun CompanyModulesRow(
     onSaveEdit: () -> Unit,
     loadOwner: suspend () -> BusinessOwnerResponse,
     onSaveOwner: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
+    resetOwnerTwoFactor: suspend (ownerUserId: String?, currentPassword: String) -> TwoFactorResetResponse,
     loadStorage: suspend () -> CompanyStorageResponse?,
     saveStorage: suspend (Long?) -> CompanyStorageResponse,
     onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
@@ -891,6 +907,8 @@ private fun CompanyModulesRow(
                     primaryColor = primaryColor,
                     loadOwner = loadOwner,
                     onSave = onSaveOwner,
+                    canResetTwoFactor = canResetOwnerTwoFactor,
+                    resetTwoFactor = resetOwnerTwoFactor,
                 )
             }
 
@@ -955,7 +973,12 @@ private fun BusinessOwnerFields(
     primaryColor: Color,
     loadOwner: suspend () -> BusinessOwnerResponse,
     onSave: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
+    canResetTwoFactor: Boolean,
+    resetTwoFactor: suspend (ownerUserId: String?, currentPassword: String) -> TwoFactorResetResponse,
 ) {
+    val scope = rememberCoroutineScope()
+    var resetting by remember(companyCode) { mutableStateOf(false) }
+    var resetMessage by remember(companyCode) { mutableStateOf<String?>(null) }
     var owner by remember(companyCode) { mutableStateOf<BusinessOwnerResponse?>(null) }
     var loadError by remember(companyCode) { mutableStateOf<String?>(null) }
     var username by remember(companyCode) { mutableStateOf("") }
@@ -981,6 +1004,37 @@ private fun BusinessOwnerFields(
 
     loadError?.let { Text(it, color = AppTheme.colors.danger) }
     val current = owner ?: return
+    if (resetting) {
+        TwoFactorResetDialog(
+            targetName = current.displayName.ifBlank { current.username },
+            submit = { currentPassword -> resetTwoFactor(current.userId, currentPassword) },
+            onDone = { doneMessage ->
+                resetting = false
+                resetMessage = doneMessage
+                // Se vuelve a leer el business owner para ver el estado nuevo.
+                scope.launch {
+                    try {
+                        show(loadOwner())
+                    } catch (exception: CompanyException) {
+                        loadError = exception.message
+                    }
+                }
+            },
+            onDismiss = { resetting = false },
+        )
+    }
+    current.twoFactorEnabled?.let { enabled ->
+        Text(
+            if (enabled) tr("Verificacion en dos pasos: activada") else tr("Verificacion en dos pasos: desactivada"),
+            color = AppTheme.colors.muted,
+        )
+    }
+    if (canResetTwoFactor && current.twoFactorEnabled == true) {
+        OutlinedButton(enabled = enabled, onClick = { resetMessage = null; resetting = true }) {
+            Text(tr("Desactivar verificacion en dos pasos"), color = AppTheme.colors.danger)
+        }
+    }
+    resetMessage?.let { Text(it, color = AppTheme.colors.success) }
     val renamed = username.trim() != current.username
     val passwordProblem = when {
         password.isNotEmpty() && password.length < 12 -> tr("Minimo 12 caracteres.")

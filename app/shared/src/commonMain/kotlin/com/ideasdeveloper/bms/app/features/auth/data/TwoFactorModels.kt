@@ -19,6 +19,10 @@ data class TwoFactorStatus(
     val available: Boolean = true,
     // Recuperacion por correo (TWO_FACTOR.md seccion 7); ausente en servidores anteriores.
     val emailRecovery: EmailRecoveryStatus = EmailRecoveryStatus(),
+    // Como paso esta sesion su segundo paso ("totp", "recovery_code", "inherited"; null si ninguno) y hasta cuando una sesion
+    // abierta con un codigo de recuperacion puede cambiar de autenticador solo con la contrasena (ISO UTC; null = cerrada).
+    val secondFactorMethod: String? = null,
+    val replaceWindowUntil: String? = null,
 )
 
 @Serializable

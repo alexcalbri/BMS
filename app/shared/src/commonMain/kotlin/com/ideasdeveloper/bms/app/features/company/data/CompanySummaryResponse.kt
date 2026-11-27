@@ -115,6 +115,24 @@ data class BusinessOwnerResponse(
     val username: String,
     val displayName: String = "",
     val email: String = "",
+    val twoFactorEnabled: Boolean? = null,
+    // Id del usuario (ruta del servidor para desactivar su verificacion); null en servidores anteriores.
+    val userId: String? = null,
+)
+
+@Serializable
+// Cuerpo de las rutas que desactivan la verificacion en dos pasos de otra persona: la contrasena del que lo hace.
+data class TwoFactorResetRequest(val currentPassword: String)
+
+@Serializable
+// Respuesta de esas rutas (TWO_FACTOR.md 8.2).
+data class TwoFactorResetResponse(
+    val userId: String = "",
+    val twoFactorEnabled: Boolean = false,
+    val sessionsClosed: Int = 0,
+    val agentsDisconnected: Int = 0,
+    val agentsDisconnectFailed: Boolean = false,
+    val message: String = "",
 )
 
 // Blank password keeps it; a new username needs a new password.

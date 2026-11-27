@@ -878,6 +878,28 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    // Desactiva la verificacion en dos pasos de un usuario (TWO_FACTOR.md 8). [viaServer] false: ruta del business owner
+    // (/companies/me, con el codigo de empresa en la cabecera); true: ruta del servidor (dueno o administrador con permiso).
+    suspend fun resetUserTwoFactor(
+        accessToken: String,
+        companyCode: String,
+        userId: String,
+        currentPassword: String,
+        viaServer: Boolean,
+    ): TwoFactorResetResponse = call(tr("No se pudo desactivar la verificacion en dos pasos.")) {
+        val path = if (viaServer) {
+            "$baseUrl/server/companies/${companyCode.encodeURLPathPart()}/users/${userId.encodeURLPathPart()}/two-factor/disable"
+        } else {
+            "$baseUrl/companies/me/users/${userId.encodeURLPathPart()}/two-factor/disable"
+        }
+        client.post(path) {
+            bearerAuth(accessToken)
+            if (!viaServer) header("X-Company-Code", companyCode)
+            contentType(ContentType.Application.Json)
+            setBody(TwoFactorResetRequest(currentPassword))
+        }
+    }
+
     // Almacenamiento de las empresas (STORAGE_QUOTA.md, solo el dueno del servidor): cuota por defecto, espacio libre y uso.
     suspend fun serverStorage(accessToken: String): ServerStorageResponse = call(tr("No se pudo cargar el almacenamiento.")) {
         client.get("$baseUrl/server/storage") { bearerAuth(accessToken) }

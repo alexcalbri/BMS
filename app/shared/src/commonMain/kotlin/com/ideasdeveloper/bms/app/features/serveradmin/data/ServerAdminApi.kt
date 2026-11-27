@@ -8,6 +8,8 @@ import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
 import com.ideasdeveloper.bms.app.features.company.data.CompanyErrorResponse
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import com.ideasdeveloper.bms.app.features.company.data.TwoFactorResetRequest
+import com.ideasdeveloper.bms.app.features.company.data.TwoFactorResetResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -118,6 +120,16 @@ class ServerAdminApi(serverUrl: String) {
             }
         }
     }
+
+    // Solo el dueno del servidor: desactiva la verificacion en dos pasos de un administrador (TWO_FACTOR.md 8).
+    suspend fun resetTwoFactor(token: String, id: String, currentPassword: String): TwoFactorResetResponse =
+        call(tr("No se pudo desactivar la verificacion en dos pasos.")) {
+            client.post("$baseUrl/server/admins/${id.encodeURLPathPart()}/two-factor/disable") {
+                bearerAuth(token)
+                contentType(ContentType.Application.Json)
+                setBody(TwoFactorResetRequest(currentPassword))
+            }
+        }
 
     suspend fun setActive(token: String, id: String, active: Boolean) {
         send(tr("No se pudo cambiar el estado del administrador.")) {

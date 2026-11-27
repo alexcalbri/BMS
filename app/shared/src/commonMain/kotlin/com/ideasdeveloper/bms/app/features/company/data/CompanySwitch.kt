@@ -23,6 +23,11 @@ object CompanySwitch {
     private val _reauthRequired = MutableStateFlow<String?>(null)
     val reauthRequired: StateFlow<String?> = _reauthRequired.asStateFlow()
 
+    // Otras pantallas (p. ej. desactivar la verificacion de otra persona) usan el mismo dialogo de volver a iniciar sesion.
+    fun requestReauth(message: String) {
+        _reauthRequired.value = message
+    }
+
     fun clearReauthRequired() {
         _reauthRequired.value = null
     }
