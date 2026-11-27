@@ -11,6 +11,12 @@ import java.util.UUID
 object CoreActivity {
     private val log = LoggerFactory.getLogger(CoreActivity::class.java)
 
+    /**
+     * Told when a company database lost its activity_log after tenant V011 was applied (database name, problem);
+     * Application points it to ActivityIntegrityService.alarm (activity.integrity_failed + the server owners).
+     */
+    @Volatile var integrityAlarm: (databaseName: String, problem: String) -> Unit = { _, _ -> }
+
     /** A tenant user of [connection] as the log names them (business owner or user); null when unknown. */
     fun tenantPerson(connection: Connection, userId: UUID): ActivityActor? =
         connection.prepareStatement(
@@ -38,11 +44,12 @@ object CoreActivity {
 
     /**
      * Records a Core row on [connection], in the caller's transaction: any failure propagates and
-     * stops the change, except one: a company whose database does not have the table yet (tenant
-     * V011 is applied at startup and by update.sh) keeps working, with a warning, instead of locking
-     * everyone out of company administration until then. Inside a transaction that case is isolated
-     * with a savepoint so the caller's transaction stays usable. Module rows (ActivityLog.record) have
-     * no such exception.
+     * stops the change, except one: a company whose database does not have the table YET (tenant
+     * V011 is applied at startup and by update.sh, and its migration history does not list it) keeps
+     * working, with a warning, instead of locking everyone out of company administration until then.
+     * Once the history lists V011, a missing table is an integrity failure: the change fails and
+     * [integrityAlarm] is raised. Inside a transaction the check is isolated with a savepoint so the
+     * caller's transaction stays usable. Module rows (ActivityLog.record) have no such exception.
      */
     fun record(
         connection: Connection,
@@ -62,7 +69,28 @@ object CoreActivity {
         } catch (failure: SQLException) {
             if (failure.sqlState != "42P01") throw failure
             savepoint?.let { connection.rollback(it) }
-            log.warn("activity_log missing in {}: Core row {} not recorded until tenant V011 is applied", runCatching { connection.catalog }.getOrNull(), action)
+            val database = runCatching { connection.catalog }.getOrNull().orEmpty()
+            if (v011Applied(connection)) {
+                val problem = "Falta la tabla activity_log aunque la migracion V011 consta como aplicada (fila de Core '$action' no escrita)."
+                runCatching { integrityAlarm(database, problem) }.onFailure { log.error("Integrity alarm of {} not raised", database, it) }
+                throw failure
+            }
+            log.warn("activity_log missing in {}: Core row {} not recorded until tenant V011 is applied", database, action)
+        }
+    }
+
+    // Whether the company's migration history says tenant V011 was applied (then the table must exist).
+    private fun v011Applied(connection: Connection): Boolean {
+        val savepoint = if (connection.autoCommit) null else connection.setSavepoint()
+        return try {
+            connection.prepareStatement("SELECT 1 FROM schema_migrations WHERE module = 'tenant' AND version = ?").use { query ->
+                query.setString(1, ActivityIntegrity.Migration)
+                query.executeQuery().use { it.next() }
+            }.also { savepoint?.let { runCatching { connection.releaseSavepoint(it) } } }
+        } catch (failure: SQLException) {
+            savepoint?.let { runCatching { connection.rollback(it) } }
+            // No history table at all: a database from before migrations were tracked, not a lost table.
+            if (failure.sqlState == "42P01") false else throw failure
         }
     }
 

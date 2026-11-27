@@ -1177,16 +1177,26 @@ class CompanySelfService(
                 connection.autoCommit = false
                 try {
                     val ids = connection.createArrayOf("uuid", staff.toTypedArray())
-                    val closed = connection.prepareStatement("UPDATE application_users SET is_active = FALSE WHERE id = ANY (?) AND is_active").use { update ->
+                    val closed = connection.prepareStatement("UPDATE application_users SET is_active = FALSE WHERE id = ANY (?) AND is_active RETURNING id, postgres_role").use { update ->
                         update.setArray(1, ids)
-                        update.executeUpdate()
+                        update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java) to rows.getString(2)) } }
                     }
-                    connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ANY (?) AND revoked_at IS NULL").use { revoke ->
+                    val revoked = connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ANY (?) AND revoked_at IS NULL RETURNING user_id").use { revoke ->
                         revoke.setArray(1, ids)
-                        revoke.executeUpdate()
+                        revoke.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+                    }
+                    // The workspace's own log, in the same transaction: one row per account closed, with its sessions.
+                    val actor = ActivityActor.fromAudit(by, by.userId?.let { loginDatabases.serverPerson(it)?.name })
+                    closed.forEach { (userId, username) ->
+                        val sessions = revoked.count { it == userId }
+                        CoreActivity.record(
+                            connection, actor, "user", userId.toString(), username, ActivityActions.StatusChanged,
+                            "Desactivo al usuario $username y cerro sus sesiones abiertas ($sessions): el administrador del servidor que conoce su contrasena ya no tiene acceso ($reason).",
+                            listOf(ActivityChange.of("active", "Activo", true, false)),
+                        )
                     }
                     connection.commit()
-                    closed
+                    closed.size
                 } catch (failure: Exception) {
                     connection.rollback()
                     throw failure

@@ -37,6 +37,10 @@ data class ActivityRow(
     val summary: String? = null,
     val changes: List<ActivityChange> = emptyList(),
     val origin: String? = null,
+    // Que clase de actor fue, leido de los campos estructurados (nunca del texto de un nombre).
+    val viaAgent: Boolean = false,
+    val fromServer: Boolean = false,
+    val actorKindLabel: String? = null,
 )
 
 @Serializable

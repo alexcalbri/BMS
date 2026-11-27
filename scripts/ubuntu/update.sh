@@ -787,6 +787,10 @@ if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     apply_control_migrations
     bash "$TRUSTED_DIR/scripts/ubuntu/domains-sync.sh" --install
     bash "$TRUSTED_DIR/scripts/ubuntu/core-update.sh" --install
+    # Every company's activity log (V011 applied above) goes to bms_audit; the timer hardens new ones hourly.
+    bash "$TRUSTED_DIR/scripts/ubuntu/activity-harden.sh" --install
+    bash "$TRUSTED_DIR/scripts/ubuntu/activity-harden.sh" ||
+        printf 'AVISO: no se pudo proteger el registro de actividad de alguna empresa (ver /var/log/bms-activity-harden.log).\n' >&2
 fi
 
 cd "$BUILD_DIR"

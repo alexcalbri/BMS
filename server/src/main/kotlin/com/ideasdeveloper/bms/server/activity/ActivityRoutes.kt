@@ -9,6 +9,11 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.pluginOrNull
+import io.ktor.server.plugins.ratelimit.RateLimit
+import io.ktor.server.plugins.ratelimit.RateLimitName
+import io.ktor.server.plugins.ratelimit.rateLimit
+import io.ktor.server.routing.application
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
@@ -53,25 +58,44 @@ fun Route.companyActivityRoutes(access: ModuleAccessService, moduleName: (String
         }
     }
 
-    get("/companies/me/activity") {
-        call.read { _, filter, tenant -> ActivityLogReader.page(tenant, filter, moduleName) }
-    }
+    activityRateLimited {
+        get("/companies/me/activity") {
+            call.read { _, filter, tenant -> ActivityLogReader.bounded(tenant) { ActivityLogReader.page(it, filter, moduleName) } }
+        }
 
-    get("/companies/me/activity/export") {
-        call.read { reader, filter, tenant ->
-            val rows = ActivityLogReader.rows(tenant, filter, ActivityLogReader.MaxExportRows, 0, moduleName)
-            // A bulk read is the one read that is logged (ACTIVITY_LOG.md §4); without the row there is no export.
-            ActivityLog.record(
-                tenant, reader.actor,
-                ActivityEntry(
-                    moduleId = CoreModuleId, entityType = "activity_log", entityId = null, entityLabel = "Registro de actividad",
-                    action = ActivityActions.Exported,
-                    summary = "Exporto el registro de actividad (${rows.size} filas" + describe(filter) + ").",
-                ),
-            )
-            ActivityLogReader.csv(rows, withCompany = false)
+        get("/companies/me/activity/export") {
+            call.read { reader, filter, tenant -> ActivityLogReader.bounded(tenant, write = true) { export(reader, filter, it, moduleName) } }
         }
     }
+}
+
+/**
+ * Mounts [build] behind the "activity" rate limit (per client address, Application.kt) when the
+ * application installed RateLimit; route tests that mount the routes alone run them unlimited.
+ */
+fun Route.activityRateLimited(build: Route.() -> Unit) {
+    if (application.pluginOrNull(RateLimit) != null) {
+        rateLimit(RateLimitName(ActivityRateLimit), build)
+    } else {
+        build()
+    }
+}
+
+/** Name of the rate limit of every activity read (routes); the agent tools use [ActivityReadLimiter]. */
+const val ActivityRateLimit = "activity"
+
+private fun export(reader: ActivityReaderLookup.Granted, filter: ActivityFilter, tenant: java.sql.Connection, moduleName: (String) -> String): String {
+    val rows = ActivityLogReader.rows(tenant, filter, ActivityLogReader.MaxExportRows, 0, moduleName)
+    // A bulk read is the one read that is logged (ACTIVITY_LOG.md §4); without the row there is no export.
+    ActivityLog.record(
+        tenant, reader.actor,
+        ActivityEntry(
+            moduleId = CoreModuleId, entityType = "activity_log", entityId = null, entityLabel = "Registro de actividad",
+            action = ActivityActions.Exported,
+            summary = "Exporto el registro de actividad (${rows.size} filas" + describe(filter) + ").",
+        ),
+    )
+    return ActivityLogReader.csv(rows, withCompany = false)
 }
 
 /** Module id of Core's own events (company administration). */

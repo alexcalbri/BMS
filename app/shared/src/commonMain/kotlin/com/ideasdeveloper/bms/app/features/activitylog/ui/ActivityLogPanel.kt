@@ -304,12 +304,24 @@ private fun ActivityRowCard(row: ActivityRow, serverLevel: Boolean, key: String)
         ) {
             Text(formatActivityTime(row.occurredAt), color = colors.muted, style = MaterialTheme.typography.bodySmall)
             Text(row.actorDisplay ?: row.actorName.orEmpty(), color = colors.text, fontWeight = FontWeight.SemiBold)
+            // Que clase de actor fue, desde los campos estructurados: un nombre escrito por alguien no puede fingirlo.
+            val badges = actorBadges(row)
+            if (badges.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    badges.forEach { badge ->
+                        Surface(color = colors.surfaceAlt, shape = MaterialTheme.shapes.small) {
+                            Text(badge, color = colors.accentText, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                        }
+                    }
+                }
+            }
             if (where.isNotEmpty()) Text(where, color = colors.muted, style = MaterialTheme.typography.bodySmall)
             row.entityLabel?.takeIf { it.isNotBlank() }?.let { Text(it, color = colors.text) }
             row.summary?.takeIf { it.isNotBlank() }?.let { Text(it, color = colors.text, style = MaterialTheme.typography.bodySmall) }
             if (expanded) {
                 row.realActorName?.takeIf { it.isNotBlank() }?.let {
-                    Text(tr("Persona real: {0} (desde el servidor)", it), color = colors.text, style = MaterialTheme.typography.bodySmall)
+                    val text = if (row.fromServer) tr("Persona real: {0} (desde el servidor)", it) else tr("Persona: {0}", it)
+                    Text(text, color = colors.text, style = MaterialTheme.typography.bodySmall)
                 }
                 row.agentName?.takeIf { it.isNotBlank() }?.let {
                     Text(tr("Agente: {0}", it), color = colors.text, style = MaterialTheme.typography.bodySmall)
@@ -332,6 +344,19 @@ private fun ActivityRowCard(row: ActivityRow, serverLevel: Boolean, key: String)
             }
         }
     }
+}
+
+// Etiquetas de la fila segun actorKind, viaAgent y fromServer (los campos que el servidor arma al leer).
+private fun actorBadges(row: ActivityRow): List<String> = buildList {
+    when (row.actorKind) {
+        "import" -> add(tr("Importación"))
+        "automation" -> add(tr("Automatización"))
+        "job" -> add(tr("Tarea programada"))
+        "integration" -> add(tr("Integración"))
+        "system" -> add(tr("Sistema"))
+    }
+    if (row.viaAgent) add(tr("Agente IA"))
+    if (row.fromServer) add(tr("Desde el servidor"))
 }
 
 // "2026-11-26T14:03:09Z" -> "2026-11-26 14:03"; si el formato es otro se muestra tal cual.

@@ -528,6 +528,7 @@ class LoginDatabases(
 
     /** Sign-in of one database: the server (server owners) or a company. */
     private inner class Scope(private val source: DataSource, database: Database, url: String, private val server: Boolean) : LoginScope {
+        private val UnknownLogin = "(usuario desconocido)"
         val users = ApplicationUserRepository(database)
         private val postgresCredentials = PostgresCredentialVerifier(url)
         private val authentication = AuthenticationService(postgresCredentials, users)
@@ -574,23 +575,33 @@ class LoginDatabases(
 
         // Failed sign-ins of this database, coalesced (FailedSignIns).
         val failedSignIns = FailedSignIns { login, address, count, first, last ->
-            val tried = login ?: "(varios usuarios)"
-            val summary = if (count == 1) "Inicio de sesion fallido para el usuario '$tried' desde $address."
-                else "$count inicios de sesion fallidos para el usuario '$tried' desde $address entre $first y $last."
+            // What was typed is never stored (it may be a password typed in the wrong box): only an account that
+            // exists is named, by its own login; anything else is "(usuario desconocido)".
+            fun summary(account: String) = if (count == 1) "Inicio de sesion fallido para $account desde $address."
+                else "$count inicios de sesion fallidos para $account desde $address entre $first y $last."
             if (server) {
+                val known = login?.trim()?.takeIf { it.isNotEmpty() }?.let { users.findByPostgresRole(it)?.postgresRole }
                 central.connection.use { connection ->
                     ProvisioningAudit.insert(
                         connection, AuditActor.system(), "server.sign_in_failed", null, null,
-                        auditDetails("login" to tried, "address" to address, "count" to count, "first" to first.toString(), "last" to last.toString()),
+                        auditDetails("login" to (known ?: if (login == null) "(varios usuarios)" else UnknownLogin), "address" to address, "count" to count,
+                            "first" to first.toString(), "last" to last.toString()),
                     )
                 }
             } else {
                 source.connection.use { connection ->
-                    // A known login names its account; an unknown one is the system's (never the password).
-                    val known = login?.let { CoreActivity.tenantPersonByLogin(connection, it) }
+                    // A known login names its account; an unknown one is the system's (never the password, never the text).
+                    val typed = login?.trim()?.takeIf { it.isNotEmpty() }
+                    val known = typed?.let { CoreActivity.tenantPersonByLogin(connection, it) }
                     val actor = known?.let { ActivityActor(ActivityActor.Kinds.System, it.userId, "Sistema", "Sistema") } ?: ActivityActor.system()
+                    val account = when {
+                        known != null -> "el usuario '$typed'"
+                        login == null -> "varios usuarios"
+                        else -> UnknownLogin
+                    }
                     CoreActivity.recordEvent(
-                        connection, actor, "user", known?.userId?.toString(), tried, ActivityActions.SignInFailed, summary,
+                        connection, actor, "user", known?.userId?.toString(), if (known != null) typed.orEmpty() else UnknownLogin,
+                        ActivityActions.SignInFailed, summary(account),
                         listOf(ActivityChange("attempts", "Intentos", null, count.toString())),
                     )
                 }

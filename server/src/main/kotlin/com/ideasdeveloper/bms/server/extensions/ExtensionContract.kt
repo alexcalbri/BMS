@@ -58,7 +58,23 @@ data class ExtensionSettingDefinition(
      * settings always belong to one company and are never applied to others.
      */
     val scope: String = ExtensionSettingScope.App,
-)
+    /** text | number | boolean | select | password | secret | url; null when the manifest does not say. */
+    val type: String? = null,
+    /**
+     * Whether a change of this setting may show its old and new value in the company activity log. Unset, only a
+     * plain [type] (text, number, boolean, select) is shown; anything else (unmarked, password, secret, url) is
+     * stored as "changed" only, and a [secret] setting never shows its value whatever this says.
+     */
+    val loggable: Boolean? = null,
+) {
+    /** Whether the activity log may store this setting's values (ACTIVITY_LOG.md §1.6): fails closed. */
+    val valueLoggable: Boolean
+        get() {
+            val kind = type?.trim()?.lowercase()
+            if (secret || kind in setOf("password", "secret")) return false
+            return loggable ?: (kind in setOf("text", "number", "boolean", "select"))
+        }
+}
 
 object ExtensionSettingScope {
     const val App = "app"

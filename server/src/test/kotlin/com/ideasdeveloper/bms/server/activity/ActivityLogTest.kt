@@ -73,7 +73,7 @@ class ActivityLogTest {
         assertEquals(luis, group.userId)
         assertEquals("Agente de Ana Ruiz (empresa origen)", group.display)
         assertEquals(ana, group.realUserId)
-        assertEquals("Ana Ruiz (origen)", group.realName)
+        assertEquals("Ana Ruiz (empresa origen)", group.realName)
         assertEquals("Claude", group.agentName)
 
         assertEquals("Importacion (Ana Ruiz)", ActivityActor.import(ActivityActor.user(ana, "Ana Ruiz")).display)

@@ -33,10 +33,12 @@ data class ActivityActor(
 ) {
     /** The same person acting through the AI agent (or OAuth connection) [agentName]: "Agente de <usuario>". */
     fun viaAgent(agentName: String): ActivityActor = copy(
-        agentName = agentName.trim().take(MaxText).ifEmpty { "Agente" },
-        display = "Agente de " + display,
+        agentName = ActivityNames.neutral(clean(agentName)).ifEmpty { "Agente" },
         origin = Origins.Agent,
-    )
+    ).rebuilt()
+
+    /** The same actor with [display] as every screen rebuilds it from the structured fields ([ActivityDisplay]). */
+    fun rebuilt(): ActivityActor = copy(display = ActivityDisplay.of(kind, name, agentName, realKind, realName).display)
 
     /** The same actor with another origin (an api route, a webhook...). */
     fun withOrigin(origin: String): ActivityActor = copy(origin = origin)
@@ -79,9 +81,9 @@ data class ActivityActor(
         fun switcher(ownerUserId: UUID, ownerName: String, realKind: String, realUserId: UUID?, realName: String): ActivityActor {
             val real = clean(realName).ifEmpty { if (realKind == Kinds.ServerOwner) "Dueno del servidor" else "Administrador del servidor" }
             return ActivityActor(
-                Kinds.BusinessOwner, ownerUserId, clean(ownerName).ifEmpty { "Business owner" }, "$real (desde el servidor)",
+                Kinds.BusinessOwner, ownerUserId, clean(ownerName).ifEmpty { "Business owner" }, "",
                 realKind = realKind, realUserId = realUserId, realName = real, origin = Origins.App,
-            )
+            ).rebuilt()
         }
 
         /**
@@ -90,54 +92,68 @@ data class ActivityActor(
          * real person, of [originCompany]) as real actor: "Agente de Ana Ruiz (empresa origen)".
          */
         fun groupAgent(target: ActivityActor, origin: ActivityActor, originCompany: String, agentName: String): ActivityActor = ActivityActor(
-            target.kind, target.userId, target.name,
-            "Agente de ${origin.display} (empresa ${clean(originCompany)})",
-            agentName = clean(agentName).ifEmpty { "Agente" },
+            target.kind, target.userId, target.name, "",
+            agentName = ActivityNames.neutral(clean(agentName)).ifEmpty { "Agente" },
             realKind = origin.realKind ?: origin.kind,
             realUserId = origin.realUserId ?: origin.userId,
-            realName = "${origin.realName ?: origin.name} (${clean(originCompany)})",
+            realName = "${origin.realName ?: origin.name} (empresa ${clean(originCompany)})",
             origin = Origins.Agent,
-        )
+        ).rebuilt()
 
         /** Automation [name]; [startedBy] when a person started it (a manual button). */
         fun automation(name: String, startedBy: ActivityActor? = null): ActivityActor =
-            started(Kinds.Automation, "Automatizacion " + clean(name), clean(name), startedBy, Origins.Automation)
+            started(Kinds.Automation, clean(name).ifEmpty { "Automatizacion" }, startedBy, Origins.Automation)
 
         /** A scheduled job of the server or a module. */
-        fun job(name: String): ActivityActor = ActivityActor(Kinds.Job, null, clean(name), "Tarea programada " + clean(name), origin = Origins.Automation)
+        fun job(name: String): ActivityActor = ActivityActor(Kinds.Job, null, clean(name).ifEmpty { "Tarea" }, "", origin = Origins.Automation).rebuilt()
 
         /** An import started by [startedBy]: "Importacion (Ana Ruiz)". */
-        fun import(startedBy: ActivityActor?): ActivityActor = started(Kinds.Import, "Importacion", "Importacion", startedBy, Origins.Import)
+        fun import(startedBy: ActivityActor?): ActivityActor = started(Kinds.Import, "Importacion", startedBy, Origins.Import)
 
         /**
          * The actor stored with [toStoredJson]; null when [stored] is null, blank or not one of ours (an old job that
-         * kept nothing), so the caller falls back as it did before.
+         * kept nothing). Validated like [restoreImport]; the stored display is never trusted.
          */
-        fun restore(stored: String?): ActivityActor? {
-            if (stored.isNullOrBlank()) return null
+        @Deprecated(
+            "A stored actor is only ever the starter of an import: use restoreImport, which always wraps it.",
+            ReplaceWith("ActivityActor.restoreImport(stored)"),
+        )
+        fun restore(stored: String?): ActivityActor? = parseStored(stored)
+
+        /**
+         * The import started by the actor stored with [toStoredJson], or by what [fallback] gives (an old job that
+         * kept only a user id) when nothing usable was stored. Same rows as when it started: "Importacion (Agente de Ana)".
+         * This is the way to use a stored actor: whatever the stored text says, the result is an import.
+         */
+        fun restoreImport(stored: String?, fallback: () -> ActivityActor? = { null }): ActivityActor = import(parseStored(stored) ?: fallback())
+
+        /**
+         * Rebuilds a stored actor, refusing anything that is not exactly what [toStoredJson] writes: known kinds and
+         * origins only, texts cut to [MaxText], names neutralized, and the display rebuilt from those fields.
+         */
+        private fun parseStored(stored: String?): ActivityActor? {
+            if (stored.isNullOrBlank() || stored.length > 4_000) return null
             return try {
                 val json = Json.parseToJsonElement(stored) as? JsonObject ?: return null
-                fun text(key: String): String? = (json[key] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
+                fun text(key: String): String? = (json[key] as? JsonPrimitive)?.takeIf { it !is JsonNull && it.isString }?.content
                 fun id(key: String): UUID? = text(key)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                 val kind = text("kind")?.takeIf { it in Kinds.all } ?: return null
-                val name = text("name") ?: return null
-                ActivityActor(
-                    kind, id("userId"), name, text("display") ?: name, text("agentName"),
-                    text("realKind"), id("realUserId"), text("realName"), text("origin"),
-                )
+                val realKind = text("realKind")
+                if (realKind != null && realKind !in Kinds.all) return null
+                val origin = text("origin")
+                if (origin != null && origin !in Origins.all) return null
+                val name = text("name")?.let(::clean)?.takeIf { it.isNotEmpty() } ?: return null
+                val agent = text("agentName")?.let(::clean)?.takeIf { it.isNotEmpty() }?.let(ActivityNames::neutral)
+                val realName = text("realName")?.let(::clean)?.takeIf { it.isNotEmpty() }
+                val display = ActivityDisplay.of(kind, name, agent, realKind, realName).display
+                ActivityActor(kind, id("userId"), name, display, agent, realKind, id("realUserId"), realName, origin)
             } catch (_: Exception) {
                 null
             }
         }
 
-        /**
-         * The import started by the actor stored with [toStoredJson], or by what [fallback] gives (an old job that
-         * kept only a user id) when nothing usable was stored. Same rows as when it started: "Importacion (Agente de Ana)".
-         */
-        fun restoreImport(stored: String?, fallback: () -> ActivityActor? = { null }): ActivityActor = import(restore(stored) ?: fallback())
-
         /** An inbound integration ("Cloudbeds", "Sitio web"...), e.g. a webhook. */
-        fun integration(name: String): ActivityActor = ActivityActor(Kinds.Integration, null, clean(name), clean(name), origin = Origins.Webhook)
+        fun integration(name: String): ActivityActor = ActivityActor(Kinds.Integration, null, clean(name).ifEmpty { "Integracion" }, "", origin = Origins.Webhook).rebuilt()
 
         /**
          * Who an audited server-side change was made by ([com.ideasdeveloper.bms.server.admins.AuditActor]), for the
@@ -147,8 +163,8 @@ data class ActivityActor(
         fun fromAudit(audit: com.ideasdeveloper.bms.server.admins.AuditActor, name: String? = null): ActivityActor {
             val who = clean(name ?: audit.login).ifEmpty { audit.login }
             return when (audit.kind) {
-                Kinds.ServerOwner, Kinds.ServerAdmin -> ActivityActor(audit.kind, audit.userId, who, "$who (desde el servidor)", origin = Origins.App)
-                Kinds.BusinessOwner -> ActivityActor(Kinds.BusinessOwner, audit.userId, who, who, origin = Origins.App)
+                Kinds.ServerOwner, Kinds.ServerAdmin -> ActivityActor(audit.kind, audit.userId, who, "", origin = Origins.App).rebuilt()
+                Kinds.BusinessOwner -> ActivityActor(Kinds.BusinessOwner, audit.userId, who, "", origin = Origins.App).rebuilt()
                 else -> system()
             }
         }
@@ -158,20 +174,20 @@ data class ActivityActor(
 
         private fun person(kind: String, userId: UUID?, name: String): ActivityActor {
             val clean = clean(name).ifEmpty { "Usuario" }
-            return ActivityActor(kind, userId, clean, clean, origin = Origins.App)
+            return ActivityActor(kind, userId, clean, "", origin = Origins.App).rebuilt()
         }
 
         // The person who started it is kept as the user of the row, the display names both.
-        private fun started(kind: String, label: String, name: String, startedBy: ActivityActor?, origin: String): ActivityActor =
-            if (startedBy == null) ActivityActor(kind, null, name, label, origin = origin)
+        private fun started(kind: String, name: String, startedBy: ActivityActor?, origin: String): ActivityActor =
+            if (startedBy == null) ActivityActor(kind, null, name, "", origin = origin).rebuilt()
             else ActivityActor(
-                kind, startedBy.userId, name, "$label (${startedBy.display})",
+                kind, startedBy.userId, name, "",
                 agentName = startedBy.agentName,
                 realKind = startedBy.realKind ?: startedBy.kind.takeIf { it != Kinds.User && it != Kinds.BusinessOwner },
                 realUserId = startedBy.realUserId,
                 realName = startedBy.realName ?: startedBy.name,
                 origin = origin,
-            )
+            ).rebuilt()
 
         internal fun clean(text: String): String = ActivityText.clean(text).take(MaxText)
     }
@@ -188,6 +204,8 @@ data class ActivityActor(
         const val System = "system"
 
         val all: Set<String> = setOf(User, BusinessOwner, ServerOwner, ServerAdmin, Automation, Job, Import, Integration, System)
+        val server: Set<String> = setOf(ServerOwner, ServerAdmin)
+        val people: Set<String> = setOf(User, BusinessOwner, ServerOwner, ServerAdmin)
     }
 
     object Origins {
@@ -197,6 +215,8 @@ data class ActivityActor(
         const val Automation = "automation"
         const val Import = "import"
         const val Webhook = "webhook"
+
+        val all: Set<String> = setOf(App, Agent, Api, Automation, Import, Webhook)
     }
 }
 
@@ -214,9 +234,13 @@ data class ActivityChange(
         fun secret(field: String, label: String): ActivityChange = ActivityChange(field, label, null, null, secret = true)
 
         /** A field change with its values formatted and cut like [ActivityChanges.diff] does. */
-        fun of(field: String, label: String, old: Any?, new: Any?): ActivityChange =
-            if (ActivityChanges.looksSecret(field)) secret(field, label)
-            else ActivityChange(field, label, ActivityChanges.format(old), ActivityChanges.format(new))
+        fun of(field: String, label: String, old: Any?, new: Any?): ActivityChange {
+            if (ActivityChanges.looksSecret(field)) return secret(field, label)
+            val before = ActivityChanges.format(old)
+            val after = ActivityChanges.format(new)
+            return if (ActivityChanges.valueLooksSecret(before) || ActivityChanges.valueLooksSecret(after)) secret(field, label)
+            else ActivityChange(field, label, before, after)
+        }
     }
 }
 
@@ -279,7 +303,22 @@ object ActivityActions {
 /** Builds old → new lists and applies the secret and length rules (ACTIVITY_LOG.md §1.6). */
 object ActivityChanges {
     const val MaxValueLength = 500
-    private val secretName = Regex("(?i)(password|passwd|contrasena|secret|token|api_?key|apikey|clave|credential|private_?key|signing|pin\$|code_hash)")
+    // Field names that hold a secret, anywhere in the name ("smtpPassword", "wifi_passphrase", "x_api_key"...).
+    private val secretName = Regex(
+        "(?i)(password|passwd|passphrase|passcode|contrasen|secret|token|api_?key|apikey|credential|private_?key|signing|signature|webhook|clave)",
+    )
+    // Name parts ("camelCase", "snake_case" or "kebab-case" words) that are a secret on their own: "pin", "otp", "psk"...
+    private val secretWords = setOf("pin", "otp", "totp", "hotp", "psk", "wpa", "wpa2", "wpa3", "hash", "salt", "private", "pwd", "firma", "cookie", "dsn", "bearer", "mfa")
+    // "key" alone, or after one of these ("licenseKey", "wifi_shared_key"); "fieldKey" or "keyColumn" name things, not secrets.
+    private val keyQualifiers = setOf("api", "secret", "private", "access", "signing", "encryption", "master", "license", "auth", "client", "app",
+        "webhook", "ssh", "wifi", "wpa", "psk", "shared", "pre", "pass", "crypto", "hmac", "jwt", "session", "sign")
+    private val wordBoundary = Regex("[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])")
+
+    // Values that carry a credential whatever their field is called: URLs with user:password@ or a token in the query.
+    private val secretValue = Regex(
+        "(?i)([a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s@]+@)|([?&](token|key|api_?key|secret|signature|sig|password|pass|auth|access_token|code)=[^&\\s]{4,})|" +
+            "(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(\\b(sk|pk|rk|ghp|gho|xox[abpr])[-_][A-Za-z0-9_-]{10,})|(\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.)",
+    )
 
     /**
      * The fields of [labels] (field -> Spanish label, in that order) whose value differs between
@@ -296,7 +335,7 @@ object ActivityChanges {
         val new = format(after[field])
         when {
             old == new -> null
-            field in secrets || looksSecret(field) -> ActivityChange.secret(field, label)
+            field in secrets || looksSecret(field) || valueLooksSecret(old) || valueLooksSecret(new) -> ActivityChange.secret(field, label)
             else -> ActivityChange(field, label, old, new)
         }
     }
@@ -309,7 +348,15 @@ object ActivityChanges {
     fun deleted(values: Map<String, Any?>, labels: Map<String, String>, secrets: Set<String> = emptySet()): List<ActivityChange> =
         diff(values, emptyMap(), labels, secrets)
 
-    fun looksSecret(field: String): Boolean = secretName.containsMatchIn(field)
+    fun looksSecret(field: String): Boolean {
+        if (secretName.containsMatchIn(field)) return true
+        val words = field.split(wordBoundary).filter { it.isNotEmpty() }.map { it.lowercase() }
+        if (words.any { it in secretWords }) return true
+        return words.withIndex().any { (index, word) -> word == "key" && (words.size == 1 || words.getOrNull(index - 1) in keyQualifiers) }
+    }
+
+    /** A value that carries a credential (a URL with user:password@ or ?token=..., a private key, a known token format). */
+    fun valueLooksSecret(value: String?): Boolean = value != null && secretValue.containsMatchIn(value)
 
     /** A value as stored: null, "Si"/"No", plain numbers, lists joined with ", ", everything cut to 500 characters. */
     fun format(value: Any?): String? {
@@ -327,6 +374,80 @@ object ActivityChanges {
     }
 
     fun cut(text: String, max: Int = MaxValueLength): String = if (text.length <= max) text else text.take(max - 1) + "…"
+}
+
+/**
+ * The markers the log itself adds to a name ("Agente de", "(desde el servidor)", "Importacion (",
+ * "Automatizacion ", "Tarea programada "). A person, agent, automation or board name that contains one
+ * could pass for something it is not, so names are checked with [hasMarker] (refused where users type
+ * them) and shown through [neutral] (quoted) everywhere else, including rows stored before the check.
+ */
+object ActivityNames {
+    private val markers = listOf(
+        Regex("(?U)agente\\s+de(\\s|$)"),
+        Regex("(?U)desde\\s+el\\s+servidor"),
+        Regex("(?U)importacion\\s*\\("),
+        Regex("(?U)automatizacion(\\s|$)"),
+        Regex("(?U)tarea\\s+programada(\\s|$)"),
+    )
+    private val marks = Regex("\\p{M}+")
+    // Zero-width and other format characters would let "Agen​te de" slip through.
+    private val invisible = Regex("[\\p{Cf}\\p{Cc}]+")
+
+    private fun folded(text: String): String =
+        java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKD).replace(marks, "").replace(invisible, "").lowercase()
+
+    /** Whether [name] contains a marker the log adds itself (accents, width and invisible characters ignored). */
+    fun hasMarker(name: String): Boolean = folded(name).let { text -> markers.any { it.containsMatchIn(text) } }
+
+    /** [name] as a display shows it: in quotes when it contains a marker, so it never reads as one. */
+    fun neutral(name: String): String =
+        if (hasMarker(name)) "«" + name.replace("«", "").replace("»", "").trim() + "»" else name
+}
+
+/**
+ * Who a row shows, rebuilt from its structured columns (kind, name, agent, real person), never from the
+ * stored actor_display: a name typed by a user cannot turn into "Agente de ..." or "(desde el servidor)".
+ */
+data class ActivityDisplay(
+    val display: String,
+    // Spanish labels of what kind of actor it was ("Agente IA", "Desde el servidor", "Importacion"...), for CSV and agents.
+    val kindLabel: String,
+    val viaAgent: Boolean,
+    val fromServer: Boolean,
+) {
+    companion object {
+        fun of(kind: String, name: String, agentName: String?, realKind: String?, realName: String?): ActivityDisplay {
+            val viaAgent = !agentName.isNullOrBlank()
+            val serverKinds = ActivityActor.Kinds.server
+            val fromServer = kind in serverKinds || realKind in serverKinds
+            val ownName = ActivityNames.neutral(ActivityActor.clean(name).ifEmpty { "Desconocido" })
+            val real = realName?.let(ActivityActor::clean)?.takeIf { it.isNotEmpty() }?.let(ActivityNames::neutral)
+            // A person (or the person who started an import or automation), with the agent and server markers.
+            fun person(who: String) = (if (viaAgent) "Agente de " else "") + who + (if (fromServer) " (desde el servidor)" else "")
+            val starter = if (real != null || viaAgent) person(real ?: "Desconocido") else null
+            val display = when (kind) {
+                ActivityActor.Kinds.Automation -> "Automatizacion $ownName" + (starter?.let { " ($it)" } ?: "")
+                ActivityActor.Kinds.Import -> "Importacion" + (starter?.let { " ($it)" } ?: "")
+                ActivityActor.Kinds.Job -> "Tarea programada $ownName"
+                ActivityActor.Kinds.Integration -> ownName
+                ActivityActor.Kinds.System -> "Sistema"
+                else -> person(if (realKind != null && real != null) real else ownName)
+            }
+            val labels = buildList {
+                when (kind) {
+                    ActivityActor.Kinds.Automation -> add("Automatizacion")
+                    ActivityActor.Kinds.Import -> add("Importacion")
+                    ActivityActor.Kinds.Job -> add("Tarea programada")
+                    ActivityActor.Kinds.Integration -> add("Integracion")
+                    ActivityActor.Kinds.System -> add("Sistema")
+                }
+                if (viaAgent) add("Agente IA")
+                if (fromServer) add("Desde el servidor")
+            }
+            return ActivityDisplay(display, labels.joinToString(", "), viaAgent, fromServer)
+        }
+    }
 }
 
 internal object ActivityText {
@@ -409,9 +530,10 @@ object ActivityLog {
             return 0
         }
         val clean = normalized(entry)
+        // Schema-qualified: a search_path set on the database (its owner can) cannot divert the rows to another table.
         return connection.prepareStatement(
             """
-            INSERT INTO activity_log (actor_kind, actor_user_id, actor_name, actor_display, agent_name, real_actor_kind,
+            INSERT INTO public.activity_log (actor_kind, actor_user_id, actor_name, actor_display, agent_name, real_actor_kind,
                 real_actor_user_id, real_actor_name, module_id, entity_type, entity_id, entity_label, action, summary, changes, origin)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?)
             RETURNING id
@@ -443,7 +565,9 @@ object ActivityLog {
         entityLabel = ActivityChanges.cut(ActivityText.clean(entry.entityLabel)),
         summary = ActivityChanges.cut(ActivityText.clean(entry.summary), MaxSummaryLength).ifEmpty { entry.action },
         changes = entry.changes.take(MaxChanges).map { change ->
-            if (change.secret || ActivityChanges.looksSecret(change.field)) ActivityChange.secret(clip(change.field), clip(change.label))
+            if (change.secret || ActivityChanges.looksSecret(change.field) || ActivityChanges.valueLooksSecret(change.old) ||
+                ActivityChanges.valueLooksSecret(change.new)
+            ) ActivityChange.secret(clip(change.field), clip(change.label))
             else change.copy(
                 field = clip(change.field),
                 label = clip(change.label),

@@ -7,6 +7,7 @@ import com.ideasdeveloper.bms.ServerAdminPermissionsRequest
 import com.ideasdeveloper.bms.ServerAdminStatusRequest
 import com.ideasdeveloper.bms.ServerMeResponse
 import com.ideasdeveloper.bms.UpdateServerAdminRequest
+import com.ideasdeveloper.bms.server.activity.activityRateLimited
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
 import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.http.HttpHeaders
@@ -35,6 +36,8 @@ fun Route.serverAdminRoutes(
     audit: ServerAudit?,
     // The companies' activity logs (ACTIVITY_LOG.md §3): owner, or server.audit.view within the scope.
     activity: com.ideasdeveloper.bms.server.activity.ServerActivity? = null,
+    // Verification of the companies' hash chains (ACTIVITY_LOG.md §9): owner only.
+    integrity: com.ideasdeveloper.bms.server.activity.ActivityIntegrityService? = null,
 ) {
     val notServer = tr("Debes iniciar sesion como server_owner.")
 
@@ -165,11 +168,17 @@ fun Route.serverAdminRoutes(
         }
     }
 
-    serverActivityRoutes(resolver, activity, notServer)
+    // Every read of the companies' logs behind the "activity" rate limit (when the application installs it).
+    activityRateLimited { serverActivityRoutes(resolver, activity, integrity, notServer) }
 }
 
 /** GET /server/activity (+ /export): the company filter is checked against the scope by [ServerActivity]. */
-private fun Route.serverActivityRoutes(resolver: ServerActorResolver, activity: com.ideasdeveloper.bms.server.activity.ServerActivity?, notServer: String) {
+private fun Route.serverActivityRoutes(
+    resolver: ServerActorResolver,
+    activity: com.ideasdeveloper.bms.server.activity.ServerActivity?,
+    integrity: com.ideasdeveloper.bms.server.activity.ActivityIntegrityService?,
+    notServer: String,
+) {
     suspend fun ApplicationCall.read(block: (ServerActor, com.ideasdeveloper.bms.server.activity.ActivityFilter, String?) -> Any) {
         noStore()
         val actor = serverActor(resolver, notServer) ?: return
@@ -194,6 +203,27 @@ private fun Route.serverActivityRoutes(resolver: ServerActorResolver, activity: 
     }
     get("/server/activity") { call.read { actor, filter, company -> activity!!.page(actor, company, filter) } }
     get("/server/activity/export") { call.read { actor, filter, company -> activity!!.export(actor, company, filter) } }
+
+    // Recomputes the hash chain of one company (or of every company without ?company=) against its anchors.
+    get("/server/activity/verify") {
+        call.noStore()
+        call.serverActor(resolver, notServer)?.requireOwner() ?: return@get
+        val service = integrity ?: return@get call.unavailable()
+        val company = call.request.queryParameters["company"]?.trim()?.takeIf { it.isNotEmpty() }
+        val result = try {
+            withContext(Dispatchers.IO) {
+                if (company != null) service.verify(company) else com.ideasdeveloper.bms.ActivityIntegritySummary(service.verifyAll())
+            }
+        } catch (failure: com.ideasdeveloper.bms.server.activity.ActivityNotFoundException) {
+            return@get call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("COMPANY_NOT_FOUND", failure.message.orEmpty()))
+        } catch (_: SQLException) {
+            return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", tr("La operacion no se pudo completar.")))
+        }
+        when (result) {
+            is com.ideasdeveloper.bms.ActivityIntegrityReport -> call.respond(HttpStatusCode.OK, result)
+            is com.ideasdeveloper.bms.ActivityIntegritySummary -> call.respond(HttpStatusCode.OK, result)
+        }
+    }
 }
 
 private fun ApplicationCall.noStore() = response.headers.append(HttpHeaders.CacheControl, "no-store")
