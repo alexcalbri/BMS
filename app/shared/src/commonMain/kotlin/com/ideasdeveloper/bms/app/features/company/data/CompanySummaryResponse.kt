@@ -65,6 +65,35 @@ data class ServerModuleCatalogResponse(
 )
 
 @Serializable
+// GET /server/modules/{id}/inspect: lo que se descarga hoy del catalogo, para revisarlo antes de autorizar un modulo sin firma.
+data class ModulePackageInspection(
+    val id: String = "",
+    val commit: String = "",
+    val commitUrl: String = "",
+    // Hash del arbol calculado sobre lo descargado.
+    val packageSha256: String = "",
+    // Verdadero solo con una firma verificada.
+    val signed: Boolean = false,
+    val keyId: String? = null,
+    // Por que una firma presente no vale; si existe, el modulo no se puede autorizar.
+    val signatureProblem: String? = null,
+)
+
+@Serializable
+data class AuthorizeUnsignedModuleRequest(
+    val confirmationText: String,
+    val expectedPackageSha256: String,
+    val expectedCommit: String,
+)
+
+@Serializable
+data class ModuleUnsignedAuthorizationResponse(
+    val id: String = "",
+    val packageSha256: String = "",
+    val sourceUrl: String = "",
+)
+
+@Serializable
 data class UpdateServerModuleCatalogRequest(
     val catalogUrl: String,
 )

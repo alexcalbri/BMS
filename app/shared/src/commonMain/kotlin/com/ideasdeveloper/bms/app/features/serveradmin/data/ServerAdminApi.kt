@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.app.features.serveradmin.data
 
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import com.ideasdeveloper.bms.app.core.session.SessionExpiry
+import com.ideasdeveloper.bms.app.core.session.SessionStore
 import com.ideasdeveloper.bms.app.core.version.VersionApi
 import com.ideasdeveloper.bms.app.core.version.installAppVersionHeader
 import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
@@ -32,6 +33,7 @@ import kotlinx.serialization.json.Json
 // Codigos de error del servidor que la app interpreta.
 const val PermissionRequiredCode = "SERVER_PERMISSION_REQUIRED"
 const val PasswordChangeRequiredCode = "PASSWORD_CHANGE_REQUIRED"
+const val TwoFactorSetupRequiredCode = "TWO_FACTOR_SETUP_REQUIRED"
 
 // Cliente HTTP de administradores del servidor, auditoria y la sesion propia del nivel servidor.
 // Los errores se lanzan como CompanyException con status y code del servidor.
@@ -197,6 +199,8 @@ class ServerAdminApi(serverUrl: String) {
 
     private suspend fun failed(response: HttpResponse, failure: String): CompanyException {
         val error = runCatching { response.body<CompanyErrorResponse>() }.getOrNull()
+        // El dueno exige la verificacion en dos pasos y esta cuenta aun no la tiene: la app muestra la activacion.
+        if (error?.code == TwoFactorSetupRequiredCode) SessionStore.update { it.copy(twoFactorSetupRequired = true) }
         val message = error?.message
             ?: if (response.status == HttpStatusCode.Forbidden) tr("No tienes permiso para esta accion.") else failure
         return CompanyException(message, status = response.status.value, code = error?.code)

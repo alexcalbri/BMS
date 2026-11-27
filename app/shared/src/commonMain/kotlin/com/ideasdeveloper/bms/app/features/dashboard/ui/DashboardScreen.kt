@@ -178,7 +178,8 @@ fun DashboardScreen(
 
     LaunchedEffect(serverUrl, session?.role, session?.serverPermissions) {
         if (session.isServerLevel && !serverUrl.isNullOrBlank()) {
-            val version = VersionApi(serverUrl).use { it.version() }
+            // El servidor solo da las novedades de Core y modulos a quien las pide con su sesion.
+            val version = VersionApi(serverUrl).use { it.version(session?.accessToken) }
             serverAdminsSupported = version?.coreVersion?.let { isCoreAtLeast(it, 0, 11, 0) } == true
             // El aviso de actualizaciones y su boton son para quien puede actualizar el Core.
             if (!session.can(ServerPermission.CoreUpdate)) return@LaunchedEffect

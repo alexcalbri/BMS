@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -54,6 +55,9 @@ private const val PollIntervalMillis = 5_000L
 
 // Tiempo maximo sin respuesta del servidor antes de dejar de consultar.
 private val RestartTimeout = 5.minutes
+
+// Repositorio del Core: el enlace del commit que se va a instalar (el dueno lo revisa antes de confirmar).
+private const val CommitUrlPrefix = "https://github.com/alexcalbri/BMS/commit/"
 
 private fun CoreUpdateRequestDto.isActive(): Boolean = status == "pending" || status == "running"
 
@@ -153,7 +157,24 @@ fun ServerUpdateScreen(
         }
     }
 
-    fun requestUpdate() {
+    // Vuelve a leer el estado (version, commit y firma) del servidor.
+    fun reloadStatus() {
+        val url = serverUrl ?: return
+        val accessToken = token ?: return
+        loading = true
+        scope.launch {
+            try {
+                status = fetchStatus(url, accessToken)
+            } catch (exception: CompanyException) {
+                error = exception.message
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    // [commit] es el que se mostro en la confirmacion (null solo en servidores que aun no lo informan).
+    fun requestUpdate(commit: String?) {
         val url = serverUrl ?: return
         val accessToken = token ?: return
         requesting = true
@@ -162,21 +183,27 @@ fun ServerUpdateScreen(
             try {
                 val api = CompanyApi(url)
                 val created = try {
-                    api.requestCoreUpdate(accessToken)
+                    api.requestCoreUpdate(accessToken, commit)
                 } finally {
                     api.close()
                 }
                 restarting = false
                 status = status?.copy(request = created)
             } catch (exception: CompanyException) {
-                error = exception.message
-                // Ya hay una solicitud activa: se recarga el estado para que aparezca y empiece el sondeo.
-                if (exception.status == 409) {
+                error = when (exception.code) {
+                    "CORE_COMMIT_INVALID" -> tr("El commit enviado no es valido. Actualiza la pantalla y revisalo de nuevo.")
+                    "CORE_COMMIT_UNAVAILABLE" -> tr("No se pudo leer en GitHub el commit de la ultima version. Intentalo de nuevo en unos minutos.")
+                    else -> exception.message
+                }
+                // Ya hay una solicitud activa o la rama avanzo: se recarga el estado para ver lo nuevo.
+                if (exception.status == 409 || exception.code == "CORE_COMMIT_UNAVAILABLE") {
                     try {
                         status = fetchStatus(url, accessToken)
                     } catch (_: CompanyException) {
                     }
                 }
+                // La version publicada cambio mientras se revisaba: se vuelve a pedir confirmacion con el commit nuevo.
+                if (exception.code == "CORE_UPDATE_COMMIT_CHANGED") confirming = true
             } finally {
                 requesting = false
             }
@@ -184,19 +211,32 @@ fun ServerUpdateScreen(
     }
 
     if (confirming) {
+        val reviewed = status
+        // El commit que se aprueba es el que esta a la vista ahora: si la rama avanza, el servidor lo rechaza.
+        val reviewedCommit = reviewed?.latestCommit
         AlertDialog(
             onDismissRequest = { confirming = false },
             title = { Text(tr("Actualizar servidor")) },
             text = {
-                Text(
-                    tr("Se compilara la nueva version en el servidor (varios minutos) y el servicio se reiniciara; durante el reinicio la app no respondera unos segundos."),
-                )
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    reviewed?.latestVersion?.let { Text(tr("Version {0}", it), color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold) }
+                    reviewed?.let { UpdateTargetInfo(it) }
+                    Text(
+                        tr("Se compilara la nueva version en el servidor (varios minutos) y el servicio se reiniciara; durante el reinicio la app no respondera unos segundos."),
+                    )
+                }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    confirming = false
-                    requestUpdate()
-                }) { Text(tr("Actualizar")) }
+                TextButton(
+                    enabled = reviewed != null && (reviewedCommit != null || reviewed.ref == null),
+                    onClick = {
+                        confirming = false
+                        requestUpdate(reviewedCommit)
+                    },
+                ) { Text(tr("Actualizar")) }
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text(tr("Cancelar")) } },
         )
@@ -233,6 +273,7 @@ fun ServerUpdateScreen(
                         current.latestVersion?.let { tr("Ultima version {0}", it) } ?: tr("No se pudo consultar el catalogo"),
                         color = colors.muted,
                     )
+                    if (current.updateAvailable) UpdateTargetInfo(current)
                 } else if (loading) {
                     Text(tr("Cargando..."), color = colors.muted)
                 }
@@ -248,12 +289,22 @@ fun ServerUpdateScreen(
                 if (current != null) {
                     if (request == null || !request.isActive()) {
                         if (current.updateAvailable && current.latestVersion != null) {
+                            // Un servidor que informa la rama (ref) y no puede leer el commit no deja actualizar: se instala solo
+                            // el commit que el dueno ve. Un servidor anterior (sin ref) sigue actualizando como antes.
+                            val commitMissing = current.latestCommit == null && current.ref != null
                             Button(
                                 onClick = { confirming = true },
-                                enabled = !requesting,
+                                enabled = !requesting && !commitMissing,
                                 colors = accentButtonColors(),
                             ) {
                                 Text(if (requesting) tr("Solicitando...") else tr("Actualizar a {0}", current.latestVersion))
+                            }
+                            if (commitMissing) {
+                                Text(
+                                    tr("No se pudo leer en GitHub el commit de la ultima version, asi que no se puede actualizar ahora."),
+                                    color = colors.warning,
+                                )
+                                Button(onClick = { reloadStatus() }, enabled = !loading, colors = accentButtonColors()) { Text(tr("Reintentar")) }
                             }
                         } else if (current.latestVersion != null) {
                             Text(tr("El servidor ya tiene la ultima version."), color = colors.muted)
@@ -265,6 +316,27 @@ fun ServerUpdateScreen(
                 }
             }
         }
+    }
+}
+
+// Lo que se va a instalar: rama, commit (con enlace a GitHub para revisarlo) y si el servidor exige firma.
+@Composable
+private fun UpdateTargetInfo(status: CoreUpdateStatusResponse) {
+    val colors = AppTheme.colors
+    val uriHandler = LocalUriHandler.current
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        status.ref?.takeIf { it.isNotBlank() }?.let { Text(tr("Rama: {0}", it), color = colors.muted) }
+        status.latestCommit?.takeIf { it.isNotBlank() }?.let { commit ->
+            TextButton(onClick = { runCatching { uriHandler.openUri(CommitUrlPrefix + commit) } }) {
+                Text(tr("Commit {0} (ver en GitHub)", commit.take(8)), color = colors.accentText)
+            }
+        }
+        // signatureRequired: hay llave de firma instalada, solo se instala un commit firmado; sin ella no se verifica el origen.
+        Text(
+            if (status.signatureRequired) tr("Firma exigida: solo se instala un commit firmado.") else tr("Sin firma: este servidor no verifica la firma del commit."),
+            color = if (status.signatureRequired) colors.success else colors.warning,
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
@@ -289,6 +361,14 @@ private fun UpdateRequestPanel(request: CoreUpdateRequestDto, restarting: Boolea
                 request.message?.takeIf { it.isNotBlank() }?.let { Text(it, color = colors.danger) }
             }
             else -> Text(request.status, color = colors.muted)
+        }
+        request.targetCommit?.takeIf { it.isNotBlank() }?.let { commit ->
+            Text(tr("Commit {0}", commit.take(8)), color = colors.muted, style = MaterialTheme.typography.bodySmall)
+        }
+        when (request.signatureStatus) {
+            "verified" -> Text(tr("Firma verificada"), color = colors.success, style = MaterialTheme.typography.bodySmall)
+            "unsigned" -> Text(tr("Sin firma"), color = colors.warning, style = MaterialTheme.typography.bodySmall)
+            else -> Unit
         }
         if (request.status == "pending" && request.stalePending) {
             Text(
