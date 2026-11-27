@@ -16,6 +16,8 @@ import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountPasswords
 import com.ideasdeveloper.bms.server.auth.application.AccountService
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
+import com.ideasdeveloper.bms.server.company.api.StorageAdmin
+import com.ideasdeveloper.bms.server.company.api.storageRoutes
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
@@ -145,9 +147,18 @@ fun Application.module() {
             ?: "build/server-modules"
     )
     // Files modules store for each company (attachments...); back this folder up with the databases.
-    val companyFiles = CompanyFiles.local(
-        Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    // Every write is limited by the company's quota, a free-disk floor and a cap on uploads in progress (STORAGE_QUOTA.md).
+    val companyFilesRoot = Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    val storageQuotas = com.ideasdeveloper.bms.server.modules.StorageQuotas(DatabaseFactory.getDataSource())
+    val storageGuard = com.ideasdeveloper.bms.server.modules.StorageGuard(
+        root = companyFilesRoot,
+        quotaFor = storageQuotas::effectiveQuotaBytes,
+        minFreeBytes = environment.config.propertyOrNull("company.minFreeDiskBytes")?.getString()?.trim()?.toLongOrNull()
+            ?.coerceAtLeast(0) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMinFreeBytes,
+        maxConcurrentUploads = environment.config.propertyOrNull("company.maxConcurrentUploads")?.getString()?.trim()?.toIntOrNull()
+            ?.coerceAtLeast(1) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMaxConcurrentUploads,
     )
+    val companyFiles = CompanyFiles.local(companyFilesRoot, storageGuard)
     val classpathModules = loadServerModules()
     val packageRequirements = mutableMapOf<String, ModuleRequirements>()
     val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements)
@@ -521,6 +532,8 @@ fun Application.module() {
                 addToScope = { userId, code -> loginDatabases.admins.addCompany(userId, code) },
             )
             serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity, activityIntegrity)
+            // Storage quotas of the companies (STORAGE_QUOTA.md), owner only.
+            storageRoutes(serverActors, StorageAdmin(DatabaseFactory.getDataSource(), storageQuotas, storageGuard, companyFilesRoot))
             // The company's own activity log (ACTIVITY_LOG.md §3).
             companyActivityRoutes(moduleAccessService, activityModuleName)
         }

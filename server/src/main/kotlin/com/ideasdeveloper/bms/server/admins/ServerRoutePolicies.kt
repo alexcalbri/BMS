@@ -125,6 +125,10 @@ object ServerRoutePolicies {
         put("PUT /server/admins/{id}/permissions", owner)
         put("PUT /server/admins/{id}/password", owner)
         put("PUT /server/admins/{id}/status", owner)
+        // Storage quotas of the companies (STORAGE_QUOTA.md): the owner only.
+        put("GET /server/storage", owner)
+        put("PUT /server/storage", owner)
+        put("PUT /companies/{code}/storage-quota", owner)
         // The caller itself
         put("GET /server/me", RoutePolicy.AnyServerUser(duringPasswordChange = true))
         put("PUT /auth/password", RoutePolicy.AnyServerUser(duringPasswordChange = true))
