@@ -157,7 +157,7 @@ object ComprasMcpTools {
         val identity = call.access.userIdentity(call.tenant, call.permissions)
         val userId = identity?.userId ?: call.permissions.userId
         val baseName = identity?.name?.takeIf { it.isNotBlank() } ?: if (call.permissions.serverOwner) "Dueno del servidor" else "Usuario"
-        return Actor(userId, "$baseName (agente ${call.agentName})".take(200), call.permissions)
+        return Actor(userId, "$baseName (agente ${call.agentName})".take(200), call.permissions, call.activityActor)
     }
 
     /** Ejecuta [block] y convierte los errores de negocio en errores de herramienta con el mismo mensaje. */

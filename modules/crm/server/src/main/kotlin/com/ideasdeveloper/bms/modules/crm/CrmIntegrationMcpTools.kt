@@ -291,7 +291,7 @@ object CrmIntegrationMcpTools {
 
     private fun actor(call: McpToolCall): CrmActor {
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
-        return actor.copy(name = "${actor.name} (agente ${call.agentName})")
+        return actor.copy(name = "${actor.name} (agente ${call.agentName})", activity = call.activityActor)
     }
 
     private fun visibleLead(call: McpToolCall, context: CrmScreens.Context): CrmLead =
@@ -432,15 +432,15 @@ object CrmIntegrationMcpTools {
         if (call.has("sharedPageAccess")) values["sharedTokens"] = call.boolean("sharedPageAccess").toString()
         listOf("pageId", "wabaId", "phoneNumberId").forEach { key -> if (call.has(key)) values[key] = call.string(key, 64) }
         val merged = checked { CrmHost.metaMerge(current, values) }
-        CrmHost.saveMeta(tenant, merged)
+        CrmHost.saveMeta(tenant, merged, call.activityActor)
         // Same as the screen: saving connects the page, Instagram and the WhatsApp account.
         if (!merged.enabled || merged.systemToken == null) return result("Meta guardado.")
-        return result("Meta guardado. ${CrmHost.metaSetup(tenant, merged).notice}".trim())
+        return result("Meta guardado. ${CrmHost.metaSetup(tenant, merged, call.activityActor).notice}".trim())
     }
 
     private fun metaConnectPage(call: McpToolCall): JsonElement {
         if (CrmHost.metaSettings(call.tenant).serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
-        val setup = CrmHost.metaSetup(call.tenant, CrmHost.metaSettings(call.tenant), whatsApp = false)
+        val setup = CrmHost.metaSetup(call.tenant, CrmHost.metaSettings(call.tenant), call.activityActor, whatsApp = false)
         if (setup.done.isEmpty()) throw McpToolException(setup.notice.ifEmpty { "No hay nada que conectar: revisa el token y la cuenta de Instagram." })
         return result(setup.notice)
     }
@@ -448,7 +448,7 @@ object CrmIntegrationMcpTools {
     private fun metaFillNames(call: McpToolCall): JsonElement {
         val settings = CrmHost.metaSettings(call.tenant)
         if (!settings.ready("messenger") && !settings.ready("instagram")) throw McpToolException("Conecta Messenger o Instagram antes de completar los nombres.")
-        val names = CrmHost.metaFillNames(call.tenant, settings)
+        val names = CrmHost.metaFillNames(call.tenant, settings, call.activityActor)
         return buildJsonObject {
             put("result", "$names.")
             put("reviewed", names.reviewed)
@@ -460,7 +460,7 @@ object CrmIntegrationMcpTools {
     private fun metaConnectWhatsApp(call: McpToolCall): JsonElement {
         val settings = CrmHost.metaSettings(call.tenant)
         if (settings.wabaId == null) throw McpToolException("Guarda primero el WhatsApp Business Account ID con update_meta (wabaId).")
-        val setup = CrmHost.metaSetup(call.tenant, settings, page = false)
+        val setup = CrmHost.metaSetup(call.tenant, settings, call.activityActor, page = false)
         if (setup.problems.isNotEmpty()) throw McpToolException(setup.notice)
         val numbers = setup.numbers
         val chosen = setup.settings.phoneNumberId
@@ -488,7 +488,7 @@ object CrmIntegrationMcpTools {
             "enabled" to (if (call.has("enabled")) call.boolean("enabled") else current.enabled).toString(),
             "siteUrl" to if (call.has("siteUrl")) call.string("siteUrl", 500) else current.siteUrl.orEmpty(),
         )
-        checked { CrmHost.saveWordPressForm(call.tenant, values) }
+        checked { CrmHost.saveWordPressForm(call.tenant, values, call.activityActor) }
         return result("WordPress guardado.")
     }
 
@@ -502,7 +502,7 @@ object CrmIntegrationMcpTools {
     private fun wordPressSyncAgents(call: McpToolCall): JsonElement {
         val context = context(call)
         val emails = CrmNotify.userSettings(call.tenant).mapValues { it.value.email }
-        val count = checked { CrmHost.wordpressSyncAgents(call.tenant, context.users, emails) }
+        val count = checked { CrmHost.wordpressSyncAgents(call.tenant, context.users, emails, call.activityActor) }
         return result("$count agente(s) del sitio sincronizados.")
     }
 
@@ -513,7 +513,7 @@ object CrmIntegrationMcpTools {
             ?: throw McpToolException("No existe ese agente del sitio; usa wordpress_sync_agents y get_integrations.")
         val wanted = call.string("user", 200)
         val target = wanted.takeIf { it.isNotEmpty() }?.let { user(context, it) }
-        CrmHost.wordpressMapAgent(call.tenant, agent.wpUserId, target?.id)
+        CrmHost.wordpressMapAgent(call.tenant, agent.wpUserId, target?.id, call.activityActor)
         return result(target?.let { "${agent.name} vinculado a ${it.name}." } ?: "${agent.name} sin usuario vinculado.")
     }
 
@@ -525,13 +525,13 @@ object CrmIntegrationMcpTools {
             "enabled" to (if (call.has("enabled")) call.boolean("enabled") else current.enabled).toString(),
             "slug" to if (call.has("slug")) call.string("slug", 100) else current.slug.orEmpty(),
         )
-        checked { CrmHost.saveEncuentra24Form(call.tenant, values) }
+        checked { CrmHost.saveEncuentra24Form(call.tenant, values, call.activityActor) }
         return result("Encuentra24 guardado.")
     }
 
     private fun encuentra24Sync(call: McpToolCall): JsonElement {
         val from = call.date("fromDate")
-        val outcome = checked { CrmHost.encuentra24Sync(call.tenant, from) }
+        val outcome = checked { CrmHost.encuentra24Sync(call.tenant, from, com.ideasdeveloper.bms.server.activity.ActivityActor.import(call.activityActor)) }
         return result("Encuentra24: $outcome.")
     }
 
@@ -569,7 +569,7 @@ object CrmIntegrationMcpTools {
             put("archiveOnCheckout", flag("archiveOnCheckout", current.archiveOnCheckout))
             put("defaultCountry", if (call.has("defaultCountry")) call.string("defaultCountry", 2) else current.defaultCountry)
         }
-        checked { provider.saveSettings(CrmHost, tenant, values, templates) }
+        checked { provider.saveSettings(CrmHost, tenant, values, templates, call.activityActor) }
         return result("Cloudbeds guardado.")
     }
 
@@ -651,7 +651,7 @@ object CrmIntegrationMcpTools {
         val lead = visibleLead(call, context)
         val listingId = call.int("listing", 0, 0..Int.MAX_VALUE).toLong().takeIf { it > 0 } ?: throw McpToolException("Propiedad invalida.")
         val listing = checked { CrmHost.wordpressListing(call.tenant, listingId) }
-        CrmHost.wordpressLinkListing(call.tenant, lead.id, listing, "Propiedad vinculada por ${actor(call).name}: ${listing.title}.")
+        CrmHost.wordpressLinkListing(call.tenant, lead.id, listing, "Propiedad vinculada por ${actor(call).name}: ${listing.title}.", actor(call))
         return result("${listing.title} vinculada a ${lead.name}.")
     }
 
@@ -660,8 +660,10 @@ object CrmIntegrationMcpTools {
         val lead = visibleLead(call, context)
         val title = call.string("title", 301)
         if (title.isEmpty() || title.length > 300) throw McpToolException("Escribe el nombre del interes (hasta 300 caracteres).")
-        CrmItems.link(call.tenant, lead.id, "manual", UUID.randomUUID().toString(), title, call.string("subtitle", 500))
-        CrmRepository.addActivity(call.tenant, lead.id, "item", "Interes agregado: $title.", actor(call))
+        CrmAudit.atomically(call.tenant) {
+            CrmItems.link(call.tenant, lead.id, "manual", UUID.randomUUID().toString(), title, call.string("subtitle", 500))
+            CrmRepository.addActivity(call.tenant, lead.id, "item", "Interes agregado: $title.", actor(call))
+        }
         return result("$title agregado.")
     }
 
@@ -671,8 +673,10 @@ object CrmIntegrationMcpTools {
         val item = item(call, lead)
         val status = call.requiredString("status", 20).takeIf { it in setOf("offered", "chosen", "discarded", "interested") }
             ?: throw McpToolException("Estado invalido: interested, offered, chosen o discarded.")
-        CrmItems.setStatus(call.tenant, item, status)
-        CrmRepository.addActivity(call.tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor(call))
+        CrmAudit.atomically(call.tenant) {
+            CrmItems.setStatus(call.tenant, item, status)
+            CrmRepository.addActivity(call.tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor(call))
+        }
         return result("${item.title}: ${CrmItems.statusLabels[status]}.")
     }
 
@@ -680,8 +684,10 @@ object CrmIntegrationMcpTools {
         val context = context(call)
         val lead = visibleLead(call, context)
         val item = item(call, lead)
-        CrmItems.remove(call.tenant, item)
-        CrmRepository.addActivity(call.tenant, lead.id, "item", "Quitado: ${item.title}.", actor(call))
+        CrmAudit.atomically(call.tenant) {
+            CrmItems.remove(call.tenant, item)
+            CrmRepository.addActivity(call.tenant, lead.id, "item", "Quitado: ${item.title}.", actor(call))
+        }
         return result("${item.title} quitado.")
     }
 

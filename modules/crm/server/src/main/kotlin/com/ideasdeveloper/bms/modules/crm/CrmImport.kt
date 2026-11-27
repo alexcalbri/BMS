@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import kotlinx.serialization.json.Json
@@ -140,20 +144,35 @@ object CrmImport {
     }
 
     /** Stores the rows of a source and guesses the mapping. */
-    fun create(tenant: Connection, source: String, name: String, table: CrmTable, userId: UUID?): UUID {
+    fun create(tenant: Connection, source: String, name: String, table: CrmTable, userId: UUID?, actor: ActivityActor): UUID {
         if (table.rows.isEmpty()) throw CrmImportException(tr("No hay filas para importar."))
         val id = UUID.randomUUID()
         transaction(tenant) {
-            insertJob(tenant, id, source, name, "mapping", emptyList(), userId)
+            insertJob(tenant, id, source, name, "mapping", emptyList(), userId, actor)
             storeRows(tenant, id, name, table)
+            jobCreated(tenant, actor, id, name, source, table.rows.size)
         }
         return id
     }
 
+    /** The row of a new import job (its rows are read and kept in crm_import_rows; the leads come when it runs). */
+    fun jobCreated(tenant: Connection, actor: ActivityActor, id: UUID, name: String, source: String, rows: Int?) {
+        CrmAudit.record(
+            tenant, actor, "import", id.toString(), name.take(200), ActivityActions.Created, "Creo la importacion ${name.take(200)}.",
+            listOfNotNull(
+                ActivityChange("source", "Origen", null, CrmImportSources.label(source) ?: source),
+                rows?.let { ActivityChange("rows", "Filas leidas", null, it.toString()) },
+            ),
+        )
+    }
+
     /** Inserts a job; [boards] are the source ids an external source still has to read (status "reading"). */
-    fun insertJob(tenant: Connection, id: UUID, source: String, name: String, status: String, boards: List<String>, userId: UUID?) {
+    fun insertJob(
+        tenant: Connection, id: UUID, source: String, name: String, status: String, boards: List<String>, userId: UUID?,
+        starter: ActivityActor? = null,
+    ) {
         tenant.prepareStatement(
-            "INSERT INTO crm_import_jobs (id, source, name, status, boards, created_by) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)"
+            "INSERT INTO crm_import_jobs (id, source, name, status, boards, created_by, started_actor) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?)"
         ).use { insert ->
             insert.setObject(1, id)
             insert.setString(2, source)
@@ -161,6 +180,7 @@ object CrmImport {
             insert.setString(4, status)
             insert.setString(5, JsonArray(boards.map { JsonPrimitive(it) }).toString())
             insert.setObject(6, userId)
+            insert.setString(7, starter?.toStoredJson())
             insert.executeUpdate()
         }
     }
@@ -240,6 +260,7 @@ object CrmImport {
     }
 
     fun saveMapping(tenant: Connection, job: CrmImportJob, mapping: CrmImportMapping) {
+        // The mapping is part of the import job (it is logged with it when the import starts and finishes).
         tenant.prepareStatement("UPDATE crm_import_jobs SET mapping = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'mapping'").use { update ->
             update.setString(1, mappingJson(mapping).toString())
             update.setObject(2, job.id)
@@ -247,8 +268,13 @@ object CrmImport {
         }
     }
 
-    fun setStatus(tenant: Connection, job: CrmImportJob, status: String) {
+    fun setStatus(tenant: Connection, job: CrmImportJob, status: String, actor: ActivityActor) = CrmAudit.atomically(tenant) {
         tenant.prepareStatement("UPDATE crm_import_jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setString(1, status); it.setObject(2, job.id); it.executeUpdate() }
+        CrmAudit.record(
+            tenant, actor, "import", job.id.toString(), job.name, ActivityActions.StatusChanged,
+            if (status == "running") "Inicio la importacion ${job.name}." else "Cancelo la importacion ${job.name}.",
+            listOf(ActivityChange("status", "Estado", job.status, status), ActivityChange("rows", "Filas", null, job.total.toString())),
+        )
     }
 
     fun presets(tenant: Connection): Map<String, CrmImportMapping> =
@@ -256,7 +282,8 @@ object CrmImport {
             query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getString(1), mapping(rows.getString(2))) } }
         }
 
-    fun savePreset(tenant: Connection, name: String, mapping: CrmImportMapping) {
+    fun savePreset(tenant: Connection, name: String, mapping: CrmImportMapping, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = presets(tenant)[name.take(80)]
         tenant.prepareStatement(
             "INSERT INTO crm_import_presets (id, name, mapping) VALUES (?, ?, CAST(? AS jsonb)) ON CONFLICT (name) DO UPDATE SET mapping = EXCLUDED.mapping"
         ).use { upsert ->
@@ -265,6 +292,10 @@ object CrmImport {
             upsert.setString(3, mappingJson(mapping).toString())
             upsert.executeUpdate()
         }
+        CrmAudit.saved(
+            tenant, actor, "import_preset", name.take(80), name.take(80), "el mapeo guardado", before?.let { mapOf("columns" to it.columns.entries.joinToString("; ") { c -> "${c.key} -> ${c.value}" }) },
+            mapOf("columns" to mapping.columns.entries.joinToString("; ") { c -> "${c.key} -> ${c.value}" }), mapOf("columns" to "Columnas"),
+        )
     }
 
     fun rows(tenant: Connection, job: CrmImportJob, status: String? = null, limit: Int = 50): List<Triple<Int, Map<String, String>, String>> = tenant.prepareStatement(
@@ -296,11 +327,12 @@ object CrmImport {
      * Saves the mapping of the form, creating first the fields its columns ask for ("Crear campo...").
      * Returns the labels of the created fields.
      */
-    fun saveMappingCreatingFields(tenant: Connection, job: CrmImportJob, mapping: CrmImportMapping): List<String> = transaction(tenant) {
+    fun saveMappingCreatingFields(tenant: Connection, job: CrmImportJob, mapping: CrmImportMapping, actor: ActivityActor): List<String> = transaction(tenant) {
         // La fuente externa del job (si la tiene) tipa las columnas y marca los campos que crea con su extension.
         val (columns, created) = CrmImportTargets.createMissing(
             tenant, mapping.columns, job.columnTypes,
             extensionId = CrmImportSources.of(job.source)?.extensionId,
+            actor = actor,
             fieldType = { columnType -> CrmImportSources.fieldType(job.source, columnType) },
         ) { column -> columnValues(tenant, job, column) }
         saveMapping(tenant, job, mapping.copy(columns = columns))
@@ -338,6 +370,8 @@ object CrmImport {
         // Sinks of the external services that want this company's notices, resolved once per run (empty: nothing is read or published per row).
         val outboundSinks: List<OutboundSink> = emptyList(),
         val customerFields: List<CustomerField> = emptyList(),
+        // Who the activity log shows for what the import writes: "Importacion (<persona>)".
+        val activity: ActivityActor = ActivityActor.import(null),
     )
 
     // A row reduced to CRM values.
@@ -413,6 +447,30 @@ object CrmImport {
 
     enum class Outcome(val status: String) { Created("created"), Updated("updated"), Skipped("skipped"), Conflict("conflict") }
 
+    /** The activity actor of the rows an import writes: the import started by whoever created the job ("Importacion (Ana Ruiz)"). */
+    fun activityOf(tenant: Connection, jobId: UUID): ActivityActor {
+        // The actor kept when the job started (an AI agent, a server owner or administrator...): rebuilt exactly, always as an import.
+        val stored = tenant.prepareStatement("SELECT started_actor FROM crm_import_jobs WHERE id = ?").use { query ->
+            query.setObject(1, jobId)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+        return ActivityActor.restoreImport(stored) { creator(tenant, jobId) }
+    }
+
+    /** Jobs from before the column kept only the user id: the person who created the job; null when nobody (server owner, source without user). */
+    private fun creator(tenant: Connection, jobId: UUID): ActivityActor? {
+        val user = tenant.prepareStatement(
+            """
+            SELECT j.created_by, COALESCE(NULLIF(u.display_name, ''), u.postgres_role), EXISTS (SELECT 1 FROM business_owner o WHERE o.user_id = u.id)
+            FROM crm_import_jobs j JOIN application_users u ON u.id = j.created_by WHERE j.id = ?
+            """.trimIndent()
+        ).use { query ->
+            query.setObject(1, jobId)
+            query.executeQuery().use { rows -> if (rows.next()) Triple(rows.getObject(1, UUID::class.java), rows.getString(2).orEmpty(), rows.getBoolean(3)) else null }
+        } ?: return null
+        return if (user.third) ActivityActor.businessOwner(user.first, user.second) else ActivityActor.user(user.first, user.second)
+    }
+
     /** The lead imported with that key (import_key), if any. */
     fun leadByKey(tenant: Connection, key: String): UUID? =
         tenant.prepareStatement("SELECT id FROM crm_leads WHERE import_key = ?").use { query ->
@@ -447,10 +505,12 @@ object CrmImport {
     fun apply(tenant: Connection, values: Values, context: Context, sourceLabel: String, listings: String?): Pair<Outcome, String> {
         val (outcome, message) = classify(tenant, values)
         if (outcome == Outcome.Skipped || outcome == Outcome.Conflict) return outcome to message
-        val actor = CrmActor(null, "Importacion")
+        val actor = CrmActor(null, "Importacion", context.activity)
         val existing = leadByKey(tenant, values.key)
-        // To tell the external services only what this row really changes (a re-imported row that changes nothing is not announced).
-        val before = existing?.takeIf { context.outboundSinks.isNotEmpty() }?.let { CrmRepository.lead(tenant, it) }
+        // What the lead was before the row: to tell the external services only what it really changes (a re-imported row that changes nothing is not
+        // announced) and to log the old -> new of a re-import.
+        val beforeLead = existing?.let { CrmRepository.lead(tenant, it) }
+        val before = beforeLead?.takeIf { context.outboundSinks.isNotEmpty() }
         val leadId = existing ?: run {
             val customer = values.email.takeIf { it.isNotEmpty() }?.let { customerBy(tenant, "lower(primary_email) = lower(?)", it) }
                 ?: values.phone.takeIf { it.isNotEmpty() }?.let { customerByPhone(tenant, it) }
@@ -464,6 +524,11 @@ object CrmImport {
                         insert.setString(4, values.phone)
                         insert.executeUpdate()
                     }
+                    val shown = values.name.ifEmpty { values.email.ifEmpty { values.phone } }.take(200)
+                    CrmAudit.customer(
+                        tenant, context.activity, id, shown, ActivityActions.Created, "Creo el cliente $shown desde una importacion.",
+                        ActivityChanges.created(CrmAudit.customerValues(shown, values.email, values.phone), CrmAudit.CustomerLabels),
+                    )
                 }
             if (values.phone.isNotEmpty()) CrmInbox.addIdentity(tenant, customer, "phone", values.phone)
             val stage = values.stage ?: context.stages.firstOrNull { it.kind == StageKind.Open } ?: context.stages.first()
@@ -487,16 +552,35 @@ object CrmImport {
                 insert.setTimestamp(10, Timestamp.from(createdAt))
                 insert.executeUpdate()
             }
-            CrmRepository.addActivity(tenant, id, "created", "Importado desde $sourceLabel en ${stage.name}.", actor, toStage = stage.id)
+            val shown = values.name.ifEmpty { values.email.ifEmpty { values.phone } }.take(200)
+            CrmRepository.addActivity(
+                tenant, id, "created", "Importado desde $sourceLabel en ${stage.name}.", actor, toStage = stage.id,
+                audit = CrmLeadAudit.Row(
+                    ActivityActions.Created, "Importo el lead $shown desde $sourceLabel.",
+                    CrmAudit.leadCreated(
+                        mapOf(
+                            "name" to shown, "email" to values.email, "phone" to values.phone, "stage" to stage.name, "source" to values.fields["source"].orEmpty().ifEmpty { sourceLabel },
+                            "language" to values.fields["language"], "message" to values.fields["message"], "details" to values.fields["details"],
+                            "estimatedValue" to values.fields["estimatedValue"], "followUpOn" to values.fields["followUpOn"],
+                        ),
+                        CrmAudit.LeadLabels,
+                    ),
+                    label = shown,
+                ),
+            )
             id
         }
         updateFields(tenant, leadId, values, existing != null, context)
         // Importing again adds the people that are new and never repeats the ones the lead already has.
         val added = CrmAssignees.add(tenant, leadId, values.ownerIds)
         if (added.isNotEmpty()) {
-            CrmRepository.addActivity(tenant, leadId, "owner", "Asignados desde la importacion: ${CrmAssignees.names(CrmNames(context.users, context.interests), added)}.", actor)
+            val names = CrmAssignees.names(CrmNames(context.users, context.interests), added)
+            CrmRepository.addActivity(
+                tenant, leadId, "owner", "Asignados desde la importacion: $names.", actor,
+                audit = CrmLeadAudit.Row(ActivityActions.Assigned, "Asigno ${added.size} usuario(s) al lead {lead} desde una importacion.", listOf(ActivityChange("owners", "Asignados", null, names))),
+            )
         }
-        val problems = CrmImportTargets.apply(tenant, leadId, values.crm, values.customer, context.crmFields, context.customerFields) +
+        val problems = CrmImportTargets.apply(tenant, leadId, values.crm, values.customer, context.crmFields, context.customerFields, context.activity) +
             // The dates of the row go to the mapped stay fields (the check-in and check-out); without mapping they are ignored and reported.
             listOfNotNull(
                 CrmStay.importDates(
@@ -505,10 +589,21 @@ object CrmImport {
                     values.fields["targetEnd"].orEmpty().ifEmpty { null }?.let { LocalDate.parse(it) },
                 ),
             )
-        addNotes(tenant, leadId, values.notes)
+        addNotes(tenant, leadId, values.notes, context.activity)
+        // A re-imported lead: what the row changed in it, old -> new (the created one has its "created" row with the values).
+        if (beforeLead != null) {
+            CrmRepository.lead(tenant, leadId)?.let { after ->
+                val names = CrmNames(context.users, context.interests)
+                val changes = CrmAudit.leadDiff(
+                    leadSnapshot(beforeLead, names, context.stages), leadSnapshot(after, names, context.stages),
+                    CrmAudit.LeadLabels.filterKeys { it != "name" && it != "email" && it != "phone" && it != "owners" && it != "stage" },
+                ) + CrmFields.activityChanges(context.crmFields, beforeLead.customFields, after.customFields)
+                if (changes.isNotEmpty()) CrmAudit.record(tenant, context.activity, CrmAudit.Lead, leadId.toString(), after.name, ActivityActions.Updated, "Actualizo el lead ${after.name} desde una importacion.", changes)
+            }
+        }
         listings?.let { raw ->
             runCatching { json.parseToJsonElement(raw) }.getOrNull().arr().forEach { element ->
-                WpListing.parse(element)?.let { CrmHost.wordpressLinkListing(tenant, leadId, it, null) }
+                WpListing.parse(element)?.let { CrmHost.wordpressLinkListing(tenant, leadId, it, null, actor) }
             }
         }
         // The row is saved in the lead: the notice to the external services (best effort; the queue uses a savepoint inside this transaction).
@@ -520,6 +615,11 @@ object CrmImport {
         val report = problems + listOfNotNull(CrmAssignees.unmatchedNote(values.ownersUnmatched).takeIf { it.isNotEmpty() })
         return (if (existing != null) Outcome.Updated else Outcome.Created) to report.joinToString("; ")
     }
+
+    private fun leadSnapshot(lead: CrmLead, names: CrmNames, stages: List<CrmStage>) = mapOf(
+        "stage" to stages.firstOrNull { it.id == lead.stageId }?.name, "interest" to lead.interestId?.let { names.interest(it) }, "source" to lead.source, "language" to lead.language,
+        "message" to lead.message, "details" to lead.details, "estimatedValue" to lead.estimatedValue, "followUpOn" to lead.followUpOn,
+    )
 
     // Fills the lead with the row values; on updates only non-empty values replace the current ones.
     private fun updateFields(tenant: Connection, leadId: UUID, values: Values, update: Boolean, context: Context) {
@@ -550,24 +650,26 @@ object CrmImport {
         // On a new import of an existing lead the mapped stage wins, recorded in the stage history.
         if (update && values.stage != null) {
             CrmRepository.lead(tenant, leadId)?.let { lead ->
-                if (lead.archivedAt == null && lead.stageId != values.stage.id) CrmAutomationEvents.suppressed { CrmRepository.moveLead(tenant, lead, values.stage, context.stages, CrmActor(null, "Importacion"), OutboundOrigin.import(context.source)) }
+                if (lead.archivedAt == null && lead.stageId != values.stage.id) CrmAutomationEvents.suppressed { CrmRepository.moveLead(tenant, lead, values.stage, context.stages, CrmActor(null, "Importacion", context.activity), OutboundOrigin.import(context.source)) }
             }
         }
     }
 
     // Historical comments become notes with their original date; the same text is never added twice.
-    private fun addNotes(tenant: Connection, leadId: UUID, notes: List<CrmImportNote>) {
+    private fun addNotes(tenant: Connection, leadId: UUID, notes: List<CrmImportNote>, actor: ActivityActor) {
         if (notes.isEmpty()) return
         val existing = tenant.prepareStatement("SELECT body FROM crm_activity WHERE lead_id = ? AND kind = 'note'").use { query ->
             query.setObject(1, leadId)
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(normalize(rows.getString(1))) } }
         }.toMutableSet()
+        val added = mutableListOf<String>()
         tenant.prepareStatement(
             "INSERT INTO crm_activity (id, lead_id, kind, body, author, created_at) VALUES (?, ?, 'note', ?, ?, COALESCE(?, CURRENT_TIMESTAMP))"
         ).use { insert ->
             notes.forEach { note ->
                 val body = note.text.trim().take(5000)
                 if (body.isEmpty() || !existing.add(normalize(body))) return@forEach
+                added += body
                 insert.setObject(1, UUID.randomUUID())
                 insert.setObject(2, leadId)
                 insert.setString(3, body)
@@ -576,6 +678,9 @@ object CrmImport {
                 insert.addBatch()
             }
             insert.executeBatch()
+        }
+        if (added.isNotEmpty()) {
+            CrmAudit.lead(tenant, actor, leadId, null, ActivityActions.Commented, { "Importo ${added.size} nota(s) al lead $it." }, added.map { ActivityChange.of("note", "Nota", null, it) })
         }
     }
 
@@ -629,6 +734,8 @@ object CrmImport {
                 CrmFields.all(tenant), outboundSinks = outboundSinks, customerFields = CrmImportTargets.customerFields(tenant),
             )
             val sourceLabel = label(job)
+            val jobActor = activityOf(tenant, job.id)
+            val jobContext = context.copy(activity = jobActor)
             val pending = tenant.prepareStatement("SELECT row_no, data::text FROM crm_import_rows WHERE job_id = ? AND status = 'pending' ORDER BY row_no LIMIT ?").use { query ->
                 query.setObject(1, job.id)
                 query.setInt(2, limit - done)
@@ -640,7 +747,7 @@ object CrmImport {
                 val values = values(row, job.mapping, context)
                 var (status, message) = try {
                     transaction(tenant) {
-                        val (outcome, text) = apply(tenant, values, context, sourceLabel, row[ListingsColumn])
+                        val (outcome, text) = apply(tenant, values, jobContext, sourceLabel, row[ListingsColumn])
                         outcome.status to text
                     }
                 } catch (failure: Exception) {
@@ -657,6 +764,7 @@ object CrmImport {
                 done++
             }
             if (Instant.now().isAfter(deadline)) return done
+            transaction(tenant) {
             tenant.prepareStatement(
                 """
                 UPDATE crm_import_jobs j SET
@@ -675,6 +783,19 @@ object CrmImport {
                 update.setObject(1, job.id)
                 update.setObject(2, job.id)
                 update.executeUpdate()
+            }
+            // The import is over: one row for the whole import, with its totals, next to the one row per lead it wrote.
+            job(tenant, job.id)?.takeIf { it.status == "done" }?.let { finished ->
+                CrmAudit.record(
+                    tenant, jobActor, "import", finished.id.toString(), finished.name, ActivityActions.Imported,
+                    "Importo ${finished.created} lead(s) nuevos y actualizo ${finished.updated} de ${finished.total} fila(s) de ${finished.name} (${finished.errors} con error).",
+                    listOf(
+                        ActivityChange("total", "Filas", null, finished.total.toString()), ActivityChange("created", "Leads creados", null, finished.created.toString()),
+                        ActivityChange("updated", "Leads actualizados", null, finished.updated.toString()), ActivityChange("skipped", "Omitidas", null, finished.skipped.toString()),
+                        ActivityChange("conflicts", "Por revisar", null, finished.conflicts.toString()), ActivityChange("errors", "Con error", null, finished.errors.toString()),
+                    ),
+                )
+            }
             }
             if (done >= limit) return done
         }

@@ -32,11 +32,14 @@ class ExtensionActors(
     private val resolver: ServerActorResolver,
     // PostgreSQL role of the user when it is an active business owner of the company, else null.
     private val businessOwnerRole: (companyCode: String, userId: java.util.UUID) -> String?,
+    // Who the business owner session is for the activity log (switcher sessions name the server person).
+    private val sessionActor: (companyCode: String, userId: java.util.UUID, token: String) -> com.ideasdeveloper.bms.server.activity.ActivityActor? = { _, _, _ -> null },
 ) {
     constructor(access: ModuleAccessService, resolver: ServerActorResolver, connections: ExtensionConnections) : this(
         { call -> access.userSession(call) },
         resolver,
         { companyCode, userId -> businessOwnerRoleIn(connections, companyCode, userId) },
+        { companyCode, userId, token -> access.sessionActor(companyCode, token, userId, businessOwner = true) },
     )
 
     /** The server owner, or an administrator the route's policy lets in, behind the Bearer token; or a refusal. */
@@ -70,7 +73,8 @@ class ExtensionActors(
             is UserSessionLookup.Granted -> {
                 val role = withContext(Dispatchers.IO) { businessOwnerRole(session.companyCode, session.userId) }
                     ?: return ExtensionActorLookup.Denied(ModuleAccessDecision.Forbidden("BUSINESS_OWNER_REQUIRED", tr("Solo el business owner puede administrar las extensiones.")))
-                ExtensionActorLookup.Found(ExtensionActor(role, serverOwner = false, companyCode = session.companyCode, audit = AuditActor.businessOwner(role)))
+                val activity = withContext(Dispatchers.IO) { sessionActor(session.companyCode, session.userId, token) }
+                ExtensionActorLookup.Found(ExtensionActor(role, serverOwner = false, companyCode = session.companyCode, audit = AuditActor.businessOwner(role), activity = activity))
             }
         }
     }
@@ -81,8 +85,11 @@ class ExtensionActors(
     }
 
     private fun ServerActor.toExtensionActor(company: String?): ExtensionActor =
-        if (isOwner) ExtensionActor(login, serverOwner = true, companyCode = company, audit = audit)
-        else ExtensionActor(login, serverOwner = false, companyCode = company, audit = audit, serverAdmin = ServerAdminScope(companyScope))
+        if (isOwner) ExtensionActor(login, serverOwner = true, companyCode = company, audit = audit, activity = com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(audit, displayName))
+        else ExtensionActor(
+            login, serverOwner = false, companyCode = company, audit = audit, serverAdmin = ServerAdminScope(companyScope),
+            activity = com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(audit, displayName),
+        )
 
     private companion object {
         fun businessOwnerRoleIn(connections: ExtensionConnections, companyCode: String, userId: java.util.UUID): String? =

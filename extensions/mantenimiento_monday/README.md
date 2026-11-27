@@ -8,6 +8,10 @@ importacion del modulo (`MantenimientoImportSource`) y no tiene rutas propias. A
 
 La sugerencia sale del nombre del tablero: "Solicitud" o "Proyecto" -> ordenes de proyecto; "Mantenimiento" o "Tareas" -> planes.
 
+## Registro de actividad (1.3.0, needs Mantenimiento 0.3.0)
+
+Todo cambio queda en el registro de actividad de la empresa, en la misma transaccion que el cambio: guardar, cambiar o borrar el token de monday (sin su valor), iniciar, confirmar y cancelar una importacion, la fila de totales al cerrarla en la misma transaccion que cierra el trabajo (si se detiene con error tambien la deja) y cada importacion antigua que borra la limpieza (la fila va antes del borrado). Cada propiedad, activo, plan, orden y adjunto importado queda a nombre de "Importacion (quien la inicio)" con sus datos clave (y, al repetir la importacion, lo que cambio); los elementos de lista y las notas no llevan fila aparte, la fila de su orden o plan dice cuantos se importaron. Si la inicio un agente de IA (`monday_read_board`), el nombre del agente se guarda en el trabajo (`created_by_agent`, migracion `V003__job_agent.sql`) y las filas dicen "Importacion (Agente de <usuario>)". Las importaciones anteriores usan solo al usuario.
+
 ## Que importa
 
 | monday | Plan | Orden |

@@ -44,7 +44,7 @@ object ExtensionMcpTools {
      * the server owner of the call (it throws when the user is no longer one).
      */
     fun tools(service: () -> ExtensionService, packages: () -> ExtensionPackageService?, role: (McpToolCall) -> String): List<McpTool> {
-        fun actor(call: McpToolCall) = role(call).let { ExtensionActor(it, serverOwner = true, audit = com.ideasdeveloper.bms.server.admins.AuditActor.owner(it, call.permissions.userId)) }
+        fun actor(call: McpToolCall) = role(call).let { ExtensionActor(it, serverOwner = true, audit = com.ideasdeveloper.bms.server.admins.AuditActor.owner(it, call.permissions.userId), activity = call.activityActor) }
 
         fun <T> run(block: () -> T): T = try {
             block()

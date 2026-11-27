@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleJob
 import com.ideasdeveloper.bms.server.modules.ModuleJobContext
@@ -42,11 +43,11 @@ object MembresiaJobs {
         val tenant = ctx.tenant
         // 1. programada -> activa cuando ya empezo (lotes mientras haya mas, con tope).
         runGuarded(log, "Membresías ${ctx.companyCode}: no se pudieron activar las programadas") {
-            repeatWhileFull { MembresiaRepository.activateStarted(tenant, today, BatchSize) }
+            repeatWhileFull { MembresiaRepository.activateStarted(tenant, today, BatchSize, ExpiryActor) }
         }
         // 2. activa -> vencida cuando su fin paso.
         runGuarded(log, "Membresías ${ctx.companyCode}: no se pudieron vencer las terminadas") {
-            repeatWhileFull { MembresiaRepository.expireEnded(tenant, today, BatchSize).size }
+            repeatWhileFull { MembresiaRepository.expireEnded(tenant, today, BatchSize, ExpiryActor).size }
         }
         // 3. aviso al equipo de las que estan por vencer.
         runGuarded(log, "Membresías ${ctx.companyCode}: no se pudieron avisar los vencimientos") {
@@ -57,6 +58,10 @@ object MembresiaJobs {
             MembresiaHotspot.syncAll(tenant, today)
         }
     }
+
+    // Quien figura en el registro de actividad por lo que hacen las tareas programadas.
+    private val ExpiryActor = ActivityActor.job("Vencimiento de membresías")
+    private val ReminderActor = ActivityActor.job("Avisos de vencimiento de membresías")
 
     private const val BatchSize = 500
     private const val MaxBatches = 20
@@ -91,7 +96,7 @@ object MembresiaJobs {
                     }
                 }
                 // Se marca aunque alguna notificacion haya fallado: no se repite cada dia.
-                MembresiaRepository.markExpiringNotified(tenant, membership.id, today)
+                MembresiaRepository.markExpiringNotified(tenant, membership, today, ReminderActor)
             }
         }
     }

@@ -56,9 +56,9 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
         module = "crm",
         displayName = "Importacion desde monday",
         description = "Importa tableros de monday como leads y envia a monday los leads nuevos, sus cambios, notas (con menciones) y archivos.",
-        version = "1.2.0",
+        version = "1.3.0",
         // El envio necesita el contrato de salida del CRM (OutboundSource, permiso crm.leads.export), desde la 0.29.0.
-        minModuleVersion = "0.30.0", // the bilingual release (minCoreVersion 0.10.0: tr)
+        minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/monday",
@@ -164,7 +164,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
         if (choices[CreatedFieldsOption] == UninstallDefault.Delete) {
             val ids = createdFieldIds(context)
             // Cada campo sale con sus valores en los leads; los leads no se tocan.
-            CrmFields.all(tenant).filter { it.id.toString() in ids }.forEach { CrmFields.remove(tenant, it) }
+            CrmFields.all(tenant).filter { it.id.toString() in ids }.forEach { CrmFields.remove(tenant, it, context.activityActor) }
         } else {
             // Se conservan: pasan a ser campos de la empresa.
             CrmExtensions.update(tenant, "UPDATE crm_field_definitions SET extension_id = NULL WHERE extension_id = ?", CrmExtensionIds.MondayImport)

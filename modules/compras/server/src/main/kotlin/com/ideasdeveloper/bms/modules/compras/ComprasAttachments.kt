@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
@@ -39,6 +41,9 @@ object ComprasAttachments {
 
     /** Cambio de adjuntos de una solicitud: nombres anadidos y quitados. */
     data class Change(val added: List<String>, val removed: List<String>)
+
+    /** Tamano para el historial ("24 KB", "900 B"): nunca el contenido. */
+    internal fun sizeLabel(bytes: Long): String = if (bytes < 1024) "$bytes B" else "${bytes / 1024} KB"
 
     /** Nombre sin carpetas ni caracteres de control. */
     fun cleanName(name: String): String = name.substringAfterLast('/').substringAfterLast('\\').filter { it >= ' ' }.trim().take(255)
@@ -145,7 +150,7 @@ object ComprasAttachments {
                 """
                 UPDATE compras_attachments SET request_id = ?, quote_id = ?, kind = ?
                 WHERE request_id IS NULL AND deleted_at IS NULL AND uploaded_by_id = ? AND id = ANY(?)
-                RETURNING file_name
+                RETURNING file_name, size_bytes
                 """.trimIndent()
             ).use { update ->
                 update.setObject(1, requestId)
@@ -153,10 +158,15 @@ object ComprasAttachments {
                 update.setString(3, kind)
                 update.setObject(4, userId)
                 update.setArray(5, tenant.createArrayOf("uuid", ids.distinct().toTypedArray()))
-                update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+                update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getLong(2)) } }
             }
-            describe(Change(added, emptyList()))?.let { ComprasRepository.addEvent(tenant, requestId, actor, "attachment", it) }
-            Change(added, emptyList())
+            describe(Change(added.map { it.first }, emptyList()))?.let { ComprasRepository.addEvent(tenant, requestId, actor, "attachment", it) }
+            if (added.isNotEmpty()) {
+                ComprasActivity.request(tenant, actor, request, ActivityActions.AttachmentAdded,
+                    "Agrego ${added.size} adjunto(s) a la solicitud ${ComprasActivity.folio(request)}.",
+                    added.map { (file, size) -> ActivityChange("file", "Archivo", null, "$file (${sizeLabel(size)})") })
+            }
+            Change(added.map { it.first }, emptyList())
         }
     }
 
@@ -178,6 +188,10 @@ object ComprasAttachments {
                 update.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
             }
             name?.let { ComprasRepository.addEvent(tenant, requestId, actor, "attachment", "Adjuntos: -$it") }
+            name?.let {
+                ComprasActivity.request(tenant, actor, request, ActivityActions.AttachmentRemoved,
+                    "Quito el adjunto $it de la solicitud ${ComprasActivity.folio(request)}.", listOf(ActivityChange("file", "Archivo", it, null)))
+            }
             name
         }
     }

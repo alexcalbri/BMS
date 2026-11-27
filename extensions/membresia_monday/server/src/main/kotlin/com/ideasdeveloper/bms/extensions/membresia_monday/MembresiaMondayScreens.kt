@@ -3,6 +3,7 @@ package com.ideasdeveloper.bms.extensions.membresia_monday
 import com.ideasdeveloper.bms.modules.membresia.MembresiaImportContext
 import com.ideasdeveloper.bms.modules.membresia.MembresiaImportReply
 import com.ideasdeveloper.bms.modules.membresia.MembresiaModule
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -68,12 +69,48 @@ object MembresiaMondayFlow {
     }
 
     /** Lee el tablero en segundo plano con el token guardado; el mapeo se comprueba contra las columnas reales. */
-    fun startRead(access: ModuleAccessService, tenant: Connection, boardId: String, mapping: MondayMapping, author: String): UUID {
+    fun startRead(access: ModuleAccessService, tenant: Connection, boardId: String, mapping: MondayMapping, author: String, permissions: ModulePermissions): UUID {
         val token = MembresiaMondaySettings.loadToken(access.secrets, tenant)
             ?: throw MembresiaMondayException(tr("Guarda primero el token de la API de monday (pantalla Importar)."))
         val board = MembresiaMondayClient.boardInfo(token, boardId)
         mappingProblem(mapping, board.columns)?.let { throw MembresiaMondayException(it) }
-        return MembresiaMondayJobs.queueRead(tenant, boardId, board.name, mapping, author)
+        // La fila del registro de actividad va en la misma transaccion que el trabajo en cola.
+        return MembresiaMondayJobs.inTransaction(tenant) {
+            val id = MembresiaMondayJobs.queueRead(tenant, boardId, board.name, mapping, author, starterOf(permissions), permissions.activityActor)
+            MembresiaMondayActivity.importQueued(tenant, permissions.activityActor, id, board.name)
+            id
+        }
+    }
+
+    /** Usuario de la empresa que empieza la importacion; un dueno del servidor no es usuario de la empresa. */
+    fun starterOf(permissions: ModulePermissions): UUID? = permissions.userId?.takeUnless { permissions.serverOwner }
+
+    /** Aplica la importacion en revision y lo deja en el registro de actividad; false si ya no estaba en revision. */
+    fun requestApply(tenant: Connection, permissions: ModulePermissions, job: MondayJob): Boolean = MembresiaMondayJobs.inTransaction(tenant) {
+        val changed = MembresiaMondayJobs.requestApply(tenant, job.id)
+        if (changed) MembresiaMondayActivity.applyRequested(tenant, permissions.activityActor, job.id, job.boardName, job.total)
+        changed
+    }
+
+    /** Cancela la importacion y lo deja en el registro de actividad; false si ya habia terminado. */
+    fun cancel(tenant: Connection, permissions: ModulePermissions, job: MondayJob): Boolean = MembresiaMondayJobs.inTransaction(tenant) {
+        val done = MembresiaMondayJobs.cancel(tenant, job.id)
+        if (done) MembresiaMondayActivity.cancelled(tenant, permissions.activityActor, job.id, job.boardName, MembresiaMondayActivity.statusName(job.status), job.applied)
+        done
+    }
+
+    /** Guarda el token (nuevo o cambiado) y deja en el registro solo que cambio, nunca su valor. */
+    fun saveToken(secrets: SecretBox, tenant: Connection, actor: ActivityActor, token: String) = MembresiaMondayJobs.inTransaction(tenant) {
+        val had = MembresiaMondaySettings.configured(tenant)
+        MembresiaMondaySettings.saveToken(secrets, tenant, token)
+        MembresiaMondayActivity.tokenSaved(tenant, actor, had)
+    }
+
+    /** Borra el token guardado (si habia) y lo deja en el registro. */
+    fun forgetToken(secrets: SecretBox, tenant: Connection, actor: ActivityActor) = MembresiaMondayJobs.inTransaction(tenant) {
+        val had = MembresiaMondaySettings.configured(tenant)
+        MembresiaMondaySettings.saveToken(secrets, tenant, null)
+        if (had) MembresiaMondayActivity.tokenForgotten(tenant, actor)
     }
 
     fun statusLabel(status: String): String = when (status) {
@@ -359,7 +396,7 @@ object MembresiaMondayScreens {
             when (op) {
                 MondayOp.Token -> saveToken(context, values)
                 MondayOp.Forget -> {
-                    MembresiaMondaySettings.saveToken(context.access.secrets, tenant, null)
+                    MembresiaMondayFlow.forgetToken(context.access.secrets, tenant, context.permissions.activityActor)
                     MembresiaImportReply(tr("Token de monday borrado."))
                 }
                 MondayOp.Boards -> MembresiaImportReply(tr("Elige un tablero."), params = mapOf("step" to "boards"))
@@ -371,7 +408,8 @@ object MembresiaMondayScreens {
                 MondayOp.Read -> read(context, values)
                 MondayOp.Apply -> {
                     val id = jobId(values)
-                    if (MembresiaMondayJobs.requestApply(tenant, id)) {
+                    val job = MembresiaMondayJobs.find(tenant, id)
+                    if (job != null && MembresiaMondayFlow.requestApply(tenant, context.permissions, job)) {
                         MembresiaImportReply(tr("Se esta importando."), params = mapOf("step" to "job", "job" to id.toString()))
                     } else {
                         failure(tr("Esta importacion ya no esta en revision."), mapOf("step" to "job", "job" to id.toString()))
@@ -379,7 +417,8 @@ object MembresiaMondayScreens {
                 }
                 MondayOp.Cancel -> {
                     val id = jobId(values)
-                    val done = MembresiaMondayJobs.cancel(tenant, id)
+                    val job = MembresiaMondayJobs.find(tenant, id)
+                    val done = job != null && MembresiaMondayFlow.cancel(tenant, context.permissions, job)
                     MembresiaImportReply(if (done) tr("Importacion cancelada.") else tr("Esta importacion ya habia terminado."), error = !done, params = mapOf("step" to "job", "job" to id.toString()))
                 }
                 else -> failure(tr("Operacion desconocida."))
@@ -396,7 +435,7 @@ object MembresiaMondayScreens {
         val tenant = context.tenant
         val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != SecretBox.Mask }
         if (typed == null && !MembresiaMondaySettings.configured(tenant)) return failure(tr("Escribe el token de la API de monday."))
-        typed?.let { MembresiaMondaySettings.saveToken(context.access.secrets, tenant, it) }
+        typed?.let { MembresiaMondayFlow.saveToken(context.access.secrets, tenant, context.permissions.activityActor, it) }
         return MembresiaImportReply(tr("Token de monday guardado."), params = mapOf("step" to "boards"))
     }
 
@@ -407,7 +446,7 @@ object MembresiaMondayScreens {
             values["map:${definition.target}"]?.let(MembresiaMondayFlow::columnIdOf)?.let { definition.target to it }
         }.toMap()
         val id = try {
-            MembresiaMondayFlow.startRead(context.access, context.tenant, board, MondayMapping(chosen), context.author)
+            MembresiaMondayFlow.startRead(context.access, context.tenant, board, MondayMapping(chosen), context.author, context.permissions)
         } catch (problem: MembresiaMondayException) {
             return failure(problem.message.orEmpty(), mapOf("step" to "map", "board" to board))
         }

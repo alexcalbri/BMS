@@ -88,6 +88,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V021__automations_templates_translation.sql",
         "modules/crm/migrations/V022__extensions_and_secrets.sql",
         "modules/crm/migrations/V023__translate_staff_notes.sql",
+        "modules/crm/migrations/V024__import_job_actor.sql",
     )
 
     override val runtimeTables = listOf(
@@ -204,7 +205,7 @@ object CrmServerModule : ServerModule {
             // La importacion vive en la extension "encuentra24"; sin ella el trabajo no hace nada.
             val provider = CrmModuleExtensions.encuentra24()
             if (provider != null && provider.active(CrmHost, context.tenant)) {
-                runCatching { provider.sync(CrmHost, context.tenant, null) }
+                runCatching { provider.sync(CrmHost, context.tenant, null, com.ideasdeveloper.bms.server.activity.ActivityActor.integration("Encuentra24")) }
             }
         },
         // Once per company (and again until the master key exists): integrations already configured become enabled extensions and
@@ -258,8 +259,8 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.30.0",
-        minCoreVersion = "0.10.0",
+        version = "0.31.0",
+        minCoreVersion = "0.12.0",
         minAppVersion = "0.7.0",
         supportsExtensions = true,
         permissions = listOf(
@@ -473,7 +474,7 @@ object CrmServerModule : ServerModule {
             }
             // Las acciones propias de las fuentes externas de importacion (las trae su extension) las atiende la fuente.
             if (screen == "import") {
-                CrmImportSources.action(tenant, params["op"].orEmpty(), values, actor.userId)?.let { result ->
+                CrmImportSources.action(tenant, params["op"].orEmpty(), values, actor.userId, actor.activity)?.let { result ->
                     return show(result.screen, UiNotice(result.message, result.tone), result.params)
                 }
             }
@@ -650,10 +651,10 @@ object CrmServerModule : ServerModule {
                     val body = email.text
                     try {
                         val externalId = channel.send(CrmChannelContext(tenant, serverMail), lead, email)
-                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, externalId, "sent", "", actor.userId, actor.name)
+                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, externalId, "sent", "", actor.userId, actor.name, actor.activity, template = chosenTemplate(values), to = recipient(channel, lead))
                         show("lead", UiNotice(tr("Mensaje enviado por {0}.", channel.label), UiTone.Success))
                     } catch (failure: CrmChannelException) {
-                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, null, "failed", failure.message.orEmpty(), actor.userId, actor.name)
+                        CrmInbox.addMessage(tenant, lead.id, "out", channel.id, email.subject, body, null, "failed", failure.message.orEmpty(), actor.userId, actor.name, actor.activity, template = chosenTemplate(values), to = recipient(channel, lead))
                         show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
                     }
                 }
@@ -700,11 +701,11 @@ object CrmServerModule : ServerModule {
                     show("automations", UiNotice(saved.message, if (saved.warning) UiTone.Warning else UiTone.Success), emptyMap())
                 }
                 "automations:delete" -> {
-                    val deleted = uuid("automation")?.let { CrmAutomationStore.delete(tenant, it) } == true
+                    val deleted = uuid("automation")?.let { CrmAutomationStore.delete(tenant, it, actor.activity) } == true
                     show("automations", UiNotice(if (deleted) tr("Automatizacion eliminada.") else tr("Esa automatizacion ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "automations:welcomeOff" -> {
-                    CrmHost.setWelcomeEnabled(tenant, false)
+                    CrmHost.setWelcomeEnabled(tenant, false, actor.activity)
                     show("automations", UiNotice(tr("Bienvenida de Cloudbeds apagada: solo saldra el correo de tus automatizaciones."), UiTone.Success), emptyMap())
                 }
                 "lead:reviewed" -> {
@@ -718,12 +719,12 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("mail", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    CrmMail.save(tenant, merged)
+                    CrmMail.save(tenant, merged, actor.activity)
                     show("mail", UiNotice(tr("Correo guardado."), UiTone.Success), emptyMap())
                 }
                 "templates:save" -> {
                     val name = try {
-                        CrmMail.saveTemplate(tenant, uuid("id"), values)
+                        CrmMail.saveTemplate(tenant, uuid("id"), values, actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("templates", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
@@ -740,7 +741,7 @@ object CrmServerModule : ServerModule {
                     show("templates", UiNotice(CrmAdminScreens.previewText(template, lead, mail), if (mail.note == null) UiTone.Success else UiTone.Warning), back, values)
                 }
                 "templates:delete" -> {
-                    val deleted = uuid("id")?.let { CrmMail.deleteTemplate(tenant, it) } == true
+                    val deleted = uuid("id")?.let { CrmMail.deleteTemplate(tenant, it, actor.activity) } == true
                     show("templates", UiNotice(if (deleted) tr("Plantilla eliminada.") else tr("Esa plantilla ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "spam:save" -> {
@@ -749,7 +750,7 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("spam", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    CrmSpam.save(tenant, settings)
+                    CrmSpam.save(tenant, settings, actor.activity)
                     show("spam", UiNotice(tr("Reglas anti-spam guardadas."), UiTone.Success), emptyMap())
                 }
                 "team:user" -> {
@@ -765,13 +766,14 @@ object CrmServerModule : ServerModule {
                             notifyNewMessage = values["notifyNewMessage"]?.let { it == "true" } ?: CrmNotify.userSettings(tenant)[user.id]?.notifyNewMessage ?: true,
                             notifyFollowUp = values["notifyFollowUp"]?.let { it == "true" } ?: CrmNotify.userSettings(tenant)[user.id]?.notifyFollowUp ?: true,
                         ),
+                        actor.activity, user.name,
                     )
                     show("team", UiNotice(tr("Avisos de {0} guardados.", user.name), UiTone.Success), emptyMap())
                 }
                 "settings:digest", "team:digest" -> {
                     val hour = values["digestHour"].orEmpty().trim().toIntOrNull()?.takeIf { it in 0..23 }
                         ?: return show("settings", UiNotice(tr("La hora debe ser un numero entre 0 y 23."), UiTone.Danger), emptyMap())
-                    tenant.prepareStatement("UPDATE crm_settings SET digest_hour = ? WHERE id = 1").use { it.setInt(1, hour); it.executeUpdate() }
+                    CrmNotify.setDigestHour(tenant, hour, actor.activity)
                     show("settings", UiNotice(tr("El resumen diario se enviara a las {0}:00.", hour), UiTone.Success), emptyMap())
                 }
                 "settings:exitSave" -> {
@@ -789,7 +791,7 @@ object CrmServerModule : ServerModule {
                             params - "op", values + ("exitConfirm" to "false"),
                         )
                     }
-                    CrmExit.save(tenant, config)
+                    CrmExit.save(tenant, config, actor.activity)
                     show("automations", UiNotice(if (config.enabled) tr("Automatizacion de salida guardada.") else tr("Automatizacion de salida desactivada."), UiTone.Success), emptyMap())
                 }
                 "integrations:metaSave" -> {
@@ -798,10 +800,10 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    CrmHost.saveMeta(tenant, merged)
+                    CrmHost.saveMeta(tenant, merged, actor.activity)
                     // Saving connects everything at once: page token and Instagram, and the WhatsApp account.
                     if (!merged.enabled || merged.systemToken == null) return show("integrations", UiNotice(tr("Meta guardado."), UiTone.Success), emptyMap())
-                    val setup = CrmHost.metaSetup(tenant, merged)
+                    val setup = CrmHost.metaSetup(tenant, merged, actor.activity)
                     show(
                         "integrations",
                         UiNotice(tr("Meta guardado. {0}", setup.notice).trim(), if (setup.problems.isEmpty()) UiTone.Success else UiTone.Warning),
@@ -818,7 +820,7 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    CrmHost.metaSaveApp(tenant, app)
+                    CrmHost.metaSaveApp(tenant, app, actor.activity)
                     show("integrations", UiNotice(if (app.enabled) tr("App de Meta del servidor guardada: las empresas ya pueden conectarse.") else tr("App de Meta del servidor guardada (desactivada)."), UiTone.Success), emptyMap())
                 }
                 "integrations:metaMode" -> {
@@ -830,7 +832,7 @@ object CrmServerModule : ServerModule {
                     }
                     if (mode != current.connectionMode) {
                         // Tokens of one mode are useless in the other: the company connects again.
-                        if (current.serverMode) CrmHost.metaDisconnect(tenant, permissions.companyCode)
+                        if (current.serverMode) CrmHost.metaDisconnect(tenant, permissions.companyCode, actor.activity)
                         CrmHost.saveMeta(
                             tenant,
                             CrmHost.metaSettings(tenant).copy(
@@ -839,6 +841,7 @@ object CrmServerModule : ServerModule {
                                 wabaId = null, phoneNumberId = null, messengerToken = null, instagramToken = null, sharedTokens = true,
                                 oauthToken = null, metaUserId = null,
                             ),
+                            actor.activity,
                         )
                         CrmHost.metaLog(tenant, "modo", if (mode == ServerMode) "app del servidor" else "app propia")
                     }
@@ -854,16 +857,16 @@ object CrmServerModule : ServerModule {
                     )
                 }
                 "integrations:metaDisconnect" -> {
-                    CrmHost.metaDisconnect(tenant, permissions.companyCode)
+                    CrmHost.metaDisconnect(tenant, permissions.companyCode, actor.activity)
                     show("integrations", UiNotice(tr("Meta desconectado: ya no se reciben ni se envian mensajes por WhatsApp, Messenger ni Instagram."), UiTone.Success), emptyMap())
                 }
                 "integrations:metaServerOptions" -> {
-                    CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(recordEchoes = values["recordEchoes"] == "true"))
+                    CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(recordEchoes = values["recordEchoes"] == "true"), actor.activity)
                     show("integrations", UiNotice(tr("Opciones de Meta guardadas."), UiTone.Success), emptyMap())
                 }
                 "integrations:e24Save" -> {
                     try {
-                        CrmHost.saveEncuentra24Form(tenant, values)
+                        CrmHost.saveEncuentra24Form(tenant, values, actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
@@ -875,7 +878,7 @@ object CrmServerModule : ServerModule {
                             ?: return show("integrations", UiNotice(tr("La fecha debe tener el formato AAAA-MM-DD."), UiTone.Danger), emptyMap())
                     }
                     val notice = try {
-                        val result = CrmHost.encuentra24Sync(tenant, from)
+                        val result = CrmHost.encuentra24Sync(tenant, from, com.ideasdeveloper.bms.server.activity.ActivityActor.import(actor.activity))
                         UiNotice(tr("Encuentra24: {0}.", result), UiTone.Success)
                     } catch (failure: CrmEncuentra24Exception) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
@@ -884,7 +887,7 @@ object CrmServerModule : ServerModule {
                 }
                 "integrations:wpSave" -> {
                     try {
-                        CrmHost.saveWordPressForm(tenant, values)
+                        CrmHost.saveWordPressForm(tenant, values, actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
@@ -892,7 +895,7 @@ object CrmServerModule : ServerModule {
                 }
                 "integrations:wpSecret" -> {
                     val secret = try {
-                        CrmHost.wordpressNewSecret(tenant)
+                        CrmHost.wordpressNewSecret(tenant, actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
@@ -910,7 +913,7 @@ object CrmServerModule : ServerModule {
                 "integrations:wpAgentsSync" -> {
                     val notice = try {
                         val emails = CrmNotify.userSettings(tenant).mapValues { it.value.email }
-                        UiNotice(tr("{0} agente(s) del sitio sincronizados.", CrmHost.wordpressSyncAgents(tenant, context.users, emails)), UiTone.Success)
+                        UiNotice(tr("{0} agente(s) del sitio sincronizados.", CrmHost.wordpressSyncAgents(tenant, context.users, emails, actor.activity)), UiTone.Success)
                     } catch (failure: CrmWordPressException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
@@ -919,7 +922,7 @@ object CrmServerModule : ServerModule {
                 "integrations:wpAgentsSave" -> {
                     CrmHost.wordpressAgents(tenant).forEach { agent ->
                         val chosen = values["agent_${agent.wpUserId}"] ?: return@forEach
-                        CrmHost.wordpressMapAgent(tenant, agent.wpUserId, context.users.firstOrNull { it.name == chosen }?.id)
+                        CrmHost.wordpressMapAgent(tenant, agent.wpUserId, context.users.firstOrNull { it.name == chosen }?.id, actor.activity)
                     }
                     show("integrations", UiNotice(tr("Agentes guardados."), UiTone.Success), emptyMap())
                 }
@@ -928,7 +931,7 @@ object CrmServerModule : ServerModule {
                     val listingId = params["listing"]?.toLongOrNull() ?: return show("properties", UiNotice(tr("Propiedad invalida."), UiTone.Danger), params - setOf("op", "listing"))
                     val notice = try {
                         val listing = CrmHost.wordpressListing(tenant, listingId)
-                        CrmHost.wordpressLinkListing(tenant, lead.id, listing, "Propiedad vinculada por ${actor.name}: ${listing.title}.")
+                        CrmHost.wordpressLinkListing(tenant, lead.id, listing, "Propiedad vinculada por ${actor.name}: ${listing.title}.", actor)
                         UiNotice(tr("{0} vinculada a {1}.", listing.title, lead.name), UiTone.Success)
                     } catch (failure: CrmWordPressException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
@@ -941,15 +944,19 @@ object CrmServerModule : ServerModule {
                     val back = mapOf("id" to lead.id.toString())
                     when (params["op"]) {
                         "itemRemove" -> {
-                            CrmItems.remove(tenant, item)
-                            CrmRepository.addActivity(tenant, lead.id, "item", "Quitado: ${item.title}.", actor)
+                            CrmAudit.atomically(tenant) {
+                                CrmItems.remove(tenant, item)
+                                CrmRepository.addActivity(tenant, lead.id, "item", "Quitado: ${item.title}.", actor)
+                            }
                             show("lead", UiNotice(tr("{0} quitado.", item.title), UiTone.Success), back)
                         }
                         "itemStatus" -> {
                             val status = params["status"].orEmpty().takeIf { it in setOf("offered", "chosen", "discarded", "interested") }
                                 ?: return show("lead", UiNotice(tr("Estado invalido."), UiTone.Danger), back)
-                            CrmItems.setStatus(tenant, item, status)
-                            CrmRepository.addActivity(tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor)
+                            CrmAudit.atomically(tenant) {
+                                CrmItems.setStatus(tenant, item, status)
+                                CrmRepository.addActivity(tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor)
+                            }
                             show("lead", UiNotice(tr("{0}: {1}.", item.title, tr(CrmItems.statusLabels.getValue(status))), UiTone.Success), back)
                         }
                         else -> try {
@@ -985,7 +992,7 @@ object CrmServerModule : ServerModule {
                 }
                 "integrations:staySave" -> {
                     val lost = try {
-                        CrmStay.save(tenant, CrmStay.parseSelection(values, context.fields))
+                        CrmStay.save(tenant, CrmStay.parseSelection(values, context.fields), actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
@@ -993,7 +1000,7 @@ object CrmServerModule : ServerModule {
                 }
                 "integrations:translationSave" -> {
                     try {
-                        CrmTranslate.save(tenant, CrmTranslate.merge(CrmTranslate.load(tenant), values, context.fields))
+                        CrmTranslate.save(tenant, CrmTranslate.merge(CrmTranslate.load(tenant), values, context.fields), actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
@@ -1003,7 +1010,7 @@ object CrmServerModule : ServerModule {
                     val provider = CrmModuleExtensions.cloudbeds()
                         ?: return show("integrations", UiNotice(tr(CrmCloudbedsMissing), UiTone.Danger), emptyMap())
                     try {
-                        provider.saveSettings(CrmHost, tenant, values, CrmMail.templates(tenant))
+                        provider.saveSettings(CrmHost, tenant, values, CrmMail.templates(tenant), actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
@@ -1029,7 +1036,7 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmImportException) {
                         return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
-                    val job = CrmImport.create(tenant, source, name, table, actor.userId)
+                    val job = CrmImport.create(tenant, source, name, table, actor.userId, actor.activity)
                     show("importjob", UiNotice(tr("{0} filas leidas. Revisa el mapeo.", table.rows.size), UiTone.Success), mapOf("job" to job.toString()))
                 }
                 "importjob:map", "importjob:preset", "importjob:start", "importjob:cancel" -> {
@@ -1042,9 +1049,9 @@ object CrmServerModule : ServerModule {
                                 CrmImport.presets(tenant)[values["preset"]] ?: return show("importjob", UiNotice(tr("Ese mapeo ya no existe."), UiTone.Warning), back)
                             } else CrmImportScreens.mapping(context, job, values)
                             // Columns marked "Crear campo..." become fields of the CRM or of the customer first.
-                            val created = CrmImport.saveMappingCreatingFields(tenant, job, mapping)
+                            val created = CrmImport.saveMappingCreatingFields(tenant, job, mapping, actor.activity)
                             val saved = CrmImport.job(tenant, job.id)!!
-                            values["presetName"]?.trim()?.takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(tenant, it, saved.mapping) }
+                            values["presetName"]?.trim()?.takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(tenant, it, saved.mapping, actor.activity) }
                             val preview = CrmImport.preview(tenant, saved, CrmImport.Context(context.stages, context.interests, context.users, context.today, saved.source))
                             val missing = if ("name" !in mapping.columns.values && "email" !in mapping.columns.values && "phone" !in mapping.columns.values) tr(" Ninguna columna es nombre, correo o telefono.") else ""
                             show(
@@ -1060,11 +1067,11 @@ object CrmServerModule : ServerModule {
                         "start" -> {
                             if (job.status != "mapping") return show("importjob", UiNotice(tr("Esa importacion ya empezo."), UiTone.Warning), back)
                             if (job.mapping.columns.values.none { it in setOf("name", "email", "phone") }) return show("importjob", UiNotice(tr("Mapea al menos el nombre, el correo o el telefono."), UiTone.Danger), back)
-                            CrmImport.setStatus(tenant, job, "running")
+                            CrmImport.setStatus(tenant, job, "running", actor.activity)
                             show("importjob", UiNotice(tr("Importacion en marcha: se aplican 300 filas por minuto."), UiTone.Success), back)
                         }
                         else -> {
-                            CrmImport.setStatus(tenant, job, "canceled")
+                            CrmImport.setStatus(tenant, job, "canceled", actor.activity)
                             show("import", UiNotice(tr("Importacion {0} cancelada.", job.name), UiTone.Success), emptyMap())
                         }
                     }
@@ -1089,24 +1096,26 @@ object CrmServerModule : ServerModule {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val title = values["title"].orEmpty().trim()
                     if (title.isEmpty() || title.length > 300) return show("lead", UiNotice(tr("Escribe el nombre del interes (hasta 300 caracteres)."), UiTone.Danger), mapOf("id" to lead.id.toString()))
-                    CrmItems.link(tenant, lead.id, "manual", UUID.randomUUID().toString(), title, values["subtitle"].orEmpty().trim().take(500))
-                    CrmRepository.addActivity(tenant, lead.id, "item", "Interes agregado: $title.", actor)
+                    CrmAudit.atomically(tenant) {
+                        CrmItems.link(tenant, lead.id, "manual", UUID.randomUUID().toString(), title, values["subtitle"].orEmpty().trim().take(500))
+                        CrmRepository.addActivity(tenant, lead.id, "item", "Interes agregado: $title.", actor)
+                    }
                     show("lead", UiNotice(tr("{0} agregado.", title), UiTone.Success), mapOf("id" to lead.id.toString()))
                 }
                 "integrations:metaNumber" -> {
                     val id = params["id"].orEmpty().takeIf { it.matches(Regex("^[0-9]{1,64}$")) }
                         ?: return show("integrations", UiNotice(tr("Numero invalido."), UiTone.Danger), emptyMap())
-                    CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(phoneNumberId = id))
+                    CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(phoneNumberId = id), actor.activity)
                     show("integrations", UiNotice(tr("Numero de WhatsApp guardado."), UiTone.Success), emptyMap())
                 }
                 "lead:delete" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
-                    CrmRepository.deleteLead(tenant, lead.id)
+                    CrmRepository.deleteLead(tenant, lead, actor, context.stage(lead.stageId)?.name)
                     show("leads", UiNotice(tr("Lead {0} eliminado.", lead.name), UiTone.Success), emptyMap())
                 }
                 "settings:interests" -> {
                     val enabled = values["enabled"] == "true"
-                    CrmRepository.setInterestsEnabled(tenant, enabled)
+                    CrmRepository.setInterestsEnabled(tenant, enabled, actor.activity)
                     show("settings", UiNotice(if (enabled) tr("Intereses activados.") else tr("Intereses desactivados: todos los usuarios del CRM ven todos los leads."), UiTone.Success), emptyMap())
                 }
                 "settings:interestSave" -> {
@@ -1118,18 +1127,18 @@ object CrmServerModule : ServerModule {
                     if (context.interests.any { it.name.equals(name, ignoreCase = true) && it.id != uuid("id") }) {
                         return show("settings", UiNotice(tr("Ya existe el interes {0}.", name), UiTone.Danger), params - "op", values)
                     }
-                    CrmRepository.saveInterest(tenant, uuid("id"), name)
+                    CrmRepository.saveInterest(tenant, uuid("id"), name, actor.activity)
                     show("settings", UiNotice(tr("Interes {0} guardado.", name), UiTone.Success), emptyMap())
                 }
                 "settings:interestDelete" -> {
-                    val deleted = uuid("id")?.let { CrmRepository.deleteInterest(tenant, it) } == true
+                    val deleted = uuid("id")?.let { CrmRepository.deleteInterest(tenant, it, actor.activity) } == true
                     show("settings", UiNotice(if (deleted) tr("Interes eliminado; sus leads estan en Recepcion.") else tr("Ese interes ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "settings:userInterests" -> {
                     val user = uuid("user")?.let { id -> context.users.firstOrNull { it.id == id } }
                         ?: return show("settings", UiNotice(tr("Ese usuario ya no tiene acceso al CRM."), UiTone.Warning), emptyMap())
                     val chosen = context.interests.filter { values[it.id.toString()] == "true" }.map { it.id }.toSet()
-                    CrmRepository.setUserInterests(tenant, user.id, chosen)
+                    CrmRepository.setUserInterests(tenant, user.id, chosen, actor.activity, user.name)
                     show("settings", UiNotice(tr("Intereses de {0} guardados.", user.name), UiTone.Success), emptyMap())
                 }
                 "settings:stageSave" -> {
@@ -1141,10 +1150,10 @@ object CrmServerModule : ServerModule {
                     if (context.stages.any { it.name.equals(input.name, ignoreCase = true) && it.id != uuid("id") }) {
                         return show("settings", UiNotice(tr("Ya existe la etapa {0}.", input.name), UiTone.Danger), params - "op", values)
                     }
-                    CrmRepository.saveStage(tenant, uuid("id"), input)
+                    CrmRepository.saveStage(tenant, uuid("id"), input, actor.activity)
                     // Manual translations of the name: written ones win over the provider; an emptied one goes back to automatic.
                     CrmTexts.otherLanguages(permissions.companyCode).forEach { language ->
-                        CrmTexts.saveManual(tenant, input.name, language, values["${CrmScreens.StageTranslationPrefix}$language"].orEmpty())
+                        CrmTexts.saveManual(tenant, input.name, language, values["${CrmScreens.StageTranslationPrefix}$language"].orEmpty(), actor.activity)
                     }
                     show("settings", UiNotice(tr("Etapa {0} guardada.", input.name), UiTone.Success), emptyMap())
                 }
@@ -1159,6 +1168,7 @@ object CrmServerModule : ServerModule {
                                 CrmAutomationStore.all(tenant).filter { it.trigger.type == CrmTriggerType.Manual },
                             ),
                             context.fields,
+                            actor.activity,
                         )
                     } catch (failure: CrmValidationException) {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
@@ -1168,7 +1178,7 @@ object CrmServerModule : ServerModule {
                 "settings:sectionSave" -> {
                     val id = uuid("id")
                     val section = try {
-                        CrmFieldSections.save(tenant, id, CrmFieldSections.parse(values, context.sections, id), context.sections)
+                        CrmFieldSections.save(tenant, id, CrmFieldSections.parse(values, context.sections, id), context.sections, actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
@@ -1178,31 +1188,31 @@ object CrmServerModule : ServerModule {
                     val section = uuid("id")?.let { id -> context.sections.firstOrNull { it.id == id } }
                         ?: return show("settings", UiNotice(tr("Esa seccion ya no existe."), UiTone.Warning), emptyMap())
                     try {
-                        CrmFieldSections.delete(tenant, section)
+                        CrmFieldSections.delete(tenant, section, actor.activity)
                     } catch (failure: CrmValidationException) {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
                     show("settings", UiNotice(tr("Seccion {0} eliminada; sus campos quedaron en {1}.", section.name, tr(CrmFields.Section)), UiTone.Success), emptyMap())
                 }
                 "settings:sectionMove" -> {
-                    val moved = uuid("id")?.let { CrmFieldSections.move(tenant, context.sections, it, params["dir"] == "up") } == true
+                    val moved = uuid("id")?.let { CrmFieldSections.move(tenant, context.sections, it, params["dir"] == "up", actor.activity) } == true
                     show("settings", UiNotice(if (moved) tr("Orden de las secciones guardado.") else tr("Esa seccion no se puede mover ahi (Datos del cliente va siempre primero)."), if (moved) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "settings:fieldDelete" -> {
                     val field = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }
                         ?: return show("settings", UiNotice(tr("Ese campo ya no existe."), UiTone.Warning), emptyMap())
-                    val lost = CrmFields.delete(tenant, field)
+                    val lost = CrmFields.delete(tenant, field, actor.activity)
                     show("settings", UiNotice(tr("Campo {0} eliminado.{1}", field.label, CrmStay.lostNote(lost)), if (lost > 0) UiTone.Warning else UiTone.Success), emptyMap())
                 }
                 "settings:stageDelete" -> {
                     val id = uuid("id") ?: return show("settings", UiNotice(tr("Etapa invalida."), UiTone.Danger), emptyMap())
                     if (context.stages.size <= 1) return show("settings", UiNotice(tr("El pipeline necesita al menos una etapa."), UiTone.Warning), emptyMap())
-                    val deleted = CrmRepository.deleteStage(tenant, id)
+                    val deleted = CrmRepository.deleteStage(tenant, id, actor.activity)
                     show("settings", UiNotice(if (deleted) tr("Etapa eliminada.") else tr("Esa etapa ya no existe."), if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "settings:template" -> {
                     val template = CrmTemplates.find(params["template"].orEmpty()) ?: return show("settings", UiNotice(tr("Plantilla desconocida."), UiTone.Danger), emptyMap())
-                    CrmRepository.applyTemplate(tenant, template)
+                    CrmRepository.applyTemplate(tenant, template, actor.activity)
                     show("settings", UiNotice(tr("Etapas de {0} aplicadas.", template.label), UiTone.Success), emptyMap())
                 }
                 else -> show(screen, UiNotice(tr("Accion desconocida."), UiTone.Danger))
@@ -1211,6 +1221,11 @@ object CrmServerModule : ServerModule {
             show(screen, UiNotice(failure.message.orEmpty(), UiTone.Danger))
         }
     }
+
+    // The template chosen in the reply form and who an email goes to, for the activity log of the message (never its text).
+    private fun chosenTemplate(values: Map<String, String>): String? = values["template"]?.takeIf { it.isNotBlank() && it != CrmAdminScreens.NoTemplate }
+
+    private fun recipient(channel: CrmChannel, lead: CrmLead): String? = lead.email.takeIf { channel.id == "email" && it.isNotBlank() }
 
     // Numbers of the WhatsApp account for the screen (id|number|name|platform;...), so the CRM number can be chosen.
     private fun metaNumbers(setup: MetaSetup): Map<String, String> =

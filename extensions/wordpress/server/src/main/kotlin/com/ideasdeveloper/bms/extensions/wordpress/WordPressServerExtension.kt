@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.wordpress
 
+import com.ideasdeveloper.bms.modules.crm.CrmActor
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionPermissions
 import com.ideasdeveloper.bms.modules.crm.CrmExtensions
@@ -59,8 +60,8 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
         module = "crm",
         displayName = "WordPress (Real Estate 7)",
         description = "Conecta el sitio WordPress (Real Estate 7) con el plugin BMS Connector: formularios y consultas crean leads, y las propiedades se buscan y se vinculan a ellos.",
-        version = "1.1.0",
-        minModuleVersion = "0.30.0", // the bilingual CRM (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/wordpress",
@@ -127,9 +128,9 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
 
     override fun settings(host: CrmHost, tenant: Connection): CrmWordPressSettings = WordPressSettingsStore.load(host, tenant)
 
-    override fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>) = WordPressSettingsStore.saveForm(host, tenant, values)
+    override fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = WordPressSettingsStore.saveForm(host, tenant, values, actor)
 
-    override fun newSecret(host: CrmHost, tenant: Connection): String = WordPressSettingsStore.newSecret(host, tenant)
+    override fun newSecret(host: CrmHost, tenant: Connection, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): String = WordPressSettingsStore.newSecret(host, tenant, actor)
 
     override fun ping(host: CrmHost, tenant: Connection): String = CrmWordPress.ping(tenant)
 
@@ -140,16 +141,16 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
 
     override fun taxonomies(host: CrmHost, tenant: Connection): Map<String, List<String>> = CrmWordPress.taxonomies(tenant)
 
-    override fun markSold(host: CrmHost, tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate) = CrmWordPress.markSold(tenant, id, price, date)
+    override fun markSold(host: CrmHost, tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmWordPress.markSold(tenant, id, price, date, actor)
 
-    override fun syncAgents(host: CrmHost, tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>): Int = CrmWordPress.syncAgents(tenant, users, userEmails)
+    override fun syncAgents(host: CrmHost, tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Int = CrmWordPress.syncAgents(tenant, users, userEmails, actor)
 
     override fun agents(host: CrmHost, tenant: Connection): List<WpAgent> = WordPressSettingsStore.agents(tenant)
 
-    override fun mapAgent(host: CrmHost, tenant: Connection, wpUserId: Long, userId: UUID?) = WordPressSettingsStore.mapAgent(tenant, wpUserId, userId)
+    override fun mapAgent(host: CrmHost, tenant: Connection, wpUserId: Long, userId: UUID?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = WordPressSettingsStore.mapAgent(tenant, wpUserId, userId, actor)
 
-    override fun linkListing(host: CrmHost, tenant: Connection, leadId: UUID, listing: WpListing, activity: String?) =
-        CrmWordPress.linkListing(tenant, leadId, listing, activity)
+    override fun linkListing(host: CrmHost, tenant: Connection, leadId: UUID, listing: WpListing, activity: String?, actor: CrmActor) =
+        CrmWordPress.linkListing(tenant, leadId, listing, activity, actor)
 
     override fun recordError(host: CrmHost, tenant: Connection, error: String) = WordPressSettingsStore.recordError(tenant, error)
 

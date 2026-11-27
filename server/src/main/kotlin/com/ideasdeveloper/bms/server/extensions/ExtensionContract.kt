@@ -58,7 +58,23 @@ data class ExtensionSettingDefinition(
      * settings always belong to one company and are never applied to others.
      */
     val scope: String = ExtensionSettingScope.App,
-)
+    /** text | number | boolean | select | password | secret | url; null when the manifest does not say. */
+    val type: String? = null,
+    /**
+     * Whether a change of this setting may show its old and new value in the company activity log. Unset, only a
+     * plain [type] (text, number, boolean, select) is shown; anything else (unmarked, password, secret, url) is
+     * stored as "changed" only, and a [secret] setting never shows its value whatever this says.
+     */
+    val loggable: Boolean? = null,
+) {
+    /** Whether the activity log may store this setting's values (ACTIVITY_LOG.md §1.6): fails closed. */
+    val valueLoggable: Boolean
+        get() {
+            val kind = type?.trim()?.lowercase()
+            if (secret || kind in setOf("password", "secret")) return false
+            return loggable ?: (kind in setOf("text", "number", "boolean", "select"))
+        }
+}
 
 object ExtensionSettingScope {
     const val App = "app"
@@ -133,6 +149,12 @@ class ExtensionContext(
     val tenant: Connection,
     val extensionId: String,
     val settings: ExtensionSettings,
+    /**
+     * Who is acting (enabling, uninstalling) for the company activity log: the person, or the server owner or
+     * administrator "(desde el servidor)". Rows an extension writes while it runs (fields it removes at uninstall)
+     * carry it; the system when nothing says.
+     */
+    val activityActor: com.ideasdeveloper.bms.server.activity.ActivityActor = com.ideasdeveloper.bms.server.activity.ActivityActor.system(),
 )
 
 /** Settings of one extension in one company; secrets are opened only when read. */
@@ -151,6 +173,32 @@ data class UninstallItem(
     /** "delete" or "keep" for always-happening items; for option items, what the declared default does. */
     val action: String,
 )
+
+/** The activity-log summary of an uninstall: what each choice removed or kept, with the counts the extension reports in its preview. */
+object UninstallSummary {
+    /** The row's text and one change per line of the [preview] (and per choice the preview does not mention). */
+    fun of(displayName: String, preview: List<UninstallItem>, choices: Map<String, String>): Pair<String, List<com.ideasdeveloper.bms.server.activity.ActivityChange>> {
+        val removed = mutableListOf<String>()
+        val kept = mutableListOf<String>()
+        val changes = mutableListOf<com.ideasdeveloper.bms.server.activity.ActivityChange>()
+        preview.forEachIndexed { index, item ->
+            val deleted = (if (item.optionId == null) item.action else choices[item.optionId] ?: item.action) == UninstallDefault.Delete
+            (if (deleted) removed else kept) += "${item.count} ${item.label}"
+            changes += com.ideasdeveloper.bms.server.activity.ActivityChange(
+                item.optionId ?: "item_$index", item.label, item.count.toString(), if (deleted) "Eliminado" else "Conservado",
+            )
+        }
+        choices.toSortedMap().filterKeys { option -> preview.none { it.optionId == option } }.forEach { (option, choice) ->
+            changes += com.ideasdeveloper.bms.server.activity.ActivityChange(option, option, null, choice)
+        }
+        val parts = listOfNotNull(
+            removed.takeIf { it.isNotEmpty() }?.joinToString("; ", "Elimino: "),
+            kept.takeIf { it.isNotEmpty() }?.joinToString("; ", "Conservo: "),
+        )
+        val summary = "Desinstalo la extension $displayName." + if (parts.isEmpty()) "" else " " + parts.joinToString(". ") + "."
+        return summary to changes
+    }
+}
 
 /** Hands an extension what it needs from the Core while it registers its routes. */
 interface ExtensionAccess {

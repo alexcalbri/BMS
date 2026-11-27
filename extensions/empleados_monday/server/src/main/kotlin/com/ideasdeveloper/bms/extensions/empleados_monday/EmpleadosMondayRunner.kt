@@ -40,7 +40,7 @@ object EmpleadosMondayRunner {
         if (!EmpleadosMondayJobs.tryLockRunner(tenant)) return 0
         try {
             var processed = 0
-            runCatching { EmpleadosMondayJobs.purgeOld(tenant) }
+            runCatching { EmpleadosMondayJobs.purgeOldRecorded(tenant) }
                 .onFailure { log.warn("No se pudieron borrar importaciones antiguas de monday", it) }
             EmpleadosMondayJobs.withStatus(tenant, MondayJobStatus.Reading).forEach { job ->
                 if (EmpleadosMondayClient.hasTime(deadline) && MondayReading.retryReady(job.retries, job.updatedAt)) processed += guarded(tenant, job) { readPages(context, job, deadline) }
@@ -101,7 +101,12 @@ object EmpleadosMondayRunner {
     private fun fail(tenant: Connection, id: UUID, message: String) {
         runCatching {
             if (!tenant.autoCommit) tenant.rollback()
-            EmpleadosMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+            val job = EmpleadosMondayJobs.find(tenant, id)
+            EmpleadosMondayJobs.inTransaction(tenant) {
+                val changed = EmpleadosMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+                // Una importacion que ya habia aplicado filas y falla deja su fila de totales (las filas por ficha ya estan).
+                if (changed && job != null && job.applied > 0) recordTotal(tenant, job, "La importación se detuvo con un error: ${message.take(200)}")
+            }
         }.onFailure { log.error("No se pudo marcar como fallida la importacion de monday {}", id, it) }
     }
 
@@ -194,6 +199,8 @@ object EmpleadosMondayRunner {
     // ---- Aplicacion ----
 
     private fun applyBatch(tenant: Connection, job: MondayJob, deadline: Long): Int {
+        // Quien empezo la importacion: es el actor de cada fila del registro de actividad.
+        val activity = EmpleadosImportApply.importActor(tenant, job.createdBy, job.startedActor)
         // Una consulta por corrida: correo (en minusculas) -> usuario activo, para enlazar fichas por correo.
         val users = EmpleadosImportApply.userEmails(tenant)
         val batch = EmpleadosMondayJobs.pending(tenant, job.id, BatchSize)
@@ -205,7 +212,7 @@ object EmpleadosMondayRunner {
             var message = ""
             try {
                 val dto = MondayRowDto.decode(row.payload)
-                when (val result = EmpleadosImportApply.apply(tenant, dto.toEmployee(), users, job.createdBy)) {
+                when (val result = EmpleadosImportApply.apply(tenant, dto.toEmployee(), users, job.createdBy, activity)) {
                     is EmpleadosImportOutcome.Created -> { outcome = "created"; message = dto.problem }
                     is EmpleadosImportOutcome.Updated -> { outcome = "updated"; message = dto.problem }
                     is EmpleadosImportOutcome.Skipped -> { outcome = "skipped"; message = result.reason }
@@ -233,6 +240,14 @@ object EmpleadosMondayRunner {
     private fun finish(tenant: Connection, jobId: UUID) {
         val job = EmpleadosMondayJobs.find(tenant, jobId) ?: return
         val message = "Importacion terminada: ${job.created} creados, ${job.updated} actualizados, ${job.skipped} omitidos y ${job.failed} con error."
-        EmpleadosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
+        // La fila de totales (quien, origen y cifras) va en la misma transaccion que cierra el trabajo.
+        EmpleadosMondayJobs.inTransaction(tenant) {
+            if (EmpleadosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))) recordTotal(tenant, job, "")
+        }
+    }
+
+    private fun recordTotal(tenant: Connection, job: MondayJob, outcome: String) {
+        val activity = EmpleadosImportApply.importActor(tenant, job.createdBy, job.startedActor)
+        EmpleadosImportApply.recordImportTotal(tenant, activity, job.id, "Monday", job.boardName, job.created, job.updated, job.skipped, job.failed, outcome)
     }
 }

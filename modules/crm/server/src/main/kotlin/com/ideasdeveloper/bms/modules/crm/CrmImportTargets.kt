@@ -101,27 +101,34 @@ object CrmImportTargets {
         }
     }
 
-    private fun createCustomerField(tenant: Connection, label: String, type: String, options: List<String>, existing: List<CustomerField>): CustomerField {
+    private fun createCustomerField(tenant: Connection, label: String, type: String, options: List<String>, existing: List<CustomerField>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): CustomerField {
         val taken = existing.map { it.key }.toSet()
         // Clientes keys have no prefix; the same slug rules as the CRM.
         val key = CrmFields.uniqueKey(label, taken.map { "cf_$it" }.toSet()).removePrefix("cf_")
         val position = tenant.prepareStatement("SELECT COALESCE(max(display_order), -1) + 1 FROM customer_field_definitions").use { query ->
             query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
         }
-        tenant.prepareStatement(
-            """
-            INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order, options)
-            VALUES (?, ?, ?, ?, ?, FALSE, ?, CAST(? AS jsonb))
-            """.trimIndent()
-        ).use { insert ->
-            insert.setObject(1, UUID.randomUUID())
-            insert.setString(2, key)
-            insert.setString(3, label.take(80))
-            insert.setString(4, type)
-            insert.setString(5, type)
-            insert.setInt(6, position)
-            insert.setString(7, JsonArray(options.map { JsonPrimitive(it) }).toString())
-            insert.executeUpdate()
+        CrmAudit.atomically(tenant) {
+            tenant.prepareStatement(
+                """
+                INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order, options)
+                VALUES (?, ?, ?, ?, ?, FALSE, ?, CAST(? AS jsonb))
+                """.trimIndent()
+            ).use { insert ->
+                insert.setObject(1, UUID.randomUUID())
+                insert.setString(2, key)
+                insert.setString(3, label.take(80))
+                insert.setString(4, type)
+                insert.setString(5, type)
+                insert.setInt(6, position)
+                insert.setString(7, JsonArray(options.map { JsonPrimitive(it) }).toString())
+                insert.executeUpdate()
+            }
+            // A field of Clientes created by the import: its own history does not show it.
+            CrmAudit.record(
+                tenant, actor, "customer_field", key, label.take(80), com.ideasdeveloper.bms.server.activity.ActivityActions.Created, "Creo el campo de cliente ${label.take(80)} desde una importacion.",
+                com.ideasdeveloper.bms.server.activity.ActivityChanges.created(mapOf("label" to label.take(80), "type" to type, "options" to options), linkedMapOf("label" to "Nombre", "type" to "Tipo", "options" to "Opciones")),
+            )
         }
         return CustomerField(key, label.take(80), type, options)
     }
@@ -137,6 +144,7 @@ object CrmImportTargets {
         types: Map<String, String>,
         // Extension que pide los campos: los campos del CRM que crea se marcan para que desinstalarla pueda ofrecer borrarlos.
         extensionId: String? = null,
+        actor: com.ideasdeveloper.bms.server.activity.ActivityActor = com.ideasdeveloper.bms.server.activity.ActivityActor.import(null),
         fieldType: (String?) -> Pair<CrmFieldType, Boolean> = { CrmFieldType.Text to false },
         distinct: (String) -> List<String>,
     ): Pair<Map<String, String>, List<String>> {
@@ -155,14 +163,14 @@ object CrmImportTargets {
             val (finalType, finalMultiple) = if (type == CrmFieldType.Dropdown && options.isEmpty()) CrmFieldType.Text to false else type to multiple
             if (target == NewCustomer && finalType != CrmFieldType.Files) {
                 customerFields.firstOrNull { it.label.equals(label, ignoreCase = true) }?.let { return@mapValues CustomerPrefix + it.key }
-                val field = createCustomerField(tenant, label, customerType(finalType, finalMultiple), options, customerFields)
+                val field = createCustomerField(tenant, label, customerType(finalType, finalMultiple), options, customerFields, actor)
                 customerFields = customerFields + field
                 created += tr("{0} (cliente)", label)
                 CustomerPrefix + field.key
             } else {
                 crmFields.firstOrNull { it.label.equals(label, ignoreCase = true) }?.let { return@mapValues CrmPrefix + it.key }
                 val position = (crmFields.maxOfOrNull { it.position } ?: -1) + 1
-                val field = CrmFields.save(tenant, null, CrmFieldInput(label, finalType, options, finalMultiple, false, position.coerceAtMost(999)), crmFields)
+                val field = CrmFields.save(tenant, null, CrmFieldInput(label, finalType, options, finalMultiple, false, position.coerceAtMost(999)), crmFields, actor)
                 if (extensionId != null) {
                     tenant.prepareStatement("UPDATE crm_field_definitions SET extension_id = ? WHERE id = ?").use { mark ->
                         mark.setString(1, extensionId)
@@ -243,6 +251,7 @@ object CrmImportTargets {
         customerValues: Map<String, String>,
         crmFields: List<CrmField>,
         customerFields: List<CustomerField>,
+        actor: com.ideasdeveloper.bms.server.activity.ActivityActor = com.ideasdeveloper.bms.server.activity.ActivityActor.import(null),
     ): List<String> {
         val problems = mutableListOf<String>()
         if (crmValues.isNotEmpty()) {
@@ -276,12 +285,25 @@ object CrmImportTargets {
                 value?.let { key to it }
             }.toMap()
             if (values.isNotEmpty()) {
+                val before = tenant.prepareStatement("SELECT c.id, c.display_name, c.flexible_attributes::text FROM customers c WHERE c.id = (SELECT customer_id FROM crm_leads WHERE id = ?)").use { query ->
+                    query.setObject(1, leadId)
+                    query.executeQuery().use { rows -> if (rows.next()) Triple(rows.getObject(1, UUID::class.java), rows.getString(2).orEmpty(), CrmFields.parseStored(rows.getString(3))) else null }
+                }
                 tenant.prepareStatement(
                     "UPDATE customers SET flexible_attributes = flexible_attributes || CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT customer_id FROM crm_leads WHERE id = ?) RETURNING id"
                 ).use { update ->
                     update.setString(1, JsonObject(values).toString())
                     update.setObject(2, leadId)
                     update.executeQuery().use { rows -> if (rows.next()) CrmCustomerEvents.changed(tenant, rows.getObject(1, java.util.UUID::class.java)) }
+                }
+                if (before != null) {
+                    val changes = values.mapNotNull { (key, value) ->
+                        val label = customerFields.firstOrNull { it.key == key }?.label ?: key
+                        val old = CrmFields.display(before.third[key])
+                        val new = CrmFields.display(value)
+                        if (old == new) null else com.ideasdeveloper.bms.server.activity.ActivityChange.of("customer.$key", label, old.ifEmpty { null }, new.ifEmpty { null })
+                    }
+                    if (changes.isNotEmpty()) CrmAudit.customer(tenant, actor, before.first, before.second, com.ideasdeveloper.bms.server.activity.ActivityActions.Updated, "Modifico los campos del cliente ${before.second} desde una importacion.", changes)
                 }
             }
         }

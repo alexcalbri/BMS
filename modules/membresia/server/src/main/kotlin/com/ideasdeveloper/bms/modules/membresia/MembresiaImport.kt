@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
@@ -61,7 +62,10 @@ class MembresiaImportContext(
     val permissions: ModulePermissions,
     val author: String,
     val today: LocalDate,
-)
+) {
+    /** Quien importa, para el registro de actividad: la importacion de quien la empezo (con "Agente de" si fue un agente). */
+    val activity: ActivityActor get() = ActivityActor.import(permissions.activityActor)
+}
 
 data class MembresiaImportReply(val notice: String, val error: Boolean = false, val params: Map<String, String> = emptyMap())
 
@@ -212,7 +216,7 @@ object MembresiaImportApply {
     // ------------------------------------------------------------ con base de datos
 
     /** Crea los planes propuestos que falten. Devuelve todos los planes (existentes y nuevos) por nombre normalizado en minusculas. */
-    fun ensurePlans(tenant: Connection, proposals: List<ImportPlanProposal>): Map<String, Plan> {
+    fun ensurePlans(tenant: Connection, proposals: List<ImportPlanProposal>, activity: ActivityActor = ActivityActor.import(null)): Map<String, Plan> {
         val byName = MembresiaRepository.plans(tenant, includeInactive = true).associateBy { planKey(it.name) }.toMutableMap()
         proposals.forEach { proposal ->
             val key = planKey(proposal.name)
@@ -222,6 +226,7 @@ object MembresiaImportApply {
                     tenant,
                     null,
                     PlanInput(normalizePlanName(proposal.name), "Plan creado al importar.", proposal.price, proposal.durationDays, null, proposal.guestPasses, true, byName.size),
+                    activity,
                 )
             } catch (failure: MembresiaValidationException) {
                 // Otro proceso lo creo a la vez: se relee.
@@ -237,7 +242,7 @@ object MembresiaImportApply {
      * Reutiliza el campo que ya tenga esa etiqueta o esa clave solo si es compatible ([compatibleField]); si no, esa etiqueta
      * se omite y queda en [CustomerFieldsResult.skipped] (no se escribe ese campo). Los nuevos van al final (display_order); se relee.
      */
-    fun ensureCustomerFields(tenant: Connection, labels: Collection<String>): CustomerFieldsResult {
+    fun ensureCustomerFields(tenant: Connection, labels: Collection<String>, activity: ActivityActor = ActivityActor.import(null)): CustomerFieldsResult {
         val wanted = labels.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         if (wanted.isEmpty()) return CustomerFieldsResult(emptyMap(), emptyList())
         fun read(): List<FieldDefinition> = tenant.prepareStatement("SELECT field_key, label, field_type, is_active FROM customer_field_definitions").use { query ->
@@ -247,21 +252,25 @@ object MembresiaImportApply {
             definitions.firstOrNull { it.label.trim().equals(label, ignoreCase = true) } ?: definitions.firstOrNull { it.key == fieldKeyFor(label) }
 
         val before = read()
-        wanted.filter { find(before, it) == null }.forEach { label ->
-            val type = fieldTypeFor(label)
-            tenant.prepareStatement(
-                """
-                INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order)
-                VALUES (?, ?, ?, ?, ?, FALSE, (SELECT COALESCE(MAX(display_order), 0) + 1 FROM customer_field_definitions))
-                ON CONFLICT DO NOTHING
-                """.trimIndent()
-            ).use { insert ->
-                insert.setObject(1, UUID.randomUUID())
-                insert.setString(2, fieldKeyFor(label))
-                insert.setString(3, label.take(200))
-                insert.setString(4, type)
-                insert.setString(5, type)
-                insert.executeUpdate()
+        // Los campos nuevos y sus filas del registro, en una transaccion.
+        MembresiaRepository.inTransaction(tenant) {
+            wanted.filter { find(before, it) == null }.forEach { label ->
+                val type = fieldTypeFor(label)
+                val inserted = tenant.prepareStatement(
+                    """
+                    INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order)
+                    VALUES (?, ?, ?, ?, ?, FALSE, (SELECT COALESCE(MAX(display_order), 0) + 1 FROM customer_field_definitions))
+                    ON CONFLICT DO NOTHING
+                    """.trimIndent()
+                ).use { insert ->
+                    insert.setObject(1, UUID.randomUUID())
+                    insert.setString(2, fieldKeyFor(label))
+                    insert.setString(3, label.take(200))
+                    insert.setString(4, type)
+                    insert.setString(5, type)
+                    insert.executeUpdate()
+                }
+                if (inserted == 1) MembresiaActivity.customerFieldCreated(tenant, activity, fieldKeyFor(label), label.take(200), type)
             }
         }
         val after = read()
@@ -305,6 +314,8 @@ object MembresiaImportApply {
         fieldKeys: Map<String, String>,
         author: String,
         today: LocalDate,
+        // Quien importa (importActor de quien la empezo): actor de cada fila del registro.
+        activity: ActivityActor = ActivityActor.import(null),
     ): ImportOutcome {
         val name = row.name.trim()
         val startsOn = row.startsOn
@@ -319,7 +330,7 @@ object MembresiaImportApply {
         if (!MembresiaRules.validAmount(amount)) return ImportOutcome.Skipped(tr("Monto fuera de rango."))
 
         val applied = try {
-            MembresiaRepository.inTransaction(tenant) { write(tenant, row, name, plan, fieldKeys, amount, startsOn, endsOn, author, today) }
+            MembresiaRepository.inTransaction(tenant) { write(tenant, row, name, plan, fieldKeys, amount, startsOn, endsOn, author, today, activity) }
         } catch (failure: MembresiaValidationException) {
             return ImportOutcome.Skipped(failure.errors.firstOrNull() ?: tr("Fila no válida."))
         }
@@ -362,6 +373,7 @@ object MembresiaImportApply {
         endsOn: LocalDate,
         author: String,
         today: LocalDate,
+        activity: ActivityActor,
     ): Applied {
         val importKey = row.key.trim()
         // Serializa corridas simultaneas de la misma fila.
@@ -384,7 +396,7 @@ object MembresiaImportApply {
         if (existing != null) {
             if (!existing.third) throw MembresiaValidationException(listOf(tr("El cliente ya no está disponible.")))
             // Ya importada: no se toca nada de la membresia; solo visitas nuevas.
-            importVisits(tenant, existing.first, existing.second, importKey, row.visits, author)
+            importVisits(tenant, existing.first, existing.second, importKey, row.visits, author, name, activity)
             return Applied(existing.first, existing.second, isNew = false, customerChanged = false)
         }
 
@@ -394,9 +406,9 @@ object MembresiaImportApply {
                 lock.executeQuery().use { it.next() }
             }
         }
-        val lookup = MembresiaRepository.findOrCreateCustomer(tenant, NewCustomerInput(name, row.email, row.phone))
+        val lookup = MembresiaRepository.findOrCreateCustomer(tenant, NewCustomerInput(name, row.email, row.phone), activity)
         val customerId = lookup.customerId
-        val fieldsChanged = fillEmptyCustomerFields(tenant, customerId, row.customerFields, fieldKeys)
+        val fieldsChanged = fillEmptyCustomerFields(tenant, customerId, name, row.customerFields, fieldKeys, activity)
 
         val status = if (row.cancelled) StoredStatus.Cancelada else MembresiaRules.initialStatus(startsOn, endsOn, today)
         val guestTotal = (row.guestPasses ?: plan.guestPasses).coerceIn(0, MembresiaRules.MaxGuestPasses)
@@ -429,14 +441,26 @@ object MembresiaImportApply {
             insert.setString(18, importKey)
             insert.executeQuery().use { rows -> rows.next(); rows.getObject(1, UUID::class.java) }
         }
-        importVisits(tenant, membershipId, customerId, importKey, row.visits, author)
+        MembresiaRepository.membershipForJob(tenant, membershipId)?.let {
+            MembresiaActivity.membershipCreated(tenant, activity, it, "Importa la membresía ${it.planName} de ${it.customerName} (${MembresiaActivity.day(it.startsOn)} a ${MembresiaActivity.day(it.endsOn)}).")
+        }
+        importVisits(tenant, membershipId, customerId, importKey, row.visits, author, name, activity)
         return Applied(membershipId, customerId, isNew = true, customerChanged = lookup.created || fieldsChanged)
     }
 
     // Rellena solo los campos de Clientes vacios o ausentes (lo existente gana) sin borrar los demas. True si escribio algo.
-    private fun fillEmptyCustomerFields(tenant: Connection, customerId: UUID, fields: Map<String, String>, fieldKeys: Map<String, String>): Boolean {
+    private fun fillEmptyCustomerFields(
+        tenant: Connection,
+        customerId: UUID,
+        customerName: String,
+        fields: Map<String, String>,
+        fieldKeys: Map<String, String>,
+        activity: ActivityActor,
+    ): Boolean {
+        val labelOf = LinkedHashMap<String, String>()
         val wanted = fields.mapNotNull { (label, value) ->
             val key = fieldKeys[label.trim()] ?: return@mapNotNull null
+            labelOf[key] = label.trim()
             value.trim().takeIf { it.isNotEmpty() }?.let { key to it.take(MaxFieldValueLength) }
         }.toMap()
         if (wanted.isEmpty()) return false
@@ -452,6 +476,7 @@ object MembresiaImportApply {
             update.setObject(2, customerId)
             update.executeUpdate()
         }
+        MembresiaActivity.customerFieldsFilled(tenant, activity, customerId, customerName, toWrite.map { (key, value) -> Triple(key, labelOf[key] ?: key, value) })
         return true
     }
 
@@ -462,8 +487,18 @@ object MembresiaImportApply {
     }
 
     // Visitas por import_key (y por el indice diario) en un lote: repetir la importacion no duplica. Luego recalcula los contadores.
-    private fun importVisits(tenant: Connection, membershipId: UUID, customerId: UUID, rowKey: String, visits: List<ImportedVisit>, author: String) {
+    private fun importVisits(
+        tenant: Connection,
+        membershipId: UUID,
+        customerId: UUID,
+        rowKey: String,
+        visits: List<ImportedVisit>,
+        author: String,
+        customerName: String,
+        activity: ActivityActor,
+    ) {
         val zone = ZoneId.systemDefault()
+        val visitsBefore = if (visits.isEmpty()) 0 else countVisits(tenant, membershipId)
         if (visits.isNotEmpty()) {
             tenant.prepareStatement(
                 """
@@ -486,6 +521,8 @@ object MembresiaImportApply {
                 }
                 insert.executeBatch()
             }
+            // Una fila por membresia con las visitas nuevas (las ya importadas no cuentan).
+            MembresiaActivity.visitsImported(tenant, activity, membershipId, customerName, countVisits(tenant, membershipId) - visitsBefore)
         }
         // guest_passes_total sube si las visitas de invitado importadas superan el cupo (respeta el CHECK used <= total).
         tenant.prepareStatement(
@@ -501,6 +538,46 @@ object MembresiaImportApply {
             update.executeUpdate()
         }
     }
+
+    private fun countVisits(tenant: Connection, membershipId: UUID): Int =
+        tenant.prepareStatement("SELECT count(*) FROM membresia_visits WHERE membership_id = ?").use { query ->
+            query.setObject(1, membershipId)
+            query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
+        }
+
+    // ------------------------------------------------------------ registro de actividad
+
+    /**
+     * El actor de una importacion: [startedBy] (usuario de la empresa que la empezo) con su nombre actual leido de
+     * application_users en la misma conexion; si la fila ya no existe, "Usuario desconocido"; sin usuario, una importacion anonima.
+     */
+    fun importActor(tenant: Connection, startedBy: UUID?, stored: String? = null): ActivityActor {
+        // The actor kept with the job when it started (an AI agent, a server owner...): rebuilt exactly; old jobs fall back to the user id.
+        ActivityActor.restoreImportOrNull(stored)?.let { return it }
+        if (startedBy == null) return ActivityActor.import(null)
+        val name = tenant.prepareStatement("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?").use { query ->
+            query.setObject(1, startedBy)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+        return ActivityActor.import(ActivityActor.user(startedBy, name?.takeIf { it.isNotBlank() } ?: "Usuario desconocido"))
+    }
+
+    /**
+     * La fila unica de una importacion terminada (quien la empezo, el origen y los totales); el llamador la escribe en la
+     * misma transaccion que cierra el trabajo. [outcome] aclara un final distinto de terminar bien.
+     */
+    fun recordImportTotal(
+        tenant: Connection,
+        activity: ActivityActor,
+        jobId: UUID?,
+        source: String,
+        board: String,
+        created: Int,
+        updated: Int,
+        skipped: Int,
+        failed: Int,
+        outcome: String = "",
+    ) = MembresiaActivity.importTotal(tenant, activity, jobId, source, board, created, updated, skipped, failed, outcome)
 
     private class FieldDefinition(val key: String, val label: String, val type: String, val active: Boolean)
 

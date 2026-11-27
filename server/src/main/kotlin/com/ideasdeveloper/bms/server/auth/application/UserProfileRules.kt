@@ -22,9 +22,14 @@ object UserProfileRules {
     fun problem(name: String, email: String): String? = when {
         hasControlCharacters(name) -> tr("el nombre no puede tener caracteres de control.")
         !validName(name) -> tr("escribe un nombre de 2 a {0} caracteres.", MaxNameLength)
+        // The activity log adds these itself ("Agente de Ana", "Luis (desde el servidor)"): a name may not fake them.
+        reservedName(name) -> tr("el nombre no puede contener \"Agente de\", \"desde el servidor\", \"Importacion (\", \"Automatizacion\" ni \"Tarea programada\".")
         !validEmail(email) -> tr("escribe un correo valido.")
         else -> null
     }
+
+    /** Whether [name] contains a marker of the activity log (ActivityNames); existing names are only quoted when shown. */
+    fun reservedName(name: String): Boolean = com.ideasdeveloper.bms.server.activity.ActivityNames.hasMarker(name)
 
     fun isComplete(name: String?, email: String?): Boolean = name != null && email != null && validName(name) && validEmail(email)
 }

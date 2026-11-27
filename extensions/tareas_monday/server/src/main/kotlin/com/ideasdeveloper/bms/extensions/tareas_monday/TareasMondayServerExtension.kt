@@ -38,8 +38,8 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
         module = "tareas",
         displayName = "Importacion de tareas desde monday",
         description = "Importa tableros de monday como tableros de Tareas: lee el tablero con el token de la empresa, mapea sus columnas y trae grupos, tareas, subelementos, comentarios y archivos.",
-        version = "1.1.0",
-        minModuleVersion = "0.4.0", // the bilingual release (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.5.0", // the activity log release (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/tareas_monday",
@@ -51,7 +51,7 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
         ),
         // El token se guarda en ext_tareas_monday__settings y se edita en la pantalla Importar: ningun ajuste es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__rendimiento.sql"),
+        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__rendimiento.sql", "migrations/V003__started_actor.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday", UninstallDefault.Delete)),
         ),
@@ -60,6 +60,7 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
     override val migrationPaths = listOf(
         "extensions/tareas_monday/migrations/V001__settings.sql",
         "extensions/tareas_monday/migrations/V002__rendimiento.sql",
+        "extensions/tareas_monday/migrations/V003__started_actor.sql",
     )
 
     override val runtimeTables = listOf(

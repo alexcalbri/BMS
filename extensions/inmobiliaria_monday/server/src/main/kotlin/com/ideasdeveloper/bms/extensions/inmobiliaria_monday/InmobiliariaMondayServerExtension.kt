@@ -52,8 +52,8 @@ object InmobiliariaMondayServerExtension : ServerExtension, CrmScreenProvider, C
         module = "crm",
         displayName = "Importacion de monday para Inmobiliaria",
         description = "Migra desde monday los tableros de listados y de deals hacia la extension Inmobiliaria: lee el tablero con el token de la empresa, mapea sus columnas y aplica la importacion. Se desinstala al terminar.",
-        version = "1.1.0",
-        minModuleVersion = "0.30.0", // the bilingual release (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/inmobiliaria_monday",
@@ -65,13 +65,13 @@ object InmobiliariaMondayServerExtension : ServerExtension, CrmScreenProvider, C
         ),
         // El token se guarda en ext_inmobiliaria_monday__settings y se edita en la pantalla de la extension.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__inmobiliaria_monday.sql"),
+        migrations = listOf("migrations/V001__inmobiliaria_monday.sql", "migrations/V002__started_actor.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday", UninstallDefault.Delete)),
         ),
     )
 
-    override val migrationPaths = listOf("extensions/inmobiliaria_monday/migrations/V001__inmobiliaria_monday.sql")
+    override val migrationPaths = listOf("extensions/inmobiliaria_monday/migrations/V001__inmobiliaria_monday.sql", "extensions/inmobiliaria_monday/migrations/V002__started_actor.sql")
 
     override val runtimeTables = listOf(InmobiliariaMondayStore.SettingsTable, InmobiliariaMondayStore.JobsTable, InmobiliariaMondayStore.RowsTable)
 

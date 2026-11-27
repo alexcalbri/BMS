@@ -2,7 +2,7 @@
 
 Registro de desarrollos (urbanizaciones o proyectos), sus lotes y quienes son sus propietarios. Cada lote guarda su número, número de
 registro, área en m², tipo de propiedad y estado, sus titulares vigentes (con porcentaje opcional), el historial de cambios de
-titularidad y archivos adjuntos como escrituras y planos. Versión 0.3.0.
+titularidad y archivos adjuntos como escrituras y planos. Versión 0.4.0.
 
 Los propietarios son clientes de **Clientes** (módulo base): aquí solo se guarda quién es titular de qué lote y desde/hasta cuándo.
 Los datos de contacto no se duplican.
@@ -114,6 +114,10 @@ y `propietarios_payments`.
 ## Trabajos
 
 `attachments-cleanup` (cada hora): borra adjuntos quitados y subidas cuyo formulario no se guardó en 24 horas. `import-runner` (cada minuto).
+
+## Registro de actividad (0.4.0, needs Core 0.12.0)
+
+Cada alta, cambio, archivo, traspaso, titular, adjunto y la importacion de lotes queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP). El historial del lote y del cliente sigue igual. El modulo no tiene ajustes propios. Un traspaso o un cotitular que cambia el estado del lote lo deja en la misma fila. La importacion deja una fila por desarrollo, lote (con sus datos clave o, al repetir, lo que cambio), cliente creado, grupo de titulares y adjunto, todo en la transaccion de la fila del tablero.
 
 ## Languages (0.3.0, needs Core 0.10.0)
 

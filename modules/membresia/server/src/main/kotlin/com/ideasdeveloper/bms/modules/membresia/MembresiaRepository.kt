@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.membresia
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import java.math.BigDecimal
@@ -44,9 +45,18 @@ object MembresiaRepository {
             )
         }.firstOrNull() ?: MembresiaSettings.Default
 
-    fun saveSettings(tenant: Connection, settings: MembresiaSettings) {
+    /** Guarda los ajustes y escribe en el registro de actividad lo que cambia (misma transaccion). */
+    fun saveSettings(tenant: Connection, settings: MembresiaSettings, actor: ActivityActor) {
         val errors = MembresiaRules.validateSettings(settings)
         if (errors.isNotEmpty()) throw MembresiaValidationException(errors)
+        transaction(tenant) {
+            val before = MembresiaRepository.settings(tenant)
+            writeSettings(tenant, settings)
+            MembresiaActivity.settingsChanged(tenant, actor, before, settings)
+        }
+    }
+
+    private fun writeSettings(tenant: Connection, settings: MembresiaSettings) {
         val sources = tenant.createArrayOf("text", settings.sources.toTypedArray())
         try {
             execute(
@@ -77,10 +87,14 @@ object MembresiaRepository {
         query(tenant, "SELECT $PlanColumns FROM membresia_plans WHERE id = ?", listOf(id), ::readPlan).firstOrNull()
 
     /** Crea ([id] nulo) o actualiza un plan. Cambiar un plan no altera las membresias ya vendidas (llevan su copia). */
-    fun savePlan(tenant: Connection, id: UUID?, input: PlanInput): Plan {
+    fun savePlan(tenant: Connection, id: UUID?, input: PlanInput, actor: ActivityActor): Plan {
         val errors = MembresiaRules.validatePlan(input)
         if (errors.isNotEmpty()) throw MembresiaValidationException(errors)
         val clean = input.copy(name = input.name.trim(), description = input.description.trim())
+        return transaction(tenant) { writePlan(tenant, id, clean, actor) }
+    }
+
+    private fun writePlan(tenant: Connection, id: UUID?, clean: PlanInput, actor: ActivityActor): Plan {
         try {
             if (id == null) {
                 val created = query(
@@ -92,8 +106,10 @@ object MembresiaRepository {
                     listOf(clean.name, clean.description, clean.price, clean.durationDays, clean.includedVisits, clean.guestPasses, clean.wifiAccess, clean.displayOrder),
                     ::readPlan,
                 )
+                MembresiaActivity.planCreated(tenant, actor, created.first())
                 return created.first()
             }
+            val before = plan(tenant, id) ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
             val updated = query(
                 tenant,
                 """
@@ -104,7 +120,9 @@ object MembresiaRepository {
                 listOf(clean.name, clean.description, clean.price, clean.durationDays, clean.includedVisits, clean.guestPasses, clean.wifiAccess, clean.displayOrder, id),
                 ::readPlan,
             )
-            return updated.firstOrNull() ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
+            val after = updated.firstOrNull() ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
+            MembresiaActivity.planUpdated(tenant, actor, before, after)
+            return after
         } catch (failure: SQLException) {
             if (failure.sqlState == UniqueViolation) throw MembresiaValidationException(listOf(tr("Ya existe un plan con ese nombre.")))
             throw failure
@@ -112,8 +130,12 @@ object MembresiaRepository {
     }
 
     /** Un plan con membresias no se borra: se desactiva (deja de ofrecerse). */
-    fun setPlanActive(tenant: Connection, id: UUID, active: Boolean): Boolean =
-        execute(tenant, "UPDATE membresia_plans SET active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", listOf(active, id)) > 0
+    fun setPlanActive(tenant: Connection, id: UUID, active: Boolean, actor: ActivityActor): Boolean = transaction(tenant) {
+        val before = plan(tenant, id) ?: return@transaction false
+        val changed = execute(tenant, "UPDATE membresia_plans SET active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", listOf(active, id)) > 0
+        if (changed && before.active != active) MembresiaActivity.planActiveChanged(tenant, actor, before, active)
+        changed
+    }
 
     // ---------------------------------------------------------------- clientes y miembros
 
@@ -193,7 +215,7 @@ object MembresiaRepository {
      * Reutiliza el cliente visible con el mismo correo (sin distinguir mayusculas); si no hay, crea uno
      * (tipo membresia, activo). El llamador avisa a Clientes con access.customerChanged tras confirmar si [CustomerLookup.created].
      */
-    fun findOrCreateCustomer(tenant: Connection, input: NewCustomerInput): CustomerLookup {
+    fun findOrCreateCustomer(tenant: Connection, input: NewCustomerInput, actor: ActivityActor): CustomerLookup {
         val name = input.name.trim()
         val email = input.email.trim()
         val phone = input.phone.trim()
@@ -218,6 +240,7 @@ object MembresiaRepository {
             "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type) VALUES (?, ?, ?, ?, 'active', 'membresia')",
             listOf(id, name, email, phone),
         )
+        MembresiaActivity.customerCreated(tenant, actor, id, name, email, phone)
         return CustomerLookup(id, created = true)
     }
 
@@ -352,8 +375,8 @@ object MembresiaRepository {
     // ---------------------------------------------------------------- membresias: cambios
 
     /** Alta de una membresia de un cliente existente copiando los datos del [plan]. Lanza [MembresiaValidationException] si algo no es valido. */
-    fun createMembership(tenant: Connection, input: MembershipInput, plan: Plan, today: LocalDate, createdBy: String): Membership =
-        createMembershipWithCustomer(tenant, input, null, plan, today, createdBy).first
+    fun createMembership(tenant: Connection, input: MembershipInput, plan: Plan, today: LocalDate, createdBy: String, actor: ActivityActor): Membership =
+        createMembershipWithCustomer(tenant, input, null, plan, today, createdBy, actor).first
 
     /**
      * Alta atomica: en UNA transaccion valida, busca o crea el cliente ([newCustomer] no nulo; entonces [MembershipInput.customerId] se ignora)
@@ -367,6 +390,7 @@ object MembresiaRepository {
         plan: Plan,
         today: LocalDate,
         createdBy: String,
+        actor: ActivityActor,
     ): Pair<Membership, Boolean> = transaction(tenant) {
         val settings = settings(tenant)
         val amount = input.amount ?: plan.price
@@ -380,15 +404,17 @@ object MembresiaRepository {
         if (errors.isNotEmpty()) throw MembresiaValidationException(errors)
         val lookup = if (newCustomer != null) {
             if (newCustomer.email.isNotBlank()) advisoryLock(tenant, newCustomer.email.trim().lowercase())
-            findOrCreateCustomer(tenant, newCustomer)
+            findOrCreateCustomer(tenant, newCustomer, actor)
         } else {
             CustomerLookup(input.customerId, created = false)
         }
-        insertMembership(tenant, lookup.customerId, plan, startsOn, amount, settings, input.source, input.hostUserId, input.hostName, input.unit, input.notes, null, createdBy, today) to lookup.created
+        val created = insertMembership(tenant, lookup.customerId, plan, startsOn, amount, settings, input.source, input.hostUserId, input.hostName, input.unit, input.notes, null, createdBy, today)
+        MembresiaActivity.membershipCreated(tenant, actor, created)
+        created to lookup.created
     }
 
     /** Renueva: crea una nueva fila enlazada (renewed_from) que empieza en MembresiaRules.renewalStart salvo que se indique otra fecha. */
-    fun renew(tenant: Connection, id: UUID, input: RenewalInput, today: LocalDate, createdBy: String): Membership = transaction(tenant) {
+    fun renew(tenant: Connection, id: UUID, input: RenewalInput, today: LocalDate, createdBy: String, actor: ActivityActor): Membership = transaction(tenant) {
         val previous = lockedMembership(tenant, id) ?: throw MembresiaValidationException(listOf(tr("La membresía no existe.")))
         val settings = settings(tenant)
         val plan = plan(tenant, input.planId ?: previous.planId) ?: throw MembresiaValidationException(listOf(tr("El plan no existe.")))
@@ -408,11 +434,13 @@ object MembresiaRepository {
             addAll(MembresiaRules.validateDates(startsOn, MembresiaRules.endsOn(startsOn, plan.durationDays), today))
         }
         if (errors.isNotEmpty()) throw MembresiaValidationException(errors)
-        insertMembership(tenant, previous.customerId, plan, startsOn, amount, settings, previous.source, previous.hostUserId, previous.hostName, previous.unit, "", previous.id, createdBy, today)
+        val renewed = insertMembership(tenant, previous.customerId, plan, startsOn, amount, settings, previous.source, previous.hostUserId, previous.hostName, previous.unit, "", previous.id, createdBy, today)
+        MembresiaActivity.membershipRenewed(tenant, actor, previous, renewed)
+        renewed
     }
 
     /** Edita fin, monto, fuente, anfitrion, unidad y notas; recalcula el estado guardado y, si cambia el fin, vuelve a permitir el aviso. Null si no existe o no es visible. */
-    fun edit(tenant: Connection, id: UUID, edit: MembershipEdit, today: LocalDate): Membership? = transaction(tenant) {
+    fun edit(tenant: Connection, id: UUID, edit: MembershipEdit, today: LocalDate, actor: ActivityActor): Membership? = transaction(tenant) {
         val current = lockedMembership(tenant, id) ?: return@transaction null
         val settings = settings(tenant)
         val errors = buildList {
@@ -434,11 +462,13 @@ object MembresiaRepository {
             """.trimIndent(),
             listOf(edit.endsOn, edit.amount, status, edit.source, edit.hostUserId, hostName, edit.unit.trim(), edit.notes.trim(), edit.endsOn, id),
         )
-        membershipForJob(tenant, id)
+        val after = membershipForJob(tenant, id)
+        if (after != null) MembresiaActivity.membershipEdited(tenant, actor, current, after)
+        after
     }
 
     /** Cancela (queda en el historial; no se recrea). Null si no existe, no es visible o ya estaba cancelada. */
-    fun cancel(tenant: Connection, id: UUID, reason: String): Membership? = transaction(tenant) {
+    fun cancel(tenant: Connection, id: UUID, reason: String, actor: ActivityActor): Membership? = transaction(tenant) {
         val clean = reason.trim()
         if (clean.length > 1000) throw MembresiaValidationException(listOf(tr("El motivo admite hasta 1000 caracteres.")))
         val current = lockedMembership(tenant, id) ?: return@transaction null
@@ -448,6 +478,7 @@ object MembresiaRepository {
             "UPDATE membresia_memberships SET status = 'cancelada', cancelled_at = CURRENT_TIMESTAMP, cancel_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'cancelada'",
             listOf(clean, id),
         )
+        MembresiaActivity.membershipCancelled(tenant, actor, current, clean)
         membershipForJob(tenant, id)
     }
 
@@ -455,7 +486,7 @@ object MembresiaRepository {
      * Registra la visita de hoy del miembro. Idempotente por dia (indice parcial): un doble toque devuelve
      * [VisitResult.AlreadyToday]. Si hay aviso (vencida, programada, visitas agotadas) pide [override]; la cancelada se rechaza siempre.
      */
-    fun recordMemberVisit(tenant: Connection, membershipId: UUID, today: LocalDate, override: Boolean, recordedBy: String, note: String = ""): VisitResult = transaction(tenant) {
+    fun recordMemberVisit(tenant: Connection, membershipId: UUID, today: LocalDate, override: Boolean, recordedBy: String, actor: ActivityActor, note: String = ""): VisitResult = transaction(tenant) {
         val membership = lockedMembership(tenant, membershipId) ?: throw MembresiaValidationException(listOf(tr("La membresía no existe.")))
         val already = query(
             tenant,
@@ -468,22 +499,23 @@ object MembresiaRepository {
             is CheckInDecision.NeedsOverride -> return@transaction VisitResult.NeedsOverride(decision.reason)
             is CheckInDecision.Allowed -> decision.overridden
         }
-        val inserted = execute(
+        val visitId = query(
             tenant,
             """
             INSERT INTO membresia_visits (membership_id, customer_id, kind, visit_on, override, recorded_by, note)
             VALUES (?, ?, 'miembro', ?, ?, ?, ?)
             ON CONFLICT (membership_id, visit_on) WHERE kind = 'miembro' DO NOTHING
+            RETURNING id
             """.trimIndent(),
             listOf(membershipId, membership.customerId, today, overridden, recordedBy.take(160), note.trim().take(500)),
-        )
-        if (inserted == 0) return@transaction VisitResult.AlreadyToday
+        ) { rows -> rows.uuid(1) }.firstOrNull() ?: return@transaction VisitResult.AlreadyToday
         execute(tenant, "UPDATE membresia_memberships SET visits_used = visits_used + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", listOf(membershipId))
+        MembresiaActivity.visitRecorded(tenant, actor, visitId, membership, today, overridden, note.trim().take(500))
         VisitResult.Recorded(overridden)
     }
 
     /** Descuenta un pase de invitado (UPDATE atomico con cupo) y registra la visita del invitado. */
-    fun useGuestPass(tenant: Connection, membershipId: UUID, guestName: String, today: LocalDate, recordedBy: String): GuestPassResult = transaction(tenant) {
+    fun useGuestPass(tenant: Connection, membershipId: UUID, guestName: String, today: LocalDate, recordedBy: String, actor: ActivityActor): GuestPassResult = transaction(tenant) {
         val name = guestName.trim()
         if (name.isEmpty()) throw MembresiaValidationException(listOf(tr("Escribe el nombre del invitado.")))
         if (name.length > 160) throw MembresiaValidationException(listOf(tr("El nombre del invitado admite hasta 160 caracteres.")))
@@ -502,28 +534,34 @@ object MembresiaRepository {
             """.trimIndent(),
             listOf(membershipId, today, today),
         ) { rows -> rows.uuid(1) }.firstOrNull() ?: return@transaction GuestPassResult.Refused(tr("No quedan pases de invitado."))
-        execute(
+        val visitId = query(
             tenant,
-            "INSERT INTO membresia_visits (membership_id, customer_id, kind, guest_name, visit_on, recorded_by) VALUES (?, ?, 'invitado', ?, ?, ?)",
+            "INSERT INTO membresia_visits (membership_id, customer_id, kind, guest_name, visit_on, recorded_by) VALUES (?, ?, 'invitado', ?, ?, ?) RETURNING id",
             listOf(membershipId, customerId, name, today, recordedBy.take(160)),
-        )
+        ) { rows -> rows.uuid(1) }.first()
+        MembresiaActivity.guestPassUsed(tenant, actor, visitId, membership, name, today)
         GuestPassResult.Recorded
     }
 
     // ---------------------------------------------------------------- trabajo diario
 
     /** programada -> activa cuando ya empezo. Devuelve cuantas cambio (lote acotado). */
-    fun activateStarted(tenant: Connection, today: LocalDate, limit: Int = 500): Int = execute(
-        tenant,
-        """
-        UPDATE membresia_memberships SET status = 'activa', updated_at = CURRENT_TIMESTAMP
-        WHERE id IN (SELECT id FROM membresia_memberships WHERE status = 'programada' AND starts_on <= ? ORDER BY starts_on, id LIMIT ?)
-        """.trimIndent(),
-        listOf(today, limit.coerceIn(1, MaxLimit)),
-    )
+    fun activateStarted(tenant: Connection, today: LocalDate, limit: Int = 500, actor: ActivityActor = ActivityActor.job("Vencimiento de membresías")): Int = transaction(tenant) {
+        val ids = query(
+            tenant,
+            """
+            UPDATE membresia_memberships SET status = 'activa', updated_at = CURRENT_TIMESTAMP
+            WHERE id IN (SELECT id FROM membresia_memberships WHERE status = 'programada' AND starts_on <= ? ORDER BY starts_on, id LIMIT ?)
+            RETURNING id
+            """.trimIndent(),
+            listOf(today, limit.coerceIn(1, MaxLimit)),
+        ) { rows -> rows.uuid(1) }
+        membershipsByIds(tenant, ids).forEach { MembresiaActivity.membershipStatusByJob(tenant, actor, it, StoredStatus.Programada, StoredStatus.Activa) }
+        ids.size
+    }
 
     /** activa -> vencida cuando su fin ya paso. Devuelve las membresias vencidas ahora. */
-    fun expireEnded(tenant: Connection, today: LocalDate, limit: Int = 500): List<Membership> = transaction(tenant) {
+    fun expireEnded(tenant: Connection, today: LocalDate, limit: Int = 500, actor: ActivityActor = ActivityActor.job("Vencimiento de membresías")): List<Membership> = transaction(tenant) {
         val ids = query(
             tenant,
             """
@@ -533,7 +571,9 @@ object MembresiaRepository {
             """.trimIndent(),
             listOf(today, limit.coerceIn(1, MaxLimit)),
         ) { rows -> rows.uuid(1) }
-        membershipsByIds(tenant, ids)
+        membershipsByIds(tenant, ids).also { expired ->
+            expired.forEach { MembresiaActivity.membershipStatusByJob(tenant, actor, it, StoredStatus.Activa, StoredStatus.Vencida) }
+        }
     }
 
     /** Activas que vencen entre hoy y hoy + [days] y aun no se avisaron (lote acotado). */
@@ -550,8 +590,11 @@ object MembresiaRepository {
         ::readMembership,
     )
 
-    fun markExpiringNotified(tenant: Connection, id: UUID, today: LocalDate) {
-        execute(tenant, "UPDATE membresia_memberships SET expiring_notified_on = ? WHERE id = ?", listOf(today, id))
+    fun markExpiringNotified(tenant: Connection, membership: Membership, today: LocalDate, actor: ActivityActor = ActivityActor.job("Avisos de vencimiento de membresías")) {
+        transaction(tenant) {
+            execute(tenant, "UPDATE membresia_memberships SET expiring_notified_on = ? WHERE id = ?", listOf(today, membership.id))
+            MembresiaActivity.expiringNotified(tenant, actor, membership, today)
+        }
     }
 
     /**

@@ -69,7 +69,16 @@ object CrmFieldSections {
     }
 
     /** Creates ([id] null, at the end) or renames a custom section. Built-in sections keep their name. */
-    fun save(tenant: Connection, id: UUID?, input: CrmFieldSectionInput, existing: List<CrmFieldSection>): CrmFieldSection {
+    fun save(tenant: Connection, id: UUID?, input: CrmFieldSectionInput, existing: List<CrmFieldSection>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): CrmFieldSection = CrmAudit.atomically(tenant) {
+        val saved = write(tenant, id, input, existing)
+        CrmAudit.saved(
+            tenant, actor, "section", saved.id.toString(), saved.name, "la seccion de campos",
+            id?.let { existing.firstOrNull { section -> section.id == it } }?.let { mapOf("name" to it.name) }, mapOf("name" to saved.name), mapOf("name" to "Nombre"),
+        )
+        saved
+    }
+
+    private fun write(tenant: Connection, id: UUID?, input: CrmFieldSectionInput, existing: List<CrmFieldSection>): CrmFieldSection {
         if (id == null) {
             if (existing.count { !it.isSystem } >= MaxCustomSections) throw CrmValidationException(tr("El CRM admite hasta {0} secciones propias.", MaxCustomSections))
             val section = CrmFieldSection(UUID.randomUUID(), input.name, (existing.maxOfOrNull { it.position } ?: -1) + 1)
@@ -97,9 +106,12 @@ object CrmFieldSections {
     }
 
     /** Deletes a custom section; its fields stay, without section (foreign key ON DELETE SET NULL). */
-    fun delete(tenant: Connection, section: CrmFieldSection): Boolean {
+    fun delete(tenant: Connection, section: CrmFieldSection, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Boolean {
         checkDeletable(section)
-        return tenant.prepareStatement("DELETE FROM crm_field_sections WHERE id = ? AND system_key IS NULL").use { it.setObject(1, section.id); it.executeUpdate() == 1 }
+        return CrmAudit.atomically(tenant) {
+            CrmAudit.removed(tenant, actor, "section", section.id.toString(), section.name, "la seccion de campos", mapOf("name" to section.name), mapOf("name" to "Nombre"))
+            tenant.prepareStatement("DELETE FROM crm_field_sections WHERE id = ? AND system_key IS NULL").use { it.setObject(1, section.id); it.executeUpdate() == 1 }
+        }
     }
 
     /**
@@ -117,7 +129,7 @@ object CrmFieldSections {
     }
 
     /** Moves a section and writes the new positions (only the sections that changed; the sections of a database before V020 are not written). */
-    fun move(tenant: Connection, sections: List<CrmFieldSection>, id: UUID, up: Boolean): Boolean {
+    fun move(tenant: Connection, sections: List<CrmFieldSection>, id: UUID, up: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Boolean {
         val moved = reorder(sections, id, up) ?: return false
         val before = sections.associate { it.id to it.position }
         CrmRepository.transaction(tenant) {
@@ -129,6 +141,11 @@ object CrmFieldSections {
                 }
                 update.executeBatch()
             }
+            val name = sections.firstOrNull { it.id == id }?.name.orEmpty()
+            CrmAudit.record(
+                tenant, actor, "section", id.toString(), name, com.ideasdeveloper.bms.server.activity.ActivityActions.Updated, "Movio la seccion de campos $name ${if (up) "hacia arriba" else "hacia abajo"}.",
+                listOf(com.ideasdeveloper.bms.server.activity.ActivityChange("order", "Orden", sorted(sections).joinToString(", ") { it.name }, moved.joinToString(", ") { it.name })),
+            )
         }
         return true
     }

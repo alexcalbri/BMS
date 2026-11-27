@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.extensions.monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmAttachments
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmExtensions
@@ -162,7 +166,7 @@ object MondayImport : CrmImportSource {
     }
 
     /** Acciones de la pantalla de importar: guardar y quitar el token, e importar los tableros marcados. */
-    override fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?): CrmImportSourceResult? = when (op) {
+    override fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?, actor: ActivityActor): CrmImportSourceResult? = when (op) {
         "mondayToken" -> {
             val inactive = CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.MondayImport)
             val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && !CrmHost.isSecretPlaceholder(it) }
@@ -170,10 +174,10 @@ object MondayImport : CrmImportSource {
                 inactive != null -> CrmImportSourceResult(inactive, UiTone.Warning)
                 typed == null && mondayToken(tenant) == null -> CrmImportSourceResult(tr("Escribe el token de la API de monday."), UiTone.Danger)
                 else -> {
-                    typed?.let { saveMondayToken(tenant, it) }
+                    typed?.let { saveMondayToken(tenant, it, actor) }
                     // Compartir: guarda tambien el token sellado como conexion de la empresa (con el escrito o, si no se cambio, el guardado).
                     val share = values["share"].orEmpty().trim().equals("true", ignoreCase = true)
-                    val shareError = if (share) shareToken(tenant, userId) else null
+                    val shareError = if (share) shareToken(tenant, userId, actor) else null
                     when {
                         shareError != null -> CrmImportSourceResult(tr("Token de monday guardado, pero no se pudo compartir: {0}", shareError), UiTone.Warning, params = mapOf("monday" to "boards"))
                         share -> CrmImportSourceResult(tr("Token de monday guardado y compartido con las demas extensiones de monday."), UiTone.Success, params = mapOf("monday" to "boards"))
@@ -183,11 +187,17 @@ object MondayImport : CrmImportSource {
             }
         }
         "mondayForget" -> {
-            saveMondayToken(tenant, null)
+            saveMondayToken(tenant, null, actor)
             CrmImportSourceResult(tr("Token de monday borrado (la conexion compartida, si hay, sigue)."), UiTone.Success)
         }
         "mondaySharedForget" -> {
-            IntegrationConnections.save(tenant, MondayConnectionService, null, userId?.toString())
+            CrmAudit.atomically(tenant) {
+                IntegrationConnections.save(tenant, MondayConnectionService, null, userId?.toString())
+                CrmAudit.record(
+                    tenant, actor, CrmAudit.Settings, "Conexion compartida de monday", "Conexion compartida de monday", ActivityActions.SettingsChanged,
+                    "Borro la conexion compartida de monday.", listOf(ActivityChange.secret("token", "Token de monday")),
+                )
+            }
             CrmImportSourceResult(tr("Conexion compartida de monday borrada."), UiTone.Success)
         }
         "monday" -> {
@@ -199,7 +209,7 @@ object MondayImport : CrmImportSource {
                 else -> {
                     val boards = values.filter { it.key.startsWith("board:") && it.value == "true" }.keys.map { it.removePrefix("board:") }
                     try {
-                        val job = queueMonday(tenant, boards, userId)
+                        val job = queueMonday(tenant, boards, userId, actor)
                         CrmImportSourceResult(tr("Se estan leyendo los tableros de monday."), UiTone.Success, "importjob", mapOf("job" to job.toString()))
                     } catch (failure: CrmImportException) {
                         CrmImportSourceResult(failure.message.orEmpty(), UiTone.Danger, params = mapOf("monday" to "boards"))
@@ -381,19 +391,25 @@ object MondayImport : CrmImportSource {
      * Guarda el token propio ya sellado como conexion compartida. Devuelve el motivo si no se pudo (sin token propio legible);
      * el valor sellado es el mismo de ext_monday__settings, asi que no se vuelve a sellar ni se muestra.
      */
-    private fun shareToken(tenant: Connection, userId: UUID?): String? {
+    private fun shareToken(tenant: Connection, userId: UUID?, actor: ActivityActor): String? {
         if (mondayToken(tenant) == null) return tr("no hay un token guardado.")
         val sealed = tenant.prepareStatement("SELECT token FROM ${MondaySettingsStore.Table} WHERE id = 1").use { query ->
             query.executeQuery().use { rows -> if (rows.next()) rows.getString(1)?.takeIf { it.isNotBlank() } else null }
         } ?: return tr("no hay un token guardado.")
-        IntegrationConnections.save(tenant, MondayConnectionService, sealed, userId?.toString())
+        CrmAudit.atomically(tenant) {
+            IntegrationConnections.save(tenant, MondayConnectionService, sealed, userId?.toString())
+            CrmAudit.record(
+                tenant, actor, CrmAudit.Settings, "Conexion compartida de monday", "Conexion compartida de monday", ActivityActions.SettingsChanged,
+                "Compartio el token de monday con las demas extensiones de monday.", listOf(ActivityChange.secret("token", "Token de monday")),
+            )
+        }
         return null
     }
 
-    fun saveMondayToken(tenant: Connection, token: String?) {
+    fun saveMondayToken(tenant: Connection, token: String?, actor: ActivityActor) {
         // Borrar el token siempre se puede; guardarlo exige la extension activa.
         if (token != null) CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
-        MondaySettingsStore.saveToken(CrmHost, tenant, token)
+        MondaySettingsStore.saveToken(CrmHost, tenant, token, actor)
     }
 
     /** Active boards the token can read, by workspace and name (subitem boards and docs left out). */
@@ -439,11 +455,14 @@ object MondayImport : CrmImportSource {
     // ---- Job: cola, lectura y aplicacion ----
 
     /** Queues monday boards for the import job, which reads them and leaves the job ready to map. */
-    fun queueMonday(tenant: Connection, boardIds: List<String>, userId: UUID?): UUID {
+    fun queueMonday(tenant: Connection, boardIds: List<String>, userId: UUID?, actor: ActivityActor): UUID {
         CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
         if (boardIds.isEmpty() || boardIds.any { !it.matches(idPattern) }) throw CrmImportException(tr("Marca al menos un tablero."))
         val id = UUID.randomUUID()
-        CrmImport.insertJob(tenant, id, Source, "monday ${boardIds.joinToString()}", "reading", boardIds, userId)
+        CrmAudit.atomically(tenant) {
+            CrmImport.insertJob(tenant, id, Source, "monday ${boardIds.joinToString()}", "reading", boardIds, userId, actor)
+            CrmImport.jobCreated(tenant, actor, id, "monday ${boardIds.joinToString()}", Source, null)
+        }
         return id
     }
 
@@ -493,7 +512,7 @@ object MondayImport : CrmImportSource {
                 apiToken == null -> listOf("sin token de monday para descargar los archivos")
                 else -> CrmImport.leadByKey(tenant, values.key)?.let { leadId ->
                     val places = wanted.toMap()
-                    MondayFiles.import(tenant, files, apiToken, leadId, wanted.map { it.first }) { places[it] }
+                    MondayFiles.import(tenant, files, apiToken, leadId, wanted.map { it.first }, CrmImport.activityOf(tenant, job.id)) { places[it] }
                 }.orEmpty()
             }
             if (problems.isEmpty()) message

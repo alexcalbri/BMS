@@ -6,8 +6,12 @@ Una importacion a la vez por empresa; todo paso es idempotente (cada fila se rec
 
 ## Tablas
 
-`ext_compras_monday__settings` (token sellado), `ext_compras_monday__jobs` y `ext_compras_monday__rows`. Migracion:
-`migrations/V001__staging.sql`. Cada pasada purga las importaciones terminadas, fallidas o canceladas de mas de 30 dias.
+`ext_compras_monday__settings` (token sellado), `ext_compras_monday__jobs` y `ext_compras_monday__rows`. Migraciones:
+`migrations/V001__staging.sql` y `migrations/V002__applied_by_agent.sql` (nombre del agente de IA que confirmo la importacion). Cada pasada purga las importaciones terminadas, fallidas o canceladas de mas de 30 dias.
+
+## Version 1.3.0 (registro de actividad)
+
+Todo cambio queda en el registro de actividad de la empresa, en la misma transaccion que el cambio: guardar, cambiar o borrar el token de monday (sin su valor), iniciar, confirmar y cancelar una importacion, la fila de totales al cerrarla (si se detiene por falta de permiso tambien la deja) y cada importacion antigua que borra la limpieza (la fila va antes del borrado). Cada solicitud, cotizacion, departamento y archivo importado queda a nombre de "Importacion (quien la confirmo)"; si la confirmo un agente de IA (`monday_apply_import`), el nombre del agente se guarda en el trabajo (`applied_by_agent`) y las filas dicen "Importacion (Agente de <usuario>)". Las importaciones anteriores a la migracion V002 usan solo al usuario. Los elementos de monday sin cotizacion ni archivo no llevan filas aparte. Necesita compras 0.4.0 (Core 0.12.0).
 
 ## Version 1.1.0 (bilingue)
 

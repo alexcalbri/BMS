@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.extensions.empleados_monday
 
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportContext
 import com.ideasdeveloper.bms.modules.empleados.EmpleadosImportReply
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -87,7 +88,40 @@ object EmpleadosMondayFlow {
         val board = EmpleadosMondayClient.boardInfo(token, boardId)
         val effective = mapping ?: EmpleadosMondayMapping.suggest(board.columns, board.name)
         mappingProblem(effective, board.columns)?.let { throw EmpleadosMondayException(it) }
-        return EmpleadosMondayJobs.queueRead(tenant, boardId, board.name, effective, actorOf(permissions))
+        // La fila del registro de actividad va en la misma transaccion que el trabajo en cola.
+        return EmpleadosMondayJobs.inTransaction(tenant) {
+            val id = EmpleadosMondayJobs.queueRead(tenant, boardId, board.name, effective, actorOf(permissions), permissions.activityActor)
+            EmpleadosMondayActivity.importQueued(tenant, permissions.activityActor, id, board.name)
+            id
+        }
+    }
+
+    /** Aplica la importacion en revision y lo deja en el registro de actividad; false si ya no estaba en revision. */
+    fun requestApply(tenant: Connection, permissions: ModulePermissions, job: MondayJob): Boolean = EmpleadosMondayJobs.inTransaction(tenant) {
+        val changed = EmpleadosMondayJobs.requestApply(tenant, job.id)
+        if (changed) EmpleadosMondayActivity.applyRequested(tenant, permissions.activityActor, job.id, job.boardName, job.total)
+        changed
+    }
+
+    /** Cancela la importacion y lo deja en el registro de actividad; false si ya habia terminado. */
+    fun cancel(tenant: Connection, permissions: ModulePermissions, job: MondayJob): Boolean = EmpleadosMondayJobs.inTransaction(tenant) {
+        val done = EmpleadosMondayJobs.cancel(tenant, job.id)
+        if (done) EmpleadosMondayActivity.cancelled(tenant, permissions.activityActor, job.id, job.boardName, EmpleadosMondayActivity.statusName(job.status), job.applied)
+        done
+    }
+
+    /** Guarda el token (nuevo o cambiado) y deja en el registro solo que cambio, nunca su valor. */
+    fun saveToken(secrets: SecretBox, tenant: Connection, actor: ActivityActor, token: String) = EmpleadosMondayJobs.inTransaction(tenant) {
+        val had = EmpleadosMondaySettings.configured(tenant)
+        EmpleadosMondaySettings.saveToken(secrets, tenant, token)
+        EmpleadosMondayActivity.tokenSaved(tenant, actor, had)
+    }
+
+    /** Borra el token guardado (si habia) y lo deja en el registro. */
+    fun forgetToken(secrets: SecretBox, tenant: Connection, actor: ActivityActor) = EmpleadosMondayJobs.inTransaction(tenant) {
+        val had = EmpleadosMondaySettings.configured(tenant)
+        EmpleadosMondaySettings.saveToken(secrets, tenant, null)
+        if (had) EmpleadosMondayActivity.tokenForgotten(tenant, actor)
     }
 
     fun statusLabel(status: String): String = when (status) {
@@ -378,7 +412,7 @@ object EmpleadosMondayScreens {
             when (op) {
                 MondayOp.Token -> saveToken(context, values)
                 MondayOp.Forget -> {
-                    EmpleadosMondaySettings.saveToken(context.access.secrets, tenant, null)
+                    EmpleadosMondayFlow.forgetToken(context.access.secrets, tenant, context.permissions.activityActor)
                     EmpleadosImportReply(tr("Token de monday borrado."))
                 }
                 MondayOp.Boards -> EmpleadosImportReply(tr("Elige un tablero."), params = mapOf("step" to "boards"))
@@ -391,8 +425,8 @@ object EmpleadosMondayScreens {
                 MondayOp.Apply -> {
                     val id = jobId(values)
                     EmpleadosMondayFlow.requireApply(context.permissions)
-                    controlled(context, id)
-                    if (EmpleadosMondayJobs.requestApply(tenant, id)) {
+                    val job = controlled(context, id)
+                    if (EmpleadosMondayFlow.requestApply(tenant, context.permissions, job)) {
                         EmpleadosImportReply(tr("Se esta importando."), params = mapOf("step" to "job", "job" to id.toString()))
                     } else {
                         failure(tr("Esta importacion ya no esta en revision."), mapOf("step" to "job", "job" to id.toString()))
@@ -400,8 +434,8 @@ object EmpleadosMondayScreens {
                 }
                 MondayOp.Cancel -> {
                     val id = jobId(values)
-                    controlled(context, id)
-                    val done = EmpleadosMondayJobs.cancel(tenant, id)
+                    val job = controlled(context, id)
+                    val done = EmpleadosMondayFlow.cancel(tenant, context.permissions, job)
                     EmpleadosImportReply(if (done) tr("Importacion cancelada.") else tr("Esta importacion ya habia terminado."), error = !done, params = mapOf("step" to "job", "job" to id.toString()))
                 }
                 else -> failure(tr("Operacion desconocida."))
@@ -412,9 +446,10 @@ object EmpleadosMondayScreens {
     }
 
     // Solo quien inicio la importacion o quien administra fichas la aplica o cancela.
-    private fun controlled(context: EmpleadosImportContext, id: UUID) {
+    private fun controlled(context: EmpleadosImportContext, id: UUID): MondayJob {
         val job = EmpleadosMondayJobs.find(context.tenant, id) ?: throw EmpleadosMondayException(tr("No se encontro la importacion."))
         EmpleadosMondayFlow.requireJobControl(context.permissions, job)
+        return job
     }
 
     private fun jobId(values: Map<String, String>): UUID =
@@ -424,7 +459,7 @@ object EmpleadosMondayScreens {
         val tenant = context.tenant
         val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != SecretBox.Mask }
         if (typed == null && !EmpleadosMondaySettings.configured(tenant)) return failure(tr("Escribe el token de la API de monday."))
-        typed?.let { EmpleadosMondaySettings.saveToken(context.access.secrets, tenant, it) }
+        typed?.let { EmpleadosMondayFlow.saveToken(context.access.secrets, tenant, context.permissions.activityActor, it) }
         return EmpleadosImportReply(tr("Token de monday guardado."), params = mapOf("step" to "boards"))
     }
 

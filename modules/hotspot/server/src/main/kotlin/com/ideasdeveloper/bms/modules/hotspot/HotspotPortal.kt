@@ -843,28 +843,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     // Guests are kept in Clientes. Existing customers are linked without changing their data or type.
-    private fun findOrCreateCustomer(connection: Connection, values: FormValues): UUID {
-        connection.prepareStatement(
-            "SELECT id FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' AND ${CustomerSql.Visible} ORDER BY created_at LIMIT 1"
-        ).use { query ->
-            query.setString(1, values.email)
-            query.executeQuery().use { rows -> if (rows.next()) return rows.getObject(1, UUID::class.java) }
-        }
-        val id = UUID.randomUUID()
-        connection.prepareStatement(
-            """
-            INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type)
-            VALUES (?, ?, ?, ?, 'active', 'hotspot')
-            """.trimIndent()
-        ).use { insert ->
-            insert.setObject(1, id)
-            insert.setString(2, values.name)
-            insert.setString(3, values.email)
-            insert.setString(4, values.phone)
-            insert.executeUpdate()
-        }
-        return id
-    }
+    private fun findOrCreateCustomer(connection: Connection, values: FormValues): UUID =
+        HotspotActivity.findOrCreateGuestCustomer(connection, values.name, values.email, values.phone)
 
     /** Resolves Host -> company -> tenant, checks the module is enabled and runs [block]; responds itself on failure. */
     private suspend fun ApplicationCall.withPortal(block: (PortalTarget) -> String): String? {

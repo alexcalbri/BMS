@@ -6,6 +6,7 @@ import com.ideasdeveloper.bms.modules.hotspot.HotspotSettings
 import com.ideasdeveloper.bms.modules.hotspot.NetworkController
 import com.ideasdeveloper.bms.modules.hotspot.NetworkControllerException
 import com.ideasdeveloper.bms.modules.hotspot.NetworkControllerProvider
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.extensions.ExtensionManifest
 import com.ideasdeveloper.bms.server.extensions.ExtensionPermissions
 import com.ideasdeveloper.bms.server.extensions.ExtensionSource
@@ -13,6 +14,7 @@ import com.ideasdeveloper.bms.server.extensions.ExtensionSourceType
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.bms.server.i18n.tr
+import java.sql.Connection
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -27,8 +29,8 @@ object UnifiExtension : ServerExtension, NetworkControllerProvider {
         module = "hotspot",
         displayName = "UniFi",
         description = "Controlador de red UniFi: autoriza y desconecta a los visitantes del portal en una consola UniFi a traves de UniFi Site Manager (api.ui.com) y lista sus redes WiFi.",
-        version = "1.1.0",
-        minModuleVersion = "0.13.0", // the bilingual release (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.14.0", // activity log of the controller configuration (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/unifi",
@@ -45,6 +47,10 @@ object UnifiExtension : ServerExtension, NetworkControllerProvider {
     } catch (failure: UnifiException) {
         throw NetworkControllerException(failure.message.orEmpty())
     }
+
+    // The console, site and API key change in the hotspot's settings; this records them (secrets masked).
+    override fun recordConfiguration(connection: Connection, actor: ActivityActor, before: HotspotSettings, after: HotspotSettings) =
+        UnifiActivity.record(connection, actor, before, after)
 
     override fun sites(settings: HotspotSettings, consoleId: String): List<ControllerOption> = try {
         UnifiClient.sites(settings.unifiApiKey.orEmpty(), consoleId).map { site ->

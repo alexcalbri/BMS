@@ -309,7 +309,8 @@ object CrmMcpTools {
     // The user, marked as acting through an agent in the lead's activity.
     private fun actor(call: McpToolCall): CrmActor {
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
-        return actor.copy(name = "${actor.name} (agente ${call.agentName})")
+        // The author string of the history names the agent; the activity log keeps the user with "Agente de <usuario>".
+        return actor.copy(name = "${actor.name} (agente ${call.agentName})", activity = call.activityActor)
     }
 
     private fun visibleLead(call: McpToolCall, context: CrmScreens.Context): CrmLead =
@@ -669,9 +670,13 @@ object CrmMcpTools {
         val actor = actor(call)
         try {
             val externalId = channel.send(CrmChannelContext(call.tenant, call.access.serverMail), lead, email)
-            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, externalId, "sent", "", actor.userId, actor.name)
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, externalId, "sent", "", actor.userId, actor.name, actor.activity,
+                template = values["template"]?.takeIf { it.isNotBlank() }, to = lead.email.takeIf { channel.id == "email" && it.isNotBlank() },
+            )
         } catch (failure: CrmChannelException) {
-            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, null, "failed", failure.message.orEmpty(), actor.userId, actor.name)
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, null, "failed", failure.message.orEmpty(), actor.userId, actor.name, actor.activity,
+                template = values["template"]?.takeIf { it.isNotBlank() }, to = lead.email.takeIf { channel.id == "email" && it.isNotBlank() },
+            )
             throw McpToolException("No se pudo enviar por ${channel.label}: ${failure.message.orEmpty()}")
         }
         return buildJsonObject {
@@ -725,7 +730,7 @@ object CrmMcpTools {
     private fun delete(call: McpToolCall): JsonElement {
         val context = context(call)
         val lead = visibleLead(call, context)
-        if (!CrmRepository.deleteLead(call.tenant, lead.id)) throw McpToolException("Ese lead ya no existe.")
+        if (!CrmRepository.deleteLead(call.tenant, lead, actor(call), context.stage(lead.stageId)?.name)) throw McpToolException("Ese lead ya no existe.")
         return buildJsonObject {
             put("id", lead.id.toString())
             put("result", "Lead ${lead.name} eliminado; el cliente sigue en Clientes.")

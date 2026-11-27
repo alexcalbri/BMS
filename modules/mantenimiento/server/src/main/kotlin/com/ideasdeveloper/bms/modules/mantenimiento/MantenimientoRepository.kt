@@ -1,6 +1,10 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
 import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
 import com.ideasdeveloper.bms.server.modules.ModuleFiles
@@ -222,16 +226,25 @@ object MantenimientoRepository {
         }
     }
 
-    /** La propiedad activa con ese nombre (sin mayúsculas); si no existe, se crea. Para importaciones. */
-    fun findOrCreateProperty(tenant: Connection, name: String): UUID {
+    /**
+     * La propiedad activa con ese nombre (sin mayúsculas); si no existe, se crea y queda en el registro de actividad a nombre de
+     * [activity] (en la transacción de quien llama). Para importaciones.
+     */
+    fun findOrCreateProperty(tenant: Connection, name: String, activity: ActivityActor): UUID {
         val clean = name.trim().take(MaxPropertyName).trim()
         if (clean.isEmpty()) fail(tr("El nombre de la propiedad es obligatorio."))
         fun existing() = tenant.query("SELECT id FROM mantenimiento_properties WHERE lower(name) = lower(?) AND NOT archived", listOf(clean)) { it.uuid("id") ?: NilId }.firstOrNull()
         return existing() ?: run {
-            tenant.update(
+            val newId = UUID.randomUUID()
+            val inserted = tenant.update(
                 "INSERT INTO mantenimiento_properties (id, name, position) VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM mantenimiento_properties)) ON CONFLICT DO NOTHING",
-                listOf(UUID.randomUUID(), clean),
+                listOf(newId, clean),
             )
+            // Solo si lo creo esta fila (otra importacion pudo adelantarse).
+            if (inserted > 0) {
+                MantenimientoActivity.write(tenant, activity, "propiedad", newId.toString(), clean, ActivityActions.Created, "Importo la propiedad $clean.",
+                    ActivityChanges.created(mapOf("name" to clean), MantenimientoActivity.PropertyLabels))
+            }
             existing() ?: fail(tr("No se pudo crear la propiedad."))
         }
     }
@@ -298,7 +311,7 @@ object MantenimientoRepository {
         tenant.update("UPDATE mantenimiento_assets SET archived = ?, updated_at = now() WHERE id = ?", listOf(archived, id)) > 0
 
     /** El activo activo con ese nombre en esa propiedad (sin mayúsculas); si no existe, se crea. Para importaciones. */
-    fun findOrCreateAsset(tenant: Connection, propertyId: UUID?, name: String): UUID {
+    fun findOrCreateAsset(tenant: Connection, propertyId: UUID?, name: String, activity: ActivityActor): UUID {
         val clean = name.trim().take(AssetInput.MaxName).trim()
         if (clean.isEmpty()) fail(tr("El nombre del activo es obligatorio."))
         fun existing() = tenant.query(
@@ -308,7 +321,14 @@ object MantenimientoRepository {
         ) { it.uuid("id") ?: NilId }.firstOrNull()
         return existing() ?: run {
             // El índice único (propiedad, nombre) evita duplicados si dos importaciones corren a la vez: se relee lo que ganó.
-            tenant.update("INSERT INTO mantenimiento_assets (id, property_id, name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", listOf(UUID.randomUUID(), propertyId, clean))
+            val newId = UUID.randomUUID()
+            val inserted = tenant.update("INSERT INTO mantenimiento_assets (id, property_id, name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", listOf(newId, propertyId, clean))
+            // Solo si lo creo esta fila (otra importacion pudo adelantarse); la fila del registro va en la misma transaccion.
+            if (inserted > 0) {
+                val propertyName = propertyId?.let { getProperty(tenant, it)?.name }
+                MantenimientoActivity.write(tenant, activity, "activo", newId.toString(), clean, ActivityActions.Created, "Importo el activo $clean.",
+                    ActivityChanges.created(MantenimientoActivity.assetValues(clean, propertyName, "", "", ""), MantenimientoActivity.AssetLabels))
+            }
             existing() ?: fail(tr("No se pudo crear el activo."))
         }
     }
@@ -512,7 +532,16 @@ object MantenimientoRepository {
                 "INSERT INTO mantenimiento_order_checklist (id, order_id, text, position) SELECT gen_random_uuid(), ?, text, position FROM mantenimiento_plan_checklist WHERE plan_id = ?",
                 listOf(id, current.id),
             )
-            insertNote(tenant, id, "system", "Generada por el plan preventivo.", MantenimientoActor(null, "Plan preventivo"))
+            val job = ActivityActor.job("Plan preventivo")
+            insertNote(tenant, id, "system", "Generada por el plan preventivo.", MantenimientoActor(null, "Plan preventivo", job))
+            val generated = getOrder(tenant, id)
+            MantenimientoActivity.write(tenant, job, "orden", id.toString(), current.title, ActivityActions.Created,
+                "Genero la orden ${MantenimientoActivity.folio(created)} desde el plan ${current.title}.",
+                ActivityChanges.created(
+                    generated?.let { orderValues(tenant, it) }
+                        ?: mapOf("title" to MantenimientoActivity.text(current.title), "dueDate" to due, "priority" to current.priority.label),
+                    MantenimientoActivity.OrderLabels,
+                ))
             markSync(tenant, id)
         }
         // La fecha siguiente se calcula siempre: si la orden de esa fecha ya existía, el plan no debe quedarse atascado en ella.
@@ -753,6 +782,11 @@ object MantenimientoRepository {
                 insertNote(tenant, id, "assign", "Asignada a ${userLabel(tenant, clean.assigneeId)}.", actor)
                 markSync(tenant, id)
             }
+            getOrder(tenant, id)?.let { order ->
+                MantenimientoActivity.write(tenant, actor.activity, "orden", id.toString(), order.title, ActivityActions.Created,
+                    "Creo la orden ${MantenimientoActivity.folio(order.number)} (${order.kind.label}).",
+                    ActivityChanges.created(orderValues(tenant, order), MantenimientoActivity.OrderLabels))
+            }
             OrderCreated(id, true)
         }
     }
@@ -782,31 +816,74 @@ object MantenimientoRepository {
             )
             if (clean.assigneeId != before.assigneeId) insertNote(tenant, id, "assign", assignText(tenant, clean.assigneeId), actor)
             markSync(tenant, id)
-            getOrder(tenant, id)
+            val after = getOrder(tenant, id)
+            if (after != null) {
+                val changes = ActivityChanges.diff(orderValues(tenant, before), orderValues(tenant, after), MantenimientoActivity.OrderLabels)
+                if (changes.isNotEmpty()) {
+                    MantenimientoActivity.write(tenant, actor.activity, "orden", id.toString(), after.title, ActivityActions.Updated,
+                        "Modifico la orden ${MantenimientoActivity.folio(after.number)}.", changes)
+                }
+            }
+            after
         }
     }
+
+    /** Campos de una orden tal como se muestran: para comparar (diff) o registrar (created). Los textos vacios no cuentan. */
+    internal fun orderValues(tenant: Connection, order: Order): Map<String, Any?> = mapOf(
+        "kind" to order.kind.label, "status" to order.status.label,
+        "title" to MantenimientoActivity.text(order.title), "description" to MantenimientoActivity.text(order.description),
+        "property" to MantenimientoActivity.text(order.propertyName), "asset" to MantenimientoActivity.text(order.assetName),
+        "priority" to order.priority.label, "dueDate" to order.dueDate,
+        "assignee" to order.assigneeId?.let { userLabel(tenant, it) }, "department" to MantenimientoActivity.text(order.department),
+        "quoteAmount" to order.quoteAmount, "quoteCurrency" to order.quoteCurrency, "quotedBy" to MantenimientoActivity.text(order.quotedBy),
+        "costAmount" to order.costAmount, "costCurrency" to order.costCurrency, "resolution" to MantenimientoActivity.text(order.resolution),
+    )
 
     private fun assignText(tenant: Connection, assigneeId: UUID?): String =
         if (assigneeId == null) "Se quitó el responsable." else "Asignada a ${userLabel(tenant, assigneeId)}."
 
     /** Costo real y resolución (quien trabaja la orden). Devuelve false si la orden no existe. */
-    fun updateWork(tenant: Connection, id: UUID, costAmount: BigDecimal?, costCurrency: String, resolution: String): Boolean {
+    fun updateWork(tenant: Connection, id: UUID, costAmount: BigDecimal?, costCurrency: String, resolution: String, activity: ActivityActor): Boolean {
         val currency = costCurrency.trim().uppercase()
         val probe = OrderInput(title = "-", costAmount = costAmount, costCurrency = currency, resolution = resolution.trim())
         firstMessage(probe.validate())
-        return tenant.update(
-            "UPDATE mantenimiento_orders SET cost_amount = ?, cost_currency = ?, resolution = ?, updated_at = now() WHERE id = ?",
-            listOf(costAmount, currency, resolution.trim(), id),
-        ) > 0
+        return transaction(tenant) {
+            val before = getOrder(tenant, id) ?: return@transaction false
+            val updated = tenant.update(
+                "UPDATE mantenimiento_orders SET cost_amount = ?, cost_currency = ?, resolution = ?, updated_at = now() WHERE id = ?",
+                listOf(costAmount, currency, resolution.trim(), id),
+            ) > 0
+            val after = if (updated) getOrder(tenant, id) else null
+            if (after != null) {
+                val changes = ActivityChanges.diff(workValues(before), workValues(after), MantenimientoActivity.WorkLabels)
+                if (changes.isNotEmpty()) {
+                    MantenimientoActivity.write(tenant, activity, "orden", id.toString(), after.title, ActivityActions.Updated,
+                        "Registro el trabajo de la orden ${MantenimientoActivity.folio(after.number)}.", changes)
+                }
+            }
+            updated
+        }
     }
+
+    private fun workValues(order: Order): Map<String, Any?> = mapOf(
+        "costAmount" to order.costAmount, "costCurrency" to order.costCurrency, "resolution" to MantenimientoActivity.text(order.resolution),
+    )
 
     /** Asigna (o quita con null) el responsable; solo a usuarios asignables. Devuelve la orden actualizada o null si no existe. */
     fun assignOrder(tenant: Connection, id: UUID, assigneeId: UUID?, actor: MantenimientoActor): Order? = transaction(tenant) {
-        lockOrder(tenant, id) ?: return@transaction null
+        val before = lockOrder(tenant, id) ?: return@transaction null
         if (assigneeId != null && !isAssignable(tenant, assigneeId)) fail(tr("Esa persona no puede ser responsable de órdenes de mantenimiento."))
         tenant.update("UPDATE mantenimiento_orders SET assignee_id = ?, updated_at = now() WHERE id = ?", listOf(assigneeId, id))
         insertNote(tenant, id, "assign", assignText(tenant, assigneeId), actor)
         markSync(tenant, id)
+        if (before.assigneeId != assigneeId) {
+            val oldName = before.assigneeId?.let { userLabel(tenant, it) }
+            val newName = assigneeId?.let { userLabel(tenant, it) }
+            MantenimientoActivity.write(tenant, actor.activity, "orden", id.toString(), before.title, ActivityActions.Assigned,
+                if (newName == null) "Quito el responsable de la orden ${MantenimientoActivity.folio(before.number)}."
+                else "Asigno la orden ${MantenimientoActivity.folio(before.number)} a $newName.",
+                listOf(ActivityChange("assignee", "Responsable", oldName, newName)))
+        }
         getOrder(tenant, id)
     }
 
@@ -821,6 +898,11 @@ object MantenimientoRepository {
             if (taken) {
                 insertNote(tenant, id, "assign", "${actor.name.trim().ifEmpty { "Alguien" }} tomó la orden.", actor)
                 markSync(tenant, id)
+                getOrder(tenant, id)?.let { order ->
+                    MantenimientoActivity.write(tenant, actor.activity, "orden", id.toString(), order.title, ActivityActions.Assigned,
+                        "Tomo la orden ${MantenimientoActivity.folio(order.number)}.",
+                        listOf(ActivityChange("assignee", "Responsable", null, actor.name.trim().ifEmpty { "Alguien" })))
+                }
             }
             taken
         }
@@ -871,6 +953,12 @@ object MantenimientoRepository {
         insertNote(tenant, id, "status", note.take(MaxNoteLength), actor)
         if (current.planId != null && (done || to == OrderStatus.Cancelled)) advanceFloatingPlan(tenant, current.planId, done, today)
         markSync(tenant, id)
+        val changes = buildList {
+            add(ActivityChange("status", "Estado", current.status.label, to.label))
+            if (cleanReason.isNotEmpty()) add(ActivityChange("reason", "Motivo", null, cleanReason))
+        }
+        MantenimientoActivity.write(tenant, actor.activity, "orden", id.toString(), current.title, ActivityActions.StatusChanged,
+            "Cambio la orden ${MantenimientoActivity.folio(current.number)} de ${current.status.label} a ${to.label}.", changes)
         getOrder(tenant, id) ?: fail(tr("La orden ya no existe."))
     }
 
@@ -905,7 +993,7 @@ object MantenimientoRepository {
             fail(tr("No puedes pasar la orden de {0} a {1}.", tr(current.status.label), tr(OrderStatus.Done.label)))
         }
         if (resolution != null || costAmount != null) {
-            updateWork(tenant, id, costAmount ?: current.costAmount, current.costCurrency, resolution ?: current.resolution)
+            updateWork(tenant, id, costAmount ?: current.costAmount, current.costCurrency, resolution ?: current.resolution, actor.activity)
         }
         changeStatus(tenant, id, OrderStatus.Done, actor, scope, today = today)
     }
@@ -927,10 +1015,13 @@ object MantenimientoRepository {
         if (clean.isEmpty()) fail(tr("La nota no puede estar vacía."))
         if (clean.length > MaxNoteLength) fail(tr("La nota admite hasta {0} caracteres.", MaxNoteLength))
         return transaction(tenant) {
-            lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
+            val order = lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
             val total = tenant.query("SELECT count(*) AS total FROM mantenimiento_order_notes WHERE order_id = ?", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
             if (total >= MaxNotesPerOrder) fail(tr("La orden ya tiene el máximo de {0} notas.", MaxNotesPerOrder))
-            insertNote(tenant, orderId, "note", clean, actor)
+            val noteId = insertNote(tenant, orderId, "note", clean, actor)
+            MantenimientoActivity.write(tenant, actor.activity, "orden", orderId.toString(), order.title, ActivityActions.Commented,
+                "Anoto en la orden ${MantenimientoActivity.folio(order.number)}.", listOf(ActivityChange("note", "Nota", null, clean)))
+            noteId
         }
     }
 
@@ -976,12 +1067,12 @@ object MantenimientoRepository {
     private fun checkOf(it: ResultSet) = run {
         OrderCheck(it.uuid("id") ?: NilId, it.uuid("order_id") ?: NilId, it.getString("text"), it.getBoolean("done"), it.getInt("position"), it.uuid("done_by"), it.instant("done_at")) }
 
-    fun addCheckItem(tenant: Connection, orderId: UUID, text: String): UUID {
+    fun addCheckItem(tenant: Connection, orderId: UUID, text: String, activity: ActivityActor): UUID {
         val clean = text.trim()
         if (clean.isEmpty()) fail(tr("El elemento no puede estar vacío."))
         if (clean.length > PlanInput.MaxChecklistText) fail(tr("Cada elemento admite hasta {0} caracteres.", PlanInput.MaxChecklistText))
         return transaction(tenant) {
-            lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
+            val order = lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
             val total = tenant.query("SELECT count(*) AS total FROM mantenimiento_order_checklist WHERE order_id = ?", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
             if (total >= MaxChecklistItems) fail(tr("La lista admite hasta {0} elementos.", MaxChecklistItems))
             val id = UUID.randomUUID()
@@ -989,22 +1080,49 @@ object MantenimientoRepository {
                 "INSERT INTO mantenimiento_order_checklist (id, order_id, text, position) VALUES (?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM mantenimiento_order_checklist WHERE order_id = ?))",
                 listOf(id, orderId, clean, orderId),
             )
+            MantenimientoActivity.write(tenant, activity, "checklist", id.toString(), clean, ActivityActions.Created,
+                "Agrego «$clean» a la lista de la orden ${MantenimientoActivity.folio(order.number)}.",
+                ActivityChanges.created(mapOf("text" to clean), MantenimientoActivity.ChecklistLabels))
             id
         }
     }
 
     /** Marca o desmarca un elemento de ESA orden; false si el elemento no pertenece a la orden. */
-    fun setCheckDone(tenant: Connection, orderId: UUID, itemId: UUID, done: Boolean, userId: UUID?): Boolean = tenant.update(
-        """
-        UPDATE mantenimiento_order_checklist
-        SET done = ?, done_by = CASE WHEN ?::boolean THEN ?::uuid ELSE NULL END, done_at = CASE WHEN ?::boolean THEN now() ELSE NULL END
-        WHERE id = ? AND order_id = ?
-        """.trimIndent(),
-        listOf(done, done, userId, done, itemId, orderId),
-    ) > 0
+    fun setCheckDone(tenant: Connection, orderId: UUID, itemId: UUID, done: Boolean, userId: UUID?, activity: ActivityActor): Boolean = transaction(tenant) {
+        val before = tenant.query("SELECT text, done FROM mantenimiento_order_checklist WHERE id = ? AND order_id = ?", listOf(itemId, orderId)) {
+            it.getString("text") to it.getBoolean("done")
+        }.firstOrNull()
+        val updated = tenant.update(
+            """
+            UPDATE mantenimiento_order_checklist
+            SET done = ?, done_by = CASE WHEN ?::boolean THEN ?::uuid ELSE NULL END, done_at = CASE WHEN ?::boolean THEN now() ELSE NULL END
+            WHERE id = ? AND order_id = ?
+            """.trimIndent(),
+            listOf(done, done, userId, done, itemId, orderId),
+        ) > 0
+        if (updated && before != null && before.second != done) {
+            getOrder(tenant, orderId)?.let { order ->
+                MantenimientoActivity.write(tenant, activity, "checklist", itemId.toString(), before.first, ActivityActions.Updated,
+                    if (done) "Marco como hecho «${before.first}» en la orden ${MantenimientoActivity.folio(order.number)}."
+                    else "Desmarco «${before.first}» en la orden ${MantenimientoActivity.folio(order.number)}.",
+                    listOf(ActivityChange("done", "Hecho", ActivityChanges.format(before.second), ActivityChanges.format(done))))
+            }
+        }
+        updated
+    }
 
-    fun removeCheckItem(tenant: Connection, orderId: UUID, itemId: UUID): Boolean =
-        tenant.update("DELETE FROM mantenimiento_order_checklist WHERE id = ? AND order_id = ?", listOf(itemId, orderId)) > 0
+    fun removeCheckItem(tenant: Connection, orderId: UUID, itemId: UUID, activity: ActivityActor): Boolean = transaction(tenant) {
+        val before = tenant.query("SELECT text FROM mantenimiento_order_checklist WHERE id = ? AND order_id = ?", listOf(itemId, orderId)) { it.getString("text") }.firstOrNull()
+        val removed = tenant.update("DELETE FROM mantenimiento_order_checklist WHERE id = ? AND order_id = ?", listOf(itemId, orderId)) > 0
+        if (removed && before != null) {
+            getOrder(tenant, orderId)?.let { order ->
+                MantenimientoActivity.write(tenant, activity, "checklist", itemId.toString(), before, ActivityActions.Deleted,
+                    "Quito «$before» de la lista de la orden ${MantenimientoActivity.folio(order.number)}.",
+                    ActivityChanges.deleted(mapOf("text" to before), MantenimientoActivity.ChecklistLabels))
+            }
+        }
+        removed
+    }
 
     // ---- adjuntos ----
 
@@ -1096,21 +1214,28 @@ object MantenimientoRepository {
     fun pendingExceeded(count: Int, bytes: Long): Boolean = count >= MaxPendingFiles || bytes >= MaxPendingBytes
 
     /** Enlaza a la orden las subidas pendientes de [uploaderId] y devuelve sus nombres. Las de otra persona o ya enlazadas se ignoran. */
-    fun attach(tenant: Connection, orderId: UUID, ids: Collection<UUID>, uploaderId: UUID?): List<String> {
+    /** Enlaza las subidas pendientes [ids] a la orden; devuelve nombre y tamano de cada una enlazada. */
+    fun attach(tenant: Connection, orderId: UUID, ids: Collection<UUID>, uploaderId: UUID?, activity: ActivityActor): List<Pair<String, Long>> {
         val pending = ids.distinct()
         if (pending.isEmpty() || uploaderId == null) return emptyList()
         return transaction(tenant) {
-            lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
+            val order = lockOrder(tenant, orderId) ?: fail(tr("La orden ya no existe."))
             val total = tenant.query("SELECT count(*) AS total FROM mantenimiento_attachments WHERE order_id = ? AND NOT delete_pending", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
             if (total + pending.size > MaxFilesPerOrder) fail(tr("Una orden admite hasta {0} archivos.", MaxFilesPerOrder))
-            tenant.query(
+            val attached = tenant.query(
                 """
                 UPDATE mantenimiento_attachments SET order_id = ?
                 WHERE order_id IS NULL AND NOT delete_pending AND uploaded_by = ? AND id = ANY(?)
-                RETURNING name
+                RETURNING name, size
                 """.trimIndent(),
                 listOf(orderId, uploaderId, tenant.uuidArray(pending)),
-            ) { it.getString("name") }
+            ) { it.getString("name") to it.getLong("size") }
+            if (attached.isNotEmpty()) {
+                MantenimientoActivity.write(tenant, activity, "orden", orderId.toString(), order.title, ActivityActions.AttachmentAdded,
+                    "Agrego ${attached.size} adjunto(s) a la orden ${MantenimientoActivity.folio(order.number)}.",
+                    attached.map { (name, size) -> ActivityChange("file", "Archivo", null, "$name (${MantenimientoActivity.sizeLabel(size)})") })
+            }
+            attached
         }
     }
 
@@ -1156,9 +1281,20 @@ object MantenimientoRepository {
     }
 
     /** Marca archivos de la orden para borrar. El trabajo de limpieza quita el contenido después. */
-    fun markDeleted(tenant: Connection, orderId: UUID, ids: Collection<UUID>): Int {
+    fun markDeleted(tenant: Connection, orderId: UUID, ids: Collection<UUID>, activity: ActivityActor): Int {
         if (ids.isEmpty()) return 0
-        return tenant.update("UPDATE mantenimiento_attachments SET delete_pending = TRUE WHERE order_id = ? AND id = ANY(?)", listOf(orderId, tenant.uuidArray(ids.distinct())))
+        return transaction(tenant) {
+            val names = tenant.query("SELECT name FROM mantenimiento_attachments WHERE order_id = ? AND id = ANY(?) AND NOT delete_pending", listOf(orderId, tenant.uuidArray(ids.distinct()))) { it.getString("name") }
+            val marked = tenant.update("UPDATE mantenimiento_attachments SET delete_pending = TRUE WHERE order_id = ? AND id = ANY(?)", listOf(orderId, tenant.uuidArray(ids.distinct())))
+            if (marked > 0) {
+                getOrder(tenant, orderId)?.let { order ->
+                    MantenimientoActivity.write(tenant, activity, "orden", orderId.toString(), order.title, ActivityActions.AttachmentRemoved,
+                        "Quito ${names.size} adjunto(s) de la orden ${MantenimientoActivity.folio(order.number)}.",
+                        names.map { ActivityChange("file", "Archivo", it, null) })
+                }
+            }
+            marked
+        }
     }
 
     /** Borra el contenido y las filas de los adjuntos quitados y de las subidas cuyo formulario nunca se guardó en un día. */
@@ -1243,10 +1379,20 @@ object MantenimientoRepository {
     }
 
     /** Guarda la solicitud creada y libera la reserva. */
-    fun savePurchase(tenant: Connection, orderId: UUID, requestId: UUID, folio: String): Boolean = tenant.update(
-        "UPDATE mantenimiento_orders SET purchase_request_id = ?, purchase_folio = ?, purchase_linking_at = NULL WHERE id = ?",
-        listOf(requestId, folio.take(40), orderId),
-    ) > 0
+    fun savePurchase(tenant: Connection, orderId: UUID, requestId: UUID, folio: String, activity: ActivityActor): Boolean = transaction(tenant) {
+        val saved = tenant.update(
+            "UPDATE mantenimiento_orders SET purchase_request_id = ?, purchase_folio = ?, purchase_linking_at = NULL WHERE id = ?",
+            listOf(requestId, folio.take(40), orderId),
+        ) > 0
+        if (saved) {
+            getOrder(tenant, orderId)?.let { order ->
+                MantenimientoActivity.write(tenant, activity, "orden", orderId.toString(), order.title, ActivityActions.Updated,
+                    "Enlazo la solicitud de compra ${folio.take(40)} a la orden ${MantenimientoActivity.folio(order.number)}.",
+                    listOf(ActivityChange("purchase", "Solicitud de compra", null, folio.take(40))))
+            }
+        }
+        saved
+    }
 
     /** Libera la reserva (también cuando la solicitud falló). */
     fun releasePurchase(tenant: Connection, orderId: UUID) {

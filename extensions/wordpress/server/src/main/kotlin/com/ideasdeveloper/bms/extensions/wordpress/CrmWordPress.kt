@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.extensions.wordpress
 
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.crm.CrmActor
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmHost
@@ -159,22 +163,27 @@ object CrmWordPress {
     fun taxonomies(tenant: Connection): Map<String, List<String>> =
         rpc(checked(tenant), "taxonomies").obj()?.mapValues { (_, terms) -> terms.arr().mapNotNull { it.obj()?.get("name").str().ifEmpty { null } } }.orEmpty()
 
-    fun markSold(tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate) {
+    fun markSold(tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate, actor: ActivityActor) {
         rpc(checked(tenant), "sold", buildJsonObject {
             put("id", id)
             put("price", price?.toPlainString().orEmpty())
             put("date", date.toString())
         })
+        // The change is made on the website: the log says who asked for it.
+        CrmAudit.record(
+            tenant, actor, "wp_listing", id.toString(), "Propiedad $id", ActivityActions.StatusChanged, "Marco la propiedad $id como vendida en el sitio de WordPress.",
+            listOfNotNull(ActivityChange("sold", "Vendida", "No", "Si"), price?.let { ActivityChange("price", "Precio", null, it.toPlainString()) }, ActivityChange("date", "Fecha", null, date.toString())),
+        )
     }
 
     /** Reads the agents of the website and keeps their BMS user (an email match links new ones). */
-    fun syncAgents(tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>): Int {
+    fun syncAgents(tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>, actor: ActivityActor): Int {
         val received = rpc(checked(tenant), "agents").arr().mapNotNull { it.obj() }
         val agents = received.mapNotNull { agent ->
             val id = agent["id"].str().toLongOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
             WpAgent(id, agent["name"].str(), agent["email"].str(), null)
         }
-        WordPressSettingsStore.syncAgents(tenant, agents, users, userEmails)
+        WordPressSettingsStore.syncAgents(tenant, agents, users, userEmails, actor)
         // Cuenta todos los agentes que envio el sitio, incluso los que se omiten por no tener id valido.
         return received.size
     }
@@ -227,14 +236,14 @@ object CrmWordPress {
                         source = source,
                         suggestedOwnerUserId = listing?.let { WordPressSettingsStore.userForAgent(tenant, it.agentId, it.agentName, it.agentEmail) },
                     ),
-                    onNewLead,
+                    onNewLead = onNewLead,
                 )
                 val leadId = when (result) {
                     is CrmIntakeResult.Created -> result.leadId
                     is CrmIntakeResult.Updated -> result.leadId
                     else -> null
                 }
-                if (leadId != null && listing != null) linkListing(tenant, leadId, listing, "Consulto la propiedad ${listing.title} en el sitio.")
+                if (leadId != null && listing != null) linkListing(tenant, leadId, listing, "Consulto la propiedad ${listing.title} en el sitio.", SiteActor)
                 WordPressSettingsStore.record(tenant, null, "")
                 "$kind: ${result::class.simpleName}"
             }
@@ -245,21 +254,26 @@ object CrmWordPress {
                     "saved_search" -> "Guardo una busqueda con alertas:\n${event["message"].str()}"
                     else -> "Vio la propiedad ${listing?.title.orEmpty()}"
                 }
-                CrmHost.addActivity(tenant, lead, "web", text, CrmActor(null, "Sitio web"))
-                if (kind == "favorite" && listing != null) linkListing(tenant, lead, listing, null)
+                CrmHost.addActivity(tenant, lead, "web", text, SiteActor)
+                if (kind == "favorite" && listing != null) linkListing(tenant, lead, listing, null, SiteActor)
                 "$kind registrado"
             }
             else -> "evento desconocido"
         }
     }
 
-    fun linkListing(tenant: Connection, leadId: UUID, listing: WpListing, activity: String?) {
-        val added = CrmHost.linkItem(
-            tenant, leadId, Source, listing.id.toString(), listing.title,
-            subtitle = listOf(listing.priceText, listing.summary).filter { it.isNotEmpty() }.joinToString(" - "),
-            url = listing.url, price = listing.priceValue,
-        )
-        if (added) CrmHost.addActivity(tenant, leadId, "item", activity ?: "Propiedad de interes: ${listing.title}.", CrmActor(null, "Sitio web"))
+    /** The website itself: its events are attributed to the "Sitio web" integration in the lead's history and in the activity log. */
+    private val SiteActor = CrmActor(null, "Sitio web", ActivityActor.integration("Sitio web"))
+
+    fun linkListing(tenant: Connection, leadId: UUID, listing: WpListing, activity: String?, actor: CrmActor = SiteActor) {
+        CrmAudit.atomically(tenant) {
+            val added = CrmHost.linkItem(
+                tenant, leadId, Source, listing.id.toString(), listing.title,
+                subtitle = listOf(listing.priceText, listing.summary).filter { it.isNotEmpty() }.joinToString(" - "),
+                url = listing.url, price = listing.priceValue,
+            )
+            if (added) CrmHost.addActivity(tenant, leadId, "item", activity ?: "Propiedad de interes: ${listing.title}.", actor)
+        }
     }
 
     fun recordError(tenant: Connection, error: String) = WordPressSettingsStore.recordError(tenant, error)

@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -20,7 +23,7 @@ object MantenimientoService {
     fun scope(permissions: ModulePermissions): MantenimientoScope = MantenimientoScope.from(permissions)
 
     fun actor(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, scope: MantenimientoScope): MantenimientoActor =
-        MantenimientoActor(scope.userId, access.userIdentity(tenant, permissions)?.name ?: "Usuario")
+        MantenimientoActor(scope.userId, access.userIdentity(tenant, permissions)?.name ?: "Usuario", permissions.activityActor)
 
     fun visibleOrder(tenant: Connection, scope: MantenimientoScope, id: UUID): Order =
         MantenimientoRepository.getOrderVisible(tenant, scope, id) ?: throw MantenimientoValidationException(tr(NotFound))
@@ -58,7 +61,7 @@ object MantenimientoService {
         val created = MantenimientoRepository.transaction(tenant) {
             val result = MantenimientoRepository.createOrder(tenant, input, actor)
             // El autor enlaza sus propios archivos al reportar.
-            MantenimientoRepository.attach(tenant, result.id, fileIds(values), permissions.userId)
+            MantenimientoRepository.attach(tenant, result.id, fileIds(values), permissions.userId, actor.activity)
             result
         }
         val order = MantenimientoRepository.getOrder(tenant, created.id) ?: missing(tr(NotFound))
@@ -84,7 +87,7 @@ object MantenimientoService {
             }
             MantenimientoActions.canWorkNow(scope, before) -> {
                 val work = MantenimientoActions.workValues(values, before)
-                MantenimientoRepository.updateWork(tenant, id, work.costAmount, work.costCurrency, work.resolution)
+                MantenimientoRepository.updateWork(tenant, id, work.costAmount, work.costCurrency, work.resolution, actor.activity)
                 MantenimientoRepository.getOrder(tenant, id) ?: missing(tr(NotFound))
             }
             else -> missing(tr("No tienes permiso para editar esta orden."))
@@ -100,10 +103,10 @@ object MantenimientoService {
         if (changes.added.isEmpty() && changes.removed.isEmpty()) return
         if (!MantenimientoActions.canAttach(scope, order)) missing(tr("No puedes cambiar los archivos de esta orden."))
         if (changes.added.isNotEmpty()) {
-            MantenimientoRepository.attach(tenant, order.id, changes.added.mapNotNull { MantenimientoActions.uuid(it.id) }, permissions.userId)
+            MantenimientoRepository.attach(tenant, order.id, changes.added.mapNotNull { MantenimientoActions.uuid(it.id) }, permissions.userId, permissions.activityActor)
         }
         val removable = if (scope.canEdit(order)) changes.removed else changes.removed.filter { id -> current.firstOrNull { it.id == id }?.uploadedBy == permissions.userId }
-        if (removable.isNotEmpty()) MantenimientoRepository.markDeleted(tenant, order.id, removable)
+        if (removable.isNotEmpty()) MantenimientoRepository.markDeleted(tenant, order.id, removable, permissions.activityActor)
     }
 
     fun saveFiles(tenant: Connection, permissions: ModulePermissions, id: UUID, values: Map<String, String>) {
@@ -151,21 +154,21 @@ object MantenimientoService {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
         if (!MantenimientoActions.canWorkChecklist(scope, order)) missing(tr("No puedes cambiar la lista de esta orden."))
-        MantenimientoRepository.addCheckItem(tenant, id, text)
+        MantenimientoRepository.addCheckItem(tenant, id, text, permissions.activityActor)
     }
 
     fun toggleCheck(tenant: Connection, permissions: ModulePermissions, id: UUID, item: UUID, done: Boolean) {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
         if (!MantenimientoActions.canWorkChecklist(scope, order)) missing(tr("No puedes cambiar la lista de esta orden."))
-        if (!MantenimientoRepository.setCheckDone(tenant, id, item, done, scope.userId)) missing(tr("Ese elemento ya no existe."))
+        if (!MantenimientoRepository.setCheckDone(tenant, id, item, done, scope.userId, permissions.activityActor)) missing(tr("Ese elemento ya no existe."))
     }
 
     fun removeCheck(tenant: Connection, permissions: ModulePermissions, id: UUID, item: UUID) {
         val scope = scope(permissions)
         val order = visibleOrder(tenant, scope, id)
         if (!scope.canEdit(order)) missing(tr(NotManager))
-        if (!MantenimientoRepository.removeCheckItem(tenant, id, item)) missing(tr("Ese elemento ya no existe."))
+        if (!MantenimientoRepository.removeCheckItem(tenant, id, item, permissions.activityActor)) missing(tr("Ese elemento ya no existe."))
     }
 
     // ---- Compras ----
@@ -182,7 +185,7 @@ object MantenimientoService {
         val order = visibleOrder(tenant, scope, id)
         if (!scope.canWork(order) || !order.status.isActive) missing(tr("No puedes pedir la compra de esta orden."))
         val userId = permissions.userId ?: missing(tr("No se pudo identificar a tu usuario."))
-        return when (val outcome = MantenimientoPurchases.request(access, tenant, permissions.companyCode, userId, permissions.serverOwner, id)) {
+        return when (val outcome = MantenimientoPurchases.request(access, tenant, permissions.companyCode, userId, permissions.serverOwner, id, permissions.activityActor)) {
             is MantenimientoPurchases.PurchaseOutcome.Created -> tr("Solicitud de compra {0} creada como borrador en Compras.", outcome.folio)
             is MantenimientoPurchases.PurchaseOutcome.Busy -> missing(outcome.message)
             is MantenimientoPurchases.PurchaseOutcome.Failed -> missing(outcome.reason)
@@ -195,15 +198,41 @@ object MantenimientoService {
         val scope = scope(permissions)
         requireManage(scope)
         val properties = MantenimientoRepository.listProperties(tenant)
-        if (id == null) return MantenimientoRepository.createAsset(tenant, MantenimientoActions.assetInput(values, properties))
-        val existing = MantenimientoRepository.getAsset(tenant, id) ?: missing(tr("Activo no encontrado."))
-        if (!MantenimientoRepository.updateAsset(tenant, id, MantenimientoActions.assetInput(values, properties, existing))) missing(tr("Activo no encontrado."))
-        return id
+        return MantenimientoRepository.transaction(tenant) {
+            if (id == null) {
+                val input = MantenimientoActions.assetInput(values, properties)
+                val created = MantenimientoRepository.createAsset(tenant, input)
+                MantenimientoActivity.write(tenant, permissions.activityActor, "activo", created.toString(), input.name.trim(), ActivityActions.Created,
+                    "Creo el activo ${input.name.trim()}.", ActivityChanges.created(assetValuesOf(input, properties), MantenimientoActivity.AssetLabels))
+                return@transaction created
+            }
+            val existing = MantenimientoRepository.getAsset(tenant, id) ?: missing(tr("Activo no encontrado."))
+            val input = MantenimientoActions.assetInput(values, properties, existing)
+            if (!MantenimientoRepository.updateAsset(tenant, id, input)) missing(tr("Activo no encontrado."))
+            val changes = ActivityChanges.diff(
+                MantenimientoActivity.assetValues(existing.name, existing.propertyName, existing.category, existing.location, existing.notes),
+                assetValuesOf(input, properties), MantenimientoActivity.AssetLabels,
+            )
+            if (changes.isNotEmpty()) {
+                MantenimientoActivity.write(tenant, permissions.activityActor, "activo", id.toString(), input.name.trim(), ActivityActions.Updated,
+                    "Modifico el activo ${input.name.trim()}.", changes)
+            }
+            id
+        }
     }
+
+    private fun assetValuesOf(input: AssetInput, properties: List<Property>): Map<String, Any?> =
+        MantenimientoActivity.assetValues(input.name, properties.firstOrNull { it.id == input.propertyId }?.name, input.category, input.location, input.notes)
 
     fun archiveAsset(tenant: Connection, permissions: ModulePermissions, id: UUID, archived: Boolean) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.archiveAsset(tenant, id, archived)) missing(tr("Activo no encontrado."))
+        MantenimientoRepository.transaction(tenant) {
+            val name = MantenimientoRepository.getAsset(tenant, id)?.name.orEmpty()
+            if (!MantenimientoRepository.archiveAsset(tenant, id, archived)) missing(tr("Activo no encontrado."))
+            MantenimientoActivity.write(tenant, permissions.activityActor, "activo", id.toString(), name,
+                if (archived) ActivityActions.Archived else ActivityActions.Restored,
+                if (archived) "Archivo el activo $name." else "Restauro el activo $name.")
+        }
     }
 
     // ---- planes ----
@@ -211,58 +240,135 @@ object MantenimientoService {
     fun savePlan(tenant: Connection, permissions: ModulePermissions, id: UUID?, values: Map<String, String>): UUID {
         val scope = scope(permissions)
         requireManage(scope)
-        if (id == null) {
-            val input = MantenimientoActions.planInput(values, lookups(tenant, null), emptyList())
-            return MantenimientoRepository.createPlan(tenant, input, scope.userId)
+        return MantenimientoRepository.transaction(tenant) {
+            if (id == null) {
+                val input = MantenimientoActions.planInput(values, lookups(tenant, null), emptyList())
+                val created = MantenimientoRepository.createPlan(tenant, input, scope.userId)
+                MantenimientoActivity.write(tenant, permissions.activityActor, "plan", created.toString(), input.title, ActivityActions.Created,
+                    "Creo el plan ${input.title}.", ActivityChanges.created(planValuesOf(tenant, input), MantenimientoActivity.PlanLabels))
+                return@transaction created
+            }
+            val existing = MantenimientoRepository.getPlan(tenant, id) ?: missing(tr("Plan no encontrado."))
+            val checklist = MantenimientoRepository.planChecklist(tenant, id).map { it.text }
+            val input = MantenimientoActions.planInput(values, lookups(tenant, existing.assetId), checklist, existing)
+            if (!MantenimientoRepository.updatePlan(tenant, id, input)) missing(tr("Plan no encontrado."))
+            val changes = ActivityChanges.diff(planValuesOfPlan(existing, checklist), planValuesOf(tenant, input), MantenimientoActivity.PlanLabels)
+            if (changes.isNotEmpty()) {
+                MantenimientoActivity.write(tenant, permissions.activityActor, "plan", id.toString(), input.title, ActivityActions.Updated,
+                    "Modifico el plan ${input.title}.", changes)
+            }
+            id
         }
-        val existing = MantenimientoRepository.getPlan(tenant, id) ?: missing(tr("Plan no encontrado."))
-        val checklist = MantenimientoRepository.planChecklist(tenant, id).map { it.text }
-        val input = MantenimientoActions.planInput(values, lookups(tenant, existing.assetId), checklist, existing)
-        if (!MantenimientoRepository.updatePlan(tenant, id, input)) missing(tr("Plan no encontrado."))
-        return id
     }
+
+    private fun planValuesOf(tenant: Connection, input: PlanInput): Map<String, Any?> = MantenimientoActivity.planValues(
+        title = input.title, description = input.description,
+        property = input.propertyId?.let { id -> MantenimientoRepository.listProperties(tenant).firstOrNull { it.id == id }?.name },
+        asset = input.assetId?.let { MantenimientoRepository.getAsset(tenant, it)?.name },
+        frequency = input.frequency.label, intervalDays = input.intervalDays, leadDays = input.leadDays,
+        priority = input.priority.label, nextDue = input.nextDue, checklist = input.checklist,
+    )
+
+    private fun planValuesOfPlan(plan: Plan, checklist: List<String>): Map<String, Any?> = MantenimientoActivity.planValues(
+        title = plan.title, description = plan.description, property = plan.propertyName, asset = plan.assetName,
+        frequency = plan.frequency.label, intervalDays = plan.intervalDays, leadDays = plan.leadDays,
+        priority = plan.priority.label, nextDue = plan.nextDue, checklist = checklist,
+    )
 
     fun setPlanActive(tenant: Connection, permissions: ModulePermissions, id: UUID, active: Boolean) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.setPlanActive(tenant, id, active)) missing(tr("Plan no encontrado."))
+        MantenimientoRepository.transaction(tenant) {
+            val plan = MantenimientoRepository.getPlan(tenant, id)
+            if (!MantenimientoRepository.setPlanActive(tenant, id, active)) missing(tr("Plan no encontrado."))
+            val title = plan?.title.orEmpty()
+            MantenimientoActivity.write(tenant, permissions.activityActor, "plan", id.toString(), title,
+                if (active) ActivityActions.Enabled else ActivityActions.Disabled,
+                if (active) "Activo el plan $title." else "Desactivo el plan $title.",
+                listOf(ActivityChange("active", "Activo", ActivityChanges.format(plan?.active == true), ActivityChanges.format(active))))
+        }
     }
 
-    /** Cambia la lista de comprobación del plan: [change] recibe los textos actuales y el índice del elemento tocado (-1 si no hay). */
+    /** Cambia la lista de comprobacion del plan: [change] recibe los textos actuales y el indice del elemento tocado (-1 si no hay). */
     fun changePlanChecklist(tenant: Connection, permissions: ModulePermissions, id: UUID, itemId: UUID?, change: (List<String>, Int) -> List<String>) {
         requireManage(scope(permissions))
-        val plan = MantenimientoRepository.getPlan(tenant, id) ?: missing(tr("Plan no encontrado."))
-        val items = MantenimientoRepository.planChecklist(tenant, id)
-        val index = itemId?.let { wanted -> items.indexOfFirst { it.id == wanted }.also { if (it < 0) missing(tr("Ese elemento ya no existe.")) } } ?: -1
-        val changed = change(items.map { it.text }, index)
-        if (!MantenimientoRepository.updatePlan(tenant, id, MantenimientoActions.planInputOf(plan, changed))) missing(tr("Plan no encontrado."))
+        MantenimientoRepository.transaction(tenant) {
+            val plan = MantenimientoRepository.getPlan(tenant, id) ?: missing(tr("Plan no encontrado."))
+            val items = MantenimientoRepository.planChecklist(tenant, id)
+            val index = itemId?.let { wanted -> items.indexOfFirst { it.id == wanted }.also { if (it < 0) missing(tr("Ese elemento ya no existe.")) } } ?: -1
+            val before = items.map { it.text }
+            val changed = change(before, index)
+            if (!MantenimientoRepository.updatePlan(tenant, id, MantenimientoActions.planInputOf(plan, changed))) missing(tr("Plan no encontrado."))
+            val diff = ActivityChanges.diff(mapOf("checklist" to before.joinToString(" · ")), mapOf("checklist" to changed.joinToString(" · ")), MantenimientoActivity.PlanLabels)
+            if (diff.isNotEmpty()) {
+                MantenimientoActivity.write(tenant, permissions.activityActor, "plan", id.toString(), plan.title, ActivityActions.Updated,
+                    "Cambio la lista de comprobacion del plan ${plan.title}.", diff)
+            }
+        }
     }
 
     // ---- ajustes ----
 
     fun addProperty(tenant: Connection, permissions: ModulePermissions, name: String) {
         requireManage(scope(permissions))
-        MantenimientoRepository.addProperty(tenant, name)
+        MantenimientoRepository.transaction(tenant) {
+            val clean = name.trim()
+            val id = MantenimientoRepository.addProperty(tenant, name)
+            MantenimientoActivity.write(tenant, permissions.activityActor, "propiedad", id.toString(), clean, ActivityActions.Created,
+                "Agrego la propiedad $clean.", ActivityChanges.created(mapOf("name" to clean), MantenimientoActivity.PropertyLabels))
+        }
     }
 
     fun renameProperty(tenant: Connection, permissions: ModulePermissions, id: UUID, name: String) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.renameProperty(tenant, id, name)) missing(tr("Propiedad no encontrada."))
+        MantenimientoRepository.transaction(tenant) {
+            val before = MantenimientoRepository.getProperty(tenant, id)
+            if (!MantenimientoRepository.renameProperty(tenant, id, name)) missing(tr("Propiedad no encontrada."))
+            val clean = name.trim()
+            val changes = ActivityChanges.diff(mapOf("name" to before?.name), mapOf("name" to clean), MantenimientoActivity.PropertyLabels)
+            if (changes.isNotEmpty()) {
+                MantenimientoActivity.write(tenant, permissions.activityActor, "propiedad", id.toString(), clean, ActivityActions.Updated,
+                    "Renombro la propiedad ${before?.name.orEmpty()} a $clean.", changes)
+            }
+        }
     }
 
     fun archiveProperty(tenant: Connection, permissions: ModulePermissions, id: UUID, archived: Boolean) {
         requireManage(scope(permissions))
-        if (!MantenimientoRepository.archiveProperty(tenant, id, archived)) missing(tr("Propiedad no encontrada."))
+        MantenimientoRepository.transaction(tenant) {
+            val name = MantenimientoRepository.getProperty(tenant, id)?.name.orEmpty()
+            if (!MantenimientoRepository.archiveProperty(tenant, id, archived)) missing(tr("Propiedad no encontrada."))
+            MantenimientoActivity.write(tenant, permissions.activityActor, "propiedad", id.toString(), name,
+                if (archived) ActivityActions.Archived else ActivityActions.Restored,
+                if (archived) "Archivo la propiedad $name." else "Restauro la propiedad $name.")
+        }
     }
 
     fun moveProperty(tenant: Connection, permissions: ModulePermissions, id: UUID, up: Boolean) {
         requireManage(scope(permissions))
-        MantenimientoRepository.moveProperty(tenant, id, up)
+        MantenimientoRepository.transaction(tenant) {
+            val before = MantenimientoRepository.getProperty(tenant, id)
+            MantenimientoRepository.moveProperty(tenant, id, up)
+            val after = MantenimientoRepository.getProperty(tenant, id)
+            if (before != null && after != null && before.position != after.position) {
+                MantenimientoActivity.write(tenant, permissions.activityActor, "propiedad", id.toString(), after.name, ActivityActions.Updated,
+                    "Cambio el orden de la propiedad ${after.name}.",
+                    listOf(ActivityChange("position", "Orden", before.position.toString(), after.position.toString())))
+            }
+        }
     }
 
     fun saveDueSoon(tenant: Connection, permissions: ModulePermissions, text: String?) {
         requireManage(scope(permissions))
         val days = MantenimientoActions.int(text, tr("Los días de aviso")) ?: missing(tr("Indica los días de aviso (0 a 30)."))
-        MantenimientoRepository.saveDueSoonDays(tenant, days)
+        MantenimientoRepository.transaction(tenant) {
+            val before = MantenimientoRepository.settings(tenant).dueSoonDays
+            MantenimientoRepository.saveDueSoonDays(tenant, days)
+            val changes = ActivityChanges.diff(mapOf("dueSoonDays" to before), mapOf("dueSoonDays" to days), MantenimientoActivity.SettingsLabels)
+            if (changes.isNotEmpty()) {
+                MantenimientoActivity.write(tenant, permissions.activityActor, "settings", null, "Ajustes de mantenimiento", ActivityActions.SettingsChanged,
+                    "Cambio los días de aviso a $days.", changes)
+            }
+        }
     }
 
     /**
@@ -287,18 +393,30 @@ object MantenimientoService {
         requireManage(scope)
         val clean = label?.trim().orEmpty()
         if (clean.isEmpty() || clean.equals(MantenimientoAdminScreens.NoBoard, ignoreCase = true)) {
-            MantenimientoRepository.saveTareasBoard(tenant, null, null)
+            saveBoard(tenant, permissions, null, null, "Sin tablero")
             return
         }
         val userId = scope.userId ?: missing(tr("Solo un usuario de la empresa puede configurar la integración."))
         val choice = tareasChoice(tenant, access, permissions)
         if (!choice.editable) missing(choice.reason.ifBlank { tr("Tareas no está disponible para tu usuario.") })
         val board = choice.labels.firstOrNull { it.second.equals(clean, ignoreCase = true) } ?: missing(tr("Tablero no válido: {0}. Elige uno de la lista.", clean))
-        MantenimientoRepository.saveTareasBoard(tenant, board.first, userId)
+        saveBoard(tenant, permissions, board.first, userId, board.second)
     }
 
     fun turnOffTareas(tenant: Connection, permissions: ModulePermissions) {
         requireManage(scope(permissions))
-        MantenimientoRepository.saveTareasBoard(tenant, null, null)
+        saveBoard(tenant, permissions, null, null, "Sin tablero")
+    }
+
+    // Guarda el tablero de Tareas y, si cambio, lo deja en el registro de actividad (sin el id del publicador).
+    private fun saveBoard(tenant: Connection, permissions: ModulePermissions, boardId: UUID?, publisherId: UUID?, label: String) {
+        MantenimientoRepository.transaction(tenant) {
+            val before = MantenimientoRepository.settings(tenant).tareasBoardId
+            MantenimientoRepository.saveTareasBoard(tenant, boardId, publisherId)
+            if (before != boardId) {
+                MantenimientoActivity.write(tenant, permissions.activityActor, "settings", null, "Ajustes de mantenimiento", ActivityActions.SettingsChanged,
+                    "Cambio el tablero de Tareas a $label.", listOf(ActivityChange("tareasBoard", "Tablero de Tareas", null, label)))
+            }
+        }
     }
 }

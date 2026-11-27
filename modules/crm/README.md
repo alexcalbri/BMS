@@ -1008,3 +1008,19 @@ recipient (user, else company, else Spanish). Emails and templates sent to custo
 - **Not translated.** Activity and history rows, run records of the automations, import rows and errors, spam log, the
   customer history events (written in Spanish when they happen), notes of the customer (Clientes), custom field labels,
   interests, user and template names, and the MCP tools (names, descriptions and results).
+
+## Company activity log (0.31.0, needs Core 0.12.0)
+
+Every change the CRM and its extensions make is also written to the company `activity_log` (ACTIVITY_LOG.md,
+ACTIVITY_LOG_MODULE_GUIDE.md), in the same connection and transaction as the change, next to the per-lead history
+(`crm_activity`, which keeps its text exactly). The actor is the Core actor: `CrmActor.activity` (the person,
+"Agente de <usuario>" through MCP, the switcher's real person), `ActivityActor.automation(name, startedBy)` for automations
+(and the button's person), `ActivityActor.import(startedBy)` for imports and `ActivityActor.integration(name)` for what a
+channel brings in (Cloudbeds, "Sitio web", WhatsApp, Encuentra24...). `CrmAudit` is the one door: leads (created, edited with
+old -> new by field, stage, assigned, archived, restored, notes, files with name and size, **deleted: written before the
+cascade erases the history**), the customer rows the CRM changes in Clientes, messages (channel, subject, template and
+recipient, never the text), the settings (stages, interests, fields, sections, automations, templates, spam rules, mail,
+translation, notices, stay dates, exit automation and the integrations' settings; secrets are stored only as "changed"),
+bulk actions (one row per lead plus one row for the operation) and imports (one row for the import with its totals plus the
+rows of each lead). The extensions record through `CrmAudit` and the `CrmHost` facade (`actor` parameters). Not logged: the spam
+block log, the queue of outbound notices, the one-time Meta connection links and read-only calls.

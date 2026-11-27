@@ -110,6 +110,11 @@ object ServerRoutePolicies {
         put("GET /server/logs", needs(ServerPermission.LogsView))
         put("PUT /server/name", needs(ServerPermission.Settings))
         put("GET /server/audit", needs(ServerPermission.AuditView))
+        // Companies' activity logs: the optional ?company= is checked against the scope by ServerActivity.
+        put("GET /server/activity", needs(ServerPermission.AuditView))
+        put("GET /server/activity/export", needs(ServerPermission.AuditView))
+        // Integrity of the companies' logs (hash chains, anchors): the owner only.
+        put("GET /server/activity/verify", owner)
         // Administrators: only the owner manages them.
         put("GET /server/admin-permissions", owner)
         put("GET /server/admins", owner)

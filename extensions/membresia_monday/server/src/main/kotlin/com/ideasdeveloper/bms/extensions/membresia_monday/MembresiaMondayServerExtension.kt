@@ -37,8 +37,8 @@ object MembresiaMondayServerExtension : ServerExtension, MembresiaImportSource {
         module = "membresia",
         displayName = "Importacion de membresias desde monday",
         description = "Importa un tablero de monday como membresias: lee el tablero con el token de la empresa, mapea sus columnas y trae planes, clientes, membresias y visitas.",
-        version = "1.1.0",
-        minModuleVersion = "0.4.0", // the bilingual release (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.5.0", // the activity log release (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/membresia_monday",
@@ -50,13 +50,16 @@ object MembresiaMondayServerExtension : ServerExtension, MembresiaImportSource {
         ),
         // El token se guarda en ext_membresia_monday__settings y se edita en la pantalla Importar: ningun ajuste es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__settings.sql"),
+        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__job_starter.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday", UninstallDefault.Delete)),
         ),
     )
 
-    override val migrationPaths = listOf("extensions/membresia_monday/migrations/V001__settings.sql")
+    override val migrationPaths = listOf(
+        "extensions/membresia_monday/migrations/V001__settings.sql",
+        "extensions/membresia_monday/migrations/V002__job_starter.sql",
+    )
 
     override val runtimeTables = listOf(MembresiaMondaySettings.Table, MembresiaMondayJobs.JobsTable, MembresiaMondayJobs.RowsTable)
 

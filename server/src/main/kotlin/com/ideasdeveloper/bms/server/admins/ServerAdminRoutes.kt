@@ -7,6 +7,7 @@ import com.ideasdeveloper.bms.ServerAdminPermissionsRequest
 import com.ideasdeveloper.bms.ServerAdminStatusRequest
 import com.ideasdeveloper.bms.ServerMeResponse
 import com.ideasdeveloper.bms.UpdateServerAdminRequest
+import com.ideasdeveloper.bms.server.activity.activityRateLimited
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
 import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.http.HttpHeaders
@@ -14,6 +15,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -28,7 +30,15 @@ import java.sql.SQLException
  * (owner or server.audit.view), and the caller's own view and password. What each route needs is in
  * [ServerRoutePolicies]; the services check the owner again.
  */
-fun Route.serverAdminRoutes(resolver: ServerActorResolver, admins: ServerAdminService?, audit: ServerAudit?) {
+fun Route.serverAdminRoutes(
+    resolver: ServerActorResolver,
+    admins: ServerAdminService?,
+    audit: ServerAudit?,
+    // The companies' activity logs (ACTIVITY_LOG.md §3): owner, or server.audit.view within the scope.
+    activity: com.ideasdeveloper.bms.server.activity.ServerActivity? = null,
+    // Verification of the companies' hash chains (ACTIVITY_LOG.md §9): owner only.
+    integrity: com.ideasdeveloper.bms.server.activity.ActivityIntegrityService? = null,
+) {
     val notServer = tr("Debes iniciar sesion como server_owner.")
 
     get("/server/me") {
@@ -155,6 +165,63 @@ fun Route.serverAdminRoutes(resolver: ServerActorResolver, admins: ServerAdminSe
                     pageSize = parameters["pageSize"]?.toIntOrNull() ?: ServerAudit.DefaultPageSize,
                 ),
             )
+        }
+    }
+
+    // Every read of the companies' logs behind the "activity" rate limit (when the application installs it).
+    activityRateLimited { serverActivityRoutes(resolver, activity, integrity, notServer) }
+}
+
+/** GET /server/activity (+ /export): the company filter is checked against the scope by [ServerActivity]. */
+private fun Route.serverActivityRoutes(
+    resolver: ServerActorResolver,
+    activity: com.ideasdeveloper.bms.server.activity.ServerActivity?,
+    integrity: com.ideasdeveloper.bms.server.activity.ActivityIntegrityService?,
+    notServer: String,
+) {
+    suspend fun ApplicationCall.read(block: (ServerActor, com.ideasdeveloper.bms.server.activity.ActivityFilter, String?) -> Any) {
+        noStore()
+        val actor = serverActor(resolver, notServer) ?: return
+        val service = activity ?: return unavailable()
+        val parameters = request.queryParameters
+        val result = try {
+            val filter = com.ideasdeveloper.bms.server.activity.ActivityFilter.of { parameters[it] }
+            withContext(Dispatchers.IO) { block(actor, filter, parameters["company"]) }
+        } catch (failure: Exception) {
+            val refusal = com.ideasdeveloper.bms.server.activity.activityRefusal(failure)
+                ?: if (failure is SQLException) Triple(503, "DATABASE_UNAVAILABLE", tr("La operacion no se pudo completar.")) else throw failure
+            return respond(HttpStatusCode.fromValue(refusal.first), CompanyErrorResponse(refusal.second, refusal.third))
+        }
+        when (result) {
+            is String -> {
+                response.headers.append(HttpHeaders.ContentDisposition, "attachment; filename=\"actividad.csv\"")
+                respondText(result, io.ktor.http.ContentType.Text.CSV.withParameter("charset", "utf-8"))
+            }
+            is com.ideasdeveloper.bms.ActivityLogPage -> respond(HttpStatusCode.OK, result)
+            else -> respond(HttpStatusCode.OK)
+        }
+    }
+    get("/server/activity") { call.read { actor, filter, company -> activity!!.page(actor, company, filter) } }
+    get("/server/activity/export") { call.read { actor, filter, company -> activity!!.export(actor, company, filter) } }
+
+    // Recomputes the hash chain of one company (or of every company without ?company=) against its anchors.
+    get("/server/activity/verify") {
+        call.noStore()
+        call.serverActor(resolver, notServer)?.requireOwner() ?: return@get
+        val service = integrity ?: return@get call.unavailable()
+        val company = call.request.queryParameters["company"]?.trim()?.takeIf { it.isNotEmpty() }
+        val result = try {
+            withContext(Dispatchers.IO) {
+                if (company != null) service.verify(company) else com.ideasdeveloper.bms.ActivityIntegritySummary(service.verifyAll())
+            }
+        } catch (failure: com.ideasdeveloper.bms.server.activity.ActivityNotFoundException) {
+            return@get call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("COMPANY_NOT_FOUND", failure.message.orEmpty()))
+        } catch (_: SQLException) {
+            return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", tr("La operacion no se pudo completar.")))
+        }
+        when (result) {
+            is com.ideasdeveloper.bms.ActivityIntegrityReport -> call.respond(HttpStatusCode.OK, result)
+            is com.ideasdeveloper.bms.ActivityIntegritySummary -> call.respond(HttpStatusCode.OK, result)
         }
     }
 }

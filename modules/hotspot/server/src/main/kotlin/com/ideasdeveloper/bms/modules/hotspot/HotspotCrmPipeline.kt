@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import java.sql.Connection
 import java.sql.Timestamp
 import java.time.Instant
@@ -81,8 +82,22 @@ object HotspotCrmPipeline {
         return windows.firstOrNull { it.allowsAccessOn(today) }
     }
 
-    fun enforceAccess(connection: Connection, settings: HotspotSettings, today: LocalDate, now: Instant) {
+    /**
+     * Moves the expiry of the code sessions to what the CRM allows. The change is one transaction with
+     * its activity row, written for [actor] (the job, or the person who saved the settings) when a
+     * session actually moved.
+     */
+    fun enforceAccess(connection: Connection, settings: HotspotSettings, today: LocalDate, now: Instant, actor: ActivityActor) {
+        HotspotActivity.transaction(connection) {
+            val adjusted = adjustExpiry(connection, settings, today, now)
+            if (adjusted > 0) HotspotActivity.sessionsAdjusted(connection, actor, adjusted)
+        }
+    }
+
+    // Returns how many sessions changed their expiry.
+    private fun adjustExpiry(connection: Connection, settings: HotspotSettings, today: LocalDate, now: Instant): Int {
         val crmAvailable = settings.crmAccessEnabled && settings.crmStageId != null && isInstalled(connection)
+        var adjusted = 0
         var after: Pair<Instant, UUID>? = null
         while (true) {
             val sessions = connection.prepareStatement(
@@ -123,23 +138,28 @@ object HotspotCrmPipeline {
             if (sessions.isEmpty()) break
             sessions.forEach { (sessionId, customerId, _) ->
                 val window = if (crmAvailable) currentWindow(connection, customerId, settings.crmStageId, today) else null
-                if (window == null) {
+                val moved = if (window == null) {
                     setExpiry(connection, sessionId, now)
                 } else {
-                    window.expiresAt()?.let { setExpiry(connection, sessionId, it) }
+                    window.expiresAt()?.let { setExpiry(connection, sessionId, it) } ?: false
                 }
+                if (moved) adjusted++
             }
             val last = sessions.last()
             after = last.third to last.first
             if (sessions.size < 100) break
         }
+        return adjusted
     }
 
-    private fun setExpiry(connection: Connection, sessionId: UUID, expiresAt: Instant) {
-        connection.prepareStatement("UPDATE hotspot_code_sessions SET expires_at = ? WHERE id = ? AND ended_at IS NULL").use { update ->
+    // Only a session whose expiry really changes is updated (and counted), so the check does not rewrite every session each run.
+    private fun setExpiry(connection: Connection, sessionId: UUID, expiresAt: Instant): Boolean =
+        connection.prepareStatement(
+            "UPDATE hotspot_code_sessions SET expires_at = ? WHERE id = ? AND ended_at IS NULL AND (expires_at IS NULL OR expires_at <> ?)"
+        ).use { update ->
             update.setTimestamp(1, Timestamp.from(expiresAt))
             update.setObject(2, sessionId)
-            update.executeUpdate()
+            update.setTimestamp(3, Timestamp.from(expiresAt))
+            update.executeUpdate() > 0
         }
-    }
 }

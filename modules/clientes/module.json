@@ -2,7 +2,7 @@
   "id": "clientes",
   "displayName": "Clientes",
   "description": "Gestiona la identidad compartida de clientes.",
-  "version": "0.12.0",
-  "minCoreVersion": "0.10.0",
+  "version": "0.13.0",
+  "minCoreVersion": "0.12.0",
   "bundled": true
 }

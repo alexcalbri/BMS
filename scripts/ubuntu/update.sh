@@ -445,6 +445,8 @@ apply_control_migrations() {
         die 'No se encontro database/tenant/migrations/V009__outbound.sql.'
     [[ -f database/tenant/migrations/V010__create_text_translations.sql ]] ||
         die 'No se encontro database/tenant/migrations/V010__create_text_translations.sql.'
+    [[ -f database/tenant/migrations/V011__create_activity_log.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V011__create_activity_log.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
@@ -520,6 +522,7 @@ SQL
         apply_migration "$tenant_db" tenant database/tenant/migrations/V008__account_reset_throttle.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V009__outbound.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V010__create_text_translations.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V011__create_activity_log.sql
         runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
@@ -534,6 +537,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON account_reset_throttle TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON outbound_events, outbound_links, integration_connections TO :"db_user";
 GRANT USAGE, SELECT ON SEQUENCE outbound_events_id_seq TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
+-- Activity log (tenant V011, ACTIVITY_LOG.md): append-only, the runtime user only reads and appends.
+GRANT SELECT, INSERT ON activity_log, activity_log_chain TO :"db_user";
+GRANT USAGE ON SEQUENCE activity_log_id_seq TO :"db_user";
 SQL
     done <<< "$tenant_list"
     cd /

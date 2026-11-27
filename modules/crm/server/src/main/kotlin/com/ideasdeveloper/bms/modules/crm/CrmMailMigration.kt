@@ -109,22 +109,24 @@ object CrmMailMigration {
         return when (val plan = plan(legacy, companyHasHost, secrets.available) { secrets.open(tenant, it) }) {
             is Plan.Wait -> Result(Outcome.Waiting, plan.reason)
             is Plan.Skip -> {
-                clear(tenant)
+                cleared(tenant, "Descarto el SMTP propio del CRM, que no se usaba.", discarded(legacy))
                 Result(Outcome.Skipped, discarded(legacy))
             }
             is Plan.KeptCompany -> {
-                clear(tenant)
+                cleared(tenant, "Descarto el SMTP propio del CRM: la empresa ya tiene el suyo.", discarded(legacy))
                 Result(Outcome.KeptCompany, discarded(legacy))
             }
             is Plan.Copy -> try {
-                CompanyMail.save(tenant, secrets, plan.input)
-                clear(tenant)
+                CrmAudit.atomically(tenant) {
+                    CompanyMail.save(tenant, secrets, plan.input)
+                    cleared(tenant, "Paso el SMTP propio del CRM al correo de la empresa.", "host ${plan.input.host}")
+                }
                 Result(Outcome.Migrated, "host ${plan.input.host}")
             } catch (failure: SecretsUnavailableException) {
                 Result(Outcome.Waiting, "falta BMS_MASTER_KEY")
             } catch (failure: SQLException) {
                 // Un dato legado que la tabla rechaza (CHECK, longitud) no se arregla reintentando: se limpia para no repetirlo cada 5 minutos.
-                clear(tenant)
+                cleared(tenant, "Descarto el SMTP propio del CRM: no se pudo copiar.", discarded(legacy))
                 Result(Outcome.Failed, "no se pudo copiar el SMTP (${failure::class.simpleName}: ${failure.message}); se descarta el del CRM")
             }
         }
@@ -144,6 +146,16 @@ object CrmMailMigration {
             if (!rows.next()) null
             else Legacy(rows.getString(1), rows.getString(2), rows.getInt(3), rows.getString(4), rows.getString(5), rows.getString(6), rows.getString(7))
         }
+    }
+
+    // The columns of the old CRM SMTP are emptied and the job says so in the activity log (never the password).
+    private fun cleared(tenant: Connection, summary: String, detail: String) = CrmAudit.atomically(tenant) {
+        clear(tenant)
+        CrmAudit.record(
+            tenant, com.ideasdeveloper.bms.server.activity.ActivityActor.job("Migracion del correo del CRM"), CrmAudit.Settings, "Correo", "Correo",
+            com.ideasdeveloper.bms.server.activity.ActivityActions.SettingsChanged, summary,
+            listOf(com.ideasdeveloper.bms.server.activity.ActivityChange("smtp", "SMTP propio del CRM", detail.take(400), null)),
+        )
     }
 
     private fun clear(tenant: Connection) {

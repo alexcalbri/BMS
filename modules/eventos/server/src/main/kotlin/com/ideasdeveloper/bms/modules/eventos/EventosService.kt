@@ -48,6 +48,13 @@ object EventosService {
     private fun actorName(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions): String =
         access.userIdentity(tenant, permissions)?.name ?: "Usuario"
 
+    // Nombres para el registro de actividad (la fila muestra nombres, no ids).
+    private fun responsibleName(tenant: Connection, userId: UUID?): String? =
+        userId?.let { id -> EventosRepository.users(tenant).firstOrNull { it.id == id }?.name }
+
+    private fun clientName(tenant: Connection, customerId: UUID?): String? =
+        customerId?.let { EventosRepository.visibleCustomer(tenant, it)?.name }
+
     private fun loadEvent(tenant: Connection, id: UUID): EventWithStats =
         EventosRepository.getEvent(tenant, id) ?: throw EventosValidationException(tr(EventNotFound))
 
@@ -100,6 +107,7 @@ object EventosService {
         val status = if (publish) EventStatus.Published else EventStatus.Draft
         EventosRepository.transaction(tenant) {
             EventosRepository.insertEvent(tenant, id, input, status, currency, author)
+            EventosActivity.eventCreated(tenant, permissions.activityActor, id, input, responsibleName(tenant, input.responsibleUserId), clientName(tenant, input.clientCustomerId), "Crea el evento ${input.title.trim()}.")
         }
         return loadEvent(tenant, id).event
     }
@@ -118,9 +126,14 @@ object EventosService {
             EventosRules.capacityError(input.capacity, current.stats.occupied)?.let { throw EventosValidationException(it) }
             if (input.clientCustomerId != event.clientCustomerId) requireClient(tenant, input)
             if (input.responsibleUserId != event.responsibleUserId) requireResponsible(tenant, input.responsibleUserId)
+            val beforeResponsible = responsibleName(tenant, event.responsibleUserId)
             EventosRepository.updateEvent(tenant, id, input)
+            EventosActivity.eventUpdated(tenant, permissions.activityActor, event, beforeResponsible, input, responsibleName(tenant, input.responsibleUserId), clientName(tenant, input.clientCustomerId))
             val status = EventosRules.statusAfterOccupancy(event.status, input.capacity, current.stats.occupied)
-            if (status != event.status) EventosRepository.setStatus(tenant, id, status)
+            if (status != event.status) {
+                EventosRepository.setStatus(tenant, id, status)
+                EventosActivity.eventStatusChanged(tenant, permissions.activityActor, id, input.title.trim(), event.status, status, "")
+            }
         }
         return loadEvent(tenant, id).event
     }
@@ -156,6 +169,7 @@ object EventosService {
         val newId = UUID.randomUUID()
         EventosRepository.transaction(tenant) {
             EventosRepository.insertEvent(tenant, newId, input, EventStatus.Draft, source.currency, author)
+            EventosActivity.eventCreated(tenant, permissions.activityActor, newId, input, responsibleName(tenant, input.responsibleUserId), clientName(tenant, input.clientCustomerId), "Duplica el evento ${source.title} como borrador.")
         }
         return loadEvent(tenant, newId).event
     }
@@ -172,6 +186,7 @@ object EventosService {
             EventosRules.transitionError(event.kind, event.status, target, reason)?.let { throw EventosValidationException(it) }
             val next = if (target == EventStatus.Published) EventosRules.statusAfterOccupancy(target, event.capacity, current.stats.occupied) else target
             EventosRepository.setStatus(tenant, id, next, reason)
+            if (next != event.status) EventosActivity.eventStatusChanged(tenant, permissions.activityActor, id, event.title, event.status, next, reason)
         }
         return loadEvent(tenant, id).event
     }
@@ -208,7 +223,10 @@ object EventosService {
                 val customerName: String
                 if (newCustomer != null) {
                     val lookup = EventosRepository.findOrCreateCustomer(tenant, newCustomer)
-                    if (lookup.created) createdCustomer = lookup.customerId
+                    if (lookup.created) {
+                        createdCustomer = lookup.customerId
+                        EventosActivity.customerCreated(tenant, permissions.activityActor, lookup.customerId, newCustomer.name.trim(), newCustomer.email.trim(), newCustomer.phone.trim())
+                    }
                     customerId = lookup.customerId
                     customerName = if (lookup.created) newCustomer.name.trim() else EventosRepository.visibleCustomer(tenant, lookup.customerId)?.name.orEmpty()
                 } else {
@@ -225,9 +243,13 @@ object EventosService {
                 val amount = EventosRules.resolveAmount(priceKind, input.amount, event.priceMember, event.pricePublic, input.seats)
                 val id = UUID.randomUUID()
                 EventosRepository.insertRegistration(tenant, id, event.id, customerId, status, input.seats, priceKind, amount, input.paid, input.note, author)
+                EventosActivity.registrationCreated(tenant, permissions.activityActor, id, event.title, customerName, status, input.seats, priceKind, amount, input.paid)
                 val taken = if (status == RegistrationStatus.Registered) occupied + input.seats else occupied
                 val next = EventosRules.statusAfterOccupancy(event.status, event.capacity, taken)
-                if (next != event.status) EventosRepository.setStatus(tenant, event.id, next)
+                if (next != event.status) {
+                    EventosRepository.setStatus(tenant, event.id, next)
+                    EventosActivity.eventStatusChanged(tenant, permissions.activityActor, event.id, event.title, event.status, next, "")
+                }
                 Placed(id, status, customerName, membership, becameFull = next == EventStatus.Full && event.status != EventStatus.Full)
             }
         } catch (failure: SQLException) {
@@ -263,9 +285,13 @@ object EventosService {
             if (registration.status == RegistrationStatus.Cancelled) throw EventosValidationException(tr("La inscripción ya estaba cancelada."))
             previous = registration.status
             EventosRepository.setRegistrationStatus(tenant, registrationId, RegistrationStatus.Cancelled)
+            EventosActivity.registrationStatusChanged(tenant, permissions.activityActor, registrationId, registration.eventTitle, registration.customerName, previous, RegistrationStatus.Cancelled)
             val current = loadEvent(tenant, eventId)
             val next = EventosRules.statusAfterOccupancy(current.event.status, current.event.capacity, current.stats.occupied)
-            if (next != current.event.status) EventosRepository.setStatus(tenant, eventId, next)
+            if (next != current.event.status) {
+                EventosRepository.setStatus(tenant, eventId, next)
+                EventosActivity.eventStatusChanged(tenant, permissions.activityActor, eventId, current.event.title, current.event.status, next, "")
+            }
             waiting = current.stats.waiting
         }
         if (EventosRules.freedSeatNotice(previous, waiting)) {
@@ -291,8 +317,12 @@ object EventosService {
                 throw EventosValidationException(tr("No hay plazas; aumenta el cupo."))
             }
             EventosRepository.setRegistrationStatus(tenant, registrationId, RegistrationStatus.Registered)
+            EventosActivity.registrationStatusChanged(tenant, permissions.activityActor, registrationId, registration.eventTitle, registration.customerName, RegistrationStatus.Waitlist, RegistrationStatus.Registered)
             val next = EventosRules.statusAfterOccupancy(event.status, event.capacity, current.stats.occupied + registration.seats)
-            if (next != event.status) EventosRepository.setStatus(tenant, eventId, next)
+            if (next != event.status) {
+                EventosRepository.setStatus(tenant, eventId, next)
+                EventosActivity.eventStatusChanged(tenant, permissions.activityActor, eventId, event.title, event.status, next, "")
+            }
         }
         return loadRegistration(tenant, registrationId)
     }
@@ -303,7 +333,12 @@ object EventosService {
         if (note.length > EventosRules.MaxPaymentNote) throw EventosValidationException(tr("La nota del pago admite hasta {0} caracteres.", EventosRules.MaxPaymentNote))
         val registration = loadRegistration(tenant, registrationId)
         if (registration.status == RegistrationStatus.Cancelled) throw EventosValidationException(tr("La inscripción está cancelada."))
-        EventosRepository.setPaid(tenant, registrationId, paid, if (paid) note else "")
+        EventosRepository.transaction(tenant) {
+            EventosRepository.setPaid(tenant, registrationId, paid, if (paid) note else "")
+            if (registration.paid != paid) {
+                EventosActivity.registrationPaidChanged(tenant, permissions.activityActor, registrationId, registration.eventTitle, registration.customerName, paid, if (paid) note else "")
+            }
+        }
         return loadRegistration(tenant, registrationId)
     }
 
@@ -315,7 +350,10 @@ object EventosService {
         EventosRules.attendanceError(registration.status, event.status, event.startsAt, Instant.now())?.let { throw EventosValidationException(it) }
         if ((registration.attendedAt != null) == attended) return registration
         val author = actorName(tenant, access, permissions)
-        EventosRepository.setAttendance(tenant, registrationId, attended, author)
+        EventosRepository.transaction(tenant) {
+            EventosRepository.setAttendance(tenant, registrationId, attended, author)
+            EventosActivity.registrationAttendanceChanged(tenant, permissions.activityActor, registrationId, registration.eventTitle, registration.customerName, attended)
+        }
         return loadRegistration(tenant, registrationId)
     }
 
@@ -340,13 +378,21 @@ object EventosService {
             val event = lockedEvent(tenant, eventId).event
             if (event.kind != EventKind.Private) throw EventosValidationException(tr("Los abonos son solo para eventos privados."))
             EventosRepository.insertPayment(tenant, id, eventId, paidOn, amount, method, note, author)
+            EventosActivity.paymentCreated(tenant, permissions.activityActor, id, event.title, paidOn, amount, method.trim(), note.trim())
         }
         return EventosRepository.getPayment(tenant, id) ?: throw EventosValidationException(tr("No se pudo guardar el abono."))
     }
 
     fun deletePayment(tenant: Connection, permissions: ModulePermissions, eventId: UUID, paymentId: UUID) {
         requirePermission(permissions, EventosModule.Manage)
-        if (EventosRepository.deletePayment(tenant, eventId, paymentId) == 0) throw EventosValidationException(tr("Abono no encontrado."))
+        EventosRepository.transaction(tenant) {
+            val payment = EventosRepository.getPayment(tenant, paymentId)?.takeIf { it.eventId == eventId }
+                ?: throw EventosValidationException(tr("Abono no encontrado."))
+            val title = EventosRepository.getEvent(tenant, eventId)?.event?.title.orEmpty()
+            // La fila se escribe antes de borrar el abono (misma transaccion).
+            EventosActivity.paymentDeleted(tenant, permissions.activityActor, paymentId, title, payment.paidOn, payment.amount, payment.method, payment.note)
+            if (EventosRepository.deletePayment(tenant, eventId, paymentId) == 0) throw EventosValidationException(tr("Abono no encontrado."))
+        }
     }
 
     // ---- settings ----
@@ -356,6 +402,14 @@ object EventosService {
         val cleanCurrency = currency.trim().uppercase()
         val errors = EventosRules.validateSettings(cleanCurrency, spaces, categories)
         if (errors.isNotEmpty()) throw EventosValidationException(errors)
-        EventosRepository.saveSettings(tenant, EventosSettings(cleanCurrency, spaces, categories))
+        val before = EventosRepository.settings(tenant)
+        EventosRepository.transaction(tenant) {
+            EventosRepository.saveSettings(tenant, EventosSettings(cleanCurrency, spaces, categories))
+            EventosActivity.settingsChanged(
+                tenant, permissions.activityActor,
+                EventosActivity.settingsValues(before.currency, before.spaces, before.categories),
+                EventosActivity.settingsValues(cleanCurrency, spaces, categories),
+            )
+        }
     }
 }

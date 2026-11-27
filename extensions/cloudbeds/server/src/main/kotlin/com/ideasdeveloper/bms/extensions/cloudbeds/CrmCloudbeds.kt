@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.cloudbeds
 
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.modules.crm.CrmLeadAudit
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CbGuest
 import com.ideasdeveloper.bms.modules.crm.CbReservationResult
 import com.ideasdeveloper.bms.modules.crm.CbRoom
@@ -243,7 +248,8 @@ object CrmCloudbeds {
      */
     fun checkIn(tenant: Connection, reservation: CrmReservation) = checkIn(CrmHost, tenant, reservation)
 
-    fun checkIn(host: CrmHost, tenant: Connection, reservation: CrmReservation) {
+    /** [alongside] runs in the same transaction as the new status, so its rows (history, activity log) are saved or refused with it. */
+    fun checkIn(host: CrmHost, tenant: Connection, reservation: CrmReservation, alongside: () -> Unit = {}) {
         host.cloudbedsInactiveReason(tenant)?.let { throw CrmCloudbedsException(it) }
         val settings = host.cloudbedsSettings(tenant)
         if (!settings.ready) throw CrmCloudbedsException(tr("Cloudbeds no esta activo: configuralo en Integraciones."))
@@ -251,7 +257,13 @@ object CrmCloudbeds {
             throw CrmValidationException(tr("La reserva {0} esta {1}: no se puede hacer el check-in.", reservation.reservationId, CrmReservations.statusLabel(reservation.status).lowercase()))
         }
         put(settings, "putReservation", checkInForm(settings, reservation.reservationId))
+        markCheckedIn(host, tenant, reservation, alongside)
+    }
+
+    /** The local half of a check-in (the call to Cloudbeds already went through): the new status and [alongside] in one transaction. */
+    fun markCheckedIn(host: CrmHost, tenant: Connection, reservation: CrmReservation, alongside: () -> Unit = {}) = CrmAudit.atomically(tenant) {
         host.markReservationCheckedIn(tenant, reservation.id)
+        alongside()
     }
 
     fun forLead(tenant: Connection, leadId: UUID) = CrmReservations.forLead(tenant, leadId)
@@ -288,13 +300,28 @@ object CrmCloudbeds {
                 ),
             )
             val email = mail.toEmail()
-            mail.note?.let { host.addActivity(tenant, lead.id, "item", "Bienvenida: $it", CrmActor(null, "Bienvenida automatica")) }
-            host.enqueueMail(tenant, "welcome", to, email, lead.id)
-            host.inboxAdd(tenant, lead.id, "out", "email", email.subject, email.text, "welcome:${reservation.reservationId}", "sent", "", null, "Bienvenida automatica")
-            host.markReservationWelcomeSent(tenant, reservation.id)
+            val welcomeActor = CrmActor(null, "Bienvenida automatica", ActivityActor.automation("Bienvenida de Cloudbeds"))
+            // The note, the email, its message row (who sent which template to whom) and the mark that it went out are saved together.
+            CrmAudit.atomically(tenant) {
+                mail.note?.let { host.addActivity(tenant, lead.id, "item", "Bienvenida: $it", welcomeActor) }
+                host.enqueueMail(tenant, "welcome", to, email, lead.id)
+                host.inboxAdd(tenant, lead.id, "out", "email", email.subject, email.text, "welcome:${reservation.reservationId}", "sent", "", null, "Bienvenida automatica", welcomeActor.activity, template = template.name, to = to)
+                host.markReservationWelcomeSent(tenant, reservation.id)
+            }
             queued++
         }
         return queued
+    }
+
+    /** The new status of [reservation] with its history and its activity row, saved together. */
+    fun applyStatus(host: CrmHost, tenant: Connection, reservation: CrmReservation, status: String, actor: CrmActor) = CrmAudit.atomically(tenant) {
+        host.updateReservationStatus(tenant, reservation.id, status)
+        host.addActivity(tenant, reservation.leadId, "item", "Reserva ${reservation.reservationId}: ${CrmReservations.statusLabels[status]}.", actor, CrmLeadAudit.None)
+        CrmAudit.record(
+            tenant, actor.activity, "reservation", reservation.id.toString(), "Reserva ${reservation.reservationId}", ActivityActions.StatusChanged,
+            "La reserva ${reservation.reservationId} paso a ${CrmReservations.statusLabels[status]} en Cloudbeds.",
+            listOf(ActivityChange("status", "Estado", CrmReservations.statusLabels[reservation.status] ?: reservation.status, CrmReservations.statusLabels[status] ?: status)),
+        )
     }
 
     /**
@@ -314,15 +341,16 @@ object CrmCloudbeds {
             open.forEach { reservation ->
                 val status = get(settings, "getReservation", mapOf("reservationID" to reservation.reservationId))["data"].obj()?.get("status").str()
                 if (status.isEmpty() || status == reservation.status || status !in CrmReservations.statusLabels) return@forEach
-                host.updateReservationStatus(tenant, reservation.id, status)
-                val actor = CrmActor(null, "Cloudbeds")
-                host.addActivity(tenant, reservation.leadId, "item", "Reserva ${reservation.reservationId}: ${CrmReservations.statusLabels[status]}.", actor)
+                val actor = CrmActor(null, "Cloudbeds", ActivityActor.integration("Cloudbeds"))
+                applyStatus(host, tenant, reservation, status, actor)
                 // With the exit automation on, only leads in its chosen stages are archived (see CrmExit).
                 val lead = if (status == "checked_out" && settings.archiveOnCheckout) host.lead(tenant, reservation.leadId) else null
                 if (lead != null && host.archivesOnCheckout(exit, settings.archiveOnCheckout, lead.stageId, lead.archivedAt != null, lead.restoredAt != null)) {
-                    val archived = host.archiveLeadIfOpen(tenant, reservation.leadId)
-                    if (archived > 0) {
-                        host.addActivity(tenant, reservation.leadId, "updated", if (exit.enabled) CrmHost.ExitActivityText else "Lead archivado: el huesped hizo check-out.", actor)
+                    CrmAudit.atomically(tenant) {
+                        val archived = host.archiveLeadIfOpen(tenant, reservation.leadId, actor)
+                        if (archived > 0) {
+                            host.addActivity(tenant, reservation.leadId, "updated", if (exit.enabled) CrmHost.ExitActivityText else "Lead archivado: el huesped hizo check-out.", actor, CrmLeadAudit.None)
+                        }
                     }
                 }
                 changed++

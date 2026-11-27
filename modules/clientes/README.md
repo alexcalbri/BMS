@@ -173,3 +173,14 @@ Spanish (source) and English: the code writes `tr("Texto en espanol")` and the E
 `server/src/main/resources/modules/clientes/i18n/en.json`. Customer data, notes, activity rows already stored
 (`customer_activity`, merge reasons, job errors), names and the MCP tools (names, descriptions and results) are
 not translated. Values the app sends back (`op`, ids, tabs) never change with the language.
+
+## Company activity log (0.13.0, needs Core 0.12.0)
+
+Every write of the module also leaves a row in the company `activity_log` (Core table, same transaction as the
+change, actor resolved by Core: "Agente de <usuario>" through an agent, "Tarea programada Compartir clientes" for the
+sharing job, "Automatizacion Compartir clientes (<usuario>)" when a person's edit is copied to the linked companies).
+`customer_activity` keeps being written exactly as before. Covered: customers (create, edit with old -> new per field,
+archive, restore), notes and manual history entries (added, deleted: the row is written before the text disappears),
+user-account links, custom fields (settings), linking and unlinking of companies, merges, separations, reviews and the
+copies the sharing job makes (one row per destination and batch with the totals). Stored text is Spanish; values are cut
+to 500 characters.

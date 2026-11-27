@@ -273,7 +273,8 @@ object AgentOAuth {
         if (company.isNotEmpty() && !Regex("[a-z][a-z0-9_]{0,62}").matches(company)) return respondPage(HttpStatusCode.OK, again(tr("El codigo de empresa no es valido.")))
 
         val result = withContext(Dispatchers.IO) {
-            val user = access.verifyCredentials(company.ifEmpty { null }, username, password)
+            // Without a company: the server owner, or an administrator holding server.audit.view for an audit-only agent.
+            val user = access.verifyCredentials(company.ifEmpty { null }, username, password, allowAuditAdmin = company.isEmpty())
                 ?: return@withContext SignInResult.Rejected(tr("Usuario, contrasena o empresa incorrectos."))
             val tools = eligibility(access, user) ?: return@withContext SignInResult.Rejected(tr("Tu usuario no puede conectar agentes en esta empresa: el modulo Agentes IA debe estar activo y necesitas el permiso \"Conectar agentes IA\"."),
             )
@@ -298,6 +299,8 @@ object AgentOAuth {
         val tenant = access.tenantConnectionForCompany(user.companyCode) ?: return null
         return tenant.use { connection ->
             if (!AgentTokens.moduleEnabled(connection)) return@use null
+            // A server administrator's agent: the audit read tools and nothing else (ACTIVITY_LOG.md §7).
+            if (user.serverAdmin) return@use access.serverAuditAgent(user.userId)?.tools?.takeIf { it.isNotEmpty() }
             val userAccess = access.userAccess(connection, user.companyCode, user.userId, user.serverOwner) ?: return@use null
             if (userAccess.permissions(AgentesModule.id)?.has(AgentesScreens.Connect) != true) return@use null
             access.mcpTools().filter(userAccess::mayUse)
@@ -396,6 +399,7 @@ object AgentOAuth {
         if (!Pkce.verify(form["code_verifier"], request.codeChallenge)) throw OAuthError("invalid_grant", "code_verifier invalido.")
         val user = grant.user
         val tenant = access.tenantConnectionForCompany(user.companyCode) ?: throw OAuthError("invalid_grant", "La empresa no esta disponible.")
+        if (user.serverAdmin) return tenant.use { connection -> exchangeAdminCode(access, connection, client, grant) }
         return tenant.use { connection ->
             val userAccess = access.userAccess(connection, user.companyCode, user.userId, user.serverOwner)
             val own = userAccess?.permissions(AgentesModule.id)
@@ -412,6 +416,25 @@ object AgentOAuth {
         }
     }
 
+    /** An administrator's audit-only connection: checked again now, created read only for the server MCP, audited. */
+    private fun exchangeAdminCode(access: ModuleAccessService, connection: java.sql.Connection, client: OAuthClient, grant: OAuthGrant): OAuthTokens {
+        val user = grant.user
+        val agent = access.serverAuditAgent(user.userId)
+        if (!AgentTokens.moduleEnabled(connection) || agent == null || user.serverOwner) {
+            throw OAuthError("invalid_grant", "El usuario ya no puede conectar agentes.")
+        }
+        val tokens = AgentTokens.createOAuth(
+            connection, user.companyCode, AgentOwner(user.userId, serverOwner = false, agent.name), client.id, client.name,
+            allowedModules = setOf(com.ideasdeveloper.bms.server.modules.ServerMcpModuleId), readOnly = true,
+            expiresAt = grant.consent.expiresAt, accessLifetime = AccessLifetime, groupScope = false, serverAdmin = true,
+        )
+        access.auditServerAdminAgent(
+            user.userId, agent.login, "server_admin.agent_connected",
+            mapOf("agent" to tokens.token.name, "tokenId" to tokens.token.id.toString(), "tools" to agent.tools.map { it.qualifiedName }),
+        )
+        return tokens
+    }
+
     private fun refresh(access: ModuleAccessService, client: OAuthClient, form: Parameters): OAuthTokens {
         val refreshToken = form["refresh_token"].orEmpty()
         val company = AgentTokens.companyOf(refreshToken, AgentTokens.RefreshPrefix) ?: throw OAuthError("invalid_grant", "refresh_token invalido.")
@@ -422,9 +445,18 @@ object AgentOAuth {
                 ?: throw OAuthError("invalid_grant", "El refresh_token no es valido, ya se uso o la conexion fue revocada.")
             // A user that lost access does not keep the connection alive.
             val token = tokens.token
-            val allowed = access.userAccess(connection, company, token.userId, token.serverOwner)?.permissions(AgentesModule.id)?.has(AgentesScreens.Connect) == true
+            val allowed = if (token.serverAdmin) {
+                access.serverAuditAgent(token.userId) != null && company == com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code
+            } else {
+                access.userAccess(connection, company, token.userId, token.serverOwner)?.permissions(AgentesModule.id)?.has(AgentesScreens.Connect) == true
+            }
             if (!allowed) {
                 AgentTokens.revoke(connection, token.id, "Sistema (el usuario perdio el acceso)")
+                if (token.serverAdmin) {
+                    runCatching {
+                        access.auditServerAdminAgent(token.userId, token.userName, "server_admin.agent_revoked", mapOf("agent" to token.name, "tokenId" to token.id.toString(), "reason" to "lost_access"))
+                    }
+                }
                 throw OAuthError("invalid_grant", "El usuario ya no puede conectar agentes.")
             }
             tokens

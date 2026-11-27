@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -126,7 +128,7 @@ internal object ClientesAccounts {
      * Links [accountId] to the card [customerId]. The card must be visible here, active and have the account's email.
      * One account, one card; one user account per card.
      */
-    fun link(tenant: Connection, currentCode: String, permissions: ModulePermissions, customerId: UUID, accountId: UUID, author: Pair<UUID?, String>): String {
+    fun link(tenant: Connection, currentCode: String, permissions: ModulePermissions, customerId: UUID, accountId: UUID, author: ClientesAuthor): String {
         requireLinker(permissions)
         val account = accountById(tenant, accountId) ?: throw ClientesSharingException(tr("La cuenta no existe o esta inactiva."))
         if (account.email.isBlank()) throw ClientesSharingException(tr("La cuenta {0} no tiene correo: agregaselo antes de enlazarla a un cliente.", account.name))
@@ -136,11 +138,11 @@ internal object ClientesAccounts {
         if (!emailMatches(account.email, customer.email)) {
             throw ClientesSharingException(tr("El correo de la cuenta ({0}) no es el de la ficha ({1}). Solo se enlaza a la ficha con el mismo correo.", account.email, customer.email.ifBlank { tr("sin correo") }))
         }
-        insertLink(tenant, customerId, account, author)
+        ClientesLog.atomically(tenant) { insertLink(tenant, customerId, account, author, customer.name) }
         return tr("Cuenta de {0} enlazada a {1}.", account.name, customer.name)
     }
 
-    private fun insertLink(tenant: Connection, customerId: UUID, account: Account, author: Pair<UUID?, String>) {
+    private fun insertLink(tenant: Connection, customerId: UUID, account: Account, author: ClientesAuthor, customerName: String) {
         linkOf(tenant, customerId)?.let { throw ClientesSharingException(tr("Esta ficha ya tiene una cuenta de usuario enlazada.")) }
         try {
             tenant.prepareStatement(
@@ -150,7 +152,7 @@ internal object ClientesAccounts {
                 insert.setObject(2, customerId)
                 insert.setString(3, UserKind)
                 insert.setObject(4, account.id)
-                insert.setString(5, author.second.take(300))
+                insert.setString(5, author.name.take(300))
                 insert.executeUpdate()
             }
         } catch (failure: SQLException) {
@@ -158,17 +160,35 @@ internal object ClientesAccounts {
             throw failure
         }
         ClientesActivity.record(tenant, customerId, "user_linked", "Cuenta de usuario enlazada", author)
+        ClientesLog.record(
+            tenant, author.actor, ClientesLog.AccountLink, customerId, customerName, ActivityActions.Updated,
+            "Enlazo la cuenta de usuario ${account.name} al cliente $customerName.",
+            listOf(ActivityChange.of("userAccount", "Cuenta de usuario", null, "${account.name} (${account.email})")),
+        )
     }
 
+    /** Same with the author as the (user id, name) pair of the module's own history; the activity log takes [permissions]' actor. */
+    fun unlink(tenant: Connection, customerId: UUID, permissions: ModulePermissions, author: Pair<UUID?, String>): String =
+        unlink(tenant, customerId, permissions, ClientesAuthor(author.first, author.second, permissions.activityActor))
+
     /** Removes the user link of the card. The card and the account stay as they are. */
-    fun unlink(tenant: Connection, customerId: UUID, permissions: ModulePermissions, author: Pair<UUID?, String>): String {
+    fun unlink(tenant: Connection, customerId: UUID, permissions: ModulePermissions, author: ClientesAuthor): String {
         requireLinker(permissions)
         val link = linkOf(tenant, customerId) ?: throw ClientesSharingException(tr("Esta ficha no tiene una cuenta de usuario enlazada."))
-        tenant.prepareStatement("DELETE FROM customer_accounts WHERE customer_id = ? AND account_kind = '$UserKind'").use { delete ->
-            delete.setObject(1, customerId)
-            delete.executeUpdate()
+        ClientesLog.atomically(tenant) {
+            val name = ClientesLog.customerName(tenant, customerId)
+            val account = link.account?.let { "${it.name} (${it.email})" }
+            ClientesLog.record(
+                tenant, author.actor, ClientesLog.AccountLink, customerId, name, ActivityActions.Updated,
+                "Desenlazo la cuenta de usuario${link.account?.let { " ${it.name}" }.orEmpty()} del cliente $name.",
+                listOf(ActivityChange.of("userAccount", "Cuenta de usuario", account ?: "(cuenta eliminada)", null)),
+            )
+            tenant.prepareStatement("DELETE FROM customer_accounts WHERE customer_id = ? AND account_kind = '$UserKind'").use { delete ->
+                delete.setObject(1, customerId)
+                delete.executeUpdate()
+            }
+            ClientesActivity.record(tenant, customerId, "user_unlinked", "Cuenta de usuario desenlazada", author)
         }
-        ClientesActivity.record(tenant, customerId, "user_unlinked", "Cuenta de usuario desenlazada", author)
         return tr("Cuenta desenlazada de la ficha.")
     }
 
@@ -180,7 +200,7 @@ internal object ClientesAccounts {
      * when there is none. Never to a card with another email or without one. Linking happens before sharing the new
      * card with the linked companies, so a merge carries the link with it.
      */
-    fun linkAccount(access: ModuleAccessService, tenant: Connection, currentCode: String, permissions: ModulePermissions, accountId: UUID, author: Pair<UUID?, String>): AccountLinkResult {
+    fun linkAccount(access: ModuleAccessService, tenant: Connection, currentCode: String, permissions: ModulePermissions, accountId: UUID, author: ClientesAuthor): AccountLinkResult {
         requireLinker(permissions)
         val account = accountById(tenant, accountId) ?: throw ClientesSharingException(tr("La cuenta no existe o esta inactiva."))
         if (account.email.isBlank()) throw ClientesSharingException(tr("La cuenta {0} no tiene correo: agregaselo antes de enlazarla a un cliente.", account.name))
@@ -198,20 +218,13 @@ internal object ClientesAccounts {
         ClientesServerModule.validateCustomerRequest(tenant, request)?.let { throw ClientesSharingException(tr("No se pudo crear la ficha: {0}", it.message)) }
         val id = UUID.randomUUID()
         // Card, activity and link in one transaction: if the link fails no orphan card is left. Sharing runs after the commit.
-        val autoCommit = tenant.autoCommit
-        tenant.autoCommit = false
-        try {
+        ClientesLog.atomically(tenant) {
             ClientesServerModule.upsertCustomer(tenant, id, request, insert = true)
             ClientesActivity.record(tenant, id, "created", "Creado desde una cuenta de usuario", author)
-            insertLink(tenant, id, account, author)
-            tenant.commit()
-        } catch (failure: Exception) {
-            runCatching { tenant.rollback() }
-            throw failure
-        } finally {
-            tenant.autoCommit = autoCommit
+            ClientesLog.customerCreated(tenant, author.actor, id, request, ClientesServerModule.loadFields(tenant).associate { it.fieldKey to it.label }, via = " Desde una cuenta de usuario.")
+            insertLink(tenant, id, account, author, account.name)
         }
-        ClientesServerModule.shareNew(access, tenant, currentCode, id)
+        ClientesServerModule.shareNew(access, tenant, currentCode, id, author.actor)
         return AccountLinkResult(id, account.name, true, tr("Se creo la ficha de {0} y se enlazo con su cuenta.", account.name))
     }
 }

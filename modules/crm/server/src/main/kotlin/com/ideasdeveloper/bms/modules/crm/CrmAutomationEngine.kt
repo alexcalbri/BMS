@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+
 import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
@@ -218,7 +221,9 @@ object CrmAutomationEngine {
         tenant: Connection, automation: CrmAutomation, lead: CrmLead, runKey: String, actor: CrmActor?,
         notifier: ModuleNotifier?, http: CrmHttp, refs: CrmAutomationRefs, now: Instant,
     ): CrmRunOutcome {
-        val doer = actor ?: CrmActor(null, "Automatizacion ${automation.name}")
+        // The activity log names the automation and, for a manual button, the person who pressed it ("Automatizacion X (Ana Ruiz)").
+        val automationActor = ActivityActor.automation(automation.name, startedBy = actor?.activity)
+        val doer = actor?.copy(activity = automationActor) ?: CrmActor(null, "Automatizacion ${automation.name}", automationActor)
         // The conditions are checked again: a queued run may wait a minute and the lead can change meanwhile.
         CrmAutomationConditions.failing(automation.conditions, lead)?.let { failing ->
             return CrmRunOutcome(CrmRunOutcome.Skipped, "No se cumple la condicion: ${CrmAutomationConditions.label(failing, refs)}.")
@@ -306,7 +311,8 @@ object CrmAutomationEngine {
 
     // The note in the lead's activity. A rule that sends a template already logged that; this one says the rule ran.
     private fun record(tenant: Connection, lead: CrmLead, automation: CrmAutomation, detail: String, actor: CrmActor) {
-        runCatching { CrmRepository.addActivity(tenant, lead.id, "item", "Automatizacion ${automation.name}: $detail", actor) }
+        // What the rule changed is logged by each action (stage, field, message); this line is only the run's note in the lead's history.
+        runCatching { CrmRepository.addActivity(tenant, lead.id, "item", "Automatizacion ${automation.name}: $detail", actor, audit = CrmLeadAudit.None) }
             .onFailure { log.warn("No se pudo anotar una automatizacion en la actividad ({}).", it.javaClass.simpleName) }
     }
 
@@ -355,12 +361,20 @@ object CrmAutomationEngine {
                 runCatching { LocalDate.parse(text) }.getOrElse { throw CrmValidationException("La fecha de seguimiento usa el formato AAAA-MM-DD.") }
             }
             if (date == lead.followUpOn) return "${CrmAutomationRefs.FollowUpLabel} ya era ${date ?: "(vacio)"}."
-            tenant.prepareStatement("UPDATE crm_leads SET follow_up_on = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
-                update.setObject(1, date)
-                update.setObject(2, lead.id)
-                update.executeUpdate()
+            CrmAudit.atomically(tenant) {
+                tenant.prepareStatement("UPDATE crm_leads SET follow_up_on = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
+                    update.setObject(1, date)
+                    update.setObject(2, lead.id)
+                    update.executeUpdate()
+                }
+                CrmRepository.addActivity(
+                    tenant, lead.id, "updated", "Seguimiento: ${lead.followUpOn ?: "(vacio)"} -> ${date ?: "(vacio)"}", actor,
+                    audit = CrmLeadAudit.Row(
+                        com.ideasdeveloper.bms.server.activity.ActivityActions.Updated, "Cambio el seguimiento del lead ${lead.name}.",
+                        listOf(ActivityChange.of("followUpOn", "Seguimiento", lead.followUpOn, date)), label = lead.name,
+                    ),
+                )
             }
-            CrmRepository.addActivity(tenant, lead.id, "updated", "Seguimiento: ${lead.followUpOn ?: "(vacio)"} -> ${date ?: "(vacio)"}", actor)
             CrmAutomationEvents.fieldsChanged(tenant, lead.id, listOf(key))
             CrmOutbound.updated(tenant, lead.id, listOf(CrmOutboundKeys.FollowUp), OutboundOrigin.Automation)
             return "${CrmAutomationRefs.FollowUpLabel}: ${date ?: "(vacio)"}."
@@ -372,13 +386,21 @@ object CrmAutomationEngine {
         if (lines.isEmpty()) return "${field.label} ya tenia ese valor."
         // A mapped stay date keeps its rule: the end is never before the start.
         CrmStay.datesAfterSave(CrmStay.effective(CrmStay.load(tenant), refs.fields), refs.fields, lead.customFields, changes)
-        tenant.prepareStatement("UPDATE crm_leads SET custom_fields = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
-            update.setString(1, after.toString())
-            update.setObject(2, lead.id)
-            update.executeUpdate()
+        CrmAudit.atomically(tenant) {
+            tenant.prepareStatement("UPDATE crm_leads SET custom_fields = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
+                update.setString(1, after.toString())
+                update.setObject(2, lead.id)
+                update.executeUpdate()
+            }
+            CrmStay.resync(tenant, lead.id)
+            CrmRepository.addActivity(
+                tenant, lead.id, "updated", lines.joinToString("\n"), actor,
+                audit = CrmLeadAudit.Row(
+                    com.ideasdeveloper.bms.server.activity.ActivityActions.Updated, "Modifico el lead ${lead.name}.",
+                    CrmFields.activityChanges(refs.fields, lead.customFields, after), label = lead.name,
+                ),
+            )
         }
-        CrmStay.resync(tenant, lead.id)
-        CrmRepository.addActivity(tenant, lead.id, "updated", lines.joinToString("\n"), actor)
         CrmAutomationEvents.fieldsChanged(tenant, lead.id, listOf(key))
         CrmOutbound.updated(tenant, lead.id, listOf(CrmOutboundKeys.custom(key)), OutboundOrigin.Automation)
         return "${field.label}: ${CrmFields.display(after[key]).ifEmpty { "(vacio)" }}."

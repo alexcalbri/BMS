@@ -2,7 +2,7 @@
   "id": "propietarios",
   "displayName": "Propietarios",
   "description": "Registro de desarrollos, lotes y propietarios: cada lote con su area, numero de registro y estado, sus titulares vigentes (con porcentaje), el historial de cambios de titularidad y adjuntos como escrituras y planos.",
-  "version": "0.3.0",
-  "minCoreVersion": "0.10.0",
+  "version": "0.4.0",
+  "minCoreVersion": "0.12.0",
   "minAppVersion": "0.7.0"
 }

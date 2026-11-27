@@ -344,9 +344,9 @@ object ClientesMcpTools {
         ClientesServerModule.validateCustomerRequest(call.tenant, request)?.let { throw McpToolException(it.message) }
         if (ClientesServerModule.emailExists(call.tenant, request.primaryEmail, null)) throw McpToolException("Ya existe un cliente con ese correo.")
         val id = UUID.randomUUID()
-        ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = true)
-        ClientesActivity.record(call.tenant, id, "created", "", author(call))
-        ClientesServerModule.shareNew(call.access, call.tenant, call.permissions.companyCode, id)
+        val author = author(call)
+        ClientesServerModule.createCustomerLogged(call.tenant, id, request, author)
+        ClientesServerModule.shareNew(call.access, call.tenant, call.permissions.companyCode, id, author.actor)
         // Sharing may have merged the new customer into an older one with the same email: it is then archived.
         val created = find(call, id, "")
         if (created != null) return Json.encodeToJsonElement(created)
@@ -373,9 +373,9 @@ object ClientesMcpTools {
         // Un cambio de correo no puede chocar con un cliente de las empresas vinculadas (aunque aqui no se vea).
         ClientesServerModule.emailChangeConflict(call.access, call.tenant, call.permissions.companyCode, id, current.primaryEmail, request.primaryEmail, call.permissions.businessOwner)
             ?.let { throw McpToolException(it) }
-        if (!ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = false)) throw McpToolException("Cliente no encontrado.")
-        ClientesServerModule.recordUpdate(call.tenant, id, current, request, author(call))
-        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id)
+        val author = author(call)
+        if (!ClientesServerModule.updateCustomerLogged(call.tenant, id, current, request, author)) throw McpToolException("Cliente no encontrado.")
+        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id, author.actor)
         return withWarning(Json.encodeToJsonElement(find(call, id, "")!!), failed)
     }
 
@@ -388,9 +388,9 @@ object ClientesMcpTools {
     private fun archive(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
         requireOrigin(call, id, "archiva")
-        if (!ClientesServerModule.archiveCustomer(call.tenant, id)) throw McpToolException("Cliente no encontrado o ya archivado.")
-        ClientesActivity.record(call.tenant, id, "archived", "", author(call))
-        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id)
+        val author = author(call)
+        if (!ClientesServerModule.archiveLogged(call.tenant, id, author)) throw McpToolException("Cliente no encontrado o ya archivado.")
+        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id, author.actor)
         return withWarning(
             buildJsonObject {
                 put("id", id.toString())
@@ -422,14 +422,12 @@ object ClientesMcpTools {
         if (ClientesServerModule.loadFields(call.tenant).any { it.fieldKey == request.fieldKey.trim() }) {
             throw McpToolException("Ya existe un campo con la clave '${request.fieldKey.trim()}'.")
         }
-        val field = ClientesServerModule.insertField(call.tenant, request)
-        ClientesActivity.recordCompany(call.tenant, "field_created", ClientesServerModule.fieldCreatedBody(field), author(call))
+        val field = ClientesServerModule.createFieldLogged(call.tenant, request, author(call))
         return Json.encodeToJsonElement(field)
     }
 
     private fun deleteField(call: McpToolCall): JsonElement {
-        val field = ClientesServerModule.deleteField(call.tenant, call.requiredUuid("id")) ?: throw McpToolException("Campo no encontrado.")
-        ClientesActivity.recordCompany(call.tenant, "field_deleted", ClientesServerModule.fieldDeletedBody(field), author(call))
+        val field = ClientesServerModule.deleteFieldLogged(call.tenant, call.requiredUuid("id"), author(call)) ?: throw McpToolException("Campo no encontrado.")
         return buildJsonObject {
             put("id", field.id)
             put("result", "Campo borrado.")
@@ -439,13 +437,13 @@ object ClientesMcpTools {
     private fun restore(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
         requireOrigin(call, id, "restaura")
-        when (ClientesServerModule.restoreCustomer(call.tenant, id)) {
+        val author = author(call)
+        when (ClientesServerModule.restoreLogged(call.tenant, id, author)) {
             ClientesServerModule.RestoreResult.NotFound -> throw McpToolException("Cliente no encontrado o no esta archivado.")
             ClientesServerModule.RestoreResult.EmailTaken -> throw McpToolException("Otro cliente activo ya usa el correo de este cliente.")
             ClientesServerModule.RestoreResult.Restored -> Unit
         }
-        ClientesActivity.record(call.tenant, id, "restored", "", author(call))
-        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id)
+        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id, author.actor)
         return withWarning(Json.encodeToJsonElement(find(call, id, "")!!), failed)
     }
 

@@ -57,12 +57,15 @@ object CrmTemplateMailer {
         val lead = CrmRepository.lead(tenant, leadId) ?: throw CrmValidationException("Ese lead ya no existe.")
         if (!CrmContacts.isEmail(lead.email)) throw CrmValidationException("El lead no tiene un correo valido.")
         val mail = renderFor(tenant, template, lead, extra, http)
-        val actor = requestedBy ?: CrmActor(null, "Automatizacion")
-        CrmNotify.enqueue(tenant, OutboxKind, lead.email, mail.toEmail(), lead.id)
-        CrmInbox.addMessage(tenant, lead.id, "out", "email", mail.subject, mail.text, null, "sent", "", actor.userId, actor.name)
-        val language = if (mail.translated) " (traducida al ${mail.language})" else ""
-        CrmRepository.addActivity(tenant, lead.id, "item", "Plantilla ${template.name} enviada a ${lead.email}$language.", actor)
-        mail.note?.let { CrmRepository.addActivity(tenant, lead.id, "item", "${template.name}: $it", actor) }
+        val actor = requestedBy ?: CrmActor(null, "Automatizacion", com.ideasdeveloper.bms.server.activity.ActivityActor.automation("Plantilla ${template.name}"))
+        // The email in the outbox, its message row (who sent which template to whom, never the body) and the history are saved together.
+        CrmAudit.atomically(tenant) {
+            CrmNotify.enqueue(tenant, OutboxKind, lead.email, mail.toEmail(), lead.id)
+            CrmInbox.addMessage(tenant, lead.id, "out", "email", mail.subject, mail.text, null, "sent", "", actor.userId, actor.name, actor.activity, template = template.name, to = lead.email)
+            val language = if (mail.translated) " (traducida al ${mail.language})" else ""
+            CrmRepository.addActivity(tenant, lead.id, "item", "Plantilla ${template.name} enviada a ${lead.email}$language.", actor, audit = CrmLeadAudit.None)
+            mail.note?.let { CrmRepository.addActivity(tenant, lead.id, "item", "${template.name}: $it", actor) }
+        }
         return SentMail(lead.email, mail)
     }
 

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.wordpress
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmExtensions
 import com.ideasdeveloper.bms.modules.crm.CrmHost
@@ -72,10 +73,10 @@ object WordPressImport : CrmImportSource {
         )
     }
 
-    override fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?): CrmImportSourceResult? {
+    override fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?, actor: ActivityActor): CrmImportSourceResult? {
         if (op != "leadspro") return null
         return try {
-            val (job, rows) = readJob(tenant, LocalDate.now(), userId)
+            val (job, rows) = readJob(tenant, LocalDate.now(), userId, actor)
             CrmImportSourceResult(tr("{0} filas leidas. Revisa el mapeo.", rows), UiTone.Success, "importjob", mapOf("job" to job.toString()))
         } catch (failure: CrmImportException) {
             CrmImportSourceResult(failure.message.orEmpty(), UiTone.Danger)
@@ -90,7 +91,7 @@ object WordPressImport : CrmImportSource {
                 description = "Lee los leads del plugin CT Leads Pro del sitio WordPress conectado y crea una importacion en mapeo.",
                 permission = CrmScreens.Settings,
             ) { call ->
-                val (job, rows) = CrmImportMcpTools.checked { readJob(call.tenant, LocalDate.now(), CrmImportMcpTools.actor(call).userId) }
+                val (job, rows) = CrmImportMcpTools.checked { readJob(call.tenant, LocalDate.now(), CrmImportMcpTools.actor(call).userId, call.activityActor) }
                 buildJsonObject {
                     put("job", job.toString())
                     put("result", "$rows filas leidas. Revisa el mapeo con get_import.")
@@ -114,9 +115,9 @@ object WordPressImport : CrmImportSource {
     // ---- Lectura ----
 
     /** Lee los leads de CT Leads Pro y crea el job en mapeo; devuelve el id del job y cuantas filas leyo. */
-    private fun readJob(tenant: Connection, today: LocalDate, userId: UUID?): Pair<UUID, Int> {
+    private fun readJob(tenant: Connection, today: LocalDate, userId: UUID?, actor: ActivityActor): Pair<UUID, Int> {
         val table = fromLeadsPro(tenant)
-        val job = CrmImport.create(tenant, Source, "CT Leads Pro $today", table, userId)
+        val job = CrmImport.create(tenant, Source, "CT Leads Pro $today", table, userId, actor)
         return job to table.rows.size
     }
 

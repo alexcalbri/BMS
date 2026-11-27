@@ -54,6 +54,11 @@ object EmpleadosService {
         }
     }
 
+    // Nombres para el registro de actividad (la fila muestra nombres, no ids).
+    private fun employeeName(tenant: Connection, employeeId: UUID): String = EmpleadosRepository.basics(tenant, listOf(employeeId))[employeeId]?.fullName.orEmpty()
+
+    private fun siteName(tenant: Connection, siteId: UUID?): String? = siteId?.let { EmpleadosRepository.getCatalog(tenant, Catalog.Sites, it)?.name }
+
     // ---- fichas ----
 
     private fun checkRefs(tenant: Connection, input: EmployeeInput, existing: Employee?) {
@@ -71,49 +76,85 @@ object EmpleadosService {
     fun createEmployee(tenant: Connection, scope: EmpleadosScope, input: EmployeeInput): UUID {
         requireManage(scope)
         failIfAny(input.validate(EmpleadosRepository.today()))
-        checkRefs(tenant, input, null)
-        var id: UUID? = null
-        uniqueGuard(tr("Ese usuario ya tiene otra ficha.")) { id = EmpleadosRepository.insertEmployee(tenant, input, scope.userId) }
-        return id ?: throw EmpleadosValidationException(tr("No se pudo guardar la ficha."))
+        return EmpleadosRepository.transaction(tenant) {
+            checkRefs(tenant, input, null)
+            var id: UUID? = null
+            uniqueGuard(tr("Ese usuario ya tiene otra ficha.")) { id = EmpleadosRepository.insertEmployee(tenant, input, scope.userId) }
+            val created = id ?: throw EmpleadosValidationException(tr("No se pudo guardar la ficha."))
+            EmpleadosActivity.employeeCreated(tenant, scope.actor, created, input)
+            created
+        }
     }
 
     fun updateEmployee(tenant: Connection, scope: EmpleadosScope, id: UUID, input: EmployeeInput) {
         requireManage(scope)
         val existing = visibleEmployee(tenant, scope, id)
         failIfAny(input.validate(EmpleadosRepository.today()))
-        checkRefs(tenant, input, existing)
-        uniqueGuard(tr("Ese usuario ya tiene otra ficha.")) {
-            if (!EmpleadosRepository.updateEmployee(tenant, id, input)) throw EmpleadosValidationException(tr(EmployeeNotFound))
+        EmpleadosRepository.transaction(tenant) {
+            checkRefs(tenant, input, existing)
+            uniqueGuard(tr("Ese usuario ya tiene otra ficha.")) {
+                if (!EmpleadosRepository.updateEmployee(tenant, id, input)) throw EmpleadosValidationException(tr(EmployeeNotFound))
+            }
+            EmpleadosActivity.employeeUpdated(tenant, scope.actor, existing, input)
         }
     }
 
     /** Da de baja (con la fecha de hoy) o reactiva una ficha. */
     fun setActive(tenant: Connection, scope: EmpleadosScope, id: UUID, active: Boolean) {
         requireManage(scope)
-        visibleEmployee(tenant, scope, id)
-        EmpleadosRepository.setStatus(tenant, id, if (active) EmployeeStatus.Active else EmployeeStatus.Inactive, EmpleadosRepository.today())
+        val employee = visibleEmployee(tenant, scope, id)
+        val status = if (active) EmployeeStatus.Active else EmployeeStatus.Inactive
+        EmpleadosRepository.transaction(tenant) {
+            EmpleadosRepository.setStatus(tenant, id, status, EmpleadosRepository.today())
+            EmpleadosActivity.employeeStatusChanged(tenant, scope.actor, employee, status)
+        }
     }
 
     // ---- sedes y departamentos ----
 
     fun addCatalog(tenant: Connection, scope: EmpleadosScope, catalog: Catalog, name: String): UUID {
         requireManage(scope)
-        return EmpleadosRepository.addCatalog(tenant, catalog, name)
+        return EmpleadosRepository.transaction(tenant) {
+            val wanted = name.trim()
+            // Una sede o departamento archivado con ese nombre se reactiva: la fila dice "restaura", no "crea".
+            val wasArchived = EmpleadosRepository.listCatalog(tenant, catalog, includeArchived = true)
+                .any { it.archived && it.name.equals(wanted, ignoreCase = true) }
+            val id = EmpleadosRepository.addCatalog(tenant, catalog, name)
+            val stored = EmpleadosRepository.getCatalog(tenant, catalog, id)?.name ?: wanted
+            EmpleadosActivity.catalogCreated(tenant, scope.actor, catalog, id, stored, restored = wasArchived)
+            id
+        }
     }
 
     fun renameCatalog(tenant: Connection, scope: EmpleadosScope, catalog: Catalog, id: UUID, name: String) {
         requireManage(scope)
-        if (!EmpleadosRepository.renameCatalog(tenant, catalog, id, name)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
+        val before = EmpleadosRepository.getCatalog(tenant, catalog, id)
+        EmpleadosRepository.transaction(tenant) {
+            if (!EmpleadosRepository.renameCatalog(tenant, catalog, id, name)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
+            val after = EmpleadosRepository.getCatalog(tenant, catalog, id)?.name
+            if (before != null && after != null && before.name != after) EmpleadosActivity.catalogRenamed(tenant, scope.actor, catalog, id, before.name, after)
+        }
     }
 
     fun moveCatalog(tenant: Connection, scope: EmpleadosScope, catalog: Catalog, id: UUID, up: Boolean) {
         requireManage(scope)
-        if (!EmpleadosRepository.moveCatalog(tenant, catalog, id, up)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
+        val before = EmpleadosRepository.getCatalog(tenant, catalog, id)
+        EmpleadosRepository.transaction(tenant) {
+            if (!EmpleadosRepository.moveCatalog(tenant, catalog, id, up)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
+            val after = EmpleadosRepository.getCatalog(tenant, catalog, id)
+            if (before != null && after != null && before.position != after.position) {
+                EmpleadosActivity.catalogMoved(tenant, scope.actor, catalog, id, after.name, before.position, after.position)
+            }
+        }
     }
 
     fun archiveCatalog(tenant: Connection, scope: EmpleadosScope, catalog: Catalog, id: UUID) {
         requireManage(scope)
-        if (!EmpleadosRepository.archiveCatalog(tenant, catalog, id)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
+        val before = EmpleadosRepository.getCatalog(tenant, catalog, id)
+        EmpleadosRepository.transaction(tenant) {
+            if (!EmpleadosRepository.archiveCatalog(tenant, catalog, id)) throw EmpleadosValidationException(tr("No se encontró la {0}.", tr(catalog.singular)))
+            before?.let { EmpleadosActivity.catalogArchived(tenant, scope.actor, catalog, id, it.name) }
+        }
     }
 
     // ---- horario habitual ----
@@ -130,7 +171,7 @@ object EmpleadosService {
         EmpleadosRepository.transaction(tenant) {
             // El candado va primero: validar y escribir sin que otra peticion cambie las franjas del empleado en medio.
             EmpleadosRepository.lockEmployee(tenant, employeeId)
-            visibleEmployee(tenant, scope, employeeId)
+            val employee = visibleEmployee(tenant, scope, employeeId)
             activeSite(tenant, siteId)
             val all = EmpleadosRepository.weekly(tenant, listOf(employeeId))
             val ofDay = all.filter { it.weekday == weekday }
@@ -138,7 +179,8 @@ object EmpleadosService {
             // Dias vecinos (el domingo es vecino del lunes): la madrugada de una franja nocturna no puede pisar a la otra.
             fun slotsOf(day: Int) = all.filter { it.weekday == day }.map { DaySlot(it.start, it.end, it.siteId, EmpleadosSchedule.SourceHabitual) }
             EmpleadosSchedule.crossDayProblem(start, end, slotsOf((weekday + 5) % 7 + 1), slotsOf(weekday % 7 + 1))?.let { throw EmpleadosValidationException(it) }
-            EmpleadosRepository.insertWeeklySlot(tenant, employeeId, weekday, start, end, siteId)
+            val slotId = EmpleadosRepository.insertWeeklySlot(tenant, employeeId, weekday, start, end, siteId)
+            EmpleadosActivity.slotCreated(tenant, scope.actor, slotId, employee.fullName, weekday, start, end, siteName(tenant, siteId))
         }
         EmpleadosNotify.weeklyChanged(tenant, access.notificationsFor(EmpleadosModule.id), employeeId, scope.userId, EmpleadosRepository.today())
     }
@@ -148,7 +190,9 @@ object EmpleadosService {
         val slot = EmpleadosRepository.getWeeklySlot(tenant, slotId) ?: throw EmpleadosValidationException(tr("Franja no encontrada."))
         EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, slot.employeeId)
-            visibleEmployee(tenant, scope, slot.employeeId)
+            val employee = visibleEmployee(tenant, scope, slot.employeeId)
+            // La fila se escribe antes de borrar la franja (misma transaccion: si el borrado falla, no queda).
+            EmpleadosActivity.slotDeleted(tenant, scope.actor, slot.id, employee.fullName, slot.weekday, slot.start, slot.end, siteName(tenant, slot.siteId))
             if (!EmpleadosRepository.deleteWeeklySlot(tenant, slotId)) throw EmpleadosValidationException(tr("Franja no encontrada."))
         }
         EmpleadosNotify.weeklyChanged(tenant, access.notificationsFor(EmpleadosModule.id), slot.employeeId, scope.userId, EmpleadosRepository.today())
@@ -179,11 +223,15 @@ object EmpleadosService {
         failIfAny(input.validate())
         val id = EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, input.employeeId)
-            activeEmployee(tenant, scope, input.employeeId)
+            val employee = activeEmployee(tenant, scope, input.employeeId)
             activeSite(tenant, input.siteId)
+            val sameDay = EmpleadosRepository.shiftsOfDay(tenant, input.employeeId, input.date)
             if (input.kind == ShiftKind.Off) {
+                // Un dia libre borra los demas turnos del dia: cada uno se registra antes de borrarse.
+                sameDay.forEach { EmpleadosActivity.shiftRemoved(tenant, scope.actor, it, employee.fullName, siteName(tenant, it.siteId)) }
                 EmpleadosRepository.deleteShiftsOfDay(tenant, input.employeeId, input.date)
             } else {
+                sameDay.filter { it.kind == ShiftKind.Off }.forEach { EmpleadosActivity.shiftRemoved(tenant, scope.actor, it, employee.fullName, siteName(tenant, it.siteId)) }
                 EmpleadosRepository.deleteOffShiftsOfDay(tenant, input.employeeId, input.date)
                 val others = EmpleadosRepository.shiftsOfDay(tenant, input.employeeId, input.date).mapNotNull { shift -> shift.start?.let { s -> shift.end?.let { e -> s to e } } }
                 val start = input.start
@@ -193,7 +241,10 @@ object EmpleadosService {
                     crossDayCheck(tenant, input.employeeId, input.date, start, end, null)
                 }
             }
-            EmpleadosRepository.insertShift(tenant, input, scope.userId)
+            val shiftId = EmpleadosRepository.insertShift(tenant, input, scope.userId)
+            val created = Shift(shiftId, input.employeeId, input.date, input.kind, input.start, input.end, input.siteId, input.note)
+            EmpleadosActivity.shiftCreated(tenant, scope.actor, shiftId, employee.fullName, created, siteName(tenant, input.siteId))
+            shiftId
         }
         EmpleadosNotify.shiftChanged(tenant, access.notificationsFor(EmpleadosModule.id), input.employeeId, listOf(input.date), scope.userId, EmpleadosRepository.today())
         return id
@@ -241,15 +292,18 @@ object EmpleadosService {
             failIfAny(problems)
             if (updated.siteId != shift.siteId) activeSite(tenant, updated.siteId)
             val others = EmpleadosRepository.shiftsOfDay(tenant, shift.employeeId, updated.date).filter { it.id != shift.id }
+            val shiftEmployee = employeeName(tenant, shift.employeeId)
             if (updated.kind == ShiftKind.Off) {
                 if (others.isNotEmpty()) throw EmpleadosValidationException(tr("Ese día ya tiene turnos."))
             } else if (start != null && end != null) {
                 val works = others.filter { it.kind == ShiftKind.Work }.mapNotNull { other -> other.start?.let { s -> other.end?.let { e -> s to e } } }
                 EmpleadosSchedule.slotsProblem(works + (start to end), ShiftInput.MaxShiftsPerDay)?.let { throw EmpleadosValidationException(it) }
                 crossDayCheck(tenant, shift.employeeId, updated.date, start, end, shift.id)
+                others.filter { it.kind == ShiftKind.Off }.forEach { EmpleadosActivity.shiftRemoved(tenant, scope.actor, it, shiftEmployee, siteName(tenant, it.siteId)) }
                 if (others.any { it.kind == ShiftKind.Off }) EmpleadosRepository.deleteOffShiftsOfDay(tenant, shift.employeeId, updated.date)
             }
             if (!EmpleadosRepository.updateShift(tenant, updated)) throw EmpleadosValidationException(tr(ShiftNotFound))
+            EmpleadosActivity.shiftUpdated(tenant, scope.actor, shift, updated, shiftEmployee, siteName(tenant, shift.siteId), siteName(tenant, updated.siteId))
             changed = shift to updated
         }
         changed?.let { (shift, updated) ->
@@ -262,6 +316,7 @@ object EmpleadosService {
         val shift = visibleShift(tenant, scope, id)
         EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, shift.employeeId)
+            EmpleadosActivity.shiftRemoved(tenant, scope.actor, shift, employeeName(tenant, shift.employeeId), siteName(tenant, shift.siteId))
             if (!EmpleadosRepository.deleteShift(tenant, id)) throw EmpleadosValidationException(tr(ShiftNotFound))
         }
         EmpleadosNotify.shiftChanged(tenant, access.notificationsFor(EmpleadosModule.id), shift.employeeId, listOf(shift.date), scope.userId, EmpleadosRepository.today())
@@ -285,7 +340,9 @@ object EmpleadosService {
             EmpleadosRepository.lockEmployee(tenant, employeeId)
             name = activeEmployee(tenant, scope, employeeId).fullName
             checkNoOverlap(tenant, input)
-            EmpleadosRepository.insertAbsence(tenant, input, AbsenceStatus.Pending, scope.userId)
+            val absenceId = EmpleadosRepository.insertAbsence(tenant, input, AbsenceStatus.Pending, scope.userId)
+            EmpleadosActivity.absenceRequested(tenant, scope.actor, absenceId, name, input)
+            absenceId
         }
         EmpleadosNotify.absenceRequested(tenant, access.notificationsFor(EmpleadosModule.id), name, input, scope.userId)
         return id
@@ -295,7 +352,10 @@ object EmpleadosService {
     fun cancelAbsence(tenant: Connection, scope: EmpleadosScope, id: UUID) {
         val absence = EmpleadosRepository.getAbsence(tenant, id)?.takeIf { it.employeeId == scope.myEmployeeId } ?: throw EmpleadosValidationException(tr(AbsenceNotFound))
         if (absence.status != AbsenceStatus.Pending) throw EmpleadosValidationException(tr("Solo se pueden cancelar solicitudes pendientes."))
-        if (!EmpleadosRepository.cancelAbsence(tenant, id)) throw EmpleadosValidationException(tr("Esa solicitud ya fue decidida."))
+        EmpleadosRepository.transaction(tenant) {
+            if (!EmpleadosRepository.cancelAbsence(tenant, id)) throw EmpleadosValidationException(tr("Esa solicitud ya fue decidida."))
+            EmpleadosActivity.absenceCancelled(tenant, scope.actor, absence, employeeName(tenant, absence.employeeId))
+        }
     }
 
     /** Quien gestiona turnos registra una ausencia ya aprobada; se avisa al empleado. */
@@ -305,10 +365,12 @@ object EmpleadosService {
         if (!scope.mayDecideAbsenceOf(input.employeeId)) throw EmpleadosValidationException(tr(SelfApproval))
         val id = EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, input.employeeId)
-            activeEmployee(tenant, scope, input.employeeId)
+            val employee = activeEmployee(tenant, scope, input.employeeId)
             checkNoOverlap(tenant, input)
             // decided_at queda puesto: la tabla exige fecha de decision en las aprobadas.
-            EmpleadosRepository.insertAbsence(tenant, input, AbsenceStatus.Approved, scope.userId)
+            val absenceId = EmpleadosRepository.insertAbsence(tenant, input, AbsenceStatus.Approved, scope.userId)
+            EmpleadosActivity.absenceRegistered(tenant, scope.actor, absenceId, employee.fullName, input)
+            absenceId
         }
         EmpleadosRepository.getAbsence(tenant, id)?.let { EmpleadosNotify.absenceDecided(tenant, access.notificationsFor(EmpleadosModule.id), it, true, "", scope.userId) }
         return id
@@ -324,10 +386,11 @@ object EmpleadosService {
         EmpleadosRepository.transaction(tenant) {
             EmpleadosRepository.lockEmployee(tenant, employeeId)
             val absence = EmpleadosRepository.getAbsence(tenant, id) ?: throw EmpleadosValidationException(tr(AbsenceNotFound))
-            visibleEmployee(tenant, scope, absence.employeeId)
+            val employee = visibleEmployee(tenant, scope, absence.employeeId)
             if (absence.status != AbsenceStatus.Pending) throw EmpleadosValidationException(tr("Esa solicitud ya fue decidida."))
             val status = if (approve) AbsenceStatus.Approved else AbsenceStatus.Rejected
             if (!EmpleadosRepository.decideAbsence(tenant, id, status, scope.userId, note)) throw EmpleadosValidationException(tr("Esa solicitud ya fue decidida."))
+            EmpleadosActivity.absenceDecided(tenant, scope.actor, absence, employee.fullName, approve, note)
             decided = absence
         }
         val absence = decided ?: return

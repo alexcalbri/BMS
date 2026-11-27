@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
@@ -372,25 +376,46 @@ object MantenimientoImportApply {
         return Assignee(null, listOfNotNull(label?.let { clip(it, MaxPerson) }))
     }
 
-    private fun propertyId(tenant: Connection, name: String?): UUID? =
-        name?.trim()?.takeIf { it.isNotEmpty() }?.let { MantenimientoRepository.findOrCreateProperty(tenant, it) }
+    private fun propertyId(tenant: Connection, name: String?, activity: ActivityActor): UUID? =
+        name?.trim()?.takeIf { it.isNotEmpty() }?.let { MantenimientoRepository.findOrCreateProperty(tenant, it, activity) }
 
-    private fun assetId(tenant: Connection, propertyId: UUID?, name: String?): UUID? =
-        name?.trim()?.takeIf { it.isNotEmpty() }?.let { MantenimientoRepository.findOrCreateAsset(tenant, propertyId, it) }
+    private fun assetId(tenant: Connection, propertyId: UUID?, name: String?, activity: ActivityActor): UUID? =
+        name?.trim()?.takeIf { it.isNotEmpty() }?.let { MantenimientoRepository.findOrCreateAsset(tenant, propertyId, it, activity) }
+
+    /** Hijos que una fila agrego a un plan u orden: los que cupieron y los que quedaron fuera por el tope. */
+    private class Added(val added: Int, val omitted: Int) {
+        operator fun plus(other: Added) = Added(added + other.added, omitted + other.omitted)
+
+        companion object { val None = Added(0, 0) }
+    }
+
+    /** "3 elementos de lista y 2 notas" (nada si no se agrego nada): lo que el registro dice de los hijos que no llevan fila propia. */
+    private fun childrenText(checks: Int, notes: Int): String? = buildList {
+        if (checks > 0) add("$checks elemento(s) de lista")
+        if (notes > 0) add("$notes nota(s)")
+    }.takeIf { it.isNotEmpty() }?.joinToString(" y ")
 
     /**
      * Crea o actualiza el plan de [row] (una transacción, mismo resultado al repetir) con su lista de comprobación. No manda avisos.
      * Una fila sin título o identificador se omite. Al repetir no se toca la próxima fecha ni si el plan está activo.
      */
-    fun applyPlan(tenant: Connection, row: ImportedPlan, users: List<MantenimientoUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
+    fun applyPlan(
+        tenant: Connection,
+        row: ImportedPlan,
+        users: List<MantenimientoUser>,
+        actorId: UUID?,
+        today: LocalDate,
+        // Quien importa, para el registro de actividad (la importacion en nombre de quien la inicio).
+        activity: ActivityActor = ActivityActor.import(null),
+    ): ImportOutcome {
         val key = row.key.trim()
         if (key.isEmpty()) return ImportOutcome.Skipped(tr("El ítem no tiene identificador."))
         if (key.length > MaxKey) return ImportOutcome.Skipped(tr("El identificador del ítem {0} es demasiado largo.", key))
         if (row.title.isBlank()) return ImportOutcome.Skipped(tr("El ítem {0} no tiene título.", key))
         return MantenimientoRepository.transaction(tenant) {
             val assignee = assigneeOf(row.assigneeEmail, row.assigneeName, users)
-            val property = propertyId(tenant, row.propertyName)
-            val asset = assetId(tenant, property, row.assetName)
+            val property = propertyId(tenant, row.propertyName, activity)
+            val asset = assetId(tenant, property, row.assetName, activity)
             val title = clip(row.title.trim(), PlanInput.MaxTitle)
             val description = descriptionWithNote(row.description, assignee.unmatched, PlanInput.MaxDescription)
             val interval = cleanInterval(row.frequency, row.intervalDays)
@@ -416,6 +441,9 @@ object MantenimientoImportApply {
                 }
             }
             val id = planId ?: throw MantenimientoValidationException(tr("No se pudo guardar el ítem {0}.", key))
+            // Lo que el plan tenia antes de esta fila, para dejar en el registro solo lo que cambio.
+            val beforePlan = if (created) null else MantenimientoRepository.getPlan(tenant, id)
+            val beforeChecklist = if (created) emptyList() else MantenimientoRepository.planChecklist(tenant, id).map { it.text }
             if (!created) {
                 tenant.exec(
                     """
@@ -426,14 +454,34 @@ object MantenimientoImportApply {
                     listOf(title, description, property, asset, row.frequency.id, interval, assignee.id, row.priority.id, id),
                 )
             }
-            val omitted = addPlanChecklist(tenant, id, row.checklist)
-            if (omitted > 0) log.warn("El plan {} superó el tope de la lista de comprobación: se omitieron {} elementos.", key, omitted)
+            val checks = addPlanChecklist(tenant, id, row.checklist)
+            if (checks.omitted > 0) log.warn("El plan {} superó el tope de la lista de comprobación: se omitieron {} elementos.", key, checks.omitted)
+            // Una fila por plan importado con sus datos clave; los elementos de la lista van contados, sin fila propia.
+            val afterPlan = MantenimientoRepository.getPlan(tenant, id)
+            if (afterPlan != null) {
+                val afterChecklist = MantenimientoRepository.planChecklist(tenant, id).map { it.text }
+                val extra = childrenText(checks.added, 0)?.let { listOf(ActivityChange("imported", "Contenido importado", null, it)) }.orEmpty()
+                if (created) {
+                    MantenimientoActivity.write(tenant, activity, "plan", id.toString(), title, ActivityActions.Created,
+                        "Importo el plan $title${extra.firstOrNull()?.let { " (con ${it.new})" }.orEmpty()}.",
+                        ActivityChanges.created(MantenimientoActivity.planValues(afterPlan, afterChecklist), MantenimientoActivity.PlanLabels) + extra)
+                } else {
+                    val changes = ActivityChanges.diff(
+                        beforePlan?.let { MantenimientoActivity.planValues(it, beforeChecklist) }.orEmpty(),
+                        MantenimientoActivity.planValues(afterPlan, afterChecklist), MantenimientoActivity.PlanLabels,
+                    )
+                    if (changes.isNotEmpty()) {
+                        MantenimientoActivity.write(tenant, activity, "plan", id.toString(), title, ActivityActions.Updated,
+                            "Modifico el plan $title desde la importacion${extra.firstOrNull()?.let { " (con ${it.new})" }.orEmpty()}.", changes + extra)
+                    }
+                }
+            }
             if (created) ImportOutcome.Created(id) else ImportOutcome.Updated(id)
         }
     }
 
-    private fun addPlanChecklist(tenant: Connection, planId: UUID, items: List<ImportedCheck>): Int {
-        if (items.isEmpty()) return 0
+    private fun addPlanChecklist(tenant: Connection, planId: UUID, items: List<ImportedCheck>): Added {
+        if (items.isEmpty()) return Added.None
         tenant.rows("SELECT 1 AS found FROM mantenimiento_plans WHERE id = ? FOR UPDATE", listOf(planId)) { it.getInt("found") }
         val existing = tenant.rows("SELECT import_key FROM mantenimiento_plan_checklist WHERE plan_id = ? AND import_key IS NOT NULL", listOf(planId)) { it.getString("import_key") }.toSet()
         val valid = items.mapNotNull { item ->
@@ -442,7 +490,7 @@ object MantenimientoImportApply {
             if (key.isEmpty() || text.isEmpty()) null else key to text
         }
         val fresh = missingChildren(existing, valid) { it.first }
-        if (fresh.isEmpty()) return 0
+        if (fresh.isEmpty()) return Added.None
         val (count, last) = tenant.rows("SELECT count(*) AS total, COALESCE(MAX(position), 0) AS last FROM mantenimiento_plan_checklist WHERE plan_id = ?", listOf(planId)) { it.getInt("total") to it.getInt("last") }.first()
         val room = (MaxRows - count).coerceAtLeast(0)
         tenant.batch(
@@ -453,22 +501,30 @@ object MantenimientoImportApply {
             """.trimIndent(),
             fresh.take(room).mapIndexed { index, (key, text) -> listOf(UUID.randomUUID(), planId, text, last + index + 1, key) },
         )
-        return (fresh.size - room).coerceAtLeast(0)
+        val omitted = (fresh.size - room).coerceAtLeast(0)
+        return Added(fresh.size - omitted, omitted)
     }
 
     /**
      * Crea o actualiza la orden de [row] (una transacción, mismo resultado al repetir) con su lista y sus notas que aún no estén.
      * No manda avisos. Una fila sin título o identificador se omite.
      */
-    fun applyOrder(tenant: Connection, row: ImportedOrder, users: List<MantenimientoUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
+    fun applyOrder(
+        tenant: Connection,
+        row: ImportedOrder,
+        users: List<MantenimientoUser>,
+        actorId: UUID?,
+        today: LocalDate,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): ImportOutcome {
         val key = row.key.trim()
         if (key.isEmpty()) return ImportOutcome.Skipped(tr("El ítem no tiene identificador."))
         if (key.length > MaxKey) return ImportOutcome.Skipped(tr("El identificador del ítem {0} es demasiado largo.", key))
         if (row.title.isBlank()) return ImportOutcome.Skipped(tr("El ítem {0} no tiene título.", key))
         return MantenimientoRepository.transaction(tenant) {
             val assignee = assigneeOf(row.assigneeEmail, row.assigneeName, users)
-            val property = propertyId(tenant, row.propertyName)
-            val asset = assetId(tenant, property, row.assetName)
+            val property = propertyId(tenant, row.propertyName, activity)
+            val asset = assetId(tenant, property, row.assetName, activity)
             val status = normalizeStatus(row.kind, row.status)
             val title = clip(row.title.trim(), OrderInput.MaxTitle)
             val description = descriptionWithNote(row.description, assignee.unmatched, OrderInput.MaxDescription)
@@ -508,6 +564,8 @@ object MantenimientoImportApply {
                 }
             }
             val id = orderId ?: throw MantenimientoValidationException(tr("No se pudo guardar el ítem {0}.", key))
+            // Lo que la orden tenia antes de esta fila, para dejar en el registro solo lo que cambio.
+            val beforeOrder = if (created) null else MantenimientoRepository.getOrder(tenant, id)
             if (!created) {
                 tenant.exec(
                     """
@@ -538,8 +596,30 @@ object MantenimientoImportApply {
                     listOf(UUID.randomUUID(), id, ImportAuthor),
                 )
             }
-            val omitted = addOrderChecklist(tenant, id, row.checklist) + addOrderNotes(tenant, id, row.notes)
-            if (omitted > 0) log.warn("El ítem {} superó los topes de lista o notas: se omitieron {} elementos.", key, omitted)
+            val checks = addOrderChecklist(tenant, id, row.checklist)
+            val notes = addOrderNotes(tenant, id, row.notes)
+            if (checks.omitted + notes.omitted > 0) log.warn("El ítem {} superó los topes de lista o notas: se omitieron {} elementos.", key, checks.omitted + notes.omitted)
+            // Una fila por orden importada con sus datos clave; la lista y las notas van contadas, sin fila propia.
+            val afterOrder = MantenimientoRepository.getOrder(tenant, id)
+            if (afterOrder != null) {
+                val folio = MantenimientoActivity.folio(afterOrder.number)
+                val extra = childrenText(checks.added, notes.added)?.let { listOf(ActivityChange("imported", "Contenido importado", null, it)) }.orEmpty()
+                val withChildren = extra.firstOrNull()?.let { " (con ${it.new})" }.orEmpty()
+                if (created) {
+                    MantenimientoActivity.write(tenant, activity, "orden", id.toString(), afterOrder.title, ActivityActions.Created,
+                        "Importo la orden $folio ${afterOrder.title}$withChildren.",
+                        ActivityChanges.created(MantenimientoRepository.orderValues(tenant, afterOrder), MantenimientoActivity.OrderLabels) + extra)
+                } else {
+                    val changes = ActivityChanges.diff(
+                        beforeOrder?.let { MantenimientoRepository.orderValues(tenant, it) }.orEmpty(),
+                        MantenimientoRepository.orderValues(tenant, afterOrder), MantenimientoActivity.OrderLabels,
+                    )
+                    if (changes.isNotEmpty() || extra.isNotEmpty()) {
+                        MantenimientoActivity.write(tenant, activity, "orden", id.toString(), afterOrder.title, ActivityActions.Updated,
+                            "Modifico la orden $folio desde la importacion$withChildren.", changes + extra)
+                    }
+                }
+            }
             if (created) ImportOutcome.Created(id) else ImportOutcome.Updated(id)
         }
     }
@@ -550,8 +630,8 @@ object MantenimientoImportApply {
     }
 
     /** Agrega los elementos que aún no están (por clave) hasta el tope, en un solo lote; devuelve cuántos quedaron fuera por el tope. */
-    private fun addOrderChecklist(tenant: Connection, orderId: UUID, items: List<ImportedCheck>): Int {
-        if (items.isEmpty()) return 0
+    private fun addOrderChecklist(tenant: Connection, orderId: UUID, items: List<ImportedCheck>): Added {
+        if (items.isEmpty()) return Added.None
         lockOrder(tenant, orderId)
         val existing = tenant.rows("SELECT import_key FROM mantenimiento_order_checklist WHERE order_id = ? AND import_key IS NOT NULL", listOf(orderId)) { it.getString("import_key") }.toSet()
         val valid = items.mapNotNull { item ->
@@ -560,7 +640,7 @@ object MantenimientoImportApply {
             if (key.isEmpty() || text.isEmpty()) null else Triple(key, text, item.done)
         }
         val fresh = missingChildren(existing, valid) { it.first }
-        if (fresh.isEmpty()) return 0
+        if (fresh.isEmpty()) return Added.None
         val (count, last) = tenant.rows("SELECT count(*) AS total, COALESCE(MAX(position), 0) AS last FROM mantenimiento_order_checklist WHERE order_id = ?", listOf(orderId)) { it.getInt("total") to it.getInt("last") }.first()
         val room = (MaxRows - count).coerceAtLeast(0)
         tenant.batch(
@@ -571,16 +651,17 @@ object MantenimientoImportApply {
             """.trimIndent(),
             fresh.take(room).mapIndexed { index, (key, text, done) -> listOf(UUID.randomUUID(), orderId, text, done, last + index + 1, done, key) },
         )
-        return (fresh.size - room).coerceAtLeast(0)
+        val omitted = (fresh.size - room).coerceAtLeast(0)
+        return Added(fresh.size - omitted, omitted)
     }
 
-    private fun addOrderNotes(tenant: Connection, orderId: UUID, notes: List<ImportedNote>): Int {
-        if (notes.isEmpty()) return 0
+    private fun addOrderNotes(tenant: Connection, orderId: UUID, notes: List<ImportedNote>): Added {
+        if (notes.isEmpty()) return Added.None
         lockOrder(tenant, orderId)
         val existing = tenant.rows("SELECT import_key FROM mantenimiento_order_notes WHERE order_id = ? AND import_key IS NOT NULL", listOf(orderId)) { it.getString("import_key") }.toSet()
         val valid = notes.filter { it.key.trim().take(MaxKey).isNotEmpty() && it.body.isNotBlank() }
         val fresh = missingChildren(existing, valid) { it.key.trim().take(MaxKey) }
-        if (fresh.isEmpty()) return 0
+        if (fresh.isEmpty()) return Added.None
         val count = tenant.rows("SELECT count(*) AS total FROM mantenimiento_order_notes WHERE order_id = ?", listOf(orderId)) { it.getInt("total") }.firstOrNull() ?: 0
         val room = (MaxNotes - count).coerceAtLeast(0)
         tenant.batch(
@@ -594,14 +675,25 @@ object MantenimientoImportApply {
                 listOf(UUID.randomUUID(), orderId, noteText(author, note.at, note.body), author, note.at?.atOffset(ZoneOffset.UTC), note.key.trim().take(MaxKey))
             },
         )
-        return (fresh.size - room).coerceAtLeast(0)
+        val omitted = (fresh.size - room).coerceAtLeast(0)
+        return Added(fresh.size - omitted, omitted)
     }
 
     /**
      * Guarda un archivo de la fuente como adjunto de la orden, una vez por [importKey] (false si ya estaba: entonces no se lee el
      * contenido). La orden admite [MantenimientoRepository.MaxFilesPerOrder] archivos y cada uno [MantenimientoRepository.MaxFileBytes].
      */
-    fun attachFile(tenant: Connection, files: ModuleFiles, orderId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
+    fun attachFile(
+        tenant: Connection,
+        files: ModuleFiles,
+        orderId: UUID,
+        importKey: String,
+        name: String,
+        contentType: String,
+        content: InputStream,
+        actorId: UUID?,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): Boolean {
         val key = importKey.trim().take(MaxKey)
         if (key.isEmpty()) throw MantenimientoValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM mantenimiento_attachments WHERE order_id = ? AND import_key = ?", listOf(orderId, key)) { it.getInt("found") }.isNotEmpty()
@@ -618,14 +710,24 @@ object MantenimientoImportApply {
             throw MantenimientoValidationException(tr("{0} supera el máximo de {1} MB.", fileName, MantenimientoRepository.MaxFileBytes / (1024 * 1024)))
         }
         try {
-            val inserted = tenant.exec(
-                """
-                INSERT INTO mantenimiento_attachments (id, order_id, name, path, content_type, size, backend, ref, uploaded_by, import_key)
-                VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (order_id, import_key) WHERE import_key IS NOT NULL DO NOTHING
-                """.trimIndent(),
-                listOf(UUID.randomUUID(), orderId, fileName, type, stored.size, stored.backend, stored.ref, actorId, key),
-            )
+            // La fila del adjunto y la del registro de actividad se confirman juntas; si fallan, el archivo guardado se borra.
+            val inserted = MantenimientoRepository.transaction(tenant) {
+                val rows = tenant.exec(
+                    """
+                    INSERT INTO mantenimiento_attachments (id, order_id, name, path, content_type, size, backend, ref, uploaded_by, import_key)
+                    VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (order_id, import_key) WHERE import_key IS NOT NULL DO NOTHING
+                    """.trimIndent(),
+                    listOf(UUID.randomUUID(), orderId, fileName, type, stored.size, stored.backend, stored.ref, actorId, key),
+                )
+                if (rows > 0) {
+                    val order = MantenimientoRepository.getOrder(tenant, orderId)
+                    MantenimientoActivity.write(tenant, activity, "orden", orderId.toString(), order?.title.orEmpty(), ActivityActions.AttachmentAdded,
+                        "Importo el adjunto $fileName${order?.let { " a la orden ${MantenimientoActivity.folio(it.number)}" }.orEmpty()}.",
+                        listOf(ActivityChange("file", "Archivo", null, "$fileName (${MantenimientoActivity.sizeLabel(stored.size)})")))
+                }
+                rows
+            }
             if (inserted == 0) {
                 runCatching { files.delete(stored) }
                 return false

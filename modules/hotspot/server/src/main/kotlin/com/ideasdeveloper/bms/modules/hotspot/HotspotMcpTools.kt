@@ -346,7 +346,7 @@ object HotspotMcpTools {
         if (!HotspotServerModule.registerDomain(call.access, call.permissions.companyCode, updated.domain)) {
             throw McpToolException("Ese dominio ya esta registrado en este servidor.")
         }
-        HotspotSettingsRepository.save(call.tenant, updated)
+        HotspotActivity.saveSettings(call.tenant, call.activityActor, current, updated)
         return buildJsonObject {
             put("saved", true)
             put("changed", JsonArray(values.keys.sorted().map(::JsonPrimitive)))
@@ -437,7 +437,7 @@ object HotspotMcpTools {
             throw McpToolException("Ya hay una red configurada con el SSID ${network.ssid} (id ${it.id}); editala en vez de crear otra.")
         }
         try {
-            HotspotNetworks.save(call.tenant, network)
+            HotspotActivity.saveNetwork(call.tenant, call.activityActor, existing, network)
         } catch (failure: HotspotValidationException) {
             throw McpToolException(failure.message.orEmpty())
         }
@@ -451,7 +451,7 @@ object HotspotMcpTools {
 
     private fun deleteNetwork(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
-        if (!HotspotNetworks.delete(call.tenant, id)) throw McpToolException("Esa red no existe; revisa list_networks.")
+        if (!HotspotActivity.deleteNetwork(call.tenant, call.activityActor, id)) throw McpToolException("Esa red no existe; revisa list_networks.")
         return buildJsonObject {
             put("deleted", true)
             put("note", "Los visitantes de esa red vuelven a usar el formulario de registro.")
@@ -466,7 +466,7 @@ object HotspotMcpTools {
         val id = call.requiredString("id", 100)
         val enabled = call.boolean("enabled")
         try {
-            HotspotIntegrations.setEnabled(call.tenant, id, enabled)
+            HotspotIntegrations.setEnabled(call.tenant, id, enabled, call.activityActor)
         } catch (failure: HotspotValidationException) {
             throw McpToolException(failure.message.orEmpty())
         }
@@ -487,10 +487,13 @@ object HotspotMcpTools {
 
     private fun export(call: McpToolCall): JsonElement {
         val (from, to) = dateRange(call)
+        val csv = HotspotReports.csv(call.tenant, from, to)
+        // Exports are logged even though the tool only reads.
+        HotspotActivity.exportReport(call.tenant, call.activityActor, from, to)
         return buildJsonObject {
             put("from", from.toString())
             put("to", to.toString())
-            put("csv", HotspotReports.csv(call.tenant, from, to))
+            put("csv", csv)
         }
     }
 
@@ -557,12 +560,12 @@ object HotspotMcpTools {
             }
             ?: throw McpToolException("'$wanted' no es un usuario activo de la empresa del servidor.")
         val network = "${call.requiredString("company", 63)} · ${call.requiredString("ssid", 64)}"
-        return grantResult(access.grantAction(call.tenant, "add", null, mapOf("network" to network, "user" to access.userLabel(user))))
+        return grantResult(access.grantAction(call.tenant, call.activityActor, "add", null, mapOf("network" to network, "user" to access.userLabel(user))))
     }
 
     private fun removeGrant(call: McpToolCall): JsonElement {
         val access = serverCompanyAccess(call)
-        return grantResult(access.grantAction(call.tenant, "delete", call.requiredUuid("id").toString(), emptyMap()))
+        return grantResult(access.grantAction(call.tenant, call.activityActor, "delete", call.requiredUuid("id").toString(), emptyMap()))
     }
 
     // The UniFi console and site are picked with the API key saved in the app; the key never reaches the agent.
@@ -584,7 +587,7 @@ object HotspotMcpTools {
         } catch (failure: HotspotValidationException) {
             throw McpToolException(failure.message.orEmpty())
         }
-        HotspotSettingsRepository.save(call.tenant, updated)
+        HotspotActivity.saveSettings(call.tenant, call.activityActor, settings, updated)
         return updated
     }
 

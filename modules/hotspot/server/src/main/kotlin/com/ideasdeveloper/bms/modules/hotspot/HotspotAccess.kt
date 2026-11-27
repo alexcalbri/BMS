@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.i18n.trIn
@@ -118,7 +119,7 @@ class HotspotAccess(private val access: ModuleAccessService) {
             "restore" -> true
             else -> return tr("Accion desconocida.") to UiTone.Danger
         }
-        if (!HotspotUserCodes.setAccessEnabled(tenant, userId, enabled)) return tr("No se pudo actualizar el acceso.") to UiTone.Danger
+        if (!HotspotActivity.setUserAccess(tenant, permissions.activityActor, user, enabled)) return tr("No se pudo actualizar el acceso.") to UiTone.Danger
         if (!enabled) {
             val settings = HotspotSettingsRepository.load(tenant)
             val now = java.time.Instant.now()
@@ -193,8 +194,8 @@ class HotspotAccess(private val access: ModuleAccessService) {
         return listOf(list, form)
     }
 
-    /** Adds or removes a grant; returns the message to show. */
-    fun grantAction(tenant: Connection, step: String, id: String?, values: Map<String, String>): Pair<String, String> {
+    /** Adds or removes a grant for [actor]; returns the message to show. */
+    fun grantAction(tenant: Connection, actor: ActivityActor, step: String, id: String?, values: Map<String, String>): Pair<String, String> {
         return when (step) {
             "add" -> {
                 val (companyCode, ssid) = values["network"].orEmpty().split(separator, limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] }
@@ -203,12 +204,12 @@ class HotspotAccess(private val access: ModuleAccessService) {
                 val user = access.centralConnection().use { central -> HotspotUserCodes.users(tenant, central) }
                     .firstOrNull { it.active && userLabel(it) == values["user"] }
                     ?: return tr("Elige el usuario.") to UiTone.Danger
-                HotspotUserCodes.addGrant(tenant, companyCode, ssid, user.id)
+                HotspotActivity.addGrant(tenant, actor, companyCode, ssid, user.id, userLabel(user))
                 tr("{0} puede conectarse a {1} de {2}.", user.name, ssid, companyCode) to UiTone.Success
             }
             "delete" -> {
                 val grantId = id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                if (grantId != null && HotspotUserCodes.deleteGrant(tenant, grantId)) tr("Acceso quitado.") to UiTone.Success
+                if (grantId != null && HotspotActivity.deleteGrant(tenant, actor, grantId)) tr("Acceso quitado.") to UiTone.Success
                 else tr("Ese acceso ya no existe.") to UiTone.Warning
             }
             else -> tr("Accion desconocida.") to UiTone.Danger

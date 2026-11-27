@@ -58,7 +58,11 @@ object OAuthPages {
         val expirations = AgentesScreens.expirations.keys.joinToString("") { option ->
             "<option value=\"${esc(option)}\"${if (option == "90 dias") " selected" else ""}>${esc(tr(option))}</option>"
         }
-        val who = if (user.serverOwner) tr("dueno del servidor") else tr("{0} · empresa {1}", esc(user.username), esc(user.companyCode))
+        val who = when {
+            user.serverOwner -> tr("dueno del servidor")
+            user.serverAdmin -> tr("{0} · administrador del servidor (solo lectura de la auditoria)", esc(user.username))
+            else -> tr("{0} · empresa {1}", esc(user.username), esc(user.companyCode))
+        }
         val client = "<strong>${esc(request.client.name)}</strong>"
         return page(
             tr("Autorizar agente"),
@@ -72,7 +76,7 @@ object OAuthPages {
               ${moduleChecks.ifEmpty { "<p class=\"error\">${tr("Aun no tienes funciones que un agente pueda usar.")}</p>" }}
               <h2>${tr("Limites")}</h2>
               <label class="check"><input type="checkbox" name="readOnly" value="true"> ${tr("Solo lectura: puede consultar, pero no crear ni modificar")}</label>
-              ${if (user.serverOwner) "" else "<label class=\"check\"><input type=\"checkbox\" name=\"groupScope\" value=\"true\"> ${tr("Tambien en las demas empresas de mi grupo (solo si eres el dueno de la empresa)")}</label>"}
+              ${if (user.serverOwner || user.serverAdmin) "" else "<label class=\"check\"><input type=\"checkbox\" name=\"groupScope\" value=\"true\"> ${tr("Tambien en las demas empresas de mi grupo (solo si eres el dueno de la empresa)")}</label>"}
               <label>${tr("La conexion vence en")}
                 <select name="expires">$expirations</select>
               </label>

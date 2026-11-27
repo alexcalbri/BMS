@@ -69,7 +69,18 @@ object CrmSpam {
         }
     }
 
-    fun save(tenant: Connection, settings: CrmSpamSettings) {
+    private val SpamLabels = linkedMapOf(
+        "words" to "Palabras bloqueadas", "maxLinks" to "Maximo de enlaces", "blockCyrillic" to "Bloquear cirilico", "blockedDomains" to "Dominios bloqueados",
+        "channels" to "Canales", "skipKnownLeads" to "No revisar leads conocidos",
+    )
+
+    private fun spamValues(settings: CrmSpamSettings) = mapOf(
+        "words" to settings.words, "maxLinks" to settings.maxLinks, "blockCyrillic" to settings.blockCyrillic, "blockedDomains" to settings.blockedDomains,
+        "channels" to settings.channels.sorted(), "skipKnownLeads" to settings.skipKnownLeads,
+    )
+
+    fun save(tenant: Connection, settings: CrmSpamSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = load(tenant)
         tenant.prepareStatement(
             """
             UPDATE crm_spam_settings SET words = ?, max_links = ?, block_cyrillic = ?, blocked_domains = ?, channels = ?,
@@ -85,6 +96,7 @@ object CrmSpam {
             update.setBoolean(6, settings.skipKnownLeads)
             update.executeUpdate()
         }
+        CrmAudit.settingsChanged(tenant, actor, "Anti-spam", "Cambio las reglas anti-spam del CRM.", spamValues(before), spamValues(settings), SpamLabels)
     }
 
     fun log(tenant: Connection, channel: String, sender: String, reason: String, excerpt: String) {

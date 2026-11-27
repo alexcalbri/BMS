@@ -39,8 +39,8 @@ object MantenimientoMondayServerExtension : ServerExtension, MantenimientoImport
         module = "mantenimiento",
         displayName = "Importacion de mantenimiento desde monday",
         description = "Importa tableros de monday al modulo Mantenimiento: como planes preventivos o como ordenes y proyectos. Lee el tablero con el token de la empresa, mapea sus columnas y trae subelementos, actualizaciones y archivos.",
-        version = "1.1.0",
-        minModuleVersion = "0.2.0", // the bilingual release (minCoreVersion 0.10.0: tr)
+        version = "1.3.0",
+        minModuleVersion = "0.3.0", // activity log (module 0.3.0, minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/mantenimiento_monday",
@@ -52,7 +52,7 @@ object MantenimientoMondayServerExtension : ServerExtension, MantenimientoImport
         ),
         // El token se guarda en ext_mantenimiento_monday__settings y se edita en la pantalla Importar: ningun ajuste es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__read_state.sql"),
+        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__read_state.sql", "migrations/V003__job_agent.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday", UninstallDefault.Delete)),
         ),
@@ -61,6 +61,7 @@ object MantenimientoMondayServerExtension : ServerExtension, MantenimientoImport
     override val migrationPaths = listOf(
         "extensions/mantenimiento_monday/migrations/V001__settings.sql",
         "extensions/mantenimiento_monday/migrations/V002__read_state.sql",
+        "extensions/mantenimiento_monday/migrations/V003__job_agent.sql",
     )
 
     override val runtimeTables = listOf(

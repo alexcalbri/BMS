@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.empleados_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -120,6 +121,8 @@ data class MondayJob(
     val failed: Int,
     val message: String,
     val createdBy: UUID?,
+    /** ActivityActor.toStoredJson de quien empezo la importacion (null en las anteriores a la columna). */
+    val startedActor: String? = null,
     val createdAt: Instant,
     /** Tamano de pagina vigente de la lectura (baja ante complejidad y se conserva entre corridas). */
     val pageSize: Int = 25,
@@ -149,19 +152,20 @@ object EmpleadosMondayJobs {
     // ---- Cola ----
 
     /** Pone en cola la lectura de un tablero. Solo hay una importacion en curso a la vez. */
-    fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, createdBy: UUID?): UUID {
+    fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, createdBy: UUID?, starter: ActivityActor? = null): UUID {
         if (!EmpleadosMondayClient.isBoardId(boardId)) throw EmpleadosMondayException(tr("El id del tablero debe ser un numero."))
         if (recent(tenant, 20).any { it.open }) throw EmpleadosMondayException(tr(OpenJobMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
-                "INSERT INTO $JobsTable (id, board_id, board_name, status, mapping, created_by) VALUES (?, ?, ?, 'reading', CAST(? AS jsonb), ?)",
+                "INSERT INTO $JobsTable (id, board_id, board_name, status, mapping, created_by, started_actor) VALUES (?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?)",
             ).use { insert ->
                 insert.setObject(1, id)
                 insert.setString(2, boardId)
                 insert.setString(3, boardName.take(200))
                 insert.setString(4, json.encodeToString(MondayMapping.serializer(), mapping))
                 insert.setObject(5, createdBy)
+                insert.setString(6, starter?.toStoredJson())
                 insert.executeUpdate()
             }
         } catch (failure: SQLException) {
@@ -208,7 +212,7 @@ object EmpleadosMondayJobs {
 
     private const val JobColumns =
         "id, board_id, board_name, status, cursor, pages, retries, summary::text, mapping::text, total, applied, created, updated, skipped, failed, " +
-            "message, created_by, created_at, page_size, restarts, updated_at"
+            "message, created_by, created_at, page_size, restarts, updated_at, started_actor"
 
     private fun toJob(rows: ResultSet) = MondayJob(
         id = rows.getObject(1, UUID::class.java),
@@ -232,6 +236,7 @@ object EmpleadosMondayJobs {
         pageSize = rows.getInt(19),
         restarts = rows.getInt(20),
         updatedAt = rows.getTimestamp(21).toInstant(),
+        startedActor = rows.getString(22),
     )
 
     fun find(tenant: Connection, id: UUID): MondayJob? =
@@ -449,6 +454,33 @@ object EmpleadosMondayJobs {
             delete.setInt(2, PurgeLimit)
             delete.executeUpdate()
         }
+
+    /**
+     * Lo mismo que [purgeOld] pero dejando en el registro de actividad cada importacion que borra (la fila se escribe antes del
+     * borrado, en la misma transaccion). Es lo que usa el trabajo periodico: [purgeOld] solo borra y no registra nada.
+     */
+    fun purgeOldRecorded(tenant: Connection): Int = inTransaction(tenant) {
+        // Cada importacion que se borra queda antes en el registro de actividad, en la misma transaccion.
+        val due = tenant.prepareStatement(
+            "SELECT id, board_name, status FROM $JobsTable WHERE status IN ('done', 'failed', 'cancelled') " +
+                "AND updated_at < CURRENT_TIMESTAMP - make_interval(days => ?) ORDER BY updated_at LIMIT ? FOR UPDATE SKIP LOCKED",
+        ).use { query ->
+            query.setInt(1, RetentionDays)
+            query.setInt(2, PurgeLimit)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(Triple(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3))) } }
+        }
+        due.forEach { (id, board, status) -> EmpleadosMondayActivity.purged(tenant, id, board, EmpleadosMondayActivity.statusName(status), RetentionDays) }
+        if (due.isEmpty()) return@inTransaction 0
+        tenant.prepareStatement("DELETE FROM $JobsTable WHERE id = ANY (?)").use { delete ->
+            val ids = tenant.createArrayOf("uuid", due.map { it.first }.toTypedArray())
+            try {
+                delete.setArray(1, ids)
+                delete.executeUpdate()
+            } finally {
+                ids.free()
+            }
+        }
+    }
 
     /**
      * Si ya hay una transaccion abierta ([Connection.getAutoCommit] en false) el bloque corre dentro de ella, sin commit ni

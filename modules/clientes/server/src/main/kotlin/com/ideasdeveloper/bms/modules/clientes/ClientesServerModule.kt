@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerHistoryEntry
 import com.ideasdeveloper.bms.server.modules.CustomerSql
@@ -71,8 +74,8 @@ object ClientesServerModule : ServerModule {
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.12.0",
-        minCoreVersion = "0.10.0",
+        version = "0.13.0",
+        minCoreVersion = "0.12.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -128,7 +131,7 @@ object ClientesServerModule : ServerModule {
         get() = CustomerChangeListener { access, tenant, customerId ->
             if (!ClientesSharing.supportsSharing(tenant)) return@CustomerChangeListener
             val company = access.companyOf(tenant) ?: return@CustomerChangeListener
-            ClientesSharing.propagate(access, tenant, company.code, customerId)
+            ClientesSharing.propagate(access, tenant, company.code, customerId, ActivityActor.system())
         }
 
     override fun routes(route: Route, access: ModuleAccessService) {
@@ -157,8 +160,7 @@ object ClientesServerModule : ServerModule {
                         if (loadFields(tenant).any { it.fieldKey == request.fieldKey.trim() }) {
                             return@tenantReply failure(HttpStatusCode.Conflict, "FIELD_DUPLICATE", tr("Ya existe un campo con esa clave."))
                         }
-                        val created = insertField(tenant, request)
-                        ClientesActivity.recordCompany(tenant, "field_created", fieldCreatedBody(created), ClientesActivity.author(tenant, permissions, access))
+                        val created = createFieldLogged(tenant, request, ClientesActivity.author(tenant, permissions, access))
                         json(HttpStatusCode.Created, created)
                     }
                 }
@@ -171,9 +173,8 @@ object ClientesServerModule : ServerModule {
                     ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_FIELD", tr("Campo invalido.")))
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
-                        val deleted = deleteField(tenant, fieldId)
+                        deleteFieldLogged(tenant, fieldId, ClientesActivity.author(tenant, permissions, access))
                             ?: return@tenantReply failure(HttpStatusCode.NotFound, "FIELD_NOT_FOUND", tr("Campo no encontrado."))
-                        ClientesActivity.recordCompany(tenant, "field_deleted", fieldDeletedBody(deleted), ClientesActivity.author(tenant, permissions, access))
                         noContent()
                     }
                 }
@@ -206,9 +207,9 @@ object ClientesServerModule : ServerModule {
                             return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", tr("Ya existe un cliente con ese correo."))
                         }
                         val customerId = UUID.randomUUID()
-                        upsertCustomer(tenant, customerId, request, insert = true)
-                        ClientesActivity.record(tenant, customerId, "created", "", ClientesActivity.author(tenant, permissions, access))
-                        shareNew(access, tenant, permissions.companyCode, customerId)
+                        val author = ClientesActivity.author(tenant, permissions, access)
+                        createCustomerLogged(tenant, customerId, request, author)
+                        shareNew(access, tenant, permissions.companyCode, customerId, author.actor)
                         // The real state: sharing may have merged the new customer into an older one (it is then archived).
                         json(HttpStatusCode.Created, customerAnyStatus(tenant, customerId) ?: request.toResponse(customerId, "active", customerCode(tenant, customerId)))
                     }
@@ -233,11 +234,11 @@ object ClientesServerModule : ServerModule {
                         emailChangeConflict(access, tenant, permissions.companyCode, customerId, before.primaryEmail, request.primaryEmail, permissions.businessOwner)?.let {
                             return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", it)
                         }
-                        val updated = upsertCustomer(tenant, customerId, request, insert = false)
+                        val author = ClientesActivity.author(tenant, permissions, access)
+                        val updated = updateCustomerLogged(tenant, customerId, before, request, author)
                         if (!updated) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
-                        recordUpdate(tenant, customerId, before, request, ClientesActivity.author(tenant, permissions, access))
                         // One record for the companies it is shared with: the edit reaches every copy.
-                        propagateLogged(access, tenant, permissions.companyCode, customerId)
+                        propagateLogged(access, tenant, permissions.companyCode, customerId, author.actor)
                         json(HttpStatusCode.OK, request.toResponse(customerId, "active", customerCode(tenant, customerId)))
                     }
                 }
@@ -251,9 +252,9 @@ object ClientesServerModule : ServerModule {
                 val answer = withContext(Dispatchers.IO) {
                     tenantReply(access, call) { tenant ->
                         originCheck(tenant, customerId, restore = false)?.let { return@tenantReply it }
-                        if (!archiveCustomer(tenant, customerId)) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
-                        ClientesActivity.record(tenant, customerId, "archived", "", ClientesActivity.author(tenant, permissions, access))
-                        propagateLogged(access, tenant, permissions.companyCode, customerId)
+                        val author = ClientesActivity.author(tenant, permissions, access)
+                        if (!archiveLogged(tenant, customerId, author)) return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado."))
+                        propagateLogged(access, tenant, permissions.companyCode, customerId, author.actor)
                         noContent()
                     }
                 }
@@ -268,13 +269,13 @@ object ClientesServerModule : ServerModule {
                     tenantReply(access, call) { tenant ->
                         // Only the company where the customer was created restores it; the copies follow.
                         originCheck(tenant, customerId, restore = true)?.let { return@tenantReply it }
-                        when (restoreCustomer(tenant, customerId)) {
+                        val author = ClientesActivity.author(tenant, permissions, access)
+                        when (restoreLogged(tenant, customerId, author)) {
                             RestoreResult.NotFound -> return@tenantReply failure(HttpStatusCode.NotFound, "CUSTOMER_NOT_FOUND", tr("Cliente no encontrado o no esta archivado."))
                             RestoreResult.EmailTaken -> return@tenantReply failure(HttpStatusCode.Conflict, "CUSTOMER_DUPLICATE_EMAIL", tr("Otro cliente activo ya usa el correo de este cliente."))
                             RestoreResult.Restored -> Unit
                         }
-                        ClientesActivity.record(tenant, customerId, "restored", "", ClientesActivity.author(tenant, permissions, access))
-                        propagateLogged(access, tenant, permissions.companyCode, customerId)
+                        propagateLogged(access, tenant, permissions.companyCode, customerId, author.actor)
                         json(HttpStatusCode.OK, activeCustomer(tenant, customerId)!!)
                     }
                 }
@@ -325,8 +326,8 @@ object ClientesServerModule : ServerModule {
     }
 
     /** Copies the change to the linked companies; the ones that could not be updated are logged and returned. */
-    internal fun propagateLogged(access: ModuleAccessService, tenant: Connection, companyCode: String, customerId: UUID): List<String> =
-        ClientesSharing.propagate(access, tenant, companyCode, customerId).also { failed ->
+    internal fun propagateLogged(access: ModuleAccessService, tenant: Connection, companyCode: String, customerId: UUID, actor: ActivityActor): List<String> =
+        ClientesSharing.propagate(access, tenant, companyCode, customerId, actor).also { failed ->
             if (failed.isNotEmpty()) log.warn("Customer {} not updated in the linked companies {}", customerId, failed.joinToString())
         }
 
@@ -370,10 +371,62 @@ object ClientesServerModule : ServerModule {
             query.executeQuery().use { it.next() }
         }
 
-    // Records what changed in an edit; an edit that changed nothing is not recorded.
-    internal fun recordUpdate(tenant: Connection, id: UUID, before: CustomerResponse, request: CreateCustomerRequest, author: Pair<UUID?, String>) {
+    // Records what changed in an edit (customer history and activity log); an edit that changed nothing is not recorded.
+    internal fun recordUpdate(tenant: Connection, id: UUID, before: CustomerResponse, request: CreateCustomerRequest, author: ClientesAuthor) {
         val labels = loadFields(tenant).associate { it.fieldKey to it.label }
         ClientesActivity.changes(before, request, labels)?.let { ClientesActivity.record(tenant, id, "updated", it, author) }
+        ClientesLog.customerUpdated(tenant, author.actor, id, before, request, labels)
+    }
+
+    // The write, its history row and its activity-log row in one transaction (routes and agent tools share them).
+    internal fun createCustomerLogged(tenant: Connection, id: UUID, request: CreateCustomerRequest, author: ClientesAuthor) = ClientesLog.atomically(tenant) {
+        upsertCustomer(tenant, id, request, insert = true)
+        ClientesActivity.record(tenant, id, "created", "", author)
+        ClientesLog.customerCreated(tenant, author.actor, id, request, loadFields(tenant).associate { it.fieldKey to it.label })
+    }
+
+    /** False when the customer does not exist (or is archived): nothing is written then. */
+    internal fun updateCustomerLogged(tenant: Connection, id: UUID, before: CustomerResponse, request: CreateCustomerRequest, author: ClientesAuthor): Boolean = ClientesLog.atomically(tenant) {
+        if (!upsertCustomer(tenant, id, request, insert = false)) return@atomically false
+        recordUpdate(tenant, id, before, request, author)
+        true
+    }
+
+    internal fun archiveLogged(tenant: Connection, id: UUID, author: ClientesAuthor): Boolean = ClientesLog.atomically(tenant) {
+        if (!archiveCustomer(tenant, id)) return@atomically false
+        ClientesActivity.record(tenant, id, "archived", "", author)
+        ClientesLog.customerStatus(tenant, author.actor, id, ActivityActions.Archived) { "Archivo el cliente $it." }
+        true
+    }
+
+    internal fun restoreLogged(tenant: Connection, id: UUID, author: ClientesAuthor): RestoreResult = ClientesLog.atomically(tenant) {
+        val result = restoreCustomer(tenant, id)
+        if (result == RestoreResult.Restored) {
+            ClientesActivity.record(tenant, id, "restored", "", author)
+            ClientesLog.customerStatus(tenant, author.actor, id, ActivityActions.Restored) { "Restauro el cliente $it." }
+        }
+        result
+    }
+
+    internal fun createFieldLogged(tenant: Connection, request: CreateCustomerFieldRequest, author: ClientesAuthor): CustomerFieldResponse = ClientesLog.atomically(tenant) {
+        val created = insertField(tenant, request)
+        ClientesActivity.recordCompany(tenant, "field_created", fieldCreatedBody(created), author)
+        ClientesLog.record(
+            tenant, author.actor, ClientesLog.Field, created.id, created.label, ActivityActions.SettingsChanged,
+            "Creo el campo personalizado ${created.label} de clientes.", ActivityChanges.created(ClientesLog.fieldValues(created), ClientesLog.FieldLabels),
+        )
+        created
+    }
+
+    internal fun deleteFieldLogged(tenant: Connection, fieldId: UUID, author: ClientesAuthor): CustomerFieldResponse? = ClientesLog.atomically(tenant) {
+        val deleted = deleteField(tenant, fieldId) ?: return@atomically null
+        ClientesActivity.recordCompany(tenant, "field_deleted", fieldDeletedBody(deleted), author)
+        ClientesLog.record(
+            tenant, author.actor, ClientesLog.Field, deleted.id, deleted.label, ActivityActions.SettingsChanged,
+            "Borro el campo personalizado ${deleted.label} de clientes (los valores de los clientes se conservan).",
+            ActivityChanges.deleted(ClientesLog.fieldValues(deleted), ClientesLog.FieldLabels),
+        )
+        deleted
     }
 
     private val fieldKeyPattern = Regex("[a-z][a-z0-9_]{0,62}")
@@ -449,9 +502,9 @@ object ClientesServerModule : ServerModule {
     }
 
     // After creating a customer: copies it to the linked companies at once. Never fails the creation; the background job copies it anyway.
-    internal fun shareNew(access: ModuleAccessService, tenant: Connection, companyCode: String, customerId: UUID) {
+    internal fun shareNew(access: ModuleAccessService, tenant: Connection, companyCode: String, customerId: UUID, actor: ActivityActor) {
         try {
-            ClientesLinking.shareNew(access, tenant, companyCode, customerId)
+            ClientesLinking.shareNew(access, tenant, companyCode, customerId, actor)
         } catch (failure: Exception) {
             log.warn("New customer {} not copied to the linked companies yet: {}", customerId, ClientesLinking.describe(failure))
         }

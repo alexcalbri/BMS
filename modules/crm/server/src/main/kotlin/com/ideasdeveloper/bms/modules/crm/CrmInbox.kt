@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
@@ -70,6 +74,9 @@ object CrmInbox {
     /** The name stored with the lead (activity, source): always Spanish. */
     fun label(channel: String) = channelLabels[channel] ?: channel
 
+    /** Who the activity log shows for what a channel brings in: the integration ("Sitio web", "WhatsApp", "Encuentra24"...). */
+    fun inboundActor(channel: String): ActivityActor = ActivityActor.integration(if (channel == "form") "Sitio web" else label(channel))
+
     /** The name of the channel in the language of who reads it. */
     fun shownLabel(channel: String) = channelLabels[channel]?.let { tr(it) } ?: channel
 
@@ -78,7 +85,8 @@ object CrmInbox {
      * their open lead, creating the customer and the lead when needed. A lead whose email and phone
      * belong to different customers is linked by email and flagged for review, never merged.
      */
-    fun receive(tenant: Connection, inbound: CrmInbound, onNewLead: (UUID) -> Unit = {}): CrmIntakeResult {
+    fun receive(tenant: Connection, inbound: CrmInbound, actor: ActivityActor? = null, onNewLead: (UUID) -> Unit = {}): CrmIntakeResult {
+        val activity = actor ?: inboundActor(inbound.channel)
         val email = CrmContacts.fixEmail(inbound.email).takeIf { CrmContacts.isEmail(it) }.orEmpty()
         val phone = CrmContacts.normalizePhone(inbound.phone)
         val identity = inbound.identity?.trim()?.takeIf { it.isNotEmpty() }
@@ -103,18 +111,18 @@ object CrmInbox {
         }
 
         return transaction(tenant) {
-            val customer = customerId ?: createCustomer(tenant, inbound.name, email, phone, identity, inbound.channel)
-            if (customerId != null) fillMissingContact(tenant, customer, email, phone)
+            val customer = customerId ?: createCustomer(tenant, inbound.name, email, phone, identity, inbound.channel, activity)
+            if (customerId != null) fillMissingContact(tenant, customer, email, phone, activity)
             identity?.let { addIdentity(tenant, customer, inbound.channel, it) }
             if (phone.isNotEmpty()) addIdentity(tenant, customer, "phone", phone)
             val (leadId, created) = if (openLead != null) {
-                if (review.isNotEmpty()) setReview(tenant, openLead, review)
+                if (review.isNotEmpty()) setReview(tenant, openLead, review, activity)
                 openLead to false
             } else {
-                createLead(tenant, customer, inbound, review) to true
+                createLead(tenant, customer, inbound, review, activity) to true
             }
             if (inbound.message.isNotBlank()) {
-                addMessage(tenant, leadId, "in", inbound.channel, inbound.subject, inbound.message, inbound.messageId, "received", "", null, inbound.name, inbound.sentAt)
+                addMessage(tenant, leadId, "in", inbound.channel, inbound.subject, inbound.message, inbound.messageId, "received", "", null, inbound.name, activity, inbound.sentAt)
             }
             // The listing button of Encuentra24 adds its link to the message: the listing joins the lead.
             // (Encuentra24 leads link their listing by id; their text only carries the chat link.)
@@ -139,7 +147,7 @@ object CrmInbox {
         }
     }
 
-    private fun createLead(tenant: Connection, customer: UUID, inbound: CrmInbound, review: String): UUID {
+    private fun createLead(tenant: Connection, customer: UUID, inbound: CrmInbound, review: String, activity: ActivityActor): UUID {
         val stage = CrmRepository.stages(tenant).firstOrNull { it.kind == StageKind.Open } ?: CrmRepository.stages(tenant).first()
         val interest = inbound.interestName?.takeIf { CrmRepository.interestsEnabled(tenant) }?.let { name ->
             CrmRepository.interests(tenant).firstOrNull { it.name.equals(name, ignoreCase = true) }?.id
@@ -164,7 +172,21 @@ object CrmInbox {
             insert.setString(10, review)
             insert.executeUpdate()
         }
-        CrmRepository.addActivity(tenant, id, "created", "Lead creado en ${stage.name}. Origen: $source.", CrmActor(null, label(inbound.channel)), toStage = stage.id)
+        val name = customerName(tenant, customer)
+        CrmRepository.addActivity(
+            tenant, id, "created", "Lead creado en ${stage.name}. Origen: $source.", CrmActor(null, label(inbound.channel), activity), toStage = stage.id,
+            audit = CrmLeadAudit.Row(
+                ActivityActions.Created, "Creo el lead $name desde ${label(inbound.channel)}.",
+                CrmAudit.leadCreated(
+                    mapOf(
+                        "name" to name, "stage" to stage.name, "source" to source, "language" to inbound.language.take(40),
+                        "message" to inbound.message, "details" to inbound.details, "interest" to interest?.let { id -> CrmRepository.interests(tenant).firstOrNull { it.id == id }?.name },
+                    ),
+                    CrmAudit.LeadLabels,
+                ),
+                label = name,
+            ),
+        )
         return id
     }
 
@@ -174,6 +196,12 @@ object CrmInbox {
         val fromListing = inbound.channel != CrmEncuentra24Ads.Source && !source.startsWith("Encuentra24") && CrmEncuentra24Ads.fromText(inbound.message) != null
         return (if (fromListing) "Encuentra24 ($source)" else source).take(120)
     }
+
+    private fun customerName(tenant: Connection, customer: UUID): String =
+        tenant.prepareStatement("SELECT display_name FROM customers WHERE id = ?").use { query ->
+            query.setObject(1, customer)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1).orEmpty() else "" }
+        }
 
     // Name of a customer that arrived without one, e.g. "Contacto de Messenger 123456".
     fun placeholderName(channel: String, identity: String) = "Contacto de ${label(channel)} ${identity.takeLast(6)}"
@@ -189,9 +217,10 @@ object CrmInbox {
         }
 
     /** Gives its name to the customer of that identity when it still has the placeholder; never replaces a name. */
-    fun fillName(tenant: Connection, channel: String, identity: String, name: String): Boolean {
+    fun fillName(tenant: Connection, channel: String, identity: String, name: String, actor: ActivityActor = inboundActor(channel)): Boolean {
         val clean = name.trim().take(200).ifEmpty { return false }
-        val changed = tenant.prepareStatement(
+        val placeholder = placeholderName(channel, identity)
+        val changed = CrmAudit.atomically(tenant) { tenant.prepareStatement(
             """
             UPDATE customers SET display_name = ?, updated_at = CURRENT_TIMESTAMP
             WHERE display_name = ? AND id IN (SELECT customer_id FROM crm_identities WHERE channel = ? AND external_id = ?)
@@ -203,7 +232,14 @@ object CrmInbox {
             update.setString(3, channel)
             update.setString(4, identity)
             update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
-        }
+        }.also { ids ->
+            ids.forEach { id ->
+                CrmAudit.customer(
+                    tenant, actor, id, clean, ActivityActions.Updated, "Dio nombre al cliente $clean desde ${label(channel)}.",
+                    listOf(ActivityChange.of("name", "Nombre", placeholder, clean)),
+                )
+            }
+        } }
         changed.forEach { CrmCustomerEvents.changed(tenant, it) }
         return changed.isNotEmpty()
     }
@@ -222,7 +258,7 @@ object CrmInbox {
         query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
     }
 
-    private fun createCustomer(tenant: Connection, name: String, email: String, phone: String, identity: String?, channel: String): UUID {
+    private fun createCustomer(tenant: Connection, name: String, email: String, phone: String, identity: String?, channel: String, actor: ActivityActor): UUID {
         val id = UUID.randomUUID()
         val display = name.trim().ifEmpty { phone.ifEmpty { email.ifEmpty { placeholderName(channel, identity.orEmpty()) } } }.take(200)
         tenant.prepareStatement(
@@ -234,11 +270,19 @@ object CrmInbox {
             insert.setString(4, phone)
             insert.executeUpdate()
         }
+        CrmAudit.customer(
+            tenant, actor, id, display, ActivityActions.Created, "Creo el cliente $display desde ${label(channel)}.",
+            ActivityChanges.created(CrmAudit.customerValues(display, email, phone), CrmAudit.CustomerLabels),
+        )
         return id
     }
 
     // Adds the email or phone a known customer did not have yet; existing values are never replaced.
-    internal fun fillMissingContact(tenant: Connection, customer: UUID, email: String, phone: String) {
+    internal fun fillMissingContact(tenant: Connection, customer: UUID, email: String, phone: String, actor: ActivityActor) {
+        val before = tenant.prepareStatement("SELECT display_name, primary_email, primary_phone FROM customers WHERE id = ?").use { query ->
+            query.setObject(1, customer)
+            query.executeQuery().use { rows -> if (rows.next()) Triple(rows.getString(1).orEmpty(), rows.getString(2).orEmpty(), rows.getString(3).orEmpty()) else null }
+        }
         tenant.prepareStatement(
             """
             UPDATE customers SET primary_email = CASE WHEN primary_email = '' THEN ? ELSE primary_email END,
@@ -251,7 +295,15 @@ object CrmInbox {
             update.setObject(3, customer)
             update.setString(4, email)
             update.setString(5, phone)
-            if (update.executeUpdate() > 0) CrmCustomerEvents.changed(tenant, customer)
+            if (update.executeUpdate() > 0) {
+                if (before != null) {
+                    val after = CrmAudit.customerValues(before.first, before.second.ifEmpty { email }, before.third.ifEmpty { phone })
+                    ActivityChanges.diff(CrmAudit.customerValues(before.first, before.second, before.third), after, CrmAudit.CustomerLabels).takeIf { it.isNotEmpty() }?.let { changes ->
+                        CrmAudit.customer(tenant, actor, customer, before.first, ActivityActions.Updated, "Completo los datos de contacto del cliente ${before.first}.", changes)
+                    }
+                }
+                CrmCustomerEvents.changed(tenant, customer)
+            }
         }
     }
 
@@ -300,12 +352,13 @@ object CrmInbox {
             query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
         }
 
-    private fun setReview(tenant: Connection, lead: UUID, reason: String) {
-        tenant.prepareStatement("UPDATE crm_leads SET review_reason = ? WHERE id = ? AND review_reason = ''").use {
+    private fun setReview(tenant: Connection, lead: UUID, reason: String, actor: ActivityActor) {
+        val changed = tenant.prepareStatement("UPDATE crm_leads SET review_reason = ? WHERE id = ? AND review_reason = ''").use {
             it.setString(1, reason)
             it.setObject(2, lead)
             it.executeUpdate()
         }
+        if (changed > 0) CrmAudit.lead(tenant, actor, lead, null, ActivityActions.Updated, { "Marco el lead $it para revision." }, listOf(ActivityChange("review", "Revision pendiente", null, reason)))
     }
 
     private fun messageExists(tenant: Connection, channel: String, externalId: String): Boolean =
@@ -314,6 +367,25 @@ object CrmInbox {
             query.setString(2, externalId)
             query.executeQuery().use { it.next() }
         }
+
+    private val ReplyPrefix = Regex("^\\s*(re|rv|fwd?|fw|rf)(\\[\\d+])?\\s*:", RegexOption.IGNORE_CASE)
+
+    /**
+     * The subject as the activity log may keep it: only what staff chose (a template) or typed for a new conversation.
+     * A reply's subject comes from the customer ("Re: ...", or the very subject of a message in the thread), so only its length is kept.
+     */
+    private fun loggedSubject(tenant: Connection, leadId: UUID, subject: String, fromTemplate: Boolean): String {
+        if (fromTemplate) return subject
+        val trimmed = subject.trim()
+        val fromThread = ReplyPrefix.containsMatchIn(trimmed) || tenant.prepareStatement(
+            "SELECT 1 FROM crm_messages WHERE lead_id = ? AND direction = 'in' AND LOWER(TRIM(subject)) = LOWER(?) LIMIT 1"
+        ).use { query ->
+            query.setObject(1, leadId)
+            query.setString(2, trimmed)
+            query.executeQuery().use { it.next() }
+        }
+        return if (fromThread) "Asunto (${trimmed.length} caracteres)" else subject
+    }
 
     fun addMessage(
         tenant: Connection,
@@ -327,16 +399,21 @@ object CrmInbox {
         error: String,
         userId: UUID?,
         author: String,
+        actor: ActivityActor,
         at: Instant? = null,
+        // The template of an email sent from a template and its recipient: only for the activity log.
+        template: String? = null,
+        to: String? = null,
     ) {
-        tenant.prepareStatement(
+        val messageId = UUID.randomUUID()
+        val stored = tenant.prepareStatement(
             """
             INSERT INTO crm_messages (id, lead_id, direction, channel, subject, body, external_id, status, error, user_id, author, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             ON CONFLICT (channel, external_id) DO NOTHING
             """.trimIndent()
         ).use { insert ->
-            insert.setObject(1, UUID.randomUUID())
+            insert.setObject(1, messageId)
             insert.setObject(2, leadId)
             insert.setString(3, direction)
             insert.setString(4, channel)
@@ -351,6 +428,26 @@ object CrmInbox {
             insert.executeUpdate()
         }
         tenant.prepareStatement("UPDATE crm_leads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, leadId); it.executeUpdate() }
+        // The conversation itself stays in crm_messages: the log says who wrote or received what and through which channel, never the text.
+        if (stored > 0) {
+            val lead = CrmAudit.leadLabel(tenant, leadId)
+            val via = label(channel)
+            val changes = listOfNotNull(
+                ActivityChange("channel", "Canal", null, via),
+                template?.let { ActivityChange("template", "Plantilla", null, it) },
+                to?.takeIf { it.isNotBlank() }?.let { ActivityChange("to", "Destinatario", null, it) },
+                subject.takeIf { it.isNotBlank() && direction != "in" }?.let { ActivityChange("subject", "Asunto", null, loggedSubject(tenant, leadId, subject, template != null)) },
+                ActivityChange("status", "Estado", null, status),
+                error.takeIf { it.isNotBlank() }?.let { ActivityChange("error", "Error", null, it) },
+            )
+            val summary = when {
+                direction == "in" -> "Recibio un mensaje por $via del lead $lead."
+                template != null -> "Envio la plantilla $template a ${to ?: lead}."
+                status == "failed" -> "No pudo enviar un mensaje por $via al lead $lead."
+                else -> "Envio un mensaje por $via al lead $lead."
+            }
+            CrmAudit.record(tenant, actor, CrmAudit.Message, messageId.toString(), lead, ActivityActions.Created, summary, changes)
+        }
     }
 
     fun messages(tenant: Connection, leadId: UUID, limit: Int): List<CrmMessage> = tenant.prepareStatement(

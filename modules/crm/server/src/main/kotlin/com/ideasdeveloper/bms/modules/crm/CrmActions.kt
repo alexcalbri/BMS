@@ -58,7 +58,7 @@ interface CloudbedsProvider : CrmActionProvider {
     /** Check-in de la primera reserva pendiente del lead; devuelve el texto del resultado. */
     fun checkInForLead(host: CrmHost, tenant: Connection, leadId: UUID, actor: CrmActor): String
 
-    fun saveSettings(host: CrmHost, tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>)
+    fun saveSettings(host: CrmHost, tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     fun settings(host: CrmHost, tenant: Connection): CrmCloudbedsSettings
 
@@ -66,7 +66,7 @@ interface CloudbedsProvider : CrmActionProvider {
     fun recordError(host: CrmHost, tenant: Connection, error: String)
 
     /** Enciende o apaga el correo de bienvenida de Cloudbeds (una automatización del CRM puede reemplazarlo). */
-    fun setWelcomeEnabled(host: CrmHost, tenant: Connection, enabled: Boolean)
+    fun setWelcomeEnabled(host: CrmHost, tenant: Connection, enabled: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     /** Envía los correos de bienvenida que tocan; devuelve cuántos puso en cola. */
     fun sendWelcomes(host: CrmHost, tenant: Connection, now: LocalDateTime): Int
@@ -85,10 +85,10 @@ interface Encuentra24Provider {
     fun settings(host: CrmHost, tenant: Connection): CrmEncuentra24Settings
 
     /** Guarda el formulario de Integraciones; lanza [CrmValidationException] si algo no es válido. */
-    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>)
+    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     /** Importa los leads desde [from] (null = desde la última sincronización) o lanza [CrmEncuentra24Exception]. */
-    fun sync(host: CrmHost, tenant: Connection, from: LocalDate?): CrmEncuentra24SyncResult
+    fun sync(host: CrmHost, tenant: Connection, from: LocalDate?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): CrmEncuentra24SyncResult
 
     /** Si [text] trae el enlace de un anuncio de Encuentra24, lo agrega a los intereses del lead (si la extensión está activa). */
     fun detectAd(host: CrmHost, tenant: Connection, leadId: UUID, text: String)
@@ -106,10 +106,10 @@ interface WordPressProvider {
     fun settings(host: CrmHost, tenant: Connection): CrmWordPressSettings
 
     /** Guarda el formulario de Integraciones; lanza [CrmValidationException] si algo no es válido. */
-    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>)
+    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     /** Crea un secreto nuevo y lo devuelve para pegarlo en el plugin. */
-    fun newSecret(host: CrmHost, tenant: Connection): String
+    fun newSecret(host: CrmHost, tenant: Connection, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): String
 
     /** Prueba la conexión; devuelve un resumen o lanza [CrmWordPressException]. */
     fun ping(host: CrmHost, tenant: Connection): String
@@ -121,17 +121,17 @@ interface WordPressProvider {
     fun taxonomies(host: CrmHost, tenant: Connection): Map<String, List<String>>
 
     /** Marca la propiedad como vendida en el sitio. */
-    fun markSold(host: CrmHost, tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate)
+    fun markSold(host: CrmHost, tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     /** Lee los agentes del sitio y vincula a los nuevos por correo; devuelve cuántos leyó. */
-    fun syncAgents(host: CrmHost, tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>): Int
+    fun syncAgents(host: CrmHost, tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Int
 
     fun agents(host: CrmHost, tenant: Connection): List<WpAgent>
 
-    fun mapAgent(host: CrmHost, tenant: Connection, wpUserId: Long, userId: UUID?)
+    fun mapAgent(host: CrmHost, tenant: Connection, wpUserId: Long, userId: UUID?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     /** Vincula la propiedad al lead como interés; [activity] es el texto de la actividad (null = el de por defecto). */
-    fun linkListing(host: CrmHost, tenant: Connection, leadId: UUID, listing: WpListing, activity: String?)
+    fun linkListing(host: CrmHost, tenant: Connection, leadId: UUID, listing: WpListing, activity: String?, actor: CrmActor)
 
     /** Guarda el último error del sitio (vacío = sin error) y la hora del último evento. */
     fun recordError(host: CrmHost, tenant: Connection, error: String)
@@ -149,7 +149,7 @@ interface MetaProvider {
     fun settings(host: CrmHost, tenant: Connection): CrmMetaSettings
 
     /** Guarda los ajustes (upsert: sin fila, la crea); los secretos se sellan. */
-    fun save(host: CrmHost, tenant: Connection, settings: CrmMetaSettings)
+    fun save(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     /** Aplica el formulario de Meta; los secretos en blanco o enmascarados conservan los guardados. Lanza [CrmValidationException]. */
     fun merge(current: CrmMetaSettings, values: Map<String, String>): CrmMetaSettings
@@ -157,14 +157,14 @@ interface MetaProvider {
     fun toFormValues(settings: CrmMetaSettings): Map<String, String>
 
     /** Conecta lo que permiten los ajustes (pagina, Instagram, WhatsApp) y guarda el resultado; lanza [CrmMetaException] si la extension no esta activa. */
-    fun setup(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, page: Boolean, whatsApp: Boolean): MetaSetup
+    fun setup(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, page: Boolean, whatsApp: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): MetaSetup
 
     fun log(host: CrmHost, tenant: Connection, event: String, detail: String)
 
     fun recent(host: CrmHost, tenant: Connection): List<MetaLogEntry>
 
     /** Pide a Meta el nombre de los contactos de Messenger e Instagram que siguen sin uno; lanza [CrmMetaException]. */
-    fun fillNames(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, limit: Int): MetaNameFill
+    fun fillNames(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, limit: Int, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): MetaNameFill
 
     /** Envia un texto por WhatsApp y devuelve el wamid; lanza [CrmMetaException]. */
     fun sendWhatsApp(host: CrmHost, settings: CrmMetaSettings, toDigits: String, text: String): String
@@ -173,7 +173,7 @@ interface MetaProvider {
     fun sendPage(host: CrmHost, settings: CrmMetaSettings, recipient: String, text: String, platform: String): String
 
     /** Olvida los tokens y activos de la empresa y deja de enrutar sus webhooks (app del servidor). */
-    fun disconnect(host: CrmHost, tenant: Connection, company: String)
+    fun disconnect(host: CrmHost, tenant: Connection, company: String, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     // ---- App de Meta del servidor ----
 
@@ -185,7 +185,7 @@ interface MetaProvider {
 
     fun loadApp(host: CrmHost, tenant: Connection): CrmMetaServerApp
 
-    fun saveApp(host: CrmHost, tenant: Connection, app: CrmMetaServerApp)
+    fun saveApp(host: CrmHost, tenant: Connection, app: CrmMetaServerApp, actor: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
     fun mergeApp(current: CrmMetaServerApp, values: Map<String, String>): CrmMetaServerApp
 

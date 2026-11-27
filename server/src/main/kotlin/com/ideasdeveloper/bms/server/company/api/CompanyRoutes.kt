@@ -310,7 +310,7 @@ fun Route.companyRoutes(
             return@get
         }
         try {
-            call.respondFile(withContext(Dispatchers.IO) { service.backupPath(context.companyCode, context.token, call.parameters["fileName"].orEmpty()).toFile() })
+            call.respondFile(withContext(Dispatchers.IO) { service.downloadBackup(context.companyCode, context.token, call.parameters["fileName"].orEmpty()).toFile() })
         } catch (exception: CompanySelfException) {
             call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BACKUP_NOT_FOUND", exception.message ?: tr("Backup no encontrado.")))
         }

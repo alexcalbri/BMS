@@ -81,7 +81,7 @@ object ComprasMondayMcpTools {
     /** El mismo contexto que la pantalla, con el usuario del agente (sus permisos vivos ya los comprobo el registro). */
     private fun contextOf(call: McpToolCall): ComprasImportContext {
         val companyCode = call.permissions.companyCode
-        val actor = Actor(call.permissions.userId, call.access.userIdentity(call.tenant, call.permissions)?.name ?: "Agente", call.permissions)
+        val actor = Actor(call.permissions.userId, call.access.userIdentity(call.tenant, call.permissions)?.name ?: "Agente", call.permissions, call.activityActor)
         return ComprasImportContext(call.tenant, companyCode, actor, call.access.files(companyCode, ComprasModule.id), call.notifier, call.access.secrets)
     }
 

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.time.LocalDate
@@ -45,10 +46,10 @@ object TareasExternal {
      * responsibles when it already exists (its state, reviewer, customer and checklist are left as they are). Returns its id.
      * The caller owns the transaction and has already checked that the assignees can use the module.
      */
-    fun upsertTask(tenant: Connection, request: ExternalTaskRequest): UUID {
+    fun upsertTask(tenant: Connection, request: ExternalTaskRequest, actor: ActivityActor = ActivityActor.integration(request.source)): UUID {
         request.validate().firstOrNull()?.let { throw TareasValidationException(it) }
         return TareasRepository.transaction(tenant) {
-            val groupId = request.groupName?.takeIf { it.isNotBlank() }?.let { TareasRepository.findOrCreateGroup(tenant, request.boardId, it) }
+            val groupId = request.groupName?.takeIf { it.isNotBlank() }?.let { TareasLog.findOrCreateGroup(tenant, actor, request.boardId, it) }
             val existing = TareasRepository.findByExternalRef(tenant, request.boardId, request.source, request.externalRef)
             // A task created at the same moment by another request comes back as not created and is updated below.
             val outcome = if (existing == null) {
@@ -56,10 +57,14 @@ object TareasExternal {
             } else {
                 null
             }
-            if (outcome?.created == true) return@transaction outcome.id
+            if (outcome?.created == true) {
+                TareasRepository.get(tenant, outcome.id)?.let { created -> TareasLog.taskCreated(tenant, actor, created, request.source) }
+                return@transaction outcome.id
+            }
             val task = existing ?: outcome?.id?.let { TareasRepository.get(tenant, it) } ?: throw TareasValidationException(tr("No se pudo guardar la tarea."))
             TareasRepository.update(tenant, task.id, request.asInput(groupId ?: task.groupId, task.reviewerId, task.customerId))
             TareasRepository.setAssignees(tenant, task.id, request.assignees)
+            TareasRepository.get(tenant, task.id)?.let { updated -> TareasLog.taskUpdated(tenant, actor, task, updated) }
             task.id
         }
     }

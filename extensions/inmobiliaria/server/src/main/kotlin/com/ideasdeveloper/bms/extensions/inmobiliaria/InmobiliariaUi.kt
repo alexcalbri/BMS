@@ -185,7 +185,7 @@ internal object InmobiliariaUi {
     const val Route = CrmScreens.UiRoute
 
     fun session(context: CrmScreens.Context, actor: CrmActor? = null): InmobiliariaSession =
-        InmobiliariaSession.of(context.tenant, context.permissions, context.scope, actor ?: CrmActor(context.scope.userId, ""))
+        InmobiliariaSession.of(context.tenant, context.permissions, context.scope, actor ?: CrmActor(context.scope.userId, "", context.permissions.activityActor))
 
     fun request(screen: String, op: String, params: Map<String, String> = emptyMap(), formId: String? = null, confirm: String? = null) =
         UiRequest("$Route/$screen", params = params + ("op" to op), confirm = confirm, formId = formId)

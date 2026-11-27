@@ -51,11 +51,18 @@ object ServerMcpTools {
         provisioning: CompanyProvisioningService,
         extensions: ((McpToolCall) -> String) -> List<McpTool> = { emptyList() },
         extensionInstructions: String = "",
+        // Read-only audit tools (list_server_audit, list_company_activity; ServerAuditMcpTools).
+        auditTools: List<McpTool> = emptyList(),
     ): RegisteredModuleMcp =
         RegisteredModuleMcp(
-            ServerMcpModuleId, Name, if (extensionInstructions.isBlank()) Instructions else Instructions + "\n\n" + extensionInstructions,
-            toolsWith({ provisioning }, extensions).map { RegisteredMcpTool(ServerMcpModuleId, Name, it) },
+            ServerMcpModuleId, Name,
+            listOf(Instructions, extensionInstructions, if (auditTools.isEmpty()) "" else AuditInstructions).filter { it.isNotBlank() }.joinToString("\n\n"),
+            (toolsWith({ provisioning }, extensions) + auditTools).map { RegisteredMcpTool(ServerMcpModuleId, Name, it) },
         )
+
+    private const val AuditInstructions =
+        "Para auditar: servidor_list_server_audit lista la auditoria del servidor y servidor_list_company_activity el registro de actividad " +
+            "de las empresas (quien hizo cada cambio). Son de solo lectura y cada consulta queda registrada."
 
     // [provisioning] is only called when a tool runs.
     fun tools(provisioning: () -> CompanyProvisioningService): List<McpTool> = toolsWith(provisioning) { emptyList() }

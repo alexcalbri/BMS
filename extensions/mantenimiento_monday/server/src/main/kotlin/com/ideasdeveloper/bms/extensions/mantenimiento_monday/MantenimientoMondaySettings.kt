@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.mantenimiento_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -130,6 +131,10 @@ data class MondayJob(
     /** Relecturas desde cero por cursor vencido; vuelve a 0 cuando una pagina se lee bien. */
     val restarts: Int = 0,
     val updatedAt: Instant = createdAt,
+    /** Agente de IA que inicio la importacion (null: una persona en la pantalla, o una importacion anterior a la columna). */
+    val createdByAgent: String? = null,
+    /** ActivityActor.toStoredJson de quien empezo la importacion (null en las anteriores a la columna). */
+    val startedActor: String? = null,
 ) {
     val active: Boolean get() = status == MondayJobStatus.Reading || status == MondayJobStatus.Applying
 
@@ -165,6 +170,8 @@ object MantenimientoMondayJobs {
         defaultKind: String,
         mapping: MondayMapping,
         createdBy: UUID?,
+        createdByAgent: String? = null,
+        starter: ActivityActor? = null,
     ): UUID {
         if (!MantenimientoMondayClient.isBoardId(boardId)) throw MantenimientoMondayException(tr("El id del tablero debe ser un numero."))
         if (!MondayDestination.isValid(target)) throw MantenimientoMondayException(tr("Elige el destino: plantillas preventivas u ordenes / proyectos."))
@@ -172,7 +179,7 @@ object MantenimientoMondayJobs {
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
-                "INSERT INTO $JobsTable (id, board_id, board_name, target, default_kind, status, mapping, created_by) VALUES (?, ?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?)",
+                "INSERT INTO $JobsTable (id, board_id, board_name, target, default_kind, status, mapping, created_by, created_by_agent, started_actor) VALUES (?, ?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?, ?)",
             ).use { insert ->
                 insert.setObject(1, id)
                 insert.setString(2, boardId)
@@ -181,6 +188,8 @@ object MantenimientoMondayJobs {
                 insert.setString(5, if (MondayDestination.isValidKind(defaultKind)) defaultKind else MondayDestination.KindCorrective)
                 insert.setString(6, json.encodeToString(MondayMapping.serializer(), mapping))
                 insert.setObject(7, createdBy)
+                insert.setString(8, createdByAgent?.take(200))
+                insert.setString(9, starter?.toStoredJson())
                 insert.executeUpdate()
             }
         } catch (failure: SQLException) {
@@ -213,7 +222,7 @@ object MantenimientoMondayJobs {
 
     private const val JobColumns =
         "id, board_id, board_name, target, default_kind, status, cursor, pages, retries, summary::text, mapping::text, total, applied, created, updated, skipped, failed, " +
-            "files_done, files_failed, message, created_by, created_at, page_size, restarts, updated_at"
+            "files_done, files_failed, message, created_by, created_at, page_size, restarts, updated_at, created_by_agent, started_actor"
 
     private fun toJob(rows: ResultSet) = MondayJob(
         id = rows.getObject(1, UUID::class.java),
@@ -241,6 +250,8 @@ object MantenimientoMondayJobs {
         pageSize = rows.getInt(23),
         restarts = rows.getInt(24),
         updatedAt = rows.getTimestamp(25).toInstant(),
+        createdByAgent = rows.getString(26),
+        startedActor = rows.getString(27),
     )
 
     fun find(tenant: Connection, id: UUID): MondayJob? =
@@ -401,16 +412,31 @@ object MantenimientoMondayJobs {
     const val RetentionDays = 30
     const val PurgeLimit = 5
 
-    /** Borra trabajos terminados, fallidos o cancelados con mas de [RetentionDays] dias; sus filas y personas se van por FK en cascada. */
-    fun purgeOld(tenant: Connection): Int =
-        tenant.prepareStatement(
-            "DELETE FROM $JobsTable WHERE id IN (SELECT id FROM $JobsTable WHERE status IN ('done', 'failed', 'cancelled') " +
-                "AND updated_at < CURRENT_TIMESTAMP - make_interval(days => ?) ORDER BY updated_at LIMIT ?)",
-        ).use { delete ->
-            delete.setInt(1, RetentionDays)
-            delete.setInt(2, PurgeLimit)
-            delete.executeUpdate()
+    /**
+     * Borra trabajos terminados, fallidos o cancelados con mas de [RetentionDays] dias (hasta [PurgeLimit] por pasada); sus filas y personas
+     * se van por FK en cascada. Cada trabajo queda antes en el registro de actividad, en la misma transaccion que el borrado.
+     */
+    fun purgeOld(tenant: Connection): Int = inTransaction(tenant) {
+        val due = tenant.prepareStatement(
+            "SELECT id, board_name, status FROM $JobsTable WHERE status IN ('done', 'failed', 'cancelled') " +
+                "AND updated_at < CURRENT_TIMESTAMP - make_interval(days => ?) ORDER BY updated_at LIMIT ? FOR UPDATE SKIP LOCKED",
+        ).use { query ->
+            query.setInt(1, RetentionDays)
+            query.setInt(2, PurgeLimit)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(MantenimientoMondayActivity.PurgedJob(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3))) } }
         }
+        due.forEach { MantenimientoMondayActivity.purged(tenant, it, RetentionDays) }
+        if (due.isEmpty()) return@inTransaction 0
+        tenant.prepareStatement("DELETE FROM $JobsTable WHERE id = ANY (?)").use { delete ->
+            val ids = tenant.createArrayOf("uuid", due.map { it.id }.toTypedArray())
+            try {
+                delete.setArray(1, ids)
+                delete.executeUpdate()
+            } finally {
+                ids.free()
+            }
+        }
+    }
 
     /**
      * Relee el tablero desde cero (cursor vencido): primero cambia el trabajo (solo si sigue leyendo, y cuenta la relectura)

@@ -85,6 +85,11 @@ stay. Imported events, clients and payments are never deleted.
 - Up to 20,000 items per board and one import in progress at a time.
 - The extension has no scheduled jobs of its own: the Eventos module calls `runPending` from its `import-runner` job.
 
+## 1.2.0 (activity log, needs Core 0.12.0 and Eventos 0.4.0)
+
+- The rows of an import in the company activity log carry who started it ("Importacion (Ana Ruiz)"; "Usuario desconocido" when that user no longer exists) and, when it ends, one totals row with the source (Monday and the board) and the numbers.
+- Also recorded: the monday token (only that it was saved, changed or deleted, never its value), starting, confirming and cancelling an import, and the old imports the cleanup deletes (the row is written before the delete).
+
 ## 1.0.1 (read performance)
 
 - Adaptive paging: on a complexity error (or a response over 5 MB) the page is halved, minimum 10, and the size is stored in the

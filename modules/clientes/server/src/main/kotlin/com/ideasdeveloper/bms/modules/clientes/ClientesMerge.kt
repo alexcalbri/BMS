@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.modules.CustomerReference
 import com.ideasdeveloper.bms.server.modules.GroupCompany
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -345,7 +347,7 @@ object ClientesMerge {
         loser: Candidate,
         winner: Candidate,
         email: String,
-        author: Pair<UUID?, String>,
+        author: ClientesAuthor,
         userCompany: String?,
         keyCache: MutableMap<String, List<ForeignKey>> = HashMap(),
     ): Result {
@@ -381,7 +383,7 @@ object ClientesMerge {
                     throw AbsorbFailure(failureReason(names.getValue(loser.origin), "customer_notes"), failureCode("customer_notes"))
                 }
                 val reason = mergedReason(winner.row.displayName, loser.row.displayName, email)
-                val mergeId = writeMergeRow(loserConnection, loser, winner, names.getValue(winner.origin), email, "merged", reason, moved, author.second, reasonCode = "")
+                val mergeId = writeMergeRow(loserConnection, loser, winner, names.getValue(winner.origin), email, "merged", reason, moved, author.name, reasonCode = "")
                 var committed = 0
                 try {
                     connections.values.filter { it !== loserConnection }.forEach { it.commit(); committed++ }
@@ -391,13 +393,14 @@ object ClientesMerge {
                     if (committed == 0) throw failure
                     log.error("Merge of {} into {} committed in {} databases and then failed ({})", loser.row.id, winner.row.id, committed, ClientesLinking.describe(failure))
                     val incomplete = "Fusion incompleta: algunas empresas ya cambiaron y otra no. Reintenta para terminarla o usa Separar."
-                    recordIncomplete(access, loser, winner, names.getValue(winner.origin), email, incomplete, author.second)
+                    recordIncomplete(access, loser, winner, names.getValue(winner.origin), email, incomplete, author)
                     return Result.Review(incomplete)
                 }
                 return Result.Merged(mergeId, winner, loser)
             } catch (failure: AbsorbFailure) {
                 connections.values.forEach { runCatching { it.rollback() } }
-                writeMergeRow(loserConnection, loser, winner, names.getValue(winner.origin), email, "review", failure.reason, emptyList(), author.second, reasonCode = failure.code)
+                writeMergeRow(loserConnection, loser, winner, names.getValue(winner.origin), email, "review", failure.reason, emptyList(), author.name, reasonCode = failure.code)
+                ClientesLog.reviewCreated(loserConnection, author.actor, loser.row.id, loser.row.displayName, failure.reason)
                 loserConnection.commit()
                 return Result.Review(failure.reason)
             } catch (failure: Throwable) {
@@ -411,10 +414,13 @@ object ClientesMerge {
     }
 
     // Writes the "incomplete merge" review with a fresh connection of the loser's company.
-    private fun recordIncomplete(access: ModuleAccessService, loser: Candidate, winner: Candidate, winnerCompanyName: String, email: String, reason: String, author: String) {
+    private fun recordIncomplete(access: ModuleAccessService, loser: Candidate, winner: Candidate, winnerCompanyName: String, email: String, reason: String, author: ClientesAuthor) {
         runCatching {
             access.tenantConnectionForCompany(loser.origin)?.use { db ->
-                writeMergeRow(db, loser, winner, winnerCompanyName, email, "review", reason, emptyList(), author, reasonCode = "incomplete")
+                ClientesLog.atomically(db) {
+                    writeMergeRow(db, loser, winner, winnerCompanyName, email, "review", reason, emptyList(), author.name, reasonCode = "incomplete")
+                    ClientesLog.reviewCreated(db, author.actor, loser.row.id, loser.row.displayName, reason)
+                }
             }
         }.onFailure { log.error("Could not record the incomplete merge of {} ({})", loser.row.id, ClientesLinking.describe(it)) }
     }
@@ -443,7 +449,7 @@ object ClientesMerge {
         filled: Filled,
         winnerNote: String,
         loserNote: String,
-        author: Pair<UUID?, String>,
+        author: ClientesAuthor,
         withUser: Boolean,
         keyCache: MutableMap<String, List<ForeignKey>>,
     ): List<Moved> {
@@ -481,8 +487,8 @@ object ClientesMerge {
                 update.executeUpdate()
             }
         }
-        ClientesLinking.activity(db, winner.row.id, "merged", winnerNote, author, withUser)
-        if (hasLoser) ClientesLinking.activity(db, loser.row.id, "merged", loserNote, author, withUser)
+        ClientesLinking.activity(db, winner.row.id, "merged", winnerNote, author, withUser, label = winner.row.displayName, action = ActivityActions.Updated)
+        if (hasLoser) ClientesLinking.activity(db, loser.row.id, "merged", loserNote, author, withUser, label = loser.row.displayName, action = ActivityActions.Archived)
         return moved
     }
 
@@ -554,8 +560,9 @@ object ClientesMerge {
      * (merged_id) and [existing] the duplicate found in company [existingCompany] (kept_id). The roles are not the
      * age order on purpose: whoever resolves it by hand decides the winner from the cards. [reasonCode]: name_differs or edit.
      */
-    fun recordPairReview(db: Connection, incoming: Candidate, existing: Candidate, existingCompany: String, email: String, reasonCode: String, reason: String) {
+    fun recordPairReview(db: Connection, incoming: Candidate, existing: Candidate, existingCompany: String, email: String, reasonCode: String, reason: String, actor: ActivityActor) {
         writeMergeRow(db, incoming, Candidate(existing.row, existingCompany), existingCompany, email, "review", reason, emptyList(), "Sistema", reasonCode)
+        ClientesLog.reviewCreated(db, actor, incoming.row.id, incoming.row.displayName, reason)
     }
 
     /** Writes the decision in the loser's company (customer_merges lives where merged_id exists). */
@@ -618,7 +625,7 @@ object ClientesMerge {
         loser: Candidate,
         winner: Candidate,
         moved: List<Moved>,
-        author: Pair<UUID?, String>,
+        author: ClientesAuthor,
         userCompany: String?,
         keyCache: MutableMap<String, List<ForeignKey>> = HashMap(),
     ): SeparateReport {
@@ -683,17 +690,17 @@ object ClientesMerge {
         loserConnection.prepareStatement(
             "UPDATE customer_merges SET status = 'separated', resolved_by = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?"
         ).use { update ->
-            update.setString(1, author.second)
+            update.setString(1, author.name)
             update.setObject(2, mergeId)
             update.executeUpdate()
         }
         // The restored loser is not shared yet (shared = FALSE): the pending pass copies it again to the others (the pair is skipped where the winner is).
-        ClientesLinking.activity(loserConnection, loser.row.id, "separated", separatedActivity(winner.row.displayName, names[winner.origin] ?: winner.origin), author, withUser = loser.origin == userCompany)
+        ClientesLinking.activity(loserConnection, loser.row.id, "separated", separatedActivity(winner.row.displayName, names[winner.origin] ?: winner.origin), author, withUser = loser.origin == userCompany, label = loser.row.displayName, action = ActivityActions.Restored)
         if (ClientesSharing.row(loserConnection, winner.row.id) != null) {
-            ClientesLinking.activity(loserConnection, winner.row.id, "separated", separatedActivity(loser.row.displayName, names[loser.origin] ?: loser.origin), author, withUser = loser.origin == userCompany)
+            ClientesLinking.activity(loserConnection, winner.row.id, "separated", separatedActivity(loser.row.displayName, names[loser.origin] ?: loser.origin), author, withUser = loser.origin == userCompany, label = winner.row.displayName, action = ActivityActions.Updated)
         }
         connections[winner.origin]?.takeIf { it !== loserConnection }?.let { db ->
-            ClientesLinking.activity(db, winner.row.id, "separated", separatedActivity(loser.row.displayName, names[loser.origin] ?: loser.origin), author, withUser = winner.origin == userCompany)
+            ClientesLinking.activity(db, winner.row.id, "separated", separatedActivity(loser.row.displayName, names[loser.origin] ?: loser.origin), author, withUser = winner.origin == userCompany, label = winner.row.displayName, action = ActivityActions.Updated)
         }
         return SeparateReport(returned, irreversible, notesGone, filledReverted)
     }

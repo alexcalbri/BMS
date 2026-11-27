@@ -233,7 +233,8 @@ data class Attachment(
 data class MantenimientoUser(val id: UUID, val label: String, val email: String?)
 
 /** Quién hace un cambio: su id (null para el dueño del servidor, que no es usuario de la empresa) y su nombre para las notas. */
-data class MantenimientoActor(val userId: UUID?, val name: String)
+/** Quien hace un cambio de orden: [name] para su historial; [activity] para el registro de actividad de la empresa. */
+data class MantenimientoActor(val userId: UUID?, val name: String, val activity: com.ideasdeveloper.bms.server.activity.ActivityActor)
 
 data class MantenimientoSettings(val tareasBoardId: UUID?, val tareasPublisherId: UUID?, val dueSoonDays: Int)
 

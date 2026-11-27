@@ -174,7 +174,19 @@ object CrmMail {
         }
     }
 
-    fun save(tenant: Connection, settings: CrmMailSettings) {
+    private val MailLabels = linkedMapOf(
+        "imapEnabled" to "Lectura de correo activada", "imapHost" to "Servidor IMAP", "imapPort" to "Puerto IMAP", "imapUsername" to "Usuario IMAP",
+        "imapPassword" to "Contrasena IMAP", "imapFolder" to "Carpeta", "imapSsl" to "SSL",
+    )
+
+    private fun mailValues(settings: CrmMailSettings) = mapOf(
+        "imapEnabled" to settings.imapEnabled, "imapHost" to settings.imapHost, "imapPort" to settings.imapPort, "imapUsername" to settings.imapUsername,
+        // Only whether the secret changed is compared and stored (the diff masks it).
+        "imapPassword" to settings.imapPassword, "imapFolder" to settings.imapFolder, "imapSsl" to settings.imapSsl,
+    )
+
+    fun save(tenant: Connection, settings: CrmMailSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = load(tenant)
         tenant.prepareStatement(
             """
             UPDATE crm_mail_settings SET imap_enabled = ?, imap_host = ?, imap_port = ?, imap_username = ?, imap_password = ?, imap_folder = ?,
@@ -193,6 +205,9 @@ object CrmMail {
             update.setLong(9, settings.imapLastUid)
             update.executeUpdate()
         }
+        CrmAudit.settingsChanged(
+            tenant, actor, "Correo", "Cambio la lectura de correo del CRM (IMAP).", mailValues(before), mailValues(settings), MailLabels, secrets = setOf("imapPassword"),
+        )
     }
 
     // ---- Templates ----
@@ -204,7 +219,13 @@ object CrmMail {
             }
         }
 
-    fun saveTemplate(tenant: Connection, id: UUID?, values: Map<String, String>): String {
+    private val TemplateLabels = linkedMapOf("name" to "Nombre", "subject" to "Asunto", "body" to "Contenido", "baseLanguage" to "Idioma base", "translate" to "Traducir segun el huesped")
+
+    private fun templateValues(template: CrmTemplate) = mapOf(
+        "name" to template.name, "subject" to template.subject, "body" to template.body, "baseLanguage" to template.baseLanguage, "translate" to template.translate,
+    )
+
+    fun saveTemplate(tenant: Connection, id: UUID?, values: Map<String, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): String = CrmAudit.atomically(tenant) {
         val name = values["name"].orEmpty().trim()
         val subject = values["subject"].orEmpty().trim()
         val body = values["body"].orEmpty()
@@ -236,13 +257,21 @@ object CrmMail {
             statement.setObject(6, savedId)
             if (statement.executeUpdate() != 1) throw CrmValidationException(tr("Esa plantilla ya no existe."))
         }
+        CrmAudit.saved(
+            tenant, actor, "template", savedId.toString(), name, "la plantilla de correo", current?.let(::templateValues),
+            mapOf("name" to name, "subject" to subject, "body" to body, "baseLanguage" to language, "translate" to translate), TemplateLabels,
+        )
         // Editing the template makes its cached translations useless.
         CrmTranslate.clearCache(tenant, savedId)
-        return name
+        name
     }
 
-    fun deleteTemplate(tenant: Connection, id: UUID): Boolean =
+    fun deleteTemplate(tenant: Connection, id: UUID, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Boolean = CrmAudit.atomically(tenant) {
+        templates(tenant).firstOrNull { it.id == id }?.let { old ->
+            CrmAudit.removed(tenant, actor, "template", id.toString(), old.name, "la plantilla de correo", templateValues(old), TemplateLabels)
+        }
         tenant.prepareStatement("DELETE FROM crm_email_templates WHERE id = ?").use { it.setObject(1, id); it.executeUpdate() == 1 }
+    }
 
     // {nombre}, {campo:clave} (custom lead field) or {cliente:clave} (customer field of Clientes).
     val placeholder = Regex("\\{([a-z_]+(?::[A-Za-z0-9_]+)?)\\}")

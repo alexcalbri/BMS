@@ -172,6 +172,15 @@ object EmpleadosRepository {
     fun userIdOf(tenant: Connection, employeeId: UUID): UUID? =
         tenant.query("SELECT user_id FROM empleados_employees WHERE id = ?", listOf(employeeId)) { it.uuid("user_id") }.firstOrNull()
 
+    /** Nombre de una cuenta para el registro de actividad (null si no hay cuenta o no existe). */
+    fun userLabel(tenant: Connection, userId: UUID?): String? {
+        if (userId == null) return null
+        return tenant.query(
+            "SELECT COALESCE(NULLIF(btrim(display_name), ''), postgres_role) AS label FROM application_users WHERE id = ?",
+            listOf(userId),
+        ) { it.getString("label") }.firstOrNull()
+    }
+
     /** Cuentas enlazadas de varias fichas (por ficha); solo para otros modulos y avisos, nunca para mostrar en pantalla. */
     fun userIdsOf(tenant: Connection, employeeIds: Collection<UUID>): Map<UUID, UUID> {
         if (employeeIds.isEmpty()) return emptyMap()

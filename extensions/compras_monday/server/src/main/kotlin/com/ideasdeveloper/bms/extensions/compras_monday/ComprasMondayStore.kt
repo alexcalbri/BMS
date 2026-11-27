@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.compras_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.compras.ComprasImportContext
 import com.ideasdeveloper.bms.modules.compras.ComprasValidationException
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -29,6 +30,10 @@ data class MondayJob(
     val createdByName: String,
     val appliedBy: UUID?,
     val appliedByName: String,
+    /** Agente de IA que confirmo la importacion (null: una persona en la pantalla, o una importacion anterior a la columna). */
+    val appliedByAgent: String? = null,
+    /** ActivityActor.toStoredJson de quien confirmo la importacion (null: anterior a la columna o aun sin confirmar). */
+    val startedActor: String? = null,
     val createdAt: Instant,
     val updatedAt: Instant,
 ) {
@@ -52,7 +57,7 @@ object ComprasMondayStore {
 
     private const val JobColumns =
         "id, board_id, board_name, groups::text AS groups, mapping::text AS mapping, status, cursor, attempts, pages, read_count, " +
-            "created_count, existing_count, failed_count, error, created_by, created_by_name, applied_by, applied_by_name, created_at, updated_at"
+            "created_count, existing_count, failed_count, error, created_by, created_by_name, applied_by, applied_by_name, created_at, updated_at, applied_by_agent, started_actor"
 
     // ---- Token (sellado con la llave de la empresa) ----
 
@@ -107,6 +112,8 @@ object ComprasMondayStore {
         appliedByName = getString("applied_by_name"),
         createdAt = getTimestamp("created_at").toInstant(),
         updatedAt = getTimestamp("updated_at").toInstant(),
+        appliedByAgent = getString("applied_by_agent"),
+        startedActor = getString("started_actor"),
     )
 
     fun job(tenant: Connection, id: UUID): MondayJob? =
@@ -176,14 +183,19 @@ object ComprasMondayStore {
             update.executeUpdate() > 0
         }
 
-    /** Pasa de "lista" a "aplicando" y deja anotado quien pulso Importar (con sus permisos se crean las solicitudes). */
-    fun startApplying(tenant: Connection, id: UUID, userId: UUID?, userName: String): Boolean =
+    /**
+     * Pasa de "lista" a "aplicando" y deja anotado quien pulso Importar (con sus permisos se crean las solicitudes) y, si fue un
+     * agente de IA, su nombre ([agent]): asi cada fila del registro de actividad dice "Agente de <usuario>".
+     */
+    fun startApplying(tenant: Connection, id: UUID, userId: UUID?, userName: String, agent: String? = null, starter: ActivityActor? = null): Boolean =
         tenant.prepareStatement(
-            "UPDATE $JobsTable SET status = 'applying', applied_by = ?, applied_by_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'ready'"
+            "UPDATE $JobsTable SET status = 'applying', applied_by = ?, applied_by_name = ?, applied_by_agent = ?, started_actor = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'ready'"
         ).use { update ->
             update.setObject(1, userId)
             update.setString(2, userName.take(200))
-            update.setObject(3, id)
+            update.setString(3, agent?.take(200))
+            update.setString(4, starter?.toStoredJson())
+            update.setObject(5, id)
             update.executeUpdate() > 0
         }
 
@@ -234,14 +246,32 @@ object ComprasMondayStore {
         }
     }
 
-    /** Borra las importaciones terminadas hace mas de [days] dias (sus filas se van en cascada). */
-    fun purgeOld(tenant: Connection, days: Int = 30): Int =
-        tenant.prepareStatement(
-            "DELETE FROM $JobsTable WHERE status IN ('done', 'failed', 'cancelled') AND updated_at < CURRENT_TIMESTAMP - make_interval(days => ?)"
-        ).use { delete ->
-            delete.setInt(1, days)
-            delete.executeUpdate()
+    /**
+     * Borra las importaciones terminadas hace mas de [days] dias (sus filas se van en cascada). Cada una queda antes en el
+     * registro de actividad, en la misma transaccion que el borrado (la fila se escribe antes de borrar).
+     */
+    fun purgeOld(tenant: Connection, days: Int = 30): Int = transaction(tenant) {
+        val due = tenant.prepareStatement(
+            "SELECT id, board_name, status, created_count, existing_count, failed_count FROM $JobsTable WHERE status IN ('done', 'failed', 'cancelled') " +
+                "AND updated_at < CURRENT_TIMESTAMP - make_interval(days => ?) FOR UPDATE SKIP LOCKED"
+        ).use { query ->
+            query.setInt(1, days)
+            query.executeQuery().use { rows ->
+                buildList { while (rows.next()) add(ComprasMondayActivity.PurgedJob(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), rows.getInt(4), rows.getInt(5), rows.getInt(6))) }
+            }
         }
+        due.forEach { ComprasMondayActivity.purged(tenant, it, days) }
+        if (due.isEmpty()) return@transaction 0
+        tenant.prepareStatement("DELETE FROM $JobsTable WHERE id = ANY (?)").use { delete ->
+            val ids = tenant.createArrayOf("uuid", due.map { it.id }.toTypedArray())
+            try {
+                delete.setArray(1, ids)
+                delete.executeUpdate()
+            } finally {
+                ids.free()
+            }
+        }
+    }
 
     // ---- Candado por importacion (dos corridas no aplican las mismas filas) ----
 
@@ -355,6 +385,25 @@ object ComprasMondayStore {
             throw failure
         } finally {
             tenant.autoCommit = previous
+        }
+    }
+
+    /**
+     * Ejecuta [block] en una transaccion (confirma al terminar, deshace si falla). Si quien llama ya abrio una, el bloque corre
+     * dentro de ella y esa es la que decide: el cambio y su fila del registro de actividad se confirman juntos.
+     */
+    fun <T> transaction(tenant: Connection, block: () -> T): T {
+        if (!tenant.autoCommit) return block()
+        tenant.autoCommit = false
+        try {
+            val result = block()
+            tenant.commit()
+            return result
+        } catch (failure: Throwable) {
+            runCatching { tenant.rollback() }
+            throw failure
+        } finally {
+            runCatching { tenant.autoCommit = true }
         }
     }
 }

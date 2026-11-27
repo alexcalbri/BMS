@@ -1,6 +1,6 @@
 # Modulo Compras
 
-Version 0.3.0. Estado: en desarrollo (`.development`).
+Version 0.4.0. Estado: en desarrollo (`.development`).
 
 Solicitudes de compra por empresa: se solicita, se aprueba y se procede. Cotizar es opcional. Cada negocio es una empresa de BMS, por eso no hay catalogo de sedes; el departamento si es un catalogo configurable.
 
@@ -132,6 +132,10 @@ reimportacion no deshace una aprobacion ni un rechazo hechos en BMS. El resultad
 - Conversion de monedas en los totales (hoy se separan por moneda).
 - Adjuntos y cotizaciones desde MCP.
 - Prueba manual en la app de las pantallas, la subida de archivos y las notificaciones.
+
+## Registro de actividad (0.4.0, needs Core 0.12.0)
+
+Cada alta, cambio, baja, cotizacion, adjunto, estado, aprobacion, departamento, aprobador y ajuste de compras queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP y por importacion). Las historias de la solicitud siguen igual. La fila va en la misma transaccion que el cambio (tambien los ajustes: moneda, departamentos y aprobadores; al quitar un aprobador la fila se escribe antes del borrado). Una solicitud importada deja una fila con sus datos clave (estado y solicitante incluidos), otra por cada cotizacion, departamento nuevo y grupo de adjuntos.
 
 ## Languages (0.3.0, needs Core 0.10.0)
 

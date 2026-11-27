@@ -384,3 +384,13 @@ guest's browser language (`Accept-Language`); the admin screens follow the user'
 subtitle, consent text, footer, email subject, network and pass-source names), the company's own HTML templates,
 the CSV export (headers and values stay in Spanish) and the MCP tools are not translated. Option values and ids the app
 posts back never change with the language.
+
+## Activity log (0.14.0, needs Core 0.12.0)
+
+Every change made by staff or by the configuration is written to the company activity log
+(`activity_log`, in the same transaction as the change): WiFi networks (create, edit, delete), the portal
+settings and colors, the captive-portal templates, the integrations on and off, UniFi (console, site and API
+key, masked), the revocation and restoration of user codes, the grants to networks of other companies, CSV
+exports of the visitors' report, and the CRM check and the SMTP migration when they change a setting or an
+expiry. Guest traffic (registrations, sessions that end on their own, the network guard's disconnects) is not
+logged; the access history stays in `hotspot_accesses`. See `ACTIVITY_LOG_MODULE_GUIDE.md`.

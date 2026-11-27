@@ -155,7 +155,7 @@ object PropietariosMondayMcpTools {
         val id: UUID = call.requiredUuid("job_id")
         val job = PropietariosMondayJobs.find(call.tenant, id) ?: throw McpToolException("No se encontro la importacion.")
         PropietariosMondayFlow.requireJobControl(call.permissions, job)
-        if (!PropietariosMondayJobs.requestApply(call.tenant, id)) {
+        if (!PropietariosMondayFlow.requestApply(call.tenant, call.permissions, job)) {
             throw McpToolException("La importacion esta en estado '${job.status}'; solo se aplica una que este en revision (preview).")
         }
         return buildJsonObject {

@@ -1,4 +1,6 @@
 {
   "Administracion de empresas, identidad y configuracion de cada empresa.": "Company administration, identity and settings of each company.",
-  "Empresa": "Company"
+  "Empresa": "Company",
+  "Permite ver quien hizo cada cambio en la empresa (usuario, modulo, registro y fecha) y exportarlo.": "Lets the user see who made each change in the company (user, module, record and date) and export it.",
+  "Ver el registro de actividad": "View the activity log"
 }

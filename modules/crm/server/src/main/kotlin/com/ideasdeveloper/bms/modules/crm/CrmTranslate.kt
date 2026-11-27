@@ -124,7 +124,18 @@ object CrmTranslate {
         }
     }
 
-    fun save(tenant: Connection, settings: CrmTranslationSettings) {
+    private val TranslationLabels = linkedMapOf(
+        "provider" to "Traductor", "apiKey" to "Clave API del traductor", "model" to "Modelo", "languageField" to "Campo del idioma del huesped",
+        "languageMap" to "Equivalencias de idioma", "translateNotes" to "Traducir las notas del equipo",
+    )
+
+    private fun translationValues(settings: CrmTranslationSettings) = mapOf(
+        "provider" to settings.provider, "apiKey" to settings.apiKey, "model" to settings.model, "languageField" to settings.languageField,
+        "languageMap" to formatLanguageMap(settings.languageMap), "translateNotes" to settings.translateNotes,
+    )
+
+    fun save(tenant: Connection, settings: CrmTranslationSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = load(tenant)
         val map = buildJsonObject { settings.languageMap.forEach { (name, code) -> put(name, code) } }.toString()
         tenant.prepareStatement(
             """
@@ -144,6 +155,10 @@ object CrmTranslate {
             update.setBoolean(6, settings.translateNotes)
             update.executeUpdate()
         }
+        CrmAudit.settingsChanged(
+            tenant, actor, "Traduccion", "Cambio los ajustes de traduccion del CRM.", translationValues(before), translationValues(settings), TranslationLabels,
+            secrets = setOf("apiKey"),
+        )
     }
 
     /** Lead fields that can hold the guest's language: text and lists. */

@@ -2,6 +2,11 @@ package com.ideasdeveloper.bms.server.auth.infrastructure.database
 
 import com.ideasdeveloper.bms.ServerPermissionIds
 import com.ideasdeveloper.bms.ServerRoles
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.CoreActivity
+import com.ideasdeveloper.bms.server.activity.FailedSignIns
 import com.ideasdeveloper.bms.server.admins.AuditActor
 import com.ideasdeveloper.bms.server.admins.ServerAdminPasswords
 import com.ideasdeveloper.bms.server.admins.ServerAdminRow
@@ -174,7 +179,11 @@ class LoginDatabases(
         }
         val target = tenantScope(databases.first) ?: return null
         val targetOwner = target.businessOwner()?.takeIf { it.isActive } ?: return null
-        if (opener == null) return target.respond(targetOwner, toCode)
+        if (opener == null) {
+            return target.respond(targetOwner, toCode)?.also { opened ->
+                target.recordEntry(opened, null, null, "Entro a la empresa desde la empresa $fromCode del mismo dueno.")
+            }
+        }
         val user = when (opener) {
             is Switcher.ServerOwner -> opener.user
             is Switcher.ServerAdmin -> opener.user
@@ -182,6 +191,7 @@ class LoginDatabases(
         }
         return target.respond(targetOwner, toCode, serverOwnerAccess = true)?.also { opened ->
             trackCompanySession(target, opened, user, admin = opener is Switcher.ServerAdmin, toCode, targetOwner.postgresRole, fromCode)
+            target.recordEntry(opened, user, opener is Switcher.ServerAdmin, "Entro a la empresa desde la empresa $fromCode con el selector del servidor.")
         }
     }
 
@@ -322,6 +332,35 @@ class LoginDatabases(
         return allowed
     }
 
+    /**
+     * The server person who opened the company session [token] of [companyCode] from the switcher (the
+     * real person behind it, for the activity log), or null for any other session. Read from the
+     * tracking row; not a permission check (companySessionAllowed is).
+     */
+    fun companySessionOpener(companyCode: String, token: String): ServerPerson? {
+        val opener = openerOf(tokens.hash(token), companyCode) ?: return null
+        return serverPerson(opener)
+    }
+
+    /** A central user as the activity log names them: owner or administrator, display name (or login). Null when unknown. */
+    fun serverPerson(userId: java.util.UUID): ServerPerson? {
+        val row = central.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT users.display_name, users.postgres_role, EXISTS (SELECT 1 FROM server_owners owners WHERE owners.user_id = users.id)
+                FROM application_users users WHERE users.id = ?
+                """.trimIndent()
+            ).use { query ->
+                query.setObject(1, userId)
+                query.executeQuery().use { rows ->
+                    if (rows.next()) Triple(rows.getString(1), rows.getString(2), rows.getBoolean(3)) else null
+                }
+            }
+        } ?: return null
+        val name = row.first?.takeIf { it.isNotBlank() } ?: row.second
+        return ServerPerson(userId, row.second, name, if (row.third) ServerRoles.Owner else ServerRoles.Admin)
+    }
+
     /** True when the company session [token] was opened from the switcher by a server administrator (not the owner). */
     fun openedByServerAdmin(companyCode: String, token: String): Boolean {
         val opener = openerOf(tokens.hash(token), companyCode) ?: return false
@@ -388,6 +427,10 @@ class LoginDatabases(
                     val owner = target.businessOwner()?.takeIf { it.isActive } ?: return null
                     target.respond(owner, toCode, serverOwnerAccess = true)?.also { opened ->
                         trackCompanySession(target, opened, user, admin = admin != null, toCode, owner.postgresRole, fromCode)
+                        target.recordEntry(
+                            opened, user, admin != null,
+                            if (fromCode == null) "Entro a la empresa desde el servidor." else "Entro a la empresa desde la empresa $fromCode con el selector del servidor.",
+                        )
                     }
                 } ?: return null
                 // Leaving a company: that session is not needed any more. Its switcher row stays until it
@@ -407,7 +450,12 @@ class LoginDatabases(
      */
     fun logout(fromCode: String?, token: String): Boolean {
         val scope = if (fromCode == null) serverScope else activeDatabase(fromCode)?.let { tenantScope(it) } ?: return false
-        scope.revoke(token)
+        // The sign-out row is written first; the session is revoked whatever happens to it.
+        try {
+            if (fromCode != null) scope.recordSignOut(fromCode, token)
+        } finally {
+            scope.revoke(token)
+        }
         // The switcher row (if any) is NOT deleted here: X-Company-Code is the caller's, and deleting
         // the row of a session of another company would turn it into an untracked business owner
         // session. Rows are pruned only after their session expired.
@@ -480,14 +528,84 @@ class LoginDatabases(
 
     /** Sign-in of one database: the server (server owners) or a company. */
     private inner class Scope(private val source: DataSource, database: Database, url: String, private val server: Boolean) : LoginScope {
+        private val UnknownLogin = "(usuario desconocido)"
         val users = ApplicationUserRepository(database)
         private val postgresCredentials = PostgresCredentialVerifier(url)
         private val authentication = AuthenticationService(postgresCredentials, users)
         private val sessions = SessionService(ApplicationSessionRepository(database), users, SessionTokenGenerator(), lifetimeSeconds)
 
         override fun login(credentials: LoginCredentials): LoginSuccessResponse? {
-            val user = authenticate(credentials) ?: return null
-            return respond(user, credentials.companyCode)
+            val user = authenticate(credentials)
+            if (user == null) {
+                // Under the existing rate limits; repeated failures of one login and address become one row.
+                failedSignIns.failed(credentials.username, credentials.clientAddress.ifBlank { "desconocida" })
+                return null
+            }
+            failedSignIns.succeeded(credentials.username, credentials.clientAddress.ifBlank { "desconocida" })
+            val response = respond(user, credentials.companyCode) ?: return null
+            try {
+                signedIn(user, credentials)
+            } catch (failure: Throwable) {
+                // Without its row the sign-in does not happen (ACTIVITY_LOG.md §1.2).
+                runCatching { revoke(response.accessToken) }
+                throw failure
+            }
+            return response
+        }
+
+        // Sign-ins: the company's activity log, or for the server provisioning_audit_log (ACTIVITY_LOG.md §3).
+        private fun signedIn(user: ApplicationUser, credentials: LoginCredentials) {
+            val userId = java.util.UUID.fromString(user.id.toString())
+            val address = credentials.clientAddress.ifBlank { "desconocida" }
+            if (server) {
+                val kind = if (isOwner(user)) AuditActor.ServerOwnerKind else AuditActor.ServerAdminKind
+                central.connection.use { connection ->
+                    ProvisioningAudit.insert(connection, AuditActor(user.postgresRole, userId, kind), "server.signed_in", null, null, auditDetails("address" to address))
+                }
+                return
+            }
+            source.connection.use { connection ->
+                val actor = CoreActivity.tenantPerson(connection, userId) ?: ActivityActor.user(userId, user.postgresRole)
+                CoreActivity.recordEvent(
+                    connection, actor, "user", userId.toString(), user.postgresRole, ActivityActions.SignedIn,
+                    "Inicio sesion desde $address.",
+                )
+            }
+        }
+
+        // Failed sign-ins of this database, coalesced (FailedSignIns).
+        val failedSignIns = FailedSignIns { login, address, count, first, last ->
+            // What was typed is never stored (it may be a password typed in the wrong box): only an account that
+            // exists is named, by its own login; anything else is "(usuario desconocido)".
+            fun summary(account: String) = if (count == 1) "Inicio de sesion fallido para $account desde $address."
+                else "$count inicios de sesion fallidos para $account desde $address entre $first y $last."
+            if (server) {
+                val known = login?.trim()?.takeIf { it.isNotEmpty() }?.let { users.findByPostgresRole(it)?.postgresRole }
+                central.connection.use { connection ->
+                    ProvisioningAudit.insert(
+                        connection, AuditActor.system(), "server.sign_in_failed", null, null,
+                        auditDetails("login" to (known ?: if (login == null) "(varios usuarios)" else UnknownLogin), "address" to address, "count" to count,
+                            "first" to first.toString(), "last" to last.toString()),
+                    )
+                }
+            } else {
+                source.connection.use { connection ->
+                    // A known login names its account; an unknown one is the system's (never the password, never the text).
+                    val typed = login?.trim()?.takeIf { it.isNotEmpty() }
+                    val known = typed?.let { CoreActivity.tenantPersonByLogin(connection, it) }
+                    val actor = known?.let { ActivityActor(ActivityActor.Kinds.System, it.userId, "Sistema", "Sistema") } ?: ActivityActor.system()
+                    val account = when {
+                        known != null -> "el usuario '$typed'"
+                        login == null -> "varios usuarios"
+                        else -> UnknownLogin
+                    }
+                    CoreActivity.recordEvent(
+                        connection, actor, "user", known?.userId?.toString(), if (known != null) typed.orEmpty() else UnknownLogin,
+                        ActivityActions.SignInFailed, summary(account),
+                        listOf(ActivityChange("attempts", "Intentos", null, count.toString())),
+                    )
+                }
+            }
         }
 
         // Misma comprobacion que el login (rol de PostgreSQL para duenos, contrasena de aplicacion para el resto), sin abrir sesion.
@@ -545,6 +663,49 @@ class LoginDatabases(
 
         // The active user of a valid session of this database.
         fun sessionUser(token: String): ApplicationUser? = sessions.validateSession(token)
+
+        // Who a company session [token] of [companyCode] is for the activity log: its user, or for a switcher session the server person too.
+        private fun sessionActor(connection: java.sql.Connection, companyCode: String, user: ApplicationUser, token: String): ActivityActor {
+            val userId = java.util.UUID.fromString(user.id.toString())
+            val own = CoreActivity.tenantPerson(connection, userId) ?: ActivityActor.user(userId, user.postgresRole)
+            val opener = companySessionOpener(companyCode, token) ?: return own
+            return ActivityActor.switcher(userId, own.name, opener.kind, opener.userId, opener.name)
+        }
+
+        fun recordSignOut(companyCode: String, token: String) {
+            val user = sessions.validateSession(token) ?: return
+            source.connection.use { connection ->
+                CoreActivity.recordEvent(
+                    connection, sessionActor(connection, companyCode, user, token), "user", user.id.toString(), user.postgresRole,
+                    ActivityActions.SignedOut, "Cerro sesion.",
+                )
+            }
+        }
+
+        /**
+         * Records that [opened] (a session of this company) entered it from elsewhere: [opener] is the
+         * server person of a switcher session (null: the business owner moving within the owner group).
+         * Without the row the new session is revoked and the switch fails.
+         */
+        fun recordEntry(opened: LoginSuccessResponse, opener: ApplicationUser?, admin: Boolean?, summary: String) {
+            try {
+                source.connection.use { connection ->
+                    val ownerId = java.util.UUID.fromString(opened.userId)
+                    val own = CoreActivity.tenantPerson(connection, ownerId) ?: ActivityActor.businessOwner(ownerId, opened.username)
+                    val actor = if (opener == null) own else {
+                        val person = serverPerson(java.util.UUID.fromString(opener.id.toString()))
+                        ActivityActor.switcher(
+                            ownerId, own.name, if (admin == true) AuditActor.ServerAdminKind else AuditActor.ServerOwnerKind,
+                            person?.userId, person?.name ?: opener.postgresRole,
+                        )
+                    }
+                    CoreActivity.recordEvent(connection, actor, "company", opened.companyCode, opened.companyCode.orEmpty(), ActivityActions.SwitchedCompany, summary)
+                }
+            } catch (failure: Throwable) {
+                runCatching { revoke(opened.accessToken) }
+                throw failure
+            }
+        }
 
         fun revokeHash(tokenHash: String) {
             sessions.revokeHash(tokenHash)
@@ -703,6 +864,9 @@ class LoginDatabases(
 }
 
 const val ServerNameSetting = "server.name"
+
+/** A server owner or administrator (central user) as the activity log names them; [kind] is server_owner or server_admin. */
+data class ServerPerson(val userId: java.util.UUID, val login: String, val name: String, val kind: String)
 
 /** Failed server sign-ins of one login allowed per [ServerLoginWindow] before it is throttled. */
 const val ServerLoginMaxFailures = 10

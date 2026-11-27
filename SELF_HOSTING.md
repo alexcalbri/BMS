@@ -78,6 +78,15 @@ server like the owner (no company code) with an application password (16+
 characters, changed at the first sign-in); they get no PostgreSQL role and only
 the permissions and companies the owner gives them. See `SERVER_ADMINS.md`.
 
+Since Core 0.12.0 every company has an append-only **activity log** (tenant
+migration `V011__create_activity_log.sql`, applied by `update.sh` to every
+company and by the server at startup and to new companies): who changed what,
+when and where. The service user gets only `SELECT, INSERT` on `activity_log`
+and its chain, triggers refuse `UPDATE`, `DELETE` and `TRUNCATE`, and there is
+no retention purge. Server sign-ins and failures go to `provisioning_audit_log`.
+See "Activity log integrity" in §14 and `ACTIVITY_LOG.md` §9 for what this does
+and does not guarantee.
+
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
 authentication for that account. This verifies login and the backend is wired
@@ -743,7 +752,36 @@ or managed PostgreSQL backups for the central database and every tenant
 database. The app deliberately does not expose a destructive database restore
 button in the first core release.
 
-------------------------------------------------------------------------
+### Activity log integrity
+
+What is prevented: nobody can edit or delete activity rows through the
+application (no route, tool, screen or job does it), and the triggers refuse
+`UPDATE`, `DELETE` and `TRUNCATE` even to the table owner. What is detected:
+every committed row is sealed into a hash chain (`activity_log_chain`); the
+server recomputes it every hour, compares it with the anchors it keeps in
+`provisioning_audit_log` (owned by `postgres`, the service user may only read
+and append), and reports any altered or deleted row covered by an anchor,
+structural tampering (disabled, extra or replaced triggers and functions,
+rules, row security, new columns or types...), a missing table and unsealed
+rows, as `activity.integrity_failed` plus a notification to the server owners.
+What is **not** guaranteed: anyone with direct database access as the service
+user or the server owner's role, root, the PostgreSQL superuser or the hosting
+provider can alter the data; changes made after the last hourly anchor can be
+hidden by recomputing the chain; a compromised server can stop the verification
+(visible as anchors that stop appearing). The log is not proof against the
+server operator.
+
+Run the verification at any time as the server owner:
+
+``` bash
+curl -fsS -H "Authorization: Bearer <owner session token>" \
+  "https://<domain>/server/activity/verify?company=<code>"   # without company: every company
+```
+
+`ok`, `problems` and `firstBadId` say what was found. Back up and restore
+company databases as usual (§14): the chain travels with the database, and a
+restore of a copy older than the last anchor is reported as missing rows (it
+is: they are lost), which is the record of that restore.
 
 ## 15. Upgrade Procedure
 
@@ -812,6 +850,12 @@ sudo curl -fsSL -o /root/bms-update/update.sh https://raw.githubusercontent.com/
 sudo curl -fsSL -o /root/bms-update/mirror.sh https://raw.githubusercontent.com/alexcalbri/BMS/master/scripts/ubuntu/mirror.sh
 sudo bash /root/bms-update/update.sh
 ```
+
+**Updating to the activity log (Core 0.12).** `update.sh` applies tenant V011
+to every company as the `postgres` superuser, like the earlier tenant
+migrations, and grants the service user `SELECT, INSERT` on `activity_log` and
+`activity_log_chain` and `USAGE` on its sequence. Afterwards
+`GET /server/activity/verify` should report every company `ok`.
 
 If `update.sh` (or `mirror.sh`) is in a path that is not entirely root-owned
 (every directory up to `/`, no group/other write, no symlinks), for example

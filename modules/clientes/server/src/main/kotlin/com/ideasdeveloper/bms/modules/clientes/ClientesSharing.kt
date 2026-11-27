@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
@@ -112,9 +113,6 @@ object ClientesSharing {
             query.executeQuery().use { it.next() }
         }
 
-    // Author of what happens without a user (a change that reached another company by itself).
-    private val SystemAuthor: Pair<UUID?, String> = null to "Sistema"
-
     /**
      * After an edit or archive in this company, copies the customer's data to the other copies of a
      * shared customer (the origin and the companies it is shared with). Nothing for a customer that
@@ -125,7 +123,7 @@ object ClientesSharing {
      * (the pending pass copies it) and a copy leaves a review "edit". Returns the names of the companies that
      * could not be updated.
      */
-    fun propagate(access: ModuleAccessService, tenant: Connection, currentCode: String, id: UUID): List<String> {
+    fun propagate(access: ModuleAccessService, tenant: Connection, currentCode: String, id: UUID, by: ActivityActor): List<String> {
         val customer = customer(tenant, id, currentCode) ?: return emptyList()
         if (!customer.shared || !customer.visible) return emptyList()
         val row = row(tenant, id) ?: return emptyList()
@@ -133,10 +131,10 @@ object ClientesSharing {
         val group = access.linkedCompanies(currentCode, ClientesLinking.LinkPurpose)
         val failed = mutableListOf<String>()
         val ran = ClientesLinking.withShortLock(access, currentCode) {
-            propagateLocked(access, tenant, currentCode, customer, row, group, failed)
+            propagateLocked(access, tenant, currentCode, customer, row, group, failed, ClientesLog.sharingActor(by))
             true
         }
-        if (ran == null) ClientesLinking.deferEdit(tenant, currentCode, customer.origin, row)
+        if (ran == null) ClientesLinking.deferEdit(tenant, currentCode, customer.origin, row, ClientesLog.sharingActor(by))
         return failed
     }
 
@@ -148,6 +146,7 @@ object ClientesSharing {
         row: Row,
         group: List<GroupCompany>,
         failed: MutableList<String>,
+        actor: ActivityActor,
     ) {
         val groupCodes = group.map { it.code }.toSet()
         val keyCache = HashMap<String, List<ClientesMerge.ForeignKey>>()
@@ -155,7 +154,7 @@ object ClientesSharing {
             val outcome = try {
                 access.tenantConnectionForCompany(company.code)?.use { target ->
                     if (!supportsSharing(target) || !ClientesLinking.supportsLinking(target)) return@use PropagateOutcome.Updated
-                    propagateOne(access, tenant, currentCode, customer, row, group, groupCodes, company, target, keyCache)
+                    propagateOne(access, tenant, currentCode, customer, row, group, groupCodes, company, target, keyCache, actor)
                 } ?: PropagateOutcome.Failed
             } catch (failure: ClientesMerge.CompanyUnavailableException) {
                 log.warn("Could not propagate customer {} to company {}: {}", row.id, company.code, failure.message)
@@ -186,6 +185,7 @@ object ClientesSharing {
         company: GroupCompany,
         target: Connection,
         keyCache: MutableMap<String, List<ClientesMerge.ForeignKey>>,
+        actor: ActivityActor,
     ): PropagateOutcome {
         if (row.status != "archived" && row.email.isNotBlank()) {
             val incoming = ClientesMerge.Candidate(row, customer.origin)
@@ -194,7 +194,7 @@ object ClientesSharing {
                 is ClientesMerge.Decision.Merge -> {
                     val result = ClientesMerge.merge(
                         access, group, mapOf(currentCode to tenant, company.code to target),
-                        decision.loser, decision.winner, row.email, SystemAuthor, userCompany = null, keyCache = keyCache,
+                        decision.loser, decision.winner, row.email, ClientesAuthor.system(actor), userCompany = null, keyCache = keyCache,
                     )
                     return when {
                         result is ClientesMerge.Result.Merged && decision.loser.row.id == row.id -> PropagateOutcome.MergedAway
@@ -205,14 +205,21 @@ object ClientesSharing {
                 is ClientesMerge.Decision.NameDiffers -> {
                     ClientesMerge.recordPairReview(
                         tenant, incoming, existing!!, company.code, row.email, "edit",
-                        ClientesMerge.editConflictReason(row.displayName, existing.row.displayName, company.name, row.email),
+                        ClientesMerge.editConflictReason(row.displayName, existing.row.displayName, company.name, row.email), actor,
                     )
                     return PropagateOutcome.Updated
                 }
                 else -> Unit
             }
         }
-        target.prepareStatement(
+        // The copy of this company is changed by itself: its own activity log says what changed (inside the transaction of the change).
+        val previous = row(target, row.id)
+        ClientesLog.atomically(target) { writeCopyUpdate(target, row, previous, currentCode, actor) }
+        return PropagateOutcome.Updated
+    }
+
+    private fun writeCopyUpdate(target: Connection, row: Row, previous: Row?, fromCompany: String, actor: ActivityActor) {
+        val written = target.prepareStatement(
             """
             UPDATE customers SET display_name = ?, primary_email = ?, primary_phone = ?, status = ?, customer_type = ?,
                 flexible_attributes = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP
@@ -235,7 +242,7 @@ object ClientesSharing {
             update.setString(13, row.attributes)
             update.executeUpdate()
         }
-        return PropagateOutcome.Updated
+        if (written > 0) ClientesLog.copyWritten(target, actor, previous, row, fromCompany)
     }
 
     /**
