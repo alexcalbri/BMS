@@ -960,34 +960,39 @@ set and versions.
 1. checks `/opt/bms/source`, `/opt/bms/app`, `/etc/bms/server.env` and `bms.service`; asks for the branch, tag or
    commit and syncs the root-owned mirror `/var/lib/bms/mirror` to it (with the signature check of `mirror.sh` when it
    has one, SIGNING.md); every script and SQL file root runs comes from that mirror;
-2. **builds and tests first**: `git archive` of the mirror commit into `/opt/bms/build-tree`, owned by the build user
+2. **checks everything it can without changing anything**, before the build: the tools it needs from the backup on
+   (`openssl`, `pg_dump`, `psql`, `curl`...), the values `server.env` must hold afterwards (the provisioning login, its
+   password — generated here when missing — and `BMS_MASTER_KEY`, validated now and written only after the stop), the
+   shape of `DB_URL`, the migration files of the release, the company list, the role layout rules and the free space for
+   the database copy. A failure here stops the update with the server untouched and running (`No se cambio nada`);
+3. **builds and tests**: `git archive` of the mirror commit into `/opt/bms/build-tree`, owned by the build user
    `bms-build` (not the service user `bms`: build code — Gradle plugins, dependencies, Node — cannot read the running
    server's environment or files), `:server:test :server:installDist` and the web app, with a clean environment, no
    local build cache and no user-level Gradle/Maven/npm settings (removed before each build). Every process of the
    build user is killed before root reads anything the build produced; root copies build output only through a
    root-owned archive it checks first (no links, no special files, no path outside). If this fails nothing on the
    server has changed;
-3. **backs up**: `pg_dump` of the control and every company database (`/var/lib/bms/backups/<time>/db`, root-only;
+4. **backs up**: `pg_dump` of the control and every company database (`/var/lib/bms/backups/<time>/db`, root-only;
    refused when the disk would keep less than 2 GiB free), the current app, web app, `server.env` and the unit drop-ins;
-4. stops `bms.service`, completes `server.env` (new non-secret keys and `DB_PROVISIONING_*`; copies
+5. stops `bms.service`, completes `server.env` (new non-secret keys and the `DB_PROVISIONING_*` planned in step 2; copies
    `server.env.update-backup.*`, mode 600, last three kept), creates or updates the provisioning role, moves the
    PostgreSQL roles to the layout of section 5 (Roles de PostgreSQL), applies the control migrations as the superuser
    (every `database/control/migrations/V*.sql` in order) and the company migrations **as the database owner's role
    through the provisioning login** (`SET ROLE`, `search_path=public`, only on validated company databases — never as
    the superuser), installs the root helpers (`bms-domains-sync`, `bms-core-update`, `bms-backup`) and the systemd
    hardening drop-in;
-5. replaces `/opt/bms/app` (with the release's company migrations in `/opt/bms/app/migrations`, root-owned:
+6. replaces `/opt/bms/app` (with the release's company migrations in `/opt/bms/app/migrations`, root-owned:
    `MIGRATIONS_ROOT` points there, so the service user can no longer change SQL that later runs as the owner's role)
    and `/opt/bms/web`, moves `/opt/bms/source` to the same commit (as `bms`, a reference copy only), starts the service
    and checks it: HTTP answers, the log since the start says `PostgreSQL connection verified` and has no PostgreSQL
    permission or authentication error, and the runtime role and the provisioning login still reach every database.
    Then it writes the deployed commit to `/var/lib/bms/deployed-commit`;
-6. **automatic rollback** if anything in steps 4–5 fails or the check fails: previous binaries and web app,
+7. **automatic rollback** if anything in steps 5–6 fails or the check fails: previous binaries and web app,
    `server.env`, unit drop-ins, root helpers and their units (`bms-core-update`, `bms-domains-sync`, `bms-backup`,
    `mirror.sh`), the runtime role's membership in the owner's role (the previous release needs it), restart, check. The databases are **not** restored automatically: the pre-update dumps stay and the commands are
    printed (see "Restore" in section 14). Migrations are transactional per file, so a failed one leaves its database as
    it was;
-7. rewrites the Nginx configuration (section 13), restoring the previous one if it fails, and prunes old backups
+8. rewrites the Nginx configuration (section 13), restoring the previous one if it fails, and prunes old backups
    (last 5 updates, database dumps of the last 3), logs and Nginx copies. Nothing after the deploy can mark the update
    failed.
 
@@ -1013,6 +1018,14 @@ done
 sudo bash /root/bms-update/preflight.sh
 sudo bash /root/bms-update/update.sh
 ```
+
+**Locale.** Every script under `scripts/ubuntu` runs with `LC_ALL=C.UTF-8` (plain `C` when that locale is missing),
+whatever the server's `LANG` is, and each exact ASCII check (role names, commits, passwords, domains) also sets
+`LC_ALL=C` for that one test (`bms_ascii_match`): with `LANG=en_US.UTF-8` a bracket range such as `[!-~]` does not mean
+printable ASCII (an update was refused that way with "DB_PROVISIONING_PASSWORD debe tener al menos 16 caracteres ASCII
+imprimibles"), and `[a-z]` lets accented letters through. The build keeps `LANG=C.UTF-8`. `sudo bash update.sh
+--self-test` runs the validators in the current locale and changes nothing; `preflight.sh` shows the system locale
+and runs that self-test with it.
 
 If `update.sh` (or `mirror.sh`) is in a path that is not entirely root-owned (every directory up to `/`, no
 group/other write, no symlinks), for example `/opt/bms/source/scripts/ubuntu/update.sh`, it refuses to run. It also

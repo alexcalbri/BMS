@@ -18,9 +18,89 @@ fi
 set -Eeuo pipefail
 set +x
 umask 077
+# Locale (scripts/ubuntu/tests/locale_test.sh): with the server's LANG (en_US.UTF-8 and others) bracket ranges such as
+# [!-~] or [a-z], sort orders and case conversions do not mean plain ASCII. Everything below runs as in C for ASCII while
+# text stays UTF-8 (plain C when C.UTF-8 is missing); the exact ASCII checks also set LC_ALL=C themselves (bms_ascii_match).
+if [[ $(LC_ALL=C.UTF-8 locale charmap 2>/dev/null) == UTF-8 ]]; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+unset LANGUAGE
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'AVISO: %s\n' "$*" >&2; }
+
+# BEGIN validators (pure functions: preflight.sh runs them through --self-test, scripts/ubuntu/tests/locale_test.sh under
+# several locales). Every exact ASCII check goes through bms_ascii_match, so it does not depend on the locale at all.
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+valid_sha() { bms_ascii_match "$1" '^[0-9a-f]{40}$'; }
+valid_git_ref() { bms_ascii_match "$1" '^[a-zA-Z0-9][a-zA-Z0-9._/-]*$' && [[ $1 != *..* ]]; }
+valid_database_name() { bms_ascii_match "$1" '^[a-z][a-z0-9_]{0,62}$'; }
+valid_role_name() { valid_database_name "$1" && [[ $1 != pg_* && $1 != postgres ]]; }
+valid_build_user() { bms_ascii_match "$1" '^[a-z][a-z0-9-]{0,31}$' && [[ $1 != root ]]; }
+# The provisioning password goes into a pgpass line: printable ASCII without ":" or "\", at least 16 characters.
+valid_provisioner_password() { bms_ascii_match "$1" '^[!-~]{16,}$' && [[ $1 != *:* && $1 != *\\* ]]; }
+generate_provisioner_password() { openssl rand -hex 32; }
+
+# jdbc:postgresql://host:port/database -> "host port"
+db_host_port() {
+    local url=$1 rest host port
+    rest=${url#jdbc:postgresql://}
+    rest=${rest%%/*}
+    host=${rest%%:*}
+    port=5432
+    [[ $rest == *:* ]] && port=${rest##*:}
+    bms_ascii_match "$host" '^[A-Za-z0-9.-]+$' && bms_ascii_match "$port" '^[0-9]{1,5}$' || return 1
+    printf '%s %s\n' "$host" "$port"
+}
+
+# Migrations of [dir] (V###__*.sql) in version order, from number [min] on; the order is byte order in any locale.
+sorted_migrations() {
+    LC_ALL=C find "$1" -maxdepth 1 -type f -name 'V[0-9][0-9][0-9]__*.sql' | LC_ALL=C sort |
+        LC_ALL=C awk -F/ -v min="${2:-0}" '{ n = substr($NF, 2, 3) + 0; if (n >= min) print }'
+}
+
+# What preflight.sh checks with `bash update.sh --self-test`: the validators above give the expected answers in the
+# locale this runs in. Prints PASS/FAIL per check; returns 1 if any fails. Changes nothing.
+validators_self_test() {
+    local failures=0 password dir expected actual
+    check() {
+        if "${@:3}"; then actual=si; else actual=no; fi
+        if [[ $actual == "$2" ]]; then printf 'PASS validador: %s\n' "$1"; else printf 'FAIL validador: %s (esperado %s)\n' "$1" "$2"; failures=$((failures + 1)); fi
+    }
+    if command -v openssl >/dev/null 2>&1; then password=$(generate_provisioner_password); else password=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef; fi
+    check 'contrasena generada (64 hex)' si valid_provisioner_password "$password"
+    check 'contrasena ASCII imprimible' si valid_provisioner_password 'Abc!def#ghi%jkl&mno~'
+    check 'contrasena corta' no valid_provisioner_password 'abc123'
+    check 'contrasena con letra no ASCII' no valid_provisioner_password 'contraseña-larga-123456'
+    check 'contrasena con dos puntos' no valid_provisioner_password 'con:dos-puntos-123456'
+    check 'contrasena con barra invertida' no valid_provisioner_password 'con\barra-invertida-1'
+    check 'contrasena con espacio' no valid_provisioner_password 'con espacio 1234567890'
+    check 'rol bms_provisioner' si valid_role_name bms_provisioner
+    check 'rol con mayuscula' no valid_role_name Bms_app
+    check 'rol con letra no ASCII' no valid_role_name josé
+    check 'rol reservado pg_' no valid_role_name pg_read
+    check 'usuario de compilacion' si valid_build_user bms-build
+    check 'commit de 40 hex' si valid_sha 0123456789abcdef0123456789abcdef01234567
+    check 'commit con mayusculas' no valid_sha 0123456789ABCDEF0123456789abcdef01234567
+    check 'referencia master' si valid_git_ref master
+    check 'referencia con letra no ASCII' no valid_git_ref ramá
+    check 'servidor de DB_URL' si db_host_port jdbc:postgresql://127.0.0.1:5432/bms_control
+    check 'servidor de DB_URL no ASCII' no db_host_port jdbc:postgresql://séver:5432/bms_control
+    dir=$(mktemp -d)
+    : > "$dir/V010__a.sql"; : > "$dir/V010__A.sql"; : > "$dir/V002__b.sql"; : > "$dir/V001__z.sql"; : > "$dir/V1__no.sql"
+    expected="$dir/V002__b.sql $dir/V010__A.sql $dir/V010__a.sql"
+    actual=$(sorted_migrations "$dir" 2 | paste -sd ' ')
+    rm -rf -- "$dir"
+    if [[ $actual == "$expected" ]]; then printf 'PASS validador: orden de migraciones\n'
+    else printf 'FAIL validador: orden de migraciones (%s)\n' "${actual//$dir\//}"; failures=$((failures + 1)); fi
+    unset -f check
+    (( failures == 0 ))
+}
+# END validators
+
+if [[ ${1:-} == --self-test ]]; then
+    validators_self_test
+    exit
+fi
 
 ask() {
     local value
@@ -51,7 +131,7 @@ done
 # Se reconstruyen para el re-exec bajo flock.
 SCRIPT_ARGS=()
 if [[ $NON_INTERACTIVE == true ]]; then
-    [[ $ARG_COMMIT =~ ^[0-9a-f]{40}$ ]] || die '--commit debe ser un sha completo de 40 caracteres hexadecimales.'
+    valid_sha "$ARG_COMMIT" || die '--commit debe ser un sha completo de 40 caracteres hexadecimales.'
     case "$ARG_TARGET" in
         server|webapp|ambos) ;;
         *) die '--target debe ser server, webapp o ambos.' ;;
@@ -313,6 +393,62 @@ prune_old() {
     done < <(find "$dir" -mindepth 1 -maxdepth 1 -name "$pattern" -printf '%T@ %p\n' | sort -rn | tail -n "+$((keep + 1))" | cut -d' ' -f2-)
 }
 
+# jdbc:postgresql://host:port/database -> jdbc:postgresql://host:port/ (TENANT_JDBC_URL_PREFIX).
+tenant_prefix_of() {
+    [[ -n $1 && ${1%/*}/ != "$1/" ]] || return 1
+    printf '%s/\n' "${1%/*}"
+}
+
+# Tools the update needs from the backup on (pg_dump, openssl...): checked before the build, so a missing one never
+# stops the update after the service is stopped.
+require_tools() {
+    local tool missing=()
+    for tool in awk sed find sort mktemp realpath install stat cmp runuser git tar sha256sum curl openssl psql pg_dump \
+        systemctl systemd-analyze journalctl flock; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    (( ${#missing[@]} == 0 )) || die "Faltan herramientas: ${missing[*]} (instala sus paquetes, p. ej. openssl, postgresql-client, curl). No se cambio nada."
+}
+
+# Everything server.env must hold after configure_server_env, generated and validated before the build (nothing is
+# written here): the provisioning login and its password, the master key, DB_URL's shape. A failure stops the update
+# with the server untouched and running; configure_server_env (after the stop) only writes these values.
+PLANNED_PROVISIONER=''
+PLANNED_PROVISIONER_PASSWORD=''
+PLANNED_MASTER_KEY=''
+plan_update_config() {
+    local db_url password
+    db_url=$(config_value DB_URL)
+    [[ -n $db_url ]] || die 'DB_URL no existe en /etc/bms/server.env. No se cambio nada.'
+    tenant_prefix_of "$db_url" >/dev/null || die 'No se pudo inferir TENANT_JDBC_URL_PREFIX desde DB_URL. No se cambio nada.'
+    db_host_port "$db_url" >/dev/null || die 'No se pudo leer servidor y puerto de DB_URL. No se cambio nada.'
+    if config_has_key DB_PROVISIONING_USER; then
+        PLANNED_PROVISIONER=$(config_value DB_PROVISIONING_USER)
+    else
+        [[ $(pg_super_count "SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = '$DEFAULT_PROVISIONER'") == 0 ]] ||
+            die "Ya existe un rol PostgreSQL $DEFAULT_PROVISIONER que no figura en server.env. Si es de BMS, agrega DB_PROVISIONING_USER=$DEFAULT_PROVISIONER y DB_PROVISIONING_PASSWORD (la de ese rol) a server.env; si no, renombralo. No se cambio nada."
+        PLANNED_PROVISIONER=$DEFAULT_PROVISIONER
+    fi
+    valid_role_name "$PLANNED_PROVISIONER" || die 'DB_PROVISIONING_USER invalido en server.env. No se cambio nada.'
+    [[ $PLANNED_PROVISIONER != "$DB_USER" ]] || die 'DB_PROVISIONING_USER debe ser distinto de DB_USER. No se cambio nada.'
+    if config_has_key DB_PROVISIONING_PASSWORD; then
+        password=$(config_value DB_PROVISIONING_PASSWORD)
+        password=${password#\"}
+        password=${password%\"}
+        valid_provisioner_password "$password" ||
+            die 'DB_PROVISIONING_PASSWORD de server.env debe tener al menos 16 caracteres ASCII imprimibles, sin ":" ni "\". No se cambio nada.'
+        PLANNED_PROVISIONER_PASSWORD=$(config_value DB_PROVISIONING_PASSWORD)
+    else
+        PLANNED_PROVISIONER_PASSWORD=$(generate_provisioner_password) || die 'openssl no genero la contrasena de aprovisionamiento. No se cambio nada.'
+        valid_provisioner_password "$PLANNED_PROVISIONER_PASSWORD" ||
+            die 'La contrasena de aprovisionamiento generada no paso la validacion (revisa: sudo bash update.sh --self-test). No se cambio nada.'
+    fi
+    unset password
+    if ! config_has_key BMS_MASTER_KEY; then
+        PLANNED_MASTER_KEY=$(openssl rand -base64 32) && [[ -n $PLANNED_MASTER_KEY ]] || die 'openssl no genero BMS_MASTER_KEY. No se cambio nada.'
+    fi
+}
+
 configure_server_env() {
     local db_url tenant_prefix
     install -d -m 755 "$APP_DIR/company-backups"
@@ -327,9 +463,7 @@ configure_server_env() {
     chown bms:bms "$APP_DIR/company-files"
 
     db_url=$(config_value DB_URL)
-    [[ -n $db_url ]] || die 'DB_URL no existe en /etc/bms/server.env.'
-    tenant_prefix="${db_url%/*}/"
-    [[ $tenant_prefix != "$db_url/" ]] || die 'No se pudo inferir TENANT_JDBC_URL_PREFIX desde DB_URL.'
+    tenant_prefix=$(tenant_prefix_of "$db_url") || die 'No se pudo inferir TENANT_JDBC_URL_PREFIX desde DB_URL.'
 
     # Copia de server.env antes de tocarla: solo root, se conservan las ultimas tres.
     install -m 600 -o root -g root "$CONFIG_FILE" "$CONFIG_FILE.update-backup.$(date -u +%Y%m%dT%H%M%SZ)"
@@ -348,7 +482,7 @@ configure_server_env() {
     append_config_value VERSION_CATALOG_URL ''
     # Llave maestra de los secretos cifrados: se genera una sola vez y nunca se regenera.
     if ! config_has_key BMS_MASTER_KEY; then
-        append_config_value BMS_MASTER_KEY "$(openssl rand -base64 32)"
+        append_config_value BMS_MASTER_KEY "$PLANNED_MASTER_KEY"
         printf 'Respalda BMS_MASTER_KEY (%s) fuera del servidor: sin ella no se pueden leer los secretos guardados (SELF_HOSTING.md, seccion 14).\n' "$CONFIG_FILE"
     fi
     append_config_value CORE_UPDATE_REF master
@@ -374,14 +508,10 @@ configure_server_env() {
     append_config_value SMTP_PASSWORD ''
     append_config_value SMTP_FROM ''
     append_config_value SMTP_SECURITY starttls
-    # Login propio del aprovisionamiento de empresas (SELF_HOSTING.md, Roles de PostgreSQL).
-    if ! config_has_key DB_PROVISIONING_USER; then
-        [[ $(pg_super_count "SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = '$DEFAULT_PROVISIONER'") == 0 ]] ||
-            die "Ya existe un rol PostgreSQL $DEFAULT_PROVISIONER que no figura en server.env. Si es de BMS, agrega DB_PROVISIONING_USER=$DEFAULT_PROVISIONER y DB_PROVISIONING_PASSWORD (la de ese rol) a server.env; si no, renombralo. No se cambio nada."
-        append_config_value DB_PROVISIONING_PASSWORD "$(openssl rand -hex 32)"
-        append_config_value DB_PROVISIONING_USER "$DEFAULT_PROVISIONER"
-    fi
-    append_config_value DB_PROVISIONING_PASSWORD "$(openssl rand -hex 32)"
+    # Login propio del aprovisionamiento de empresas (SELF_HOSTING.md, Roles de PostgreSQL): los valores ya se generaron y
+    # validaron en plan_update_config, antes de compilar y de detener el servicio.
+    append_config_value DB_PROVISIONING_USER "$PLANNED_PROVISIONER"
+    append_config_value DB_PROVISIONING_PASSWORD "$PLANNED_PROVISIONER_PASSWORD"
     chown root:root "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
     local backup
@@ -438,16 +568,24 @@ pg_super_count() {
     runuser -u postgres -- psql -X -At -d postgres -c "$1"
 }
 
-# jdbc:postgresql://host:port/database -> "host port"
-db_host_port() {
-    local url=$1 rest host port
-    rest=${url#jdbc:postgresql://}
-    rest=${rest%%/*}
-    host=${rest%%:*}
-    port=5432
-    [[ $rest == *:* ]] && port=${rest##*:}
-    [[ $host =~ ^[A-Za-z0-9.-]+$ && $port =~ ^[0-9]{1,5}$ ]] || return 1
-    printf '%s %s\n' "$host" "$port"
+# The read-only half of bms_migrate_role_layout (db-roles.sh), before the build: a server owner role exists and every
+# database registered in companies passes the rules, or the update stops here with nothing changed.
+precheck_role_layout() {
+    local owners classified rejected
+    owners=$(bms_server_owner_roles "$CONTROL_DB") || die 'No se pudieron leer los roles de server owner. No se cambio nada.'
+    [[ -n $owners ]] || die "No hay ningun rol de server owner en $CONTROL_DB. No se cambio nada."
+    classified=$(bms_classify_tenant_databases "$CONTROL_DB") || die 'No se pudo revisar las bases de las empresas. No se cambio nada.'
+    rejected=$(awk '$1 == "reject" { $1 = ""; sub(/^ /, ""); print " - " $0 }' <<< "$classified")
+    [[ -z $rejected ]] || die "Estas bases registradas en companies existen pero no cumplen las reglas (corrige su nombre o su dueno, o quita la fila de companies). No se cambio nada:
+$rejected"
+}
+
+# Free space for the pg_dump copy of every database before migrating (BMS_UPDATE_SKIP_DB_DUMP=true skips the copy).
+check_backup_space() {
+    [[ ${BMS_UPDATE_SKIP_DB_DUMP:-} != true ]] || return 0
+    DB_BYTES=$(bms_backup_size "$CONTROL_DB") || die 'No se pudo medir el tamano de las bases. No se cambio nada.'
+    bms_backup_space_ok "$BACKUP_ROOT" "$DB_BYTES" ||
+        die "No hay espacio libre suficiente en $BACKUP_ROOT para copiar las bases antes de migrar (unos $DB_BYTES bytes y 2 GiB de margen). Libera espacio (por ejemplo respaldos viejos en $BACKUP_ROOT) y reintenta. No se cambio nada."
 }
 
 # The provisioning login (role and password from server.env) and the passfile tenant migrations use (A2).
@@ -457,9 +595,9 @@ ensure_provisioner_role() {
     password=$(config_value DB_PROVISIONING_PASSWORD)
     password=${password#\"}
     password=${password%\"}
-    bms_valid_role "$PROVISIONER" || die 'DB_PROVISIONING_USER invalido en server.env.'
+    valid_role_name "$PROVISIONER" || die 'DB_PROVISIONING_USER invalido en server.env.'
     [[ $PROVISIONER != "$DB_USER" ]] || die 'DB_PROVISIONING_USER debe ser distinto de DB_USER.'
-    [[ $password =~ ^[!-~]{16,}$ && $password != *:* && $password != *\\* ]] ||
+    valid_provisioner_password "$password" ||
         die 'DB_PROVISIONING_PASSWORD debe tener al menos 16 caracteres ASCII imprimibles, sin ":" ni "\".'
     printf '%s' "$password" | bms_role_set_password "$PROVISIONER" "$BMS_PROVISIONER_ATTRIBUTES" ||
         die "No se pudo crear o actualizar el rol $PROVISIONER."
@@ -483,11 +621,11 @@ migrate_role_layout() {
     bms_migrate_role_layout "$CONTROL_DB" "$DB_USER" "$PROVISIONER" || die 'No se pudo pasar a la nueva organizacion de roles de PostgreSQL.'
 }
 
-apply_control_migrations() {
+# The files of the release this update applies one by one, and migrations.sh: checked before anything changes, again
+# before applying them. Relative to the trusted tree.
+require_release_files() {
     local migration
-    # Rutas relativas de aqui en adelante: SQL y migrations.sh se leen del directorio confiable.
-    cd "$TRUSTED_DIR"
-    [[ -f scripts/ubuntu/migrations.sh ]] || die 'No se encontro scripts/ubuntu/migrations.sh.'
+    [[ -f $TRUSTED_DIR/scripts/ubuntu/migrations.sh ]] || die 'No se encontro scripts/ubuntu/migrations.sh.'
     for migration in \
         database/core/migrations/V003__add_application_user_profile.sql \
         database/core/migrations/V004__add_application_user_code.sql \
@@ -510,13 +648,22 @@ apply_control_migrations() {
         database/tenant/migrations/V014__session_second_factor_mark.sql \
         database/tenant/migrations/V015__session_switch_origin.sql \
         database/tenant/migrations/V016__two_factor_replace.sql \
-        database/tenant/migrations/V017__create_assistant.sql \
-        database/tenant/migrations/V018__assistant_turn_safety.sql \
+        database/tenant/migrations/V017__extension_schema_state.sql \
+        database/tenant/migrations/V018__create_assistant.sql \
+        database/tenant/migrations/V019__assistant_turn_safety.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do
-        [[ -f $migration ]] || die "No se encontro $migration."
+        [[ -f $TRUSTED_DIR/$migration ]] || die "No se encontro $migration en $TRUSTED_DIR. No se cambio nada."
     done
+
+}
+
+apply_control_migrations() {
+    local migration
+    require_release_files
+    # Rutas relativas de aqui en adelante: SQL y migrations.sh se leen del directorio confiable.
+    cd "$TRUSTED_DIR"
 
     # shellcheck source=migrations.sh
     source scripts/ubuntu/migrations.sh
@@ -525,7 +672,7 @@ apply_control_migrations() {
     MIGRATION_ROLE=''
     while IFS= read -r migration; do
         apply_migration "$CONTROL_DB" control "$migration"
-    done < <(find database/control/migrations -maxdepth 1 -type f -name 'V[0-9][0-9][0-9]__*.sql' | sort)
+    done < <(sorted_migrations database/control/migrations)
     apply_migration "$CONTROL_DB" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$CONTROL_DB" core database/core/migrations/V004__add_application_user_code.sql
     apply_migration "$CONTROL_DB" core database/core/migrations/V006__add_application_user_language.sql
@@ -595,8 +742,7 @@ apply_tenant_migrations() {
         # stay as above: an old company may lack their history rows.
         while IFS= read -r migration; do
             apply_migration "$tenant_db" tenant "$migration"
-        done < <(find database/tenant/migrations -maxdepth 1 -type f -name 'V[0-9][0-9][0-9]__*.sql' | LC_ALL=C sort |
-            awk -F/ '{ n = substr($NF, 2, 3) + 0; if (n >= 6) print }')
+        done < <(sorted_migrations database/tenant/migrations 6)
         migration_psql "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$DB_USER" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
@@ -618,7 +764,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
 REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON application_user_2fa_email_recovery FROM :"db_user";
 GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user";
--- In-app assistant (tenant V017, GLOBAL_AGENT.md): its messages are only read and appended by the runtime user.
+-- In-app assistant (tenant V018, GLOBAL_AGENT.md): its messages are only read and appended by the runtime user.
 GRANT SELECT, INSERT, UPDATE, DELETE ON assistant_settings, assistant_conversations, assistant_pending_calls, assistant_usage TO :"db_user";
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON assistant_messages FROM :"db_user";
 GRANT SELECT, INSERT ON assistant_messages TO :"db_user";
@@ -711,7 +857,7 @@ ensure_build_user() {
     local name
     BUILD_USER=$(config_value BMS_BUILD_USER)
     BUILD_USER=${BUILD_USER:-$DEFAULT_BUILD_USER}
-    [[ $BUILD_USER =~ ^[a-z][a-z0-9-]{0,31}$ && $BUILD_USER != root ]] || die 'BMS_BUILD_USER invalido en server.env.'
+    valid_build_user "$BUILD_USER" || die 'BMS_BUILD_USER invalido en server.env.'
     if [[ $BUILD_USER == bms ]]; then
         warn 'BMS_BUILD_USER=bms: se compila con el usuario del servicio (sin separacion).'
         BUILD_HOME=$APP_HOME_DIR
@@ -756,7 +902,7 @@ fetch_ci_web_dist() {
     local sha=$1 base name dir expected actual
     base=$(config_value WEB_DIST_BASE_URL)
     base=${base:-https://github.com/alexcalbri/BMS/releases/download/web-dist}
-    [[ $base =~ ^https://[A-Za-z0-9./_-]+$ ]] || { warn 'WEB_DIST_BASE_URL invalida.'; return 1; }
+    bms_ascii_match "$base" '^https://[A-Za-z0-9./_-]+$' || { warn 'WEB_DIST_BASE_URL invalida.'; return 1; }
     command -v curl >/dev/null 2>&1 || { warn 'no hay curl para descargar la webapp del CI.'; return 1; }
     name=web-$sha.tar.gz
     dir=$(mktemp -d -p "$ROOT_STATE_DIR" webdist.XXXXXX) || return 1
@@ -790,7 +936,7 @@ fetch_ci_web_dist() {
     stop_build_user_processes
     # El .sha256 (verificado) debe nombrar exactamente este paquete; se compara el hash de la copia de root.
     expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$dir/sha256")
-    [[ $expected =~ ^[0-9a-f]{64}$ ]] || { warn 'checksum del CI ilegible.'; return 1; }
+    bms_ascii_match "$expected" '^[0-9a-f]{64}$' || { warn 'checksum del CI ilegible.'; return 1; }
     actual=$(sha256sum -- "$dir/package.tar.gz" | awk '{print $1}')
     [[ $actual == "$expected" ]] || { warn 'el checksum de la webapp del CI no coincide.'; return 1; }
     install -d -m 700 -o root -g root "$dir/dist" || return 1
@@ -1093,7 +1239,7 @@ cd "$SOURCE_DIR"
 CURRENT_REF=$(git_source rev-parse --abbrev-ref HEAD) || CURRENT_REF=HEAD
 CURRENT_COMMIT=$(git_source rev-parse --short HEAD) || CURRENT_COMMIT=desconocido
 PREVIOUS_SOURCE_COMMIT=$(git_source rev-parse HEAD) || PREVIOUS_SOURCE_COMMIT=''
-[[ $PREVIOUS_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || PREVIOUS_SOURCE_COMMIT=''
+valid_sha "$PREVIOUS_SOURCE_COMMIT" || PREVIOUS_SOURCE_COMMIT=''
 # root no se queda con el directorio de trabajo dentro de un arbol que bms puede escribir.
 cd /
 if [[ $NON_INTERACTIVE == true ]]; then
@@ -1106,7 +1252,7 @@ else
         CURRENT_REF=${CURRENT_REF:-master}
     fi
     ask GIT_REF 'Rama, etiqueta o commit para actualizar' "$CURRENT_REF"
-    [[ $GIT_REF =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ && $GIT_REF != *..* ]] || die 'Referencia Git invalida.'
+    valid_git_ref "$GIT_REF" || die 'Referencia Git invalida.'
     ask UPDATE_TARGET 'Que deseas actualizar? server, webapp o ambos' ambos
     case "$UPDATE_TARGET" in
         server|webapp|ambos) ;;
@@ -1138,7 +1284,7 @@ else
     source "$MIRROR_LIB_FILE"
     printf 'Sincronizando el espejo de root con %s...\n' "$GIT_REF"
     BUILD_SHA=$(sync_mirror "$GIT_REF") || die "No se pudo traer $GIT_REF desde GitHub al espejo $MIRROR_DIR."
-    [[ $BUILD_SHA =~ ^[0-9a-f]{40}$ ]] || die 'No se pudo leer el commit del espejo.'
+    valid_sha "$BUILD_SHA" || die 'No se pudo leer el commit del espejo.'
     # Firma del commit (SIGNING.md), cuando el mirror.sh instalado sabe verificarla. Con una llave instalada, un
     # mirror.sh que no sabe verificar no sirve.
     if [[ -e $ALLOWED_SIGNERS || -L $ALLOWED_SIGNERS ]] && ! declare -F verify_mirror_signature >/dev/null; then
@@ -1178,7 +1324,7 @@ CONTROL_DB=${DB_URL_VALUE##*/}
 CONTROL_DB=${CONTROL_DB%%\?*}
 [[ -n $DB_USER ]] || die 'DB_USER no existe en /etc/bms/server.env.'
 bms_valid_role "$DB_USER" || die 'DB_USER invalido en server.env.'
-[[ $CONTROL_DB =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die 'No se pudo inferir la base central desde DB_URL.'
+valid_database_name "$CONTROL_DB" || die 'No se pudo inferir la base central desde DB_URL.'
 
 if [[ -n ${JAVA_HOME:-} && -x $JAVA_HOME/bin/java ]]; then
     UPDATE_JAVA_HOME=$JAVA_HOME
@@ -1186,6 +1332,18 @@ else
     UPDATE_JAVA_HOME="/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture)"
 fi
 [[ -x $UPDATE_JAVA_HOME/bin/java ]] || die 'No se encontro Java 21. Instala openjdk-21-jdk-headless o define JAVA_HOME.'
+
+# 0. Everything that can be checked without changing anything, before the build (long before the stop): tools,
+# server.env values (generated and validated now, written only after the stop), the release's migration files, the
+# company list and the space for the database copy. A failure here leaves the server untouched and running.
+require_tools
+if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
+    plan_update_config
+    require_release_files
+    bms_tenant_databases "$CONTROL_DB" >/dev/null || die 'No se pudo leer la lista de empresas (companies). No se cambio nada.'
+    precheck_role_layout
+    check_backup_space
+fi
 ensure_update_swap
 ensure_build_user
 
@@ -1241,9 +1399,8 @@ if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     if [[ ${BMS_UPDATE_SKIP_DB_DUMP:-} == true ]]; then
         warn 'BMS_UPDATE_SKIP_DB_DUMP=true: se actualiza SIN copia previa de las bases.'
     else
-        DB_BYTES=$(bms_backup_size "$CONTROL_DB") || die 'No se pudo medir el tamano de las bases.'
-        bms_backup_space_ok "$BACKUP_ROOT" "$DB_BYTES" ||
-            die "No hay espacio libre suficiente en $BACKUP_ROOT para copiar las bases antes de migrar (unos $DB_BYTES bytes y 2 GiB de margen). Libera espacio (por ejemplo respaldos viejos en $BACKUP_ROOT) y reintenta. No se cambio nada."
+        # Again after the build, which used disk too.
+        check_backup_space
         printf 'Copiando las bases de datos (pg_dump) en %s/db...\n' "$BACKUP_DIR"
         bms_dump_databases "$BACKUP_DIR/db" "$CONTROL_DB" || die 'Fallo la copia de las bases; no se cambio nada.'
     fi

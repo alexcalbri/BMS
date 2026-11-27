@@ -61,7 +61,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The assistant end to end on a real PostgreSQL, with the model scripted (no network, no real key): tenant V017 and
+ * The assistant end to end on a real PostgreSQL, with the model scripted (no network, no real key): tenant V018 and
  * its grants, server and company settings (sealed keys, audit, activity log), availability rules, the SSE turn with a
  * paused write approved later, the owner rule, the activity actor of the tool's row, usage and accounting, retention.
  * Runs only with BMS_TEST_PG_URL (or BMS_ACTIVITY_PG_URL), jdbc:postgresql://host:port/postgres?user=postgres of a
@@ -192,7 +192,7 @@ class AssistantPostgresTest {
         val databases = loginDatabases()
         provisioning(databases).applyPendingModuleMigrations()
         provisioning(databases).applyPendingModuleMigrations()
-        assertEquals("1", scalar(company, "SELECT count(*) FROM schema_migrations WHERE version LIKE 'V017__create_assistant%'"))
+        assertEquals("1", scalar(company, "SELECT count(*) FROM schema_migrations WHERE version LIKE 'V018__create_assistant%'"))
         // Narrower rights: the runtime role only reads and appends messages; the rest of the tables are ordinary.
         assertEquals("f|t|t|f", scalar(company, "SELECT has_table_privilege('bms_as_runtime', 'assistant_messages', 'UPDATE') || '|' || has_table_privilege('bms_as_runtime', 'assistant_messages', 'INSERT') || '|' || has_table_privilege('bms_as_runtime', 'assistant_conversations', 'DELETE') || '|' || has_table_privilege('bms_as_runtime', 'assistant_messages', 'DELETE')")?.replace("true", "t")?.replace("false", "f"))
 

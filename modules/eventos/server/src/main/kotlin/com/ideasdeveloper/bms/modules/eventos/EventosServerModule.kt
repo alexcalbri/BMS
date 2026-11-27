@@ -99,8 +99,8 @@ object EventosServerModule : ServerModule {
         id = EventosModule.id,
         displayName = EventosModule.displayName,
         description = "Eventos publicos con cupo, lista de espera, inscripciones, asistencia y precio de miembro, y eventos privados con contratante, monto acordado y abonos.",
-        version = "0.4.0",
-        minCoreVersion = "0.12.0",
+        version = "0.4.1",
+        minCoreVersion = "0.13.1",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(

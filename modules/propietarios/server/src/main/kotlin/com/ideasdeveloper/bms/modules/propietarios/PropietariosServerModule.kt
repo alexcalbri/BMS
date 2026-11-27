@@ -106,8 +106,8 @@ object PropietariosServerModule : ServerModule {
         id = PropietariosModule.id,
         displayName = PropietariosModule.displayName,
         description = "Registro de desarrollos, lotes y propietarios: area, numero de registro y estado de cada lote, titulares vigentes con su porcentaje, historial de cambios de titularidad y adjuntos como escrituras y planos.",
-        version = "0.5.0",
-        minCoreVersion = "0.13.0",
+        version = "0.5.1",
+        minCoreVersion = "0.13.1",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(

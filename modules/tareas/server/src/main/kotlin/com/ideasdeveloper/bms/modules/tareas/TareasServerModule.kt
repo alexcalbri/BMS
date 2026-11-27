@@ -123,8 +123,8 @@ object TareasServerModule : ServerModule {
         id = TareasModule.id,
         displayName = TareasModule.displayName,
         description = "Tableros de tareas con grupos, varios responsables, revisor, lista de comprobacion, comentarios, adjuntos, avisos de vencimiento y vistas de lista, kanban, agenda y carga de trabajo.",
-        version = "0.6.0",
-        minCoreVersion = "0.13.0",
+        version = "0.6.1",
+        minCoreVersion = "0.13.1",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(

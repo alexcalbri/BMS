@@ -85,7 +85,7 @@ data class AssistantUsageRow(
 class AssistantLeaseLostException : Exception("lease lost")
 
 /**
- * Where the assistant keeps a company's conversations (tenant V017, V018). Every read of a conversation is by its id
+ * Where the assistant keeps a company's conversations (tenant V018, V019). Every read of a conversation is by its id
  * AND its owner (user and owner key). Every write of a turn names the turn's lease token and is refused with
  * [AssistantLeaseLostException] when another turn holds the conversation.
  */

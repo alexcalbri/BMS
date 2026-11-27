@@ -331,7 +331,7 @@ Every change is audited in `provisioning_audit_log` (`assistant.settings_changed
   `assistant.model`, `assistant.effort`, `assistant.monthly_tokens.default`, `assistant.limit_own_key`,
   `assistant.retention_days`, `assistant.api_key` (sealed with BMS_MASTER_KEY + the control data key),
   `assistant.company.<code>.allowed`, `assistant.company.<code>.monthly_tokens`.
-- Tenant migration `V017__create_assistant.sql`: `assistant_settings` (one row: enabled, sealed own key, hint),
+- Tenant migration `V018__create_assistant.sql`: `assistant_settings` (one row: enabled, sealed own key, hint),
   `assistant_conversations`, `assistant_messages` (role, content blocks JSON exactly as resent, including thinking,
   tool_use and tool_result; usage per response), `assistant_pending_calls`, `assistant_usage` (day, user, key source).
 - Retention: conversations not updated for `retentionDays` (default 90) are deleted by a daily job; usage rows are
@@ -362,7 +362,7 @@ server's (`BMS_PUBLIC_BASE_URL`) or one of the company's public domains with a `
 
 ### Turn safety (review fix)
 
-- Each turn holds the conversation with a lease token (tenant V018); every write of the turn (messages, pending calls,
+- Each turn holds the conversation with a lease token (tenant V019); every write of the turn (messages, pending calls,
   claims, giving the conversation back) checks it, and the lease (12 min) is renewed before each model request and each
   tool call. A turn that lost it stops (`error CONVERSATION_BUSY`) without touching the conversation.
 - The SDK does not retry (`maxRetries 0`); the server retries once, only before anything was streamed. Request timeout
@@ -405,7 +405,7 @@ into each user turn's context block, so a language change no longer changes the 
 Where it lives: `server/.../server/assistant/` — `AssistantModel.kt` (the SDK behind `AssistantModelClient`,
 request builder `AnthropicRequests`, response reader `AnthropicResponses`, typed errors), `AssistantEngine.kt` (turn loop,
 pause/resume, expiry, system prompt), `AssistantTools.kt` (tool registry reuse, see "How the assistant gets its tools"),
-`AssistantStore.kt` (tenant V017), `AssistantSettings.kt` (server_settings and tenant settings, sealed keys, audit),
+`AssistantStore.kt` (tenant V018), `AssistantSettings.kt` (server_settings and tenant settings, sealed keys, audit),
 `AssistantService.kt` (caller, availability, runtime, per-user limits, daily upkeep), `AssistantRoutes.kt` /
 `AssistantServerRoutes.kt` (HTTP + SSE), `AssistantView.kt` (what the app sees). Contract types:
 `core/.../Assistant.kt`.
@@ -428,7 +428,7 @@ manual loop rather than the SDK's tool runner: the pause for confirmation must s
 runner cannot do. One SDK client per API key (by its hash), the key passed explicitly, never `fromEnv()`; timeout 10 min,
 2 retries; errors classified by HTTP status only (the exception text is never logged or shown).
 
-Database: tenant `V017__create_assistant.sql` (applied to new companies with the Core migrations, to existing ones by
+Database: tenant `V018__create_assistant.sql` (applied to new companies with the Core migrations, to existing ones by
 the startup catch-up and by `update.sh`, which applies every tenant migration from V006 on). Grants: the runtime role gets
 SELECT, INSERT, UPDATE, DELETE on `assistant_settings`, `assistant_conversations`, `assistant_pending_calls`,
 `assistant_usage`, and only SELECT, INSERT on `assistant_messages` (+ USAGE, SELECT on its sequence): messages go only

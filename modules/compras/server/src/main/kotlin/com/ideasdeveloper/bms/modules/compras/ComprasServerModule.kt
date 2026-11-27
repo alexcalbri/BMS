@@ -85,8 +85,8 @@ object ComprasServerModule : ServerModule {
         id = ComprasModule.id,
         displayName = ComprasModule.displayName,
         description = "Solicitudes de compra con cotizaciones opcionales, aprobadores con limite de monto, adjuntos de respaldo y totales por departamento, mes y moneda.",
-        version = "0.5.0",
-        minCoreVersion = "0.13.0",
+        version = "0.5.1",
+        minCoreVersion = "0.13.1",
         minAppVersion = "0.5.0",
         permissions = listOf(
             ModulePermissionDefinition(ComprasModule.View, "Ver compras", "Permite entrar a Compras y ver sus propias solicitudes."),
@@ -126,10 +126,9 @@ object ComprasServerModule : ServerModule {
                 context.tenant, context.companyCode, null, context.access.files(context.companyCode, ComprasModule.id), context.notifier, context.access.secrets,
             )
             ComprasActions.activeSources(ComprasImportSources.all) { it.isEnabled(ctx) }.forEach { source ->
-                try {
+                // A source that keeps failing (e.g. a migration not applied) waits longer each time and is logged once (JobBackoff).
+                com.ideasdeveloper.bms.server.modules.JobBackoff.imports.run(log, "compras/${context.companyCode}/${source.id}", "La importacion ${source.id} de compras fallo en ${context.companyCode}") {
                     source.runPending(ctx, 200)
-                } catch (failure: Exception) {
-                    log.warn("La importacion {} de compras fallo en {}.", source.id, context.companyCode, failure)
                 }
             }
         }),

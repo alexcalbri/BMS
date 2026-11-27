@@ -58,7 +58,8 @@ class LocalFileBackend(private val root: Path) : FileBackend {
 
     override fun write(companyCode: String, moduleId: String, name: String, contentType: String, content: InputStream): String {
         val today = LocalDate.now()
-        val ref = "%04d/%02d/%s".format(today.year, today.monthValue, UUID.randomUUID())
+        // Locale.ROOT: %d uses the default locale's digits (Arabic-Indic under ar-EG or fa-IR), which refPattern rejects.
+        val ref = "%04d/%02d/%s".format(java.util.Locale.ROOT, today.year, today.monthValue, UUID.randomUUID())
         val target = resolve(companyCode, moduleId, ref)
         Files.createDirectories(target.parent)
         // Written aside and moved at the end: a cut upload never leaves half a file under the ref.

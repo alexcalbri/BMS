@@ -421,23 +421,49 @@ fun Application.module() {
             log.error("Pending installs were not resumed", failure)
         }
     }, "resume-installs").apply { isDaemon = true }.start()
+    // The module jobs (which call the extensions' imports) wait for this: extension code of a new version never runs on a
+    // company schema of an older one (EXTENSIONS.md, Updating a package).
+    val extensionsReady = java.util.concurrent.CountDownLatch(1)
     // A module loaded at a version below an extension's minimum leaves that extension incompatible.
     Thread({
-        // Group operations cut by a restart end as failed, so their companies can be retried.
         try {
-            extensionService.recoverInterrupted()
-        } catch (failure: Exception) {
-            log.error("Interrupted extension operations were not recovered", failure)
-        }
-        migrationsDone.await()
-        serverModules.map { it.definition }.filter { extensionRegistry.forModule(it.id).isNotEmpty() }.forEach { definition ->
+            // Group operations cut by a restart end as failed, so their companies can be retried.
             try {
-                extensionService.markIncompatible(definition.id, definition.version)
+                extensionService.recoverInterrupted()
             } catch (failure: Exception) {
-                log.error("Extensions of module {} were not checked", definition.id, failure)
+                log.error("Interrupted extension operations were not recovered", failure)
             }
+            migrationsDone.await()
+            // A package (or module, or Core) update replaced the code: each company gets the new version's migrations, or
+            // the extension is suspended there.
+            extensionService.syncSchemas()
+            serverModules.map { it.definition }.filter { extensionRegistry.forModule(it.id).isNotEmpty() }.forEach { definition ->
+                try {
+                    extensionService.markIncompatible(definition.id, definition.version)
+                } catch (failure: Exception) {
+                    log.error("Extensions of module {} were not checked", definition.id, failure)
+                }
+            }
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (failure: Throwable) {
+            log.error("Extension schemas were not checked at startup", failure)
+        } finally {
+            extensionsReady.countDown()
         }
     }, "extension-compatibility").apply { isDaemon = true }.start()
+    // Every hour: suspended extensions (and companies that could not be read) are retried.
+    val extensionSchemaJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "extension-schemas").apply { isDaemon = true } }
+    extensionSchemaJob.scheduleWithFixedDelay({
+        try {
+            extensionsReady.await()
+            extensionService.syncSchemas()
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (failure: Throwable) {
+            log.error("Extension schemas check failed", failure)
+        }
+    }, 60, 60, java.util.concurrent.TimeUnit.MINUTES)
     // Name and email of each user and password recovery by email code.
     // Un solo contador de fallos de contrasena actual para /auth/profile y la edicion del business owner.
     val passwordAttempts = com.ideasdeveloper.bms.server.auth.application.PasswordAttemptLimiter()
@@ -485,7 +511,13 @@ fun Application.module() {
         ),
     )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.
-    val moduleJobs = ModuleJobScheduler(moduleRegistry, moduleAccessService).also { it.start() }
+    // They start once the startup migrations of modules and extensions ran; a module whose migrations failed in a company
+    // does not run its jobs there until a later catch-up applies them.
+    val moduleJobs = ModuleJobScheduler(
+        moduleRegistry, moduleAccessService,
+        ready = { extensionsReady.count == 0L },
+        blocked = companyProvisioning::moduleMigrationFailed,
+    ).also { it.start() }
     // Turning another account's two-step verification off (TWO_FACTOR.md §8).
     val twoFactorResets = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService(
         loginDatabases, passwordAttempts, mail = serverMailSettings().let { settings -> { settings } }, notify = notifyAccount,
@@ -550,6 +582,7 @@ fun Application.module() {
         assistantModels.close()
         assistantService.close()
         emailRecoveryJob.shutdownNow()
+        extensionSchemaJob.shutdownNow()
         moduleJobs.stop()
         moduleAccessService.close()
         remoteModuleCatalog.close()

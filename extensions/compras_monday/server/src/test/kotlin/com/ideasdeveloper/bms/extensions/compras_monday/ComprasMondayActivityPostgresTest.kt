@@ -82,7 +82,7 @@ class ComprasMondayActivityPostgresTest {
             db.run("INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES ('${ana.userId}', 'role_ana', TRUE, 'Ana Ruiz', 'ana@example.com')")
             db.run("INSERT INTO business_owner (user_id) VALUES ('${ana.userId}')")
             db.run("INSERT INTO tenant_modules (module_id, display_name, status, enabled_at) VALUES ('compras', 'Compras', 'enabled', now())")
-            db.run("INSERT INTO tenant_extensions (extension_id, module_id, version, status, enabled_at) VALUES ('compras_monday', 'compras', '1.3.0', 'enabled', now())")
+            db.run("INSERT INTO tenant_extensions (extension_id, module_id, version, status, enabled_at) VALUES ('compras_monday', 'compras', '1.3.1', 'enabled', now())")
             ComprasMondayImport.bind(access)
             block(db)
         }

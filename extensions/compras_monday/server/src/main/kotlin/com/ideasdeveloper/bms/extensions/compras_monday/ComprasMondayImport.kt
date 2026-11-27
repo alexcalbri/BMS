@@ -405,6 +405,9 @@ object ComprasMondayImport : ComprasImportSource {
                 }
             }
         } catch (failure: SQLException) {
+            // Un error de esquema (SQLState 42: tabla o columna que no existe, una migracion sin aplicar) no se arregla
+            // reintentando cada minuto: sube al modulo, que espera cada vez mas y lo registra una sola vez.
+            if (failure.sqlState?.startsWith("42") == true) throw failure
             // La base no respondio: lo pendiente queda como esta y se reintenta en la proxima corrida.
             log.warn("Importacion de monday: error de base de datos en {} ({}).", ctx.companyCode, failure.sqlState)
         }

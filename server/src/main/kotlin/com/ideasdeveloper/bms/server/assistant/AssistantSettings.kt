@@ -235,7 +235,7 @@ object AssistantCompanyConfig {
             }
         }
     } catch (failure: java.sql.SQLException) {
-        // Before tenant V017 the company has no assistant yet.
+        // Before tenant V018 the company has no assistant yet.
         if (failure.sqlState == "42P01") AssistantCompanySettings() else throw failure
     }
 

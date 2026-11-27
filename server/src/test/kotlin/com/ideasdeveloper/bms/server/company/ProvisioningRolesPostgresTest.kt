@@ -167,7 +167,7 @@ class ProvisioningRolesPostgresTest {
             // Delayed recovery by email (tenant V013): started, updated, never deleted by the runtime.
             assertEquals("INSERT,SELECT,UPDATE", scalar(db, "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = current_user AND table_name = 'application_user_2fa_email_recovery'"))
             assertFailsWith<SQLException> { db.run("DELETE FROM application_user_2fa_email_recovery") }
-            // The assistant's messages (tenant V017) are only read and appended; they go with their conversation.
+            // The assistant's messages (tenant V018) are only read and appended; they go with their conversation.
             assertEquals("INSERT,SELECT", scalar(db, "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = current_user AND table_name = 'assistant_messages'"))
             listOf("UPDATE assistant_messages SET role = role", "DELETE FROM assistant_messages").forEach { sql -> assertFailsWith<SQLException>(sql) { db.run(sql) } }
             db.run("DELETE FROM assistant_conversations WHERE FALSE")
