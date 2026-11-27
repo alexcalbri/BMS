@@ -9,7 +9,7 @@ import java.util.UUID
 /**
  * A disposable company database on a real PostgreSQL for the activity-log tests of the CRM and its extensions: Core's tenant
  * migrations (with the activity log), Clientes, the CRM and the migrations of the extension under test. Only with
- * BMS_ACTIVITY_PG_URL (or BMS_SERVER_ADMINS_PG_URL), jdbc:postgresql://host:port/postgres?user=postgres of a DISPOSABLE
+ * BMS_CRM_ACTIVITY_PG_URL (or BMS_ACTIVITY_PG_URL, BMS_SERVER_ADMINS_PG_URL), jdbc:postgresql://host:port/postgres?user=postgres of a DISPOSABLE
  * server: [open] drops and creates the database it is given.
  */
 object CrmTestDatabase {
