@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.server.i18n.localizedPayload
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.modules.ModuleAccessErrorResponse
 import com.ideasdeveloper.bms.server.modules.SettingsTable
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
@@ -15,7 +16,6 @@ import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.modules.ServerModule
 import com.ideasdeveloper.bms.server.modules.ServerModuleProvider
 import com.ideasdeveloper.bms.server.modules.requireModuleAccess
-import com.ideasdeveloper.bms.server.modules.requireModulePermission
 import com.ideasdeveloper.bms.ui.ModuleUiEntry
 import com.ideasdeveloper.bms.ui.UiJson
 import com.ideasdeveloper.bms.ui.UiNode
@@ -120,8 +120,8 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.13.0",
-        minCoreVersion = "0.10.0",
+        version = "0.14.0",
+        minCoreVersion = "0.12.0",
         supportsExtensions = true,
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
@@ -172,7 +172,7 @@ object HotspotServerModule : ServerModule {
         ) { context ->
             val now = Instant.now()
             val settings = HotspotSettingsRepository.load(context.tenant)
-            HotspotCrmPipeline.enforceAccess(context.tenant, settings, LocalDate.now(), now)
+            HotspotCrmPipeline.enforceAccess(context.tenant, settings, LocalDate.now(), now, HotspotActivity.crmCheckActor())
             HotspotCodeSessions.expire(context.tenant, settings, HotspotIntegrations.controller(context.tenant), now)
         },
         // UniFi authorizes guests for every SSID of the site; a device that changes network must log in there.
@@ -207,7 +207,7 @@ object HotspotServerModule : ServerModule {
                     val enabled = call.request.queryParameters["enabled"] == "true"
                     return@post call.respondScreen(access) { tenant ->
                         val notice = try {
-                            HotspotIntegrations.setEnabled(tenant, id, enabled)
+                            HotspotIntegrations.setEnabled(tenant, id, enabled, permissions.activityActor)
                             UiNotice(if (enabled) tr("Integracion activada.") else tr("Integracion desactivada."), UiTone.Success)
                         } catch (failure: HotspotValidationException) {
                             UiNotice(failure.message.orEmpty(), UiTone.Danger)
@@ -235,7 +235,7 @@ object HotspotServerModule : ServerModule {
                     val step = call.request.queryParameters["grant"].orEmpty()
                     val id = call.request.queryParameters["id"]
                     return@post call.respondScreen(access) { tenant ->
-                        val (message, tone) = userAccess.grantAction(tenant, step, id, values)
+                        val (message, tone) = userAccess.grantAction(tenant, permissions.activityActor, step, id, values)
                         render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, tone), customBody = userAccess.accessBody(tenant, permissions))
                     }
                 }
@@ -272,11 +272,15 @@ object HotspotServerModule : ServerModule {
         }
 
         route.get(HotspotScreens.ExportRoute) {
-            if (!call.requireModulePermission(access, HotspotModule.id, HotspotScreens.ReportsExport)) return@get
+            val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@get
+            if (!permissions.has(HotspotScreens.ReportsExport)) {
+                return@get call.respond(HttpStatusCode.Forbidden, ModuleAccessErrorResponse("missing_permission", tr("No tienes permiso para exportar reportes del hotspot.")))
+            }
             val range = call.dateRange() ?: return@get
             val companyCode = access.companyCode(call).orEmpty()
             call.respondScreen(access) { tenant ->
                 val csv = HotspotReports.csv(tenant, range.first, range.second)
+                HotspotActivity.exportReport(tenant, permissions.activityActor, range.first, range.second)
                 call.response.header(
                     HttpHeaders.ContentDisposition,
                     ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "hotspot-$companyCode-${range.first}-${range.second}.csv").toString(),
@@ -292,7 +296,7 @@ object HotspotServerModule : ServerModule {
         access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions,
         primary: String?, secondary: String?, text: String?,
     ): UiScreen = try {
-        HotspotSettingsRepository.saveColors(tenant, primary, secondary, text)
+        HotspotActivity.saveColors(tenant, permissions.activityActor, primary, secondary, text)
         render(access, tenant, permissions, "design", emptyMap(), UiNotice(tr("Colores del portal guardados."), UiTone.Success))
     } catch (error: HotspotValidationException) {
         render(
@@ -318,7 +322,7 @@ object HotspotServerModule : ServerModule {
                 submittedValues = mapOf(HotspotScreens.templateKey(view.id) to html),
             )
         }
-        HotspotTemplates.save(tenant, view, html)
+        HotspotActivity.saveTemplate(tenant, permissions.activityActor, view, html)
         val message = if (html.isBlank()) tr("{0} vuelve a usar el diseno de BMS.", tr(view.label)) else tr("HTML de {0} validado y guardado.", tr(view.label))
         return render(access, tenant, permissions, "design", emptyMap(), UiNotice(message, UiTone.Success))
     }
@@ -368,23 +372,21 @@ object HotspotServerModule : ServerModule {
         if (id != null && networkId == null) return screen(UiNotice(tr("Red invalida."), UiTone.Danger))
         return when (step) {
             "save" -> {
-                if (networkId != null && HotspotNetworks.find(tenant, networkId) == null) {
-                    return screen(UiNotice(tr("Esa red ya no existe."), UiTone.Warning))
-                }
+                val existing = networkId?.let { HotspotNetworks.find(tenant, it) ?: return screen(UiNotice(tr("Esa red ya no existe."), UiTone.Warning)) }
                 val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
                 try {
                     val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
                     val crmEnabled = HotspotSettingsRepository.load(tenant).crmAccessEnabled && HotspotCrmPipeline.isInstalled(tenant)
                     val sources = if (crmEnabled) HotspotPasses.choosable(tenant).map { it.id }.toSet() else emptySet()
                     val network = HotspotNetworks.parse(networkId ?: UUID.randomUUID(), submitted, usersEnabled, sources, crmEnabled)
-                    HotspotNetworks.save(tenant, network)
+                    HotspotActivity.saveNetwork(tenant, permissions.activityActor, existing, network)
                     screen(UiNotice(tr("Red {0} guardada.", network.ssid), UiTone.Success))
                 } catch (failure: HotspotValidationException) {
                     // Keep the network open in the form with what the user typed.
                     screen(UiNotice(failure.message.orEmpty(), UiTone.Danger), networkId?.let { mapOf("networkId" to it.toString()) }.orEmpty(), submitted)
                 }
             }
-            "delete" -> if (networkId != null && HotspotNetworks.delete(tenant, networkId)) {
+            "delete" -> if (networkId != null && HotspotActivity.deleteNetwork(tenant, permissions.activityActor, networkId)) {
                 screen(UiNotice(tr("Red eliminada; vuelve a usar el formulario de registro."), UiTone.Success))
             } else {
                 screen(UiNotice(tr("Esa red ya no existe."), UiTone.Warning))
@@ -435,9 +437,9 @@ object HotspotServerModule : ServerModule {
         if (!registerDomain(access, permissions.companyCode, updated.domain)) {
             return failed(tr("Ese dominio ya esta registrado en este servidor."))
         }
-        HotspotSettingsRepository.save(tenant, updated)
+        HotspotActivity.saveSettings(tenant, permissions.activityActor, current, updated)
         val now = Instant.now()
-        HotspotCrmPipeline.enforceAccess(tenant, updated, LocalDate.now(), now)
+        HotspotCrmPipeline.enforceAccess(tenant, updated, LocalDate.now(), now, permissions.activityActor)
         HotspotCodeSessions.expire(tenant, updated, HotspotIntegrations.controller(tenant), now)
         return render(access, tenant, permissions, screen, emptyMap(), UiNotice(tr("Cambios guardados."), UiTone.Success))
     }
@@ -471,8 +473,9 @@ object HotspotServerModule : ServerModule {
             return HotspotScreens.build("settings", tenant, permissions, emptyMap(), status, active, sending, notice, shown, listOfNotNull(picker))
         }
         fun store(vararg changes: Pair<String, String>) {
-            settings = HotspotSettingsRepository.merge(settings, JsonObject(changes.associate { it.first to JsonPrimitive(it.second) }))
-            HotspotSettingsRepository.save(tenant, settings)
+            val updated = HotspotSettingsRepository.merge(settings, JsonObject(changes.associate { it.first to JsonPrimitive(it.second) }))
+            HotspotActivity.saveSettings(tenant, permissions.activityActor, settings, updated)
+            settings = updated
         }
         return try {
             when (step) {

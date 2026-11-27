@@ -275,6 +275,7 @@
   "No se pudo identificar tu usuario.": "Your user could not be identified.",
   "No tienes permiso para cambiar accesos.": "You do not have permission to change accesses.",
   "No tienes permiso para cambiar la configuracion.": "You do not have permission to change the settings.",
+  "No tienes permiso para exportar reportes del hotspot.": "You do not have permission to export hotspot reports.",
   "No tienes permiso para ver esta seccion.": "You do not have permission to view this section.",
   "Nombre": "Name",
   "Nombre de la red (SSID)": "Network name (SSID)",

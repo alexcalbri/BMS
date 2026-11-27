@@ -136,22 +136,26 @@ object HotspotMailMigration {
         return when (val plan = plan(legacy, companyHasHost, secrets.available)) {
             is Plan.Wait -> Result(Outcome.Waiting, plan.reason)
             is Plan.Skip -> {
-                clear(tenant)
+                clearLegacy(tenant, "Quito el SMTP propio de Hotspot, que no se usaba.")
                 Result(Outcome.Skipped, discarded(legacy))
             }
             is Plan.CompanyHasMail -> {
-                clear(tenant)
+                clearLegacy(tenant, "La empresa ya tenia correo: descarto el SMTP propio de Hotspot.")
                 Result(Outcome.KeptCompany, discarded(legacy))
             }
             is Plan.Copy -> try {
-                CompanyMail.save(tenant, secrets, plan.input)
-                clear(tenant)
+                // The company's copy and the clear of the legacy columns are one transaction, with their activity row.
+                HotspotActivity.transaction(tenant) {
+                    CompanyMail.save(tenant, secrets, plan.input)
+                    HotspotActivity.mailMigrated(tenant, "Copio el SMTP propio de Hotspot al correo de la empresa y quito el de Hotspot.")
+                    clear(tenant)
+                }
                 Result(Outcome.Migrated, "host ${plan.input.host}")
             } catch (failure: SecretsUnavailableException) {
                 Result(Outcome.Waiting, "falta BMS_MASTER_KEY")
             } catch (failure: SQLException) {
                 // Un dato legado que la tabla rechaza (CHECK, longitud) no se arregla reintentando: se limpia para no repetirlo cada 5 minutos.
-                clear(tenant)
+                clearLegacy(tenant, "No se pudo copiar el SMTP propio de Hotspot; se descarta.")
                 Result(Outcome.Failed, "no se pudo copiar el SMTP (${failure::class.simpleName}: ${failure.message}); se descarta el de Hotspot")
             }
         }
@@ -171,6 +175,12 @@ object HotspotMailMigration {
             if (!rows.next()) null
             else Legacy(rows.getString(1), rows.getString(2), rows.getInt(3), rows.getString(4), rows.getString(5), rows.getString(6), rows.getString(7))
         }
+    }
+
+    // Clears the legacy columns and writes the row that says why, in one transaction.
+    private fun clearLegacy(tenant: Connection, summary: String) = HotspotActivity.transaction(tenant) {
+        HotspotActivity.mailMigrated(tenant, summary)
+        clear(tenant)
     }
 
     private fun clear(tenant: Connection) {

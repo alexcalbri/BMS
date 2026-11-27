@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.msg
@@ -75,6 +76,13 @@ interface NetworkControllerProvider {
 
     /** Sitios de la consola [consoleId]. Lanza [NetworkControllerException] si no se pueden leer. */
     fun sites(settings: HotspotSettings, consoleId: String): List<ControllerOption>
+
+    /**
+     * Records the configuration of this controller that changed between [before] and [after] (its own
+     * keys, secrets masked), on [connection] and in its transaction. Controllers without settings of
+     * their own keep the default: nothing.
+     */
+    fun recordConfiguration(connection: Connection, actor: ActivityActor, before: HotspotSettings, after: HotspotSettings) = Unit
 }
 
 /** Registro de los controladores de red que aportan las extensiones del hotspot (las entrega el Core al arrancar). */
@@ -146,9 +154,20 @@ object HotspotIntegrations {
         return controllers.firstOrNull { it.id in enabled }
     }
 
-    /** Turns an integration on or off; enabling a network controller disables the other ones. */
-    fun setEnabled(connection: Connection, id: String, enabled: Boolean) {
-        val integration = catalog(connection).firstOrNull { it.id == id } ?: throw HotspotValidationException(tr("Integracion desconocida."))
+    /**
+     * Turns an integration on or off; enabling a network controller disables the other ones. The
+     * change is recorded for [actor] in the same transaction when the active set changes.
+     */
+    fun setEnabled(connection: Connection, id: String, enabled: Boolean, actor: ActivityActor) {
+        val known = catalog(connection)
+        val integration = known.firstOrNull { it.id == id } ?: throw HotspotValidationException(tr("Integracion desconocida."))
+        val titles = known.associate { it.id to it.title }
+        val before = HotspotIntegrations.enabled(connection)
+        val after = when {
+            enabled && integration.kind == Network -> (before - known.filter { it.kind == Network }.map { it.id }.toSet()) + id
+            enabled -> before + id
+            else -> before - id
+        }
         val autoCommit = connection.autoCommit
         connection.autoCommit = false
         try {
@@ -170,6 +189,7 @@ object HotspotIntegrations {
                 upsert.setBoolean(3, enabled)
                 upsert.executeUpdate()
             }
+            HotspotActivity.integrationChanged(connection, actor, integration, enabled, before, after, titles)
             connection.commit()
         } catch (failure: Exception) {
             connection.rollback()
