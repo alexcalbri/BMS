@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import java.math.BigDecimal
 import java.time.Instant
@@ -8,7 +9,7 @@ import java.util.UUID
 /** Datos de prueba compartidos (sin base de datos). */
 object ComprasTestSupport {
     fun actor(userId: UUID? = UUID.randomUUID(), vararg granted: String, owner: Boolean = false, serverOwner: Boolean = false) =
-        Actor(userId, "Persona", ModulePermissions("acme", "token", owner, granted.toSet(), userId = userId, serverOwner = serverOwner))
+        Actor(userId, "Persona", ModulePermissions("acme", "token", owner, granted.toSet(), userId = userId, serverOwner = serverOwner), ActivityActor.user(userId ?: UUID.randomUUID(), "Persona"))
 
     fun approver(userId: UUID, max: String?, currency: String = "USD", active: Boolean = true) =
         Approver(userId, "Aprobador", max?.let { BigDecimal(it) }, currency, active)

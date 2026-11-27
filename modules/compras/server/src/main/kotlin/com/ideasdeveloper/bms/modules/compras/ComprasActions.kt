@@ -241,7 +241,7 @@ object ComprasActions {
                 Outcome("approvals", emptyMap(), move(tenant, actor, notifier, request.id, to, values["reason"]))
             }
             "settings:currency" -> {
-                ComprasRepository.setDefaultCurrency(tenant, ComprasMoney.currency(values["currency"]))
+                ComprasRepository.setDefaultCurrency(tenant, actor, ComprasMoney.currency(values["currency"]))
                 ok("settings", tr("Moneda por defecto guardada."))
             }
             "settings:deptSave" -> {

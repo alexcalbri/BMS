@@ -84,8 +84,8 @@ object ComprasServerModule : ServerModule {
         id = ComprasModule.id,
         displayName = ComprasModule.displayName,
         description = "Solicitudes de compra con cotizaciones opcionales, aprobadores con limite de monto, adjuntos de respaldo y totales por departamento, mes y moneda.",
-        version = "0.3.0",
-        minCoreVersion = "0.10.0",
+        version = "0.4.0",
+        minCoreVersion = "0.12.0",
         minAppVersion = "0.5.0",
         permissions = listOf(
             ModulePermissionDefinition(ComprasModule.View, "Ver compras", "Permite entrar a Compras y ver sus propias solicitudes."),
@@ -138,7 +138,7 @@ object ComprasServerModule : ServerModule {
     private fun ModulePermissions.allows(permission: String): Boolean = businessOwner || serverOwner || has(permission)
 
     private fun actorOf(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions) =
-        Actor(permissions.userId, access.userIdentity(tenant, permissions)?.name ?: "Usuario", permissions)
+        Actor(permissions.userId, access.userIdentity(tenant, permissions)?.name ?: "Usuario", permissions, permissions.activityActor)
 
     // Lo que el modulo ofrece a las fuentes de importacion durante una peticion (el actor es el usuario).
     private fun importContextOf(access: ModuleAccessService, permissions: ModulePermissions, tenant: Connection, actor: Actor) = ComprasImportContext(

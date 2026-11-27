@@ -438,7 +438,7 @@ object ComprasMondayImport : ComprasImportSource {
         val userId = job.appliedBy ?: return null
         val permissions = modules?.userAccess(ctx.tenant, ctx.companyCode, userId, false)?.permissions(ComprasModule.id) ?: return null
         if (!permissions.businessOwner && !permissions.has(ImportPermission)) return null
-        return Actor(userId, job.appliedByName.ifEmpty { "Importacion de monday" }, permissions)
+        return Actor(userId, job.appliedByName.ifEmpty { "Importacion de monday" }, permissions, permissions.activityActor)
     }
 
     /** Aplica hasta [limit] filas pendientes (por lotes, hasta el plazo); devuelve cuantas proceso. Al terminar avisa a quien la lanzo. */
