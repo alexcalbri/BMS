@@ -168,7 +168,7 @@ fun Application.module() {
     val companyFiles = CompanyFiles.local(companyFilesRoot, storageGuard)
     val classpathModules = loadServerModules()
     val packageRequirements = mutableMapOf<String, ModuleRequirements>()
-    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements)
+    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements, modulePackagesRoot)
     val serverModules = (classpathModules + packagedModules).sortedBy { it.definition.id }
     val installedServerModules = loadInstalledServerModuleDefinitions(DatabaseFactory.getDataSource(), serverModules)
     val moduleRegistry = ModuleRegistry(
@@ -342,7 +342,7 @@ fun Application.module() {
             ),
             verifier = ExtensionSignatureVerifier(),
             authorizations = unsignedAuthorizations,
-            moduleJar = { id -> installedModuleJar(DatabaseFactory.getDataSource(), id) },
+            moduleJar = { id -> installedModuleJar(DatabaseFactory.getDataSource(), id, modulePackagesRoot) },
             githubToken = githubToken,
         ),
         authorizations = unsignedAuthorizations,
@@ -745,28 +745,42 @@ private fun loadPackagedModules(
     central: DataSource,
     classpathModuleIds: Set<String>,
     requirements: MutableMap<String, ModuleRequirements>,
+    packagesRoot: Path,
 ): List<ServerModule> {
     val log = LoggerFactory.getLogger("ModulePackages")
     val packages = try {
         central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT module_id, installed_package_path FROM server_modules WHERE installed_package_path LIKE '%.jar'"
+                "SELECT module_id, installed_package_path, package_sha256 FROM server_modules WHERE installed_package_path LIKE '%.jar'"
             ).use { query ->
                 query.executeQuery().use { rows ->
-                    buildList { while (rows.next()) add(rows.getString("module_id") to rows.getString("installed_package_path")) }
+                    buildList { while (rows.next()) add(Triple(rows.getString("module_id"), rows.getString("installed_package_path"), rows.getString("package_sha256"))) }
                 }
             }
         }
     } catch (_: SQLException) {
         emptyList()
     }
-    return packages.flatMap { (moduleId, path) ->
-        val jar = Path.of(path)
+    return packages.flatMap { (moduleId, path, sha256) ->
+        // B8: only a jar inside the modules folder whose hash is the one recorded at install (ModuleJarIntegrity).
+        val checked = if (moduleId in classpathModuleIds || !Files.isRegularFile(Path.of(path))) null
+            else com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.check(moduleId, path, sha256, packagesRoot) { actual ->
+                com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.recordFirst(central, moduleId, actual)
+            }
+        val jar = when (checked) {
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Verified -> checked.jar
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Recorded -> checked.jar
+            else -> Path.of(path)
+        }
         when {
             // A module compiled into this server (base module or :server:run) wins over a package.
             moduleId in classpathModuleIds -> emptyList()
             !Files.isRegularFile(jar) -> {
                 log.error("Package of module {} not found at {}; reinstall the module.", moduleId, jar)
+                emptyList()
+            }
+            checked is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Refused -> {
+                log.error("Package of module {} was NOT loaded: {}. Reinstall the module.", moduleId, checked.reason)
                 emptyList()
             }
             else -> try {
@@ -782,11 +796,17 @@ private fun loadPackagedModules(
 
 // systemd (Restart=on-failure) starts the server again within seconds and the new package loads.
 // Jar of an optional module built on this server, which extension packages compile against; null for base modules.
-private fun installedModuleJar(central: DataSource, moduleId: String): Path? = try {
+private fun installedModuleJar(central: DataSource, moduleId: String, packagesRoot: Path): Path? = try {
     central.connection.use { connection ->
-        connection.prepareStatement("SELECT installed_package_path FROM server_modules WHERE module_id = ? AND installed_package_path LIKE '%.jar'").use { query ->
+        connection.prepareStatement("SELECT installed_package_path, package_sha256 FROM server_modules WHERE module_id = ? AND installed_package_path LIKE '%.jar'").use { query ->
             query.setString(1, moduleId)
-            query.executeQuery().use { rows -> if (rows.next()) Path.of(rows.getString(1)).takeIf { Files.isRegularFile(it) } else null }
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+        }
+    }?.let { (path, sha256) ->
+        // The same check as loading it (B8): extensions compile against a verified jar only.
+        when (val checked = com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.check(moduleId, path, sha256, packagesRoot) { false }) {
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Verified -> checked.jar
+            else -> null
         }
     }
 } catch (_: SQLException) {
