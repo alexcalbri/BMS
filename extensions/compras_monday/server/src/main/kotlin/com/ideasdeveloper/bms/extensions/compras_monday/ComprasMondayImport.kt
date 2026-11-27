@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.compras_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityEntry
+import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.modules.compras.Actor
 import com.ideasdeveloper.bms.modules.compras.ComprasImportContext
 import com.ideasdeveloper.bms.modules.compras.ComprasImportEngine
@@ -100,11 +105,13 @@ object ComprasMondayImport : ComprasImportSource {
         val token = typed.trim().takeIf { it.isNotEmpty() && it != "********" }
             ?: throw ComprasValidationException(tr("Escribe el token de la API de monday."))
         ComprasMondayStore.saveToken(ctx, token)
+        ctx.actor?.let { recordTokenChange(ctx.tenant, it.activity, "Guardo el token de monday.") }
     }
 
     fun forgetToken(ctx: ComprasImportContext) {
         requireEnabled(ctx.tenant)
         ComprasMondayStore.saveToken(ctx, null)
+        ctx.actor?.let { recordTokenChange(ctx.tenant, it.activity, "Quito el token de monday.") }
     }
 
     /**
@@ -522,6 +529,12 @@ object ComprasMondayImport : ComprasImportSource {
 
     private fun finish(ctx: ComprasImportContext, job: MondayJob) {
         val userId = job.appliedBy ?: job.createdBy ?: return
+        // Una fila con los totales; las de cada solicitud ya estan en el registro (la importacion las hizo en nombre de quien la inicio).
+        recordImportSummary(
+            ctx.tenant, job.id, job.boardName,
+            ActivityActor.import(ActivityActor.user(userId, job.appliedByName.ifEmpty { job.createdByName })),
+            job.createdCount, job.existingCount, job.failedCount,
+        )
         try {
             ctx.notifier?.notify(ctx.tenant, userId) {
                 NotificationText(
@@ -532,5 +545,23 @@ object ComprasMondayImport : ComprasImportSource {
         } catch (failure: Exception) {
             log.warn("No se pudo crear el aviso de la importacion de monday ({}).", failure.javaClass.simpleName)
         }
+    }
+
+    /** Una fila con los totales de la importacion de monday, a nombre de [importer]. */
+    internal fun recordImportSummary(tenant: Connection, jobId: java.util.UUID, boardName: String, importer: ActivityActor, created: Int, existing: Int, failed: Int) {
+        ActivityLog.record(tenant, importer, ActivityEntry(
+            moduleId = "compras", entityType = "importacion", entityId = jobId.toString(), entityLabel = boardName,
+            action = ActivityActions.Imported, summary = "Importo $created solicitudes de monday desde $boardName.",
+            changes = listOf(ActivityChange("totals", "Totales", null, "creadas $created, ya existian $existing, con error $failed")),
+        ))
+    }
+
+    /** Guardar o quitar el token de monday: el valor nunca se registra, solo que cambio (campo secreto). */
+    internal fun recordTokenChange(tenant: Connection, activity: ActivityActor, summary: String) {
+        ActivityLog.record(tenant, activity, ActivityEntry(
+            moduleId = "compras", entityType = "settings", entityId = null, entityLabel = "Monday",
+            action = ActivityActions.SettingsChanged, summary = summary,
+            changes = listOf(ActivityChange.secret("mondayToken", "Token de monday")),
+        ))
     }
 }

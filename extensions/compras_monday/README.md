@@ -9,6 +9,10 @@ Una importacion a la vez por empresa; todo paso es idempotente (cada fila se rec
 `ext_compras_monday__settings` (token sellado), `ext_compras_monday__jobs` y `ext_compras_monday__rows`. Migracion:
 `migrations/V001__staging.sql`. Cada pasada purga las importaciones terminadas, fallidas o canceladas de mas de 30 dias.
 
+## Version 1.2.0 (registro de actividad)
+
+La importacion deja una fila con sus totales y cada solicitud creada o cotizacion o archivo importado queda en el registro de actividad a nombre de "Importacion (quien la inicio)". Guardar o quitar el token de monday queda registrado sin su valor. Necesita compras 0.4.0 (Core 0.12.0).
+
 ## Version 1.1.0 (bilingue)
 
 - Textos en español e inglés: el código usa `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/compras_monday/i18n/en.json`. Necesita Core 0.10.0.
