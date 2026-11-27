@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -145,6 +146,7 @@ object HotspotMcpTools {
             title = "Eliminar red WiFi",
             description = "Elimina la configuracion de una red; sus visitantes vuelven al formulario de registro y a los tiempos generales. Confirma con el usuario antes.",
             permission = HotspotScreens.SettingsManage,
+            preview = { call -> networkPreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la red (list_networks).")), required = listOf("id")),
         ) { call -> deleteNetwork(call) },
@@ -451,6 +453,15 @@ object HotspotMcpTools {
         }
     }
 
+    private fun networkPreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val ssid = call.tenant.prepareStatement("SELECT ssid FROM hotspot_networks WHERE id = ?").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: throw McpToolException("Esa red no existe; revisa list_networks.")
+        return listOf(McpPreviewRow("Red WiFi que se elimina", ssid))
+    }
+
     private fun deleteNetwork(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
         if (!HotspotActivity.deleteNetwork(call.tenant, call.activityActor, id)) throw McpToolException("Esa red no existe; revisa list_networks.")
@@ -499,21 +510,24 @@ object HotspotMcpTools {
         }
     }
 
+    // Read only, with the same answer as before: it reads the codes and access state as they are and creates nothing (no
+    // Core code, no hotspot_user_codes row). A user with no code yet shows "sin codigo" here only; the screen and the
+    // portal keep creating them as before.
     private fun userCodes(call: McpToolCall): JsonElement {
         if (!call.permissions.businessOwner) throw McpToolException("Solo el dueno de la empresa o del servidor ve los codigos de todos los usuarios.")
         val access = HotspotAccess(call.access)
         val users = if (access.isServerCompanyOwner(call.permissions)) {
-            call.access.centralConnection().use { central -> HotspotUserCodes.users(call.tenant, central) }
+            call.access.centralConnection().use { central -> HotspotUserCodes.usersReadOnly(call.tenant, central) }
         } else {
-            HotspotUserCodes.users(call.tenant, null)
+            HotspotUserCodes.usersReadOnly(call.tenant, null)
         }
         return buildJsonObject {
             put("usersIntegrationEnabled", HotspotIntegrations.isEnabled(call.tenant, HotspotIntegrations.Users))
-            put("users", JsonArray(users.map { user ->
+            put("users", JsonArray(users.map { (user, hasCode) ->
                 buildJsonObject {
                     put("user", user.username)
                     put("name", user.name)
-                    put("code", user.code)
+                    put("code", if (hasCode) user.code else "sin codigo")
                     put("serverOwner", user.serverOwner)
                     put("active", user.active)
                 }

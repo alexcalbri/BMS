@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -91,6 +92,7 @@ object CrmSettingsMcpTools {
             title = "Eliminar interes",
             description = "Elimina un interes; sus leads pasan a Recepcion (sin interes).$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> interestPreview(call) },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del interes.")), required = listOf("id")),
         ) { call -> deleteInterest(call) },
         McpTool(
@@ -118,6 +120,7 @@ object CrmSettingsMcpTools {
             title = "Eliminar etapa",
             description = "Elimina una etapa sin leads (mueve antes sus leads a otra). El embudo necesita al menos una etapa.$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> stagePreview(call) },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la etapa.")), required = listOf("id")),
         ) { call -> deleteStage(call) },
         McpTool(
@@ -154,6 +157,7 @@ object CrmSettingsMcpTools {
             title = "Eliminar plantilla de mensaje",
             description = "Elimina una plantilla de mensaje.$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> templatePreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la plantilla.")), required = listOf("id")),
         ) { call -> deleteMessageTemplate(call) },
@@ -356,6 +360,24 @@ object CrmSettingsMcpTools {
         if (context.interests.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw McpToolException("Ya existe el interes $name.")
         CrmRepository.saveInterest(call.tenant, id, name, call.activityActor)
         return result("Interes $name guardado.")
+    }
+
+    private fun interestPreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val interest = context(call).interests.firstOrNull { it.id == id } ?: throw McpToolException("Ese interes no existe.")
+        return listOf(McpPreviewRow("Interes que se elimina", interest.name), McpPreviewRow("Sus leads", "pasan a Recepcion"))
+    }
+
+    private fun stagePreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val stage = context(call).stages.firstOrNull { it.id == id } ?: throw McpToolException("Esa etapa no existe.")
+        return listOf(McpPreviewRow("Etapa que se elimina", stage.name))
+    }
+
+    private fun templatePreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val template = CrmMail.templates(call.tenant).firstOrNull { it.id == id } ?: throw McpToolException("Esa plantilla no existe.")
+        return listOf(McpPreviewRow("Plantilla que se elimina", template.name), McpPreviewRow("Asunto", template.subject.ifBlank { "-" }))
     }
 
     private fun deleteInterest(call: McpToolCall): JsonElement {

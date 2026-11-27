@@ -57,6 +57,8 @@ object CrmImportMcpTools {
             title = "Importar desde una direccion",
             description = "Descarga un CSV o XLSX publico (https://, por ejemplo un Google Sheets publicado) y crea una importacion en mapeo.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
             inputSchema = McpSchema.obj(mapOf("url" to McpSchema.string("Direccion https:// del archivo.")), required = listOf("url")),
         ) { call ->
             read(call) {

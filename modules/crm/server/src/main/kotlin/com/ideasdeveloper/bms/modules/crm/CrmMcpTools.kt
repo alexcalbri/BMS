@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.modules.crm
 
 import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -258,6 +259,9 @@ object CrmMcpTools {
             description = "Envia un mensaje a un lead visible por un canal (correo, WhatsApp...), con texto propio o una plantilla; los marcadores de la plantilla " +
                 "se llenan con los datos del lead. Le llega de inmediato a la persona: muestra el mensaje al usuario y espera su confirmacion antes de enviarlo.",
             permission = CrmScreens.Manage,
+            preview = { call -> sendPreview(call) },
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
             inputSchema = McpSchema.obj(
                 mapOf(
                     "id" to McpSchema.uuid("Id del lead."),
@@ -299,6 +303,7 @@ object CrmMcpTools {
             title = "Eliminar lead",
             description = "Elimina un lead visible con su actividad; el cliente queda en Clientes. No se puede deshacer: confirma con el usuario antes.",
             permission = CrmScreens.Delete,
+            preview = { call -> leadPreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
         ) { call -> delete(call) },
@@ -650,6 +655,39 @@ object CrmMcpTools {
     }
 
     // Same composition and channel checks as the reply form of the lead.
+    // What the confirmation shows: who gets it, by which channel and address, and the final text (template filled in).
+    private fun sendPreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
+        val lead = visibleLead(call, context)
+        val wanted = call.requiredString("channel", 40)
+        val channel = CrmChannels.all.firstOrNull { it.id.equals(wanted, ignoreCase = true) || it.label.equals(wanted, ignoreCase = true) }
+            ?: throw McpToolException("No existe el canal '$wanted'.")
+        val values = mapOf("channel" to channel.label, "template" to call.string("template", 200), "text" to call.string("text", 20_001), "subject" to call.string("subject", 500))
+        val (_, email) = try {
+            CrmAdminScreens.composeReply(context, lead, values)
+        } catch (failure: CrmValidationException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        return listOfNotNull(
+            McpPreviewRow("Destinatario (lead)", lead.name),
+            McpPreviewRow("Canal", channel.label),
+            McpPreviewRow("Se envia a", if (channel.id == "email") lead.email else lead.phone.ifBlank { lead.email }),
+            email.subject.takeIf { it.isNotBlank() }?.let { McpPreviewRow("Asunto", it) },
+            McpPreviewRow("Mensaje (completo)", email.text),
+        )
+    }
+
+    private fun leadPreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        return listOf(
+            McpPreviewRow("Lead que se elimina", lead.name),
+            McpPreviewRow("Correo", lead.email.ifBlank { "-" }),
+            McpPreviewRow("Telefono", lead.phone.ifBlank { "-" }),
+            McpPreviewRow("Etapa", context.stage(lead.stageId)?.name ?: "-"),
+        )
+    }
+
     private fun send(call: McpToolCall): JsonElement {
         val context = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
         val lead = visibleLead(call, context)

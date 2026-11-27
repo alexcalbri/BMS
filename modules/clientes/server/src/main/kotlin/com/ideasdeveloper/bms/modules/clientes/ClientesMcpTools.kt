@@ -3,6 +3,7 @@ package com.ideasdeveloper.bms.modules.clientes
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.ModuleMcp
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -157,6 +158,7 @@ object ClientesMcpTools {
             description = "Borra un campo personalizado: deja de aparecer en la ficha y en los formularios, pero los valores ya guardados " +
                 "en los clientes se conservan. Confirma con el usuario antes.",
             permission = "clientes.fields.manage",
+            preview = { call -> fieldPreview(call) },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del campo (ver list_customer_fields).")), required = listOf("id")),
         ) { call -> deleteField(call) },
         McpTool(
@@ -428,6 +430,15 @@ object ClientesMcpTools {
         }
         val field = ClientesServerModule.createFieldLogged(call.tenant, request, author(call))
         return Json.encodeToJsonElement(field)
+    }
+
+    private fun fieldPreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val (label, key) = call.tenant.prepareStatement("SELECT label, field_key FROM customer_field_definitions WHERE id = ?").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+        } ?: throw McpToolException("Campo no encontrado.")
+        return listOf(McpPreviewRow("Campo que se borra", label), McpPreviewRow("Clave", key))
     }
 
     private fun deleteField(call: McpToolCall): JsonElement {

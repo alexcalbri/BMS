@@ -210,3 +210,7 @@ parsed in Spanish and translated only where they are shown. Notifications are wr
 reasons), the rows already stored (the import notes, the history), the schedule text parser used by the Monday
 extension and the MCP tools (names, descriptions and results) are not translated. Values the app sends back (`op`,
 ids, filters and the option values such as "Todos" or "Activos") never change with the language.
+
+## 0.4.0 (needs Core 0.14.0)
+
+Confirmation card of the Core's in-app assistant (GLOBAL_AGENT.md): delete_shift has a `preview` (employee, date and hours of the shift).

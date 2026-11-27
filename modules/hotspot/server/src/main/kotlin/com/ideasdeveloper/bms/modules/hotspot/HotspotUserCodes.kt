@@ -66,6 +66,28 @@ object HotspotUserCodes {
         }
     }
 
+    /**
+     * The users of this database (and, with [central], the server owners) as they are NOW, without creating any code or
+     * WiFi-access row: what an agent or the assistant may read (hotspot_list_user_codes is read only). [code] is null for
+     * a user who has none yet ("sin codigo").
+     */
+    fun usersReadOnly(tenant: Connection, central: Connection?): List<Pair<HotspotUser, Boolean>> {
+        fun storedCode(connection: Connection, userId: UUID): String? =
+            connection.prepareStatement("SELECT user_code FROM application_users WHERE id = ?").use { query ->
+                query.setObject(1, userId)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        val local = userRows(tenant, "", "ORDER BY users.postgres_role") {}.map { row ->
+            val code = storedCode(tenant, row.id)
+            HotspotUser(row.id, row.username, code.orEmpty(), false, row.active, row.displayName, accessEnabled(tenant, row.id)) to (code != null)
+        }
+        val owners = central?.let(::serverOwners).orEmpty().map { row ->
+            val code = storedCode(central!!, row.id)
+            HotspotUser(row.id, row.username, code.orEmpty(), true, true, row.displayName, accessEnabled(tenant, row.id)) to (code != null)
+        }
+        return local + owners
+    }
+
     /** The user of [code] in this database, checking that the account is still active. */
     fun findActive(tenant: Connection, central: Connection, code: String): HotspotUser? {
         if (!isUserCode(code)) return null

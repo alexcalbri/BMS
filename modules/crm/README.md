@@ -1043,3 +1043,7 @@ block log, the queue of outbound notices, the one-time Meta connection links and
   `POST /modules/crm/ui/import` the same limit; the other screens keep the 2 MB of Nginx). The agent tool `import_csv`
   takes up to 1,000,000 characters, because the MCP endpoint reads at most 1 MB per request; a larger CSV goes through
   `import_from_url` or the import screen.
+
+## 0.33.0 (needs Core 0.14.0)
+
+Confirmation card of the Core's in-app assistant (GLOBAL_AGENT.md): send_message, run_automation, press_lead_button, import_from_url and the integration tests are marked `outbound`; send_message, delete_lead, delete_interest, delete_stage, delete_message_template and delete_automation have a `preview` (recipient, address and final text; the names of what is deleted).

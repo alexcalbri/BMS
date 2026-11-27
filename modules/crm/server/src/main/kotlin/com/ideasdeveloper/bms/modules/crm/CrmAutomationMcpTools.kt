@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -99,6 +100,7 @@ object CrmAutomationMcpTools {
             title = "Eliminar automatizacion",
             description = "Elimina una automatizacion y su registro de ejecuciones. Los botones que la usaban dejan de encontrarla.$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> automationPreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la automatizacion.")), required = listOf("id")),
         ) { call -> delete(call) },
@@ -121,6 +123,8 @@ object CrmAutomationMcpTools {
             description = "Ejecuta una automatizacion con disparador manual (y activa) en un lead que el usuario puede editar, como lo haria un boton: " +
                 "comprueba las condiciones y los datos que necesitan las acciones, y devuelve el resultado o lo que falta. Puede enviar correos o crear reservas: muestra lo que hara y confirma con el usuario antes.",
             permission = CrmScreens.Manage,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
             inputSchema = McpSchema.obj(
                 mapOf("id" to McpSchema.uuid("Id de la automatizacion manual."), "lead" to McpSchema.uuid("Id del lead.")),
                 required = listOf("id", "lead"),
@@ -132,6 +136,8 @@ object CrmAutomationMcpTools {
             description = "Pulsa un campo de tipo boton de la ficha del lead (envia su plantilla o ejecuta sus automatizaciones manuales en orden). " +
                 "Los botones salen de list_pipeline (customFields de tipo Boton). Puede enviar correos o crear reservas: confirma con el usuario antes.",
             permission = CrmScreens.Manage,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
             inputSchema = McpSchema.obj(
                 mapOf("lead" to McpSchema.uuid("Id del lead."), "button" to McpSchema.string("Clave o nombre del boton.")),
                 required = listOf("lead", "button"),
@@ -153,6 +159,11 @@ object CrmAutomationMcpTools {
     private fun actor(call: McpToolCall): CrmActor {
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
         return actor.copy(name = "${actor.name} (agente ${call.agentName})", activity = call.activityActor)
+    }
+
+    private fun automationPreview(call: McpToolCall): List<McpPreviewRow> {
+        val automation = automation(call)
+        return listOf(McpPreviewRow("Automatizacion que se elimina", automation.name), McpPreviewRow("Activa", if (automation.enabled) "Si" else "No"))
     }
 
     private fun automation(call: McpToolCall, key: String = "id"): CrmAutomation =

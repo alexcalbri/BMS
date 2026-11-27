@@ -72,6 +72,8 @@ object CrmIntegrationMcpTools {
             description = "Pide a Meta el nombre de los contactos de Messenger e Instagram que llegaron sin nombre (hasta 100 por canal) y lo guarda. " +
                 "Nunca cambia un nombre existente.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
         ) { call -> gated(call, CrmExtensionIds.Meta) { metaFillNames(call) } },
         McpTool(
             name = "meta_connect_whatsapp",
@@ -97,12 +99,16 @@ object CrmIntegrationMcpTools {
             title = "Probar conexion con WordPress",
             description = "Comprueba la conexion con el plugin del sitio y devuelve su nombre y versiones.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
         ) { call -> gated(call, CrmExtensionIds.WordPress) { wordPressTest(call) } },
         McpTool(
             name = "wordpress_sync_agents",
             title = "Sincronizar agentes del sitio",
             description = "Lee los agentes del sitio WordPress; los nuevos se vinculan al usuario del CRM con el mismo correo de avisos.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
         ) { call -> gated(call, CrmExtensionIds.WordPress) { wordPressSyncAgents(call) } },
         McpTool(
             name = "wordpress_map_agent",
@@ -161,6 +167,8 @@ object CrmIntegrationMcpTools {
             title = "Probar conexion con Cloudbeds",
             description = "Comprueba la conexion con Cloudbeds con la API key guardada.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
         ) { call -> gated(call, CrmExtensionIds.Cloudbeds) { cloudbedsTest(call) } },
 
         // ---- Lead items (crm.leads.manage, like the property and room screens) ----
