@@ -155,6 +155,26 @@ any ─────────────► removed         (uninstall)
   again after a compatible extension version is installed.
 - **Uninstall:** see below.
 
+### Updating a package
+
+Installing a new version of a package (or of a module with bundled extensions, or of the Core) replaces the code for
+every company at the next start; `tenant_extensions.version` is the version whose migrations each company already
+has. At every start, after the module migrations and before the module jobs run, the Core applies the new version's
+migrations (through the provisioning login, as the database owner) in every active company where the extension is
+installed, in any status but removed, and then records the new version. Until that happens the route gate and
+`ExtensionAccess` treat the row as incompatible, so the code of one version never runs on the schema of another.
+
+A company where those migrations fail gets the extension **suspended**: status `incompatible`, the reason in
+`schema_error` and the previous status in `status_before_error` (tenant V017), one log line, one audit entry
+(`extension.suspended`) and one notification to its business owner; the other companies keep working. The Core
+retries every hour, at every start and when the extension is enabled again; once the migrations apply, the previous
+status comes back (`extension.schema_updated`). The list of extensions shows the reason as `problem`.
+
+The import loops of the modules (Membresías, Tareas, Eventos, Mantenimiento, Propietarios, Empleados, Compras) run
+each source through `JobBackoff`: a source that keeps failing waits longer each time (1 minute doubling up to an hour)
+and is logged once; a schema error (SQLState class 42: a table or column that does not exist) waits an hour from the
+first failure and is given up after three attempts until the server restarts.
+
 ## Ownership of data
 
 - Extension settings are stored in `tenant_extension_settings`, inside the

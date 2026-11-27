@@ -15,6 +15,14 @@
 # Lo que escribe el backend en la tabla es entrada no confiable: se valida antes de usarlo.
 set -Eeuo pipefail
 umask 077
+# Locale (scripts/ubuntu/tests/locale_test.sh): with the server's LANG (en_US.UTF-8 and others) bracket ranges such as
+# [!-~] or [a-z], sort orders and case conversions do not mean plain ASCII. Everything below runs as in C for ASCII while
+# text stays UTF-8 (plain C when C.UTF-8 is missing); the exact ASCII checks also set LC_ALL=C themselves (bms_ascii_match).
+if [[ $(LC_ALL=C.UTF-8 locale charmap 2>/dev/null) == UTF-8 ]]; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+unset LANGUAGE
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+# shellcheck disable=SC2329 # mirror.sh, sourced below, defines the same function
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
 
 readonly CONFIG_FILE=/etc/bms/server.env
 readonly STATE_DIR=/var/lib/bms
@@ -84,10 +92,10 @@ config_value() {
 
 DB_URL=$(config_value DB_URL)
 DB_NAME=${DB_URL##*/}
-[[ $DB_NAME =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die 'No se pudo inferir la base central desde DB_URL.'
+bms_ascii_match "$DB_NAME" '^[a-z][a-z0-9_]{0,62}$' || die 'No se pudo inferir la base central desde DB_URL.'
 CORE_UPDATE_REF=$(config_value CORE_UPDATE_REF)
 CORE_UPDATE_REF=${CORE_UPDATE_REF:-master}
-[[ $CORE_UPDATE_REF =~ $REF_PATTERN && $CORE_UPDATE_REF != *..* && $CORE_UPDATE_REF != *.lock ]] ||
+bms_ascii_match "$CORE_UPDATE_REF" "$REF_PATTERN" && [[ $CORE_UPDATE_REF != *..* && $CORE_UPDATE_REF != *.lock ]] ||
     die 'CORE_UPDATE_REF invalido en server.env.'
 
 central_psql() {
@@ -120,7 +128,7 @@ PENDING=$(central_psql -At -F '|' -c "SELECT id, target_version, coalesce(target
 [[ -n $PENDING ]] || exit 0
 # Un valor con '|' de mas cae entero en TARGET_COMMIT y no pasa la validacion de abajo.
 IFS='|' read -r REQUEST_ID TARGET_VERSION TARGET_COMMIT <<< "$PENDING"
-[[ $REQUEST_ID =~ ^[0-9]+$ ]] || die 'Identificador de solicitud invalido.'
+bms_ascii_match "$REQUEST_ID" '^[0-9]+$' || die 'Identificador de solicitud invalido.'
 
 # Si hay otra instalacion o actualizacion en curso, la solicitud sigue pendiente. Desde aqui este ayudante tiene el
 # lock de mantenimiento (L9): nadie mas toca el espejo mientras lo sincroniza; update.sh lo hereda
@@ -191,10 +199,10 @@ fail_request() {
 }
 
 SIGNATURE_STATUS=''
-[[ $TARGET_VERSION =~ $VERSION_PATTERN ]] || fail_request 'Version destino invalida.'
+bms_ascii_match "$TARGET_VERSION" "$VERSION_PATTERN" || fail_request 'Version destino invalida.'
 [[ -n $TARGET_COMMIT ]] ||
     fail_request 'La solicitud no indica el commit aprobado; vuelve a pedir la actualizacion desde la app.'
-[[ $TARGET_COMMIT =~ $COMMIT_PATTERN ]] || fail_request 'Commit destino invalido.'
+bms_ascii_match "$TARGET_COMMIT" "$COMMIT_PATTERN" || fail_request 'Commit destino invalido.'
 install -m 600 /dev/null "$LOG_FILE"
 FINALIZED=false
 

@@ -116,6 +116,10 @@ class ModuleJobScheduler(
     private val registry: ModuleRegistry,
     private val access: ModuleAccessService,
     private val tick: Duration = Duration.ofMinutes(1),
+    // False while the startup migrations of modules and extensions run: no pass starts before them.
+    private val ready: () -> Boolean = { true },
+    // A module whose migrations failed in a company (module id, company code): its jobs skip that company.
+    private val blocked: (String, String) -> Boolean = { _, _ -> false },
 ) {
     private val log = LoggerFactory.getLogger(ModuleJobScheduler::class.java)
     private val clock = ModuleJobClock()
@@ -154,6 +158,7 @@ class ModuleJobScheduler(
     private fun runDueJobsSafely() = runGuarded(log, "Module jobs pass failed", ::runDueJobs)
 
     internal fun runDueJobs() {
+        if (!ready()) return
         try {
             // Jobs grouped by company so a pass opens at most one connection per company.
             val byCompany = linkedMapOf<String, MutableList<Pair<String, ModuleJob>>>()
@@ -165,7 +170,7 @@ class ModuleJobScheduler(
             runEachGuarded(log, registry.installedModuleIds().sorted(), { "Jobs of module $it failed" }) { moduleId ->
                 val jobs = registry.module(moduleId)?.jobs.orEmpty()
                 if (jobs.isNotEmpty()) {
-                    access.companiesWithModule(moduleId).forEach { companyCode ->
+                    access.companiesWithModule(moduleId).filterNot { blocked(moduleId, it) }.forEach { companyCode ->
                         jobs.forEach { byCompany.getOrPut(companyCode) { mutableListOf() }.add(moduleId to it) }
                     }
                 }
@@ -284,5 +289,89 @@ class ModuleJobRunGuard {
 
     fun finish(key: String) {
         running.remove(key)
+    }
+}
+
+/**
+ * Repeated failures of one step of a periodic job (an import source in a company...), so a broken step neither runs
+ * again every minute nor floods the log. The first failure is logged once with its stack trace; while it keeps failing
+ * the step waits longer each time ([FirstWait] doubling up to [MaxWait]) and only a different error is logged again. A
+ * schema error (SQLState class 42: a table or column that does not exist, i.e. a migration not applied, or no right on
+ * it) waits [MaxWait] from the first failure and, after [MaxSchemaAttempts] attempts, is not run again until the server
+ * restarts or [reset] is called (the step is logged once as given up). A success clears the step and says so once.
+ */
+class JobBackoff(private val clock: () -> Instant = Instant::now) {
+    private class State(val failures: Int, val nextAt: Instant, val signature: String, val gaveUp: Boolean)
+
+    private val states = ConcurrentHashMap<String, State>()
+
+    /** Whether [key] may run now (it never failed, its wait is over and it was not given up). */
+    fun due(key: String): Boolean = states[key]?.let { !it.gaveUp && !clock().isBefore(it.nextAt) } ?: true
+
+    /** Runs [block] for [key] when due: its result, or null when skipped or failed (the failure handled here). */
+    fun <T> run(log: org.slf4j.Logger, key: String, description: String, block: () -> T): T? {
+        if (!due(key)) return null
+        return try {
+            block().also { succeeded(log, key, description) }
+        } catch (interrupted: InterruptedException) {
+            throw interrupted
+        } catch (cancellation: java.util.concurrent.CancellationException) {
+            throw cancellation
+        } catch (failure: Exception) {
+            failed(log, key, description, failure)
+            null
+        }
+    }
+
+    fun succeeded(log: org.slf4j.Logger, key: String, description: String) {
+        val previous = states.remove(key) ?: return
+        log.info("{}: funciona de nuevo tras {} fallos seguidos.", description, previous.failures)
+    }
+
+    fun failed(log: org.slf4j.Logger, key: String, description: String, failure: Throwable) {
+        val now = clock()
+        val schema = isSchemaError(failure)
+        val signature = signatureOf(failure)
+        val previous = states[key]
+        val failures = (previous?.failures ?: 0) + 1
+        val wait = if (schema) MaxWait else FirstWait.multipliedBy(1L shl minOf(failures - 1, 10)).coerceAtMost(MaxWait)
+        val gaveUp = schema && failures >= MaxSchemaAttempts
+        states[key] = State(failures, now.plus(wait), signature, gaveUp)
+        when {
+            previous == null || previous.signature != signature ->
+                log.error("{} (se reintenta en {} min{}).", description, wait.toMinutes(), if (schema) "; falta una migracion o un permiso de la base" else "", failure)
+            gaveUp -> log.error("{}: sigue fallando con un error de esquema tras {} intentos; no se reintenta hasta reiniciar el servidor: {}", description, failures, signature)
+            else -> log.debug("{}: fallo {} seguido: {}", description, failures, signature)
+        }
+    }
+
+    /** Forgets [key] (after a migration or a fix): it runs at the next pass. */
+    fun reset(key: String) {
+        states.remove(key)
+    }
+
+    /** Forgets every key that starts with [prefix] (e.g. "tareas/acme/"). */
+    fun resetAll(prefix: String = "") {
+        states.keys.removeIf { it.startsWith(prefix) }
+    }
+
+    companion object {
+        val FirstWait: Duration = Duration.ofMinutes(1)
+        val MaxWait: Duration = Duration.ofMinutes(60)
+        const val MaxSchemaAttempts = 3
+
+        /** One instance for the imports of every module (keys "module/company/source"). */
+        val imports = JobBackoff()
+
+        /** A missing table, column or function, or a missing privilege (SQLState class 42), anywhere in the causes. */
+        fun isSchemaError(failure: Throwable): Boolean =
+            generateSequence(failure) { it.cause.takeIf { cause -> cause !== it } }.take(10)
+                .any { it is java.sql.SQLException && it.sqlState?.startsWith("42") == true }
+
+        private fun signatureOf(failure: Throwable): String {
+            val sql = generateSequence(failure) { it.cause.takeIf { cause -> cause !== it } }.take(10).filterIsInstance<java.sql.SQLException>().firstOrNull()
+            return (sql?.let { "${it.javaClass.simpleName} ${it.sqlState}: ${it.message}" } ?: "${failure.javaClass.simpleName}: ${failure.message}")
+                .lines().first().take(300)
+        }
     }
 }

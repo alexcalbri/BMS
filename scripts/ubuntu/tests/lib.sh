@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Helpers of the script tests (sourced).
+# The tests compare and sort as in C (locale_test.sh runs the scripts' code under other locales on purpose).
+export LC_ALL=C.UTF-8
 SCRIPTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck disable=SC2034 # used by the tests that source this file
 REPO=$(cd -- "$SCRIPTS/../.." && pwd)

@@ -83,8 +83,8 @@ object EmpleadosServerModule : ServerModule {
         id = EmpleadosModule.id,
         displayName = EmpleadosModule.displayName,
         description = "Fichas de empleados, sedes y departamentos, horario habitual con turnos concretos, vista semanal por sede, solicitudes de ausencia con aprobacion y avisos de cambios de turno.",
-        version = "0.3.0",
-        minCoreVersion = "0.12.0",
+        version = "0.3.1",
+        minCoreVersion = "0.13.1",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(

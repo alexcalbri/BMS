@@ -30,6 +30,21 @@ class CompanyFilesTest {
     }
 
     @Test
+    fun aDefaultLocaleWithOtherDigitsStillWritesAsciiRefs() {
+        val previous = java.util.Locale.getDefault()
+        try {
+            // Arabic-Indic digits for %d: the ref "٢٠٢٦/١١/..." would not pass the ref check on read.
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("ar-EG"))
+            val module = files.module("acme", "crm")
+            val stored = module.put("a.txt", "text/plain", "hola".byteInputStream(), maxBytes = 100)
+            assertTrue(Regex("[0-9]{4}/[0-9]{2}/[0-9a-f-]{36}").matches(stored.ref), stored.ref)
+            assertContentEquals("hola".toByteArray(), module.open(stored)!!.use { it.readBytes() })
+        } finally {
+            java.util.Locale.setDefault(previous)
+        }
+    }
+
+    @Test
     fun anOversizeFileLeavesNothingBehind() {
         val module = files.module("acme", "crm")
         assertFailsWith<FileTooLargeException> { module.put("grande.bin", "", ByteArray(50).inputStream(), maxBytes = 10) }

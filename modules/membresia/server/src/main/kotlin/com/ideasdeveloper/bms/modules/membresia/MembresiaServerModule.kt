@@ -47,7 +47,7 @@ object MembresiaServerModule : ServerModule {
             ModulePermissionDefinition(MembresiaModule.Import, "Importar datos", "Permite ver y usar la pantalla Importar para traer miembros, membresías y visitas desde otra herramienta."),
         ),
         ui = ModuleUiEntry(type = "native", entry = MembresiaModule.UiRoute, home = "recepcion"),
-        minCoreVersion = "0.12.0",
+        minCoreVersion = "0.13.1",
         supportsExtensions = true,
         extensionPermissions = listOf(MembresiaModule.ImportWrite),
     )
