@@ -181,6 +181,7 @@ object PropietariosService {
             buildList {
                 add(ActivityChange("date", "Fecha del cambio", null, date.toString()))
                 add(ActivityChange("owners", "Titulares", fromOwners, toOwners))
+                if (plan.newStatus != status) add(ActivityChange("status", "Estado del lote", status.label, plan.newStatus.label))
                 notes.trim().takeIf { it.isNotEmpty() }?.let { add(ActivityChange("notes", "Notas", null, it)) }
             },
         )
@@ -218,10 +219,11 @@ object PropietariosService {
         PropietariosActivity.write(
             tenant, activity, "lote", lotId.toString(), lot.lotNumber, PropietariosActivity.OwnerAdded,
             "Agrego a ${customer.name} como cotitular del lote ${lot.lotNumber}.",
-            listOf(
-                ActivityChange("owner", "Titular", null, PropietariosRules.ownerLabel(customer.name, newOwner.sharePercent)),
-                ActivityChange("startsOn", "Inicio", null, (startsOn ?: today).toString()),
-            ),
+            buildList {
+                add(ActivityChange("owner", "Titular", null, PropietariosRules.ownerLabel(customer.name, newOwner.sharePercent)))
+                add(ActivityChange("startsOn", "Inicio", null, (startsOn ?: today).toString()))
+                if (after != status) add(ActivityChange("status", "Estado del lote", status.label, after.label))
+            },
         )
         OwnershipResult(lotId, lot.lotNumber, lot.developmentName, "alta", startsOn ?: today, listOf(OwnershipChange(id, customer.id)), emptyList())
     }
