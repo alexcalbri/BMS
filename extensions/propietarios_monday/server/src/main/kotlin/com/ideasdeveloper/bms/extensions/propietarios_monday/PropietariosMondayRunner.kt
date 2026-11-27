@@ -1,10 +1,6 @@
 package com.ideasdeveloper.bms.extensions.propietarios_monday
 
-import com.ideasdeveloper.bms.server.activity.ActivityActions
 import com.ideasdeveloper.bms.server.activity.ActivityActor
-import com.ideasdeveloper.bms.server.activity.ActivityChange
-import com.ideasdeveloper.bms.server.activity.ActivityEntry
-import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.modules.propietarios.LotImportOutcome
 import com.ideasdeveloper.bms.modules.propietarios.PropietariosImportApply
 import com.ideasdeveloper.bms.modules.propietarios.PropietariosImportJobContext
@@ -56,13 +52,13 @@ object PropietariosMondayRunner {
         // Al empezar cada pasada: purga de trabajos viejos (con tope), sin que un fallo detenga la pasada.
         runCatching { PropietariosMondayJobs.purgeOld(tenant) }.onFailure { log.warn("No se pudo purgar importaciones viejas de monday", it) }
         PropietariosMondayJobs.withStatus(tenant, MondayJobStatus.Reading).forEach { job ->
-            if (PropietariosMondayClient.hasTime(deadline) && MondayReading.retryReady(job.retries, job.updatedAt)) processed += guarded(tenant, job) { readPages(context, job, deadline) }
+            if (PropietariosMondayClient.hasTime(deadline) && MondayReading.retryReady(job.retries, job.updatedAt)) processed += guarded(context, job) { readPages(context, job, deadline) }
         }
         PropietariosMondayJobs.withStatus(tenant, MondayJobStatus.Applying).firstOrNull()?.let { job ->
             // Lotes de [BatchSize] filas hasta agotar el tiempo de la pasada; un lote que no avanza (fallo, cancelacion, fin) corta el ciclo.
             while (PropietariosMondayClient.hasTime(deadline) && MondayReading.retryReady(job.retries, job.updatedAt)) {
                 val progress = IntArray(1)
-                val done = guarded(tenant, job) { applyBatch(context, job, deadline, progress) }
+                val done = guarded(context, job) { applyBatch(context, job, deadline, progress) }
                 processed += done
                 // Un lote que no cambio ninguna fila (solo releyo filas con archivos por bajar) no se repite en esta pasada.
                 if (done == 0 || progress[0] == 0) break
@@ -72,7 +68,8 @@ object PropietariosMondayRunner {
     }
 
     // Un fallo pasajero de monday reintenta; el resto deja el trabajo en "failed" con un mensaje legible. Todo se registra.
-    private fun guarded(tenant: Connection, job: MondayJob, block: () -> Int): Int {
+    private fun guarded(context: PropietariosImportJobContext, job: MondayJob, block: () -> Int): Int {
+        val tenant = context.tenant
         try {
             return block()
         } catch (failure: InterruptedException) {
@@ -81,25 +78,25 @@ object PropietariosMondayRunner {
         } catch (failure: PropietariosMondayException) {
             if (failure.transient) {
                 log.warn("Importacion de monday {}: error temporal: {}", job.id, failure.message)
-                retry(tenant, job.id, failure.message.orEmpty())
+                retry(context, job.id, failure.message.orEmpty())
             } else {
                 log.warn("Importacion de monday {} fallo: {}", job.id, failure.message)
-                fail(tenant, job.id, failure.message.orEmpty())
+                fail(context, job.id, failure.message.orEmpty())
             }
         } catch (failure: PropietariosValidationException) {
             log.warn("Importacion de monday {} fallo: {}", job.id, failure.message)
-            fail(tenant, job.id, failure.message.orEmpty())
+            fail(context, job.id, failure.message.orEmpty())
         } catch (failure: SQLException) {
             if (isTransientSql(failure)) {
                 log.warn("Importacion de monday {}: error temporal de base de datos: {}", job.id, failure.sqlState)
-                retry(tenant, job.id, msg("Error temporal de la base de datos."))
+                retry(context, job.id, msg("Error temporal de la base de datos."))
             } else {
                 log.error("Importacion de monday {} fallo", job.id, failure)
-                fail(tenant, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
+                fail(context, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
             }
         } catch (failure: Exception) {
             log.error("Importacion de monday {} fallo", job.id, failure)
-            fail(tenant, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
+            fail(context, job.id, msg("No se pudo completar la importacion; revisa el registro del servidor."))
         }
         return 0
     }
@@ -110,18 +107,28 @@ object PropietariosMondayRunner {
         return state.startsWith("40") || state.startsWith("08")
     }
 
-    private fun retry(tenant: Connection, id: UUID, message: String) {
+    private fun retry(context: PropietariosImportJobContext, id: UUID, message: String) {
+        val tenant = context.tenant
         runCatching {
             if (!tenant.autoCommit) tenant.rollback()
             val attempts = PropietariosMondayJobs.bumpRetries(tenant, id, "Error temporal de monday, se reintenta (intento de $MaxRetries): $message")
-            if (attempts >= MaxRetries) fail(tenant, id, "monday no respondio despues de $MaxRetries intentos: $message")
+            if (attempts >= MaxRetries) fail(context, id, "monday no respondio despues de $MaxRetries intentos: $message")
         }.onFailure { log.error("No se pudo registrar el reintento de la importacion de monday {}", id, it) }
     }
 
-    private fun fail(tenant: Connection, id: UUID, message: String) {
+    private fun fail(context: PropietariosImportJobContext, id: UUID, message: String) {
+        val tenant = context.tenant
         runCatching {
             if (!tenant.autoCommit) tenant.rollback()
-            PropietariosMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+            val job = PropietariosMondayJobs.find(tenant, id)
+            PropietariosMondayJobs.inTransaction(tenant) {
+                val changed = PropietariosMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+                // Una importacion que ya habia aplicado filas y falla deja su fila de totales (las de cada registro ya estan).
+                if (changed && job != null && job.applied > 0) {
+                    val closed = PropietariosMondayJobs.find(tenant, id) ?: job
+                    PropietariosMondayActivity.total(tenant, importerActivity(context, closed), closed, "La importacion se detuvo con un error: ${message.take(200)}")
+                }
+            }
         }.onFailure { log.error("No se pudo marcar como fallida la importacion de monday {}", id, it) }
     }
 
@@ -213,7 +220,11 @@ object PropietariosMondayRunner {
         val tenant = context.tenant
         // Los permisos se leen en vivo: si quien inicio la importacion ya no puede importar, se cancela antes de escribir nada.
         if (!creatorMayImport(context, job)) {
-            PropietariosMondayJobs.cancelWithMessage(tenant, job.id, msg("Quien inició la importación ya no tiene permiso."))
+            PropietariosMondayJobs.inTransaction(tenant) {
+                if (PropietariosMondayJobs.cancelWithMessage(tenant, job.id, msg("Quien inició la importación ya no tiene permiso."))) {
+                    PropietariosMondayActivity.cancelledByRules(tenant, job, "quien la empezo ya no tiene permiso para importar.")
+                }
+            }
             return 0
         }
         // Idempotente: el desarrollo se busca por su clave (o es el elegido), asi cada corrida llega al mismo.
@@ -359,31 +370,22 @@ object PropietariosMondayRunner {
         val job = PropietariosMondayJobs.find(tenant, jobId) ?: return
         val message = "Importacion terminada: ${job.created} lotes creados, ${job.updated} actualizados, ${job.skipped} omitidos y ${job.failed} con error. " +
             "Archivos: ${job.filesDone} importados y ${job.filesFailed} con error."
-        PropietariosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
-        // Una fila con los totales de la importacion (las de cada lote y archivo ya estan en el registro).
-        recordImportSummary(tenant, jobId, job.boardName, importer, job.created, job.updated, job.skipped, job.failed, job.filesDone, job.filesFailed)
+        // El cierre del trabajo y la fila de totales (las de cada lote y archivo ya estan en el registro) se confirman juntos.
+        PropietariosMondayJobs.inTransaction(tenant) {
+            if (PropietariosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))) {
+                PropietariosMondayActivity.total(tenant, importer, job)
+            }
+        }
     }
 
-    /** Una fila con los totales de la importacion de monday, a nombre de [importer]. */
-    internal fun recordImportSummary(
-        tenant: Connection, jobId: UUID, boardName: String, importer: ActivityActor,
-        created: Int, updated: Int, skipped: Int, failed: Int, filesDone: Int, filesFailed: Int,
-    ) {
-        ActivityLog.record(tenant, importer, ActivityEntry(
-            moduleId = "propietarios", entityType = "importacion", entityId = jobId.toString(), entityLabel = boardName,
-            action = ActivityActions.Imported,
-            summary = "Importo $created lotes de monday desde $boardName.",
-            changes = listOf(
-                ActivityChange("lots", "Lotes", null, "creados $created, actualizados $updated, omitidos $skipped, con error $failed"),
-                ActivityChange("files", "Archivos", null, "importados $filesDone, con error $filesFailed"),
-            ),
-        ))
-    }
-
-    /** Quien inicio la importacion, para el registro de actividad ("Importacion (Ana Ruiz)"). */
+    /**
+     * Quien inicio la importacion, para el registro de actividad ("Importacion (Ana Ruiz)"); si la empezo un agente de IA,
+     * "Importacion (Agente de Ana Ruiz)".
+     */
     private fun importerActivity(context: PropietariosImportJobContext, job: MondayJob): ActivityActor {
         val creator = job.createdBy ?: return ActivityActor.import(null)
-        val startedBy = context.access.userAccess(context.tenant, context.companyCode, creator, serverOwner = false)?.permissions("propietarios")?.activityActor
-        return ActivityActor.import(startedBy ?: ActivityActor.user(creator, "Usuario"))
+        val user = context.access.userAccess(context.tenant, context.companyCode, creator, serverOwner = false)?.permissions("propietarios")?.activityActor
+            ?: ActivityActor.user(creator, "Usuario")
+        return ActivityActor.import(job.createdByAgent?.let(user::viaAgent) ?: user)
     }
 }
