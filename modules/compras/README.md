@@ -135,7 +135,7 @@ reimportacion no deshace una aprobacion ni un rechazo hechos en BMS. El resultad
 
 ## Registro de actividad (0.4.0, needs Core 0.12.0)
 
-Cada alta, cambio, baja, cotizacion, adjunto, estado, aprobacion, departamento, aprobador y ajuste de compras queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP y por importacion). Las historias de la solicitud siguen igual.
+Cada alta, cambio, baja, cotizacion, adjunto, estado, aprobacion, departamento, aprobador y ajuste de compras queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP y por importacion). Las historias de la solicitud siguen igual. La fila va en la misma transaccion que el cambio (tambien los ajustes: moneda, departamentos y aprobadores; al quitar un aprobador la fila se escribe antes del borrado). Una solicitud importada deja una fila con sus datos clave (estado y solicitante incluidos), otra por cada cotizacion, departamento nuevo y grupo de adjuntos.
 
 ## Languages (0.3.0, needs Core 0.10.0)
 
