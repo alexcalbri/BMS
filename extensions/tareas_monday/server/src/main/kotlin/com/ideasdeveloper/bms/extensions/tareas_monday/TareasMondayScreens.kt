@@ -119,7 +119,7 @@ object TareasMondayFlow {
             ?: throw TareasMondayException(tr("Guarda primero el token de la API de monday (pantalla Importar)."))
         val board = TareasMondayClient.boardInfo(token, boardId)
         mappingProblem(mapping, board.columns)?.let { throw TareasMondayException(it) }
-        return TareasMondayJobs.queueRead(tenant, boardId, board.name, targetBoardId, mapping, actorOf(permissions))
+        return TareasMondayJobs.queueRead(tenant, boardId, board.name, targetBoardId, mapping, actorOf(permissions), permissions.activityActor)
     }
 
     fun statusLabel(status: String): String = when (status) {
@@ -422,7 +422,7 @@ object TareasMondayScreens {
             when (op) {
                 MondayOp.Token -> saveToken(context, values)
                 MondayOp.Forget -> {
-                    TareasMondaySettings.saveToken(context.access.secrets, tenant, null)
+                    TareasMondaySettings.saveToken(context.access.secrets, tenant, null, context.permissions.activityActor)
                     TareasImportReply(tr("Token de monday borrado."))
                 }
                 MondayOp.Boards -> TareasImportReply(tr("Elige un tablero."), params = mapOf("step" to "boards"))
@@ -435,7 +435,7 @@ object TareasMondayScreens {
                 MondayOp.Apply -> {
                     val id = jobId(values)
                     controlled(context, id)
-                    if (TareasMondayJobs.requestApply(tenant, id)) {
+                    if (TareasMondayJobs.requestApply(tenant, id, context.permissions.activityActor)) {
                         TareasImportReply(tr("Se esta importando."), params = mapOf("step" to "job", "job" to id.toString()))
                     } else {
                         failure(tr("Esta importacion ya no esta en revision."), mapOf("step" to "job", "job" to id.toString()))
@@ -444,7 +444,7 @@ object TareasMondayScreens {
                 MondayOp.Cancel -> {
                     val id = jobId(values)
                     controlled(context, id)
-                    val done = TareasMondayJobs.cancel(tenant, id)
+                    val done = TareasMondayJobs.cancel(tenant, id, context.permissions.activityActor)
                     TareasImportReply(if (done) tr("Importacion cancelada.") else tr("Esta importacion ya habia terminado."), error = !done, params = mapOf("step" to "job", "job" to id.toString()))
                 }
                 else -> failure(tr("Operacion desconocida."))
@@ -467,7 +467,7 @@ object TareasMondayScreens {
         val tenant = context.tenant
         val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != SecretBox.Mask }
         if (typed == null && !TareasMondaySettings.configured(tenant)) return failure(tr("Escribe el token de la API de monday."))
-        typed?.let { TareasMondaySettings.saveToken(context.access.secrets, tenant, it) }
+        typed?.let { TareasMondaySettings.saveToken(context.access.secrets, tenant, it, context.permissions.activityActor) }
         return TareasImportReply(tr("Token de monday guardado."), params = mapOf("step" to "boards"))
     }
 

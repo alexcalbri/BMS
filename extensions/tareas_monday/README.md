@@ -98,3 +98,11 @@ Siempre se borra el token. La opcion `import_history` (por omision, borrar) elim
 ## Idiomas
 
 Bilingüe español/inglés (1.1.0, necesita Core 0.10.0): los textos del código usan `tr("Texto en español")` y el catálogo inglés está en `server/src/main/resources/extensions/tareas_monday/i18n/en.json`. Lo que viene de monday (nombres de tableros, grupos, columnas, elementos, subelementos, personas, archivos) no se traduce. Lo que se guarda al importar (notas, motivos y errores de las filas) queda en español.
+
+## Registro de actividad de la empresa (1.2.0, necesita Tareas 0.5.0 y Core 0.12.0)
+
+Lo que la extension escribe deja su fila en el registro de actividad de la empresa, en la misma transaccion: guardar o borrar
+el token (solo que cambio, nunca su valor), iniciar la lectura de un tablero, aplicarla o cancelarla (con la persona o el agente
+que lo hizo: "Agente de <usuario>") y el cierre de la importacion con sus totales. Lo que escribe la importacion en segundo plano
+(el tablero nuevo, cada tarea creada o actualizada con su antes -> despues, los archivos adjuntados) va a nombre de
+"Importacion (<persona que la inicio>)". El historial propio de la extension no cambia.

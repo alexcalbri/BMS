@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.tareas_monday
 
+import com.ideasdeveloper.bms.modules.tareas.TareasLog
+import com.ideasdeveloper.bms.modules.tareas.TareasRepository
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.modules.tareas.ImportedTask
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
 import com.ideasdeveloper.bms.server.i18n.msg
@@ -71,7 +76,7 @@ object TareasMondaySettings {
     }
 
     /** Guarda el token sellado (upsert); null o vacio lo borra. Sin llave maestra no guarda nada en claro. */
-    fun saveToken(secrets: SecretBox, tenant: Connection, token: String?) {
+    fun saveToken(secrets: SecretBox, tenant: Connection, token: String?, actor: ActivityActor) {
         val clean = token?.trim()?.takeIf { it.isNotEmpty() }
         val sealed = clean?.let {
             try {
@@ -80,14 +85,22 @@ object TareasMondaySettings {
                 throw TareasMondayException(tr(UnavailableMessage))
             }
         }
-        tenant.prepareStatement(
-            """
-            INSERT INTO $Table (id, token) VALUES (1, ?)
-            ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token, updated_at = CURRENT_TIMESTAMP
-            """.trimIndent(),
-        ).use { update ->
-            update.setString(1, sealed)
-            update.executeUpdate()
+        // The setting and its activity row in one transaction; the token itself is never stored there, only that it changed.
+        TareasRepository.transaction(tenant) {
+            tenant.prepareStatement(
+                """
+                INSERT INTO $Table (id, token) VALUES (1, ?)
+                ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token, updated_at = CURRENT_TIMESTAMP
+                """.trimIndent(),
+            ).use { update ->
+                update.setString(1, sealed)
+                update.executeUpdate()
+            }
+            TareasLog.record(
+                tenant, actor, "monday_settings", null, "monday", ActivityActions.SettingsChanged,
+                if (clean == null) "Borro el token de la API de monday." else "Guardo el token de la API de monday.",
+                listOf(ActivityChange.secret("token", "Token de la API de monday")),
+            )
         }
     }
 }
@@ -154,21 +167,27 @@ object TareasMondayJobs {
     // ---- Cola ----
 
     /** Pone en cola la lectura de un tablero. Solo hay una importacion en curso a la vez. */
-    fun queueRead(tenant: Connection, boardId: String, boardName: String, targetBoardId: UUID?, mapping: MondayMapping, createdBy: UUID?): UUID {
+    fun queueRead(tenant: Connection, boardId: String, boardName: String, targetBoardId: UUID?, mapping: MondayMapping, createdBy: UUID?, actor: ActivityActor): UUID {
         if (!TareasMondayClient.isBoardId(boardId)) throw TareasMondayException(tr("El id del tablero debe ser un numero."))
         if (recent(tenant, 20).any { it.open }) throw TareasMondayException(tr(OpenJobMessage))
         val id = UUID.randomUUID()
         try {
-            tenant.prepareStatement(
-                "INSERT INTO $JobsTable (id, board_id, board_name, target_board_id, status, mapping, created_by) VALUES (?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?)",
-            ).use { insert ->
-                insert.setObject(1, id)
-                insert.setString(2, boardId)
-                insert.setString(3, boardName.take(200))
-                insert.setObject(4, targetBoardId)
-                insert.setString(5, json.encodeToString(MondayMapping.serializer(), mapping))
-                insert.setObject(6, createdBy)
-                insert.executeUpdate()
+            TareasRepository.transaction(tenant) {
+                tenant.prepareStatement(
+                    "INSERT INTO $JobsTable (id, board_id, board_name, target_board_id, status, mapping, created_by) VALUES (?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?)",
+                ).use { insert ->
+                    insert.setObject(1, id)
+                    insert.setString(2, boardId)
+                    insert.setString(3, boardName.take(200))
+                    insert.setObject(4, targetBoardId)
+                    insert.setString(5, json.encodeToString(MondayMapping.serializer(), mapping))
+                    insert.setObject(6, createdBy)
+                    insert.executeUpdate()
+                }
+                TareasLog.record(
+                    tenant, actor, TareasLog.Import, id, boardName.take(200), ActivityActions.Created, "Inicio la lectura del tablero ${boardName.take(200)} de monday para importarlo.",
+                    listOf(ActivityChange.of("board", "Tablero de monday", null, boardName.take(200)), ActivityChange.of("status", "Estado", null, "Leyendo")),
+                )
             }
         } catch (failure: SQLException) {
             // El indice unico parcial deja una sola importacion abierta por empresa (dos peticiones a la vez).
@@ -179,11 +198,39 @@ object TareasMondayJobs {
     }
 
     /** Pasa de "preview" a "applying"; false si el trabajo ya no esta en revision. */
-    fun requestApply(tenant: Connection, id: UUID): Boolean = changeStatus(tenant, id, MondayJobStatus.Applying, "", from = listOf(MondayJobStatus.Preview))
+    fun requestApply(tenant: Connection, id: UUID, actor: ActivityActor): Boolean = TareasRepository.transaction(tenant) {
+        val changed = changeStatus(tenant, id, MondayJobStatus.Applying, "", from = listOf(MondayJobStatus.Preview))
+        if (changed) recordStep(tenant, id, actor, "Aplico la importacion del tablero", MondayJobStatus.Preview, MondayJobStatus.Applying)
+        changed
+    }
 
     /** Cancela un trabajo que aun no termino; false si ya habia terminado. */
-    fun cancel(tenant: Connection, id: UUID): Boolean =
-        changeStatus(tenant, id, MondayJobStatus.Cancelled, "Cancelada por el usuario.", from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
+    fun cancel(tenant: Connection, id: UUID, actor: ActivityActor): Boolean = TareasRepository.transaction(tenant) {
+        val before = find(tenant, id)?.status
+        val changed = changeStatus(tenant, id, MondayJobStatus.Cancelled, "Cancelada por el usuario.", from = listOf(MondayJobStatus.Reading, MondayJobStatus.Preview, MondayJobStatus.Applying))
+        if (changed) recordStep(tenant, id, actor, "Cancelo la importacion del tablero", before.orEmpty(), MondayJobStatus.Cancelled)
+        changed
+    }
+
+    // A person's step on an import (apply, cancel): the status old -> new in the activity log.
+    private fun recordStep(tenant: Connection, id: UUID, actor: ActivityActor, verb: String, from: String, to: String) {
+        val board = find(tenant, id)?.boardName.orEmpty()
+        TareasLog.record(
+            tenant, actor, TareasLog.Import, id, board, ActivityActions.Updated, "$verb $board de monday.",
+            listOf(ActivityChange.of("status", "Estado", statusText(from), statusText(to))),
+        )
+    }
+
+    // The state of an import as the log writes it (Spanish, stored).
+    private fun statusText(code: String): String = when (code) {
+        MondayJobStatus.Reading -> "Leyendo"
+        MondayJobStatus.Preview -> "Por revisar"
+        MondayJobStatus.Applying -> "Aplicando"
+        MondayJobStatus.Done -> "Terminada"
+        MondayJobStatus.Failed -> "Con error"
+        MondayJobStatus.Cancelled -> "Cancelada"
+        else -> code
+    }
 
     fun changeStatus(tenant: Connection, id: UUID, status: String, message: String, from: List<String>): Boolean =
         tenant.prepareStatement(
