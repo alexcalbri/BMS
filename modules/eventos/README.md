@@ -1,6 +1,6 @@
 # Eventos
 
-Version 0.2.1 (in development). Events of the business: **public events** with capacity, waiting list, registrations,
+Version 0.4.0 (in development, needs Core 0.12.0). Activity log: every change to events, registrations, waiting list, attendance, payments, settings and imports is recorded (see `ACTIVITY_LOG.md`). Events of the business: **public events** with capacity, waiting list, registrations,
 attendance and member prices (workshops, music nights, talks), and **private events** with a client, an agreed amount and
 payments (abonos) (weddings, celebrations, retreats). Out of scope in 0.2.0: public registration page, online payments and
 tickets with codes: the team registers people and marks payment by hand.
