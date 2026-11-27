@@ -139,6 +139,7 @@ class CompanyProvisioningService(
                     roleCreated = true
                     statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
                     statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(ownerUsername)}")
+                    grantProvisioningConnect(statement, databaseName)
                 }
             }
 
@@ -480,6 +481,7 @@ class CompanyProvisioningService(
                     }
                     statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
                     statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(owner.role)}")
+                    grantProvisioningConnect(statement, databaseName)
                 }
             }
             tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
@@ -1479,6 +1481,7 @@ class CompanyProvisioningService(
                     statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
                     statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
                     statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
+                    grantProvisioningConnect(statement, databaseName)
                 }
             }
         }
@@ -1619,6 +1622,7 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("Activity log migration failed for company {}", companyCode, failure)
                     }
+                    grantRuntimeDefaults(tenant)
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1913,11 +1917,16 @@ class CompanyProvisioningService(
         password = config.runtimePassword,
     )
 
+    /**
+     * A short-lived connection for provisioning, as the provisioning login (not the runtime role of the pool), switched
+     * to [provisioningRole] (the server owner's role, which owns the company databases and may create databases and
+     * roles). The pooled runtime connections never hold those rights (SELF_HOSTING.md, Roles de PostgreSQL).
+     */
     private fun adminConnection(provisioningRole: String): Connection {
         val source = PGSimpleDataSource().apply {
             setURL(config.administrationJdbcUrl)
-            setUser(config.runtimeUser)
-            setPassword(config.runtimePassword)
+            setUser(config.adminUser)
+            setPassword(config.adminPassword)
         }
         return source.connection.apply {
             setProvisioningRole(provisioningRole)
@@ -1927,8 +1936,8 @@ class CompanyProvisioningService(
     private fun tenantAdminConnection(jdbcUrl: String, provisioningRole: String): Connection {
         val source = PGSimpleDataSource().apply {
             setURL(jdbcUrl)
-            setUser(config.runtimeUser)
-            setPassword(config.runtimePassword)
+            setUser(config.adminUser)
+            setPassword(config.adminPassword)
         }
         return source.connection.apply {
             setProvisioningRole(provisioningRole)
@@ -2175,6 +2184,7 @@ class CompanyProvisioningService(
                 statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON $tables TO ${quoteIdentifier(config.runtimeUser)}")
             }
         }
+        grantRuntimeDefaults(connection)
     }
 
     // Packaged modules carry their migrations; modules compiled into the server read the source tree.
@@ -2283,6 +2293,34 @@ class CompanyProvisioningService(
                 statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(ownerUsername)}")
             }
         }
+        grantRuntimeDefaults(connection)
+    }
+
+    /**
+     * The runtime role owns nothing and is a member of nothing (SELF_HOSTING.md, Roles de PostgreSQL): it reaches the
+     * company's tables only through grants. Every table and view of schema public owned by the current role (the
+     * server owner's) gets SELECT, INSERT, UPDATE, DELETE for it, schema_migrations SELECT, and every sequence USAGE,
+     * SELECT; the activity log and its sequence keep the narrower grants of [applyActivityLogMigration]. Only missing
+     * privileges are granted, so running it after every migration costs one catalog query. Never throws.
+     */
+    private fun grantRuntimeDefaults(connection: Connection) {
+        try {
+            val statements = connection.prepareStatement(RuntimeDefaultGrantsSql).use { query ->
+                query.setString(1, config.runtimeUser)
+                query.setString(2, config.runtimeUser)
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+            }
+            if (statements.isEmpty()) return
+            connection.createStatement().use { statement -> statements.forEach { statement.execute(it) } }
+        } catch (failure: Exception) {
+            log.error("No se pudieron conceder al runtime {} los privilegios de las tablas de la empresa", config.runtimeUser, failure)
+        }
+    }
+
+    // CONNECT for the provisioning login on a database it just created (it inherits nothing from the owner's role).
+    private fun grantProvisioningConnect(statement: java.sql.Statement, databaseName: String) {
+        if (!config.separateProvisioningRole) return
+        statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.adminUser)}")
     }
 
     private fun loadCompanyModules(databaseName: String): List<CompanyModuleResponse> {
@@ -2447,8 +2485,8 @@ class CompanyProvisioningService(
     /**
      * The company's activity row for a change made from the server by [actor], on [tenant] (the change's own
      * connection, in its transaction). A provisioning connection runs as the server owner's role, which may hold no
-     * grant on a log another role owns (update.sh applies V011 as the superuser): the row is written as the login
-     * (runtime) role, which has them, and the role is set back.
+     * grant on a log another role owns (an older update.sh applied V011 as the superuser): the row is written as the
+     * runtime role, which has them (the provisioning login may SET ROLE to it), and the role is set back.
      */
     private fun recordOnTenant(
         tenant: Connection, actor: AuditActor, entityType: String, entityId: String?, label: String, action: String, summary: String,
@@ -2458,8 +2496,8 @@ class CompanyProvisioningService(
         val current = tenant.createStatement().use { statement ->
             statement.executeQuery("SELECT current_user, session_user").use { rows -> rows.next(); rows.getString(1) to rows.getString(2) }
         }
-        val switched = current.first != current.second
-        if (switched) tenant.createStatement().use { it.execute("SET LOCAL ROLE NONE") }
+        val switched = current.first != config.runtimeUser
+        if (switched) tenant.createStatement().use { it.execute("SET LOCAL ROLE ${quoteIdentifier(config.runtimeUser)}") }
         // A failure aborts the transaction, whose rollback also undoes the SET LOCAL.
         com.ideasdeveloper.bms.server.activity.CoreActivity.record(
             tenant, com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(actor, actorName(actor)), entityType, entityId, label, action, summary, changes,
@@ -2514,6 +2552,7 @@ class CompanyProvisioningService(
                     statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON $tables TO ${quoteIdentifier(config.runtimeUser)}")
                 }
             }
+            grantRuntimeDefaults(tenant)
         }
     }
 
@@ -2626,3 +2665,34 @@ private class ModuleInstallState(val status: String, private val text: () -> Str
 
 // Tenant table of the company activity log (tenant V011); never granted beyond SELECT/INSERT.
 private const val ActivityLogTable = "activity_log"
+
+// Privileges of the runtime role missing on what the current role owns in schema public (see grantRuntimeDefaults):
+// one GRANT statement per object. Parameters: the runtime role twice.
+private val RuntimeDefaultGrantsSql = """
+    WITH runtime AS (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = ?),
+    owned AS (
+        SELECT c.oid, c.relname, c.relkind, c.relacl FROM pg_catalog.pg_class c
+        WHERE c.relnamespace = 'public'::pg_catalog.regnamespace
+          AND c.relowner = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user)
+          AND c.relkind IN ('r', 'p', 'v', 'S')
+          AND c.relname NOT IN ('activity_log', 'activity_log_chain', 'activity_log_id_seq')
+    ),
+    wanted AS (
+        SELECT o.relname, o.relacl, CASE o.relkind WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END AS kind, p.privilege
+        FROM owned o
+        CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('USAGE')) AS p (privilege)
+        WHERE CASE
+            WHEN o.relkind = 'S' THEN p.privilege IN ('USAGE', 'SELECT')
+            WHEN o.relname = 'schema_migrations' THEN p.privilege = 'SELECT'
+            ELSE p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+        END
+    )
+    SELECT pg_catalog.format('GRANT %s ON %s public.%I TO %I', pg_catalog.string_agg(w.privilege, ', ' ORDER BY w.privilege), w.kind, w.relname, ?)
+    FROM wanted w
+    WHERE NOT EXISTS (
+        SELECT 1 FROM pg_catalog.aclexplode(w.relacl) acl
+        WHERE acl.grantee = (SELECT oid FROM runtime) AND acl.privilege_type = w.privilege
+    )
+    GROUP BY w.kind, w.relname
+    ORDER BY w.relname
+""".trimIndent()
