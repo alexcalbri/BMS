@@ -4,9 +4,9 @@ Importa un tablero de [monday.com](https://monday.com) al modulo **Propietarios*
 importacion del modulo (`PropietariosImportSource`) y no tiene rutas propias. Pensada para tableros como "Lot Owners Group":
 cada elemento es un lote y cada grupo, un propietario o una familia.
 
-## Registro de actividad (1.2.0, needs Propietarios 0.4.0)
+## Registro de actividad (1.3.0, needs Propietarios 0.4.0)
 
-La importacion deja una fila con sus totales y cada lote, titular, adjunto y desarrollo importado queda en el registro de actividad a nombre de "Importacion (quien la inicio)". Guardar o quitar el token de monday queda registrado sin su valor.
+Todo cambio queda en el registro de actividad de la empresa, en la misma transaccion que el cambio: guardar, cambiar o borrar el token de monday (sin su valor), iniciar, confirmar y cancelar una importacion (tambien la que se cancela sola porque quien la empezo ya no puede importar), la fila de totales al cerrarla en la misma transaccion que cierra el trabajo (si se detiene con error tambien la deja) y cada importacion antigua que borra la limpieza (la fila va antes del borrado). Cada desarrollo, lote, titular, cliente y adjunto importado queda a nombre de "Importacion (quien la inicio)"; si la inicio un agente de IA (`monday_read_board`), el nombre del agente se guarda en el trabajo (`created_by_agent`, migracion `V003__job_agent.sql`) y las filas dicen "Importacion (Agente de <usuario>)". Las importaciones anteriores usan solo al usuario.
 
 ## Que importa
 

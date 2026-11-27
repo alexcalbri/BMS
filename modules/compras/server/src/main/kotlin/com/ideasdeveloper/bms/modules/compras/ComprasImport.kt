@@ -372,7 +372,7 @@ object ComprasImportEngine {
     }
 
     // Departamento existente; uno nuevo solo lo crea quien administra compras (si no, null y un problema).
-    private fun departmentFor(tenant: Connection, name: String, canManage: Boolean, run: Run): UUID? {
+    private fun departmentFor(tenant: Connection, importer: Actor, name: String, canManage: Boolean, run: Run): UUID? {
         fun find(): UUID? = tenant.prepareStatement("SELECT id FROM compras_departments WHERE lower(name) = lower(?)").use { query ->
             query.setString(1, name)
             query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
@@ -388,6 +388,12 @@ object ComprasImportEngine {
             insert.setObject(1, UUID.randomUUID())
             insert.setString(2, name)
             insert.executeUpdate()
+        }.let { inserted ->
+            // Solo si lo creo esta fila (otra importacion pudo adelantarse): la fila del registro va en la misma transaccion.
+            if (inserted > 0) find()?.let { createdId ->
+                ComprasActivity.write(tenant, importer.activity, "departamento", createdId.toString(), name, ActivityActions.Created,
+                    "Importo el departamento $name.", ActivityChanges.created(mapOf("name" to name), ComprasActivity.DepartmentLabels))
+            }
         }
         return find() ?: throw IllegalStateException("departamento")
     }
@@ -420,7 +426,7 @@ object ComprasImportEngine {
         if (creating) {
             val match = if (canManage) plan.requesterEmail?.let { findUserByEmail(tenant, it) } else null
             val (requesterId, requesterName) = requesterFor(match, canManage, importerId, importer.name, plan.requesterName)
-            val department = plan.department?.let { departmentFor(tenant, it, canManage, run) }
+            val department = plan.department?.let { departmentFor(tenant, importer, it, canManage, run) }
             val inserted = tenant.prepareStatement(
                 """
                 INSERT INTO compras_requests (id, title, description, department_id, estimated_amount, currency, required_date, priority, status,
@@ -448,7 +454,7 @@ object ComprasImportEngine {
                     mapOf(
                         "title" to plan.title, "description" to plan.description, "department" to plan.department,
                         "estimatedAmount" to plan.estimatedAmount, "currency" to plan.currency, "requiredDate" to plan.requiredDate,
-                        "priority" to plan.priority.label,
+                        "priority" to plan.priority.label, "status" to plan.status.label, "requester" to requesterName,
                     ),
                     ComprasActivity.RequestLabels,
                 ))

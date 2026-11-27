@@ -335,7 +335,11 @@ class MantenimientoMondayMappingTest {
         assertEquals(fromDisk, MantenimientoMondayServerExtension.manifest)
         assertEquals(MantenimientoMondayId, MantenimientoMondayServerExtension.sourceId)
         assertEquals(
-            listOf("extensions/mantenimiento_monday/migrations/V001__settings.sql", "extensions/mantenimiento_monday/migrations/V002__read_state.sql"),
+            listOf(
+                "extensions/mantenimiento_monday/migrations/V001__settings.sql",
+                "extensions/mantenimiento_monday/migrations/V002__read_state.sql",
+                "extensions/mantenimiento_monday/migrations/V003__job_agent.sql",
+            ),
             MantenimientoMondayServerExtension.migrationPaths,
         )
         assertTrue(repoFile("extensions/mantenimiento_monday/migrations/V002__read_state.sql").isFile)

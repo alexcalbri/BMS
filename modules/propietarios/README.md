@@ -117,7 +117,7 @@ y `propietarios_payments`.
 
 ## Registro de actividad (0.4.0, needs Core 0.12.0)
 
-Cada alta, cambio, archivo, traspaso, titular, adjunto y la importacion de lotes queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP). El historial del lote y del cliente sigue igual. El modulo no tiene ajustes propios.
+Cada alta, cambio, archivo, traspaso, titular, adjunto y la importacion de lotes queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP). El historial del lote y del cliente sigue igual. El modulo no tiene ajustes propios. Un traspaso o un cotitular que cambia el estado del lote lo deja en la misma fila. La importacion deja una fila por desarrollo, lote (con sus datos clave o, al repetir, lo que cambio), cliente creado, grupo de titulares y adjunto, todo en la transaccion de la fila del tablero.
 
 ## Languages (0.3.0, needs Core 0.10.0)
 

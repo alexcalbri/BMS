@@ -472,7 +472,7 @@ object PropietariosImportApply {
         ) { it.getString("import_key") }.toSet()
         val fresh = notStored(candidates.values, { it.ownerKey }, storedKeys).sortedBy { lockKey(it) }
         val createdCustomers = mutableListOf<UUID>()
-        val resolved = fresh.map { candidate -> candidate to findOrCreateCustomer(tenant, candidate, createdCustomers) }
+        val resolved = fresh.map { candidate -> candidate to findOrCreateCustomer(tenant, activity, candidate, createdCustomers) }
         val assigned = PropietariosRepository.assignedShare(tenant, lotId, today)
         val given = resolved.mapNotNull { it.first.share }
         val dropShares = given.any { !PropietariosRules.validShare(it) } || given.fold(assigned) { sum, share -> sum + share } > BigDecimal(100)
@@ -528,7 +528,7 @@ object PropietariosImportApply {
      * El cliente visible con el mismo correo (sin mayusculas) o, sin correo, con el mismo nombre exacto y tipo propietarios; si no hay, se crea
      * (tipo propietarios, activo) y se anota en [createdCustomers] para avisar a Clientes tras confirmar.
      */
-    private fun findOrCreateCustomer(tenant: Connection, candidate: Candidate, createdCustomers: MutableList<UUID>): UUID {
+    private fun findOrCreateCustomer(tenant: Connection, activity: ActivityActor, candidate: Candidate, createdCustomers: MutableList<UUID>): UUID {
         // Mismo candado que usan otros modulos al crear clientes por correo: dos importaciones a la vez no duplican al cliente.
         lock(tenant, lockKey(candidate))
         val existing = if (candidate.email.isNotEmpty()) {
@@ -549,6 +549,8 @@ object PropietariosImportApply {
             listOf(id, candidate.name, candidate.email, candidate.phone, ImportedCustomerType),
         )
         createdCustomers += id
+        PropietariosActivity.write(tenant, activity, "cliente", id.toString(), candidate.name, ActivityActions.Created, "Importo el cliente ${candidate.name} como propietario.",
+            ActivityChanges.created(mapOf("name" to candidate.name, "email" to candidate.email.ifEmpty { null }, "phone" to candidate.phone.ifEmpty { null }), PropietariosActivity.CustomerLabels))
         return id
     }
 
@@ -581,21 +583,27 @@ object PropietariosImportApply {
             throw PropietariosValidationException(tr("{0} supera el máximo de {1} MB.", fileName, PropietariosRepository.MaxFileBytes / (1024 * 1024)))
         }
         try {
-            val inserted = tenant.exec(
-                """
-                INSERT INTO propietarios_attachments (id, lot_id, name, path, content_type, size, backend, ref, uploaded_by, import_key)
-                VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (lot_id, import_key) WHERE import_key IS NOT NULL DO NOTHING
-                """.trimIndent(),
-                listOf(UUID.randomUUID(), lotId, fileName, type, stored.size, stored.backend, stored.ref, actorId, key),
-            )
+            // La fila del adjunto y la del registro de actividad se confirman juntas; si fallan, el archivo guardado se borra.
+            val inserted = PropietariosRepository.transaction(tenant) {
+                val rows = tenant.exec(
+                    """
+                    INSERT INTO propietarios_attachments (id, lot_id, name, path, content_type, size, backend, ref, uploaded_by, import_key)
+                    VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (lot_id, import_key) WHERE import_key IS NOT NULL DO NOTHING
+                    """.trimIndent(),
+                    listOf(UUID.randomUUID(), lotId, fileName, type, stored.size, stored.backend, stored.ref, actorId, key),
+                )
+                if (rows > 0) {
+                    PropietariosActivity.write(tenant, activity, "lote", lotId.toString(), PropietariosRepository.getLot(tenant, lotId)?.lotNumber.orEmpty(),
+                        ActivityActions.AttachmentAdded, "Importo el adjunto $fileName.",
+                        listOf(ActivityChange("file", "Archivo", null, "$fileName (${PropietariosActivity.sizeLabel(stored.size)})")))
+                }
+                rows
+            }
             if (inserted == 0) {
                 runCatching { files.delete(stored) }
                 return false
             }
-            PropietariosActivity.write(tenant, activity, "lote", lotId.toString(), PropietariosRepository.getLot(tenant, lotId)?.lotNumber.orEmpty(),
-                ActivityActions.AttachmentAdded, "Importo el adjunto $fileName.",
-                listOf(ActivityChange("file", "Archivo", null, "$fileName (${PropietariosActivity.sizeLabel(stored.size)})")))
             return true
         } catch (failure: Exception) {
             runCatching { files.delete(stored) }

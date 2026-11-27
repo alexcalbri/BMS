@@ -28,6 +28,7 @@ internal object PropietariosActivity {
         "propertyType" to "Tipo", "status" to "Estado", "areaM2" to "Area (m²)", "latitude" to "Latitud", "longitude" to "Longitud",
         "mapUrl" to "Enlace del mapa", "notes" to "Notas",
     )
+    val CustomerLabels = mapOf("name" to "Nombre", "email" to "Correo", "phone" to "Telefono")
     val OwnershipLabels = mapOf(
         "customer" to "Cliente", "sharePercent" to "Porcentaje", "startsOn" to "Inicio", "endsOn" to "Fin", "notes" to "Notas",
     )

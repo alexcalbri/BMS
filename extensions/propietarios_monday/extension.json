@@ -3,7 +3,7 @@
   "module": "propietarios",
   "displayName": "Importacion de propietarios desde monday",
   "description": "Importa un tablero de monday (lotes y sus propietarios) al modulo Propietarios: lee el tablero con el token de la empresa, mapea sus columnas y trae desarrollos, lotes, titulares y archivos.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "minModuleVersion": "0.4.0",
   "source": { "type": "github", "url": "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/propietarios_monday" },
   "permissions": [
@@ -12,7 +12,7 @@
     "propietarios.import.write"
   ],
   "settings": [],
-  "migrations": ["migrations/V001__settings.sql", "migrations/V002__rows_pending_idx.sql"],
+  "migrations": ["migrations/V001__settings.sql", "migrations/V002__rows_pending_idx.sql", "migrations/V003__job_agent.sql"],
   "uninstall": { "options": [
     { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
   ] }

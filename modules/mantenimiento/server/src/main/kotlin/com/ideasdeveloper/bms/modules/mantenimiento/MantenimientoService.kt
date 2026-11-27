@@ -185,7 +185,7 @@ object MantenimientoService {
         val order = visibleOrder(tenant, scope, id)
         if (!scope.canWork(order) || !order.status.isActive) missing(tr("No puedes pedir la compra de esta orden."))
         val userId = permissions.userId ?: missing(tr("No se pudo identificar a tu usuario."))
-        return when (val outcome = MantenimientoPurchases.request(access, tenant, permissions.companyCode, userId, permissions.serverOwner, id)) {
+        return when (val outcome = MantenimientoPurchases.request(access, tenant, permissions.companyCode, userId, permissions.serverOwner, id, permissions.activityActor)) {
             is MantenimientoPurchases.PurchaseOutcome.Created -> tr("Solicitud de compra {0} creada como borrador en Compras.", outcome.folio)
             is MantenimientoPurchases.PurchaseOutcome.Busy -> missing(outcome.message)
             is MantenimientoPurchases.PurchaseOutcome.Failed -> missing(outcome.reason)

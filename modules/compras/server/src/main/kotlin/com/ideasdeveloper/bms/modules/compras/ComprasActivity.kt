@@ -18,7 +18,7 @@ internal object ComprasActivity {
 
     val RequestLabels = mapOf(
         "title" to "Titulo", "description" to "Descripcion", "department" to "Departamento", "estimatedAmount" to "Monto estimado",
-        "currency" to "Moneda", "requiredDate" to "Fecha requerida", "priority" to "Prioridad",
+        "currency" to "Moneda", "requiredDate" to "Fecha requerida", "priority" to "Prioridad", "status" to "Estado", "requester" to "Solicitante",
     )
     val QuoteLabels = mapOf("supplier" to "Proveedor", "amount" to "Monto", "currency" to "Moneda", "notes" to "Notas")
     val DepartmentLabels = mapOf("name" to "Nombre", "active" to "Activo")

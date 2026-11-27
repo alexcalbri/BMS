@@ -24,7 +24,7 @@ class ComprasMondayActivityTest {
     fun importSummaryIsAttributedToTheImportAndWhoStartedIt() {
         val starter = ActivityActor.import(ActivityLogTesting.user("Ana Ruiz", ana))
         val row = ActivityLogTesting.rows {
-            ComprasMondayImport.recordImportSummary(unusedConnection, jobId, "Tablero de compras", starter, 3, 1, 0)
+            ComprasMondayActivity.total(unusedConnection, starter, jobId, "Tablero de compras", 3, 1, 0)
         }.single()
         assertEquals(ActivityActions.Imported, row.action)
         assertEquals("Importacion (Ana Ruiz)", row.display)
@@ -36,7 +36,7 @@ class ComprasMondayActivityTest {
     fun importSummaryThroughAnAgentNamesTheAgent() {
         val starter = ActivityActor.import(ActivityLogTesting.user("Ana Ruiz", ana).viaAgent("Claude"))
         val row = ActivityLogTesting.rows {
-            ComprasMondayImport.recordImportSummary(unusedConnection, jobId, "Tablero de compras", starter, 1, 0, 0)
+            ComprasMondayActivity.total(unusedConnection, starter, jobId, "Tablero de compras", 1, 0, 0)
         }.single()
         assertTrue(row.display.startsWith("Importacion (Agente de "), row.display)
     }
@@ -44,7 +44,7 @@ class ComprasMondayActivityTest {
     @Test
     fun tokenChangeIsRecordedAsASecretWithoutItsValue() {
         val row = ActivityLogTesting.rows {
-            ComprasMondayImport.recordTokenChange(unusedConnection, ActivityLogTesting.user("Ana Ruiz", ana), "Guardo el token de monday.")
+            ComprasMondayActivity.token(unusedConnection, ActivityLogTesting.user("Ana Ruiz", ana), "Guardo el token de la API de monday.")
         }.single()
         assertEquals(ActivityActions.SettingsChanged, row.action)
         val change = row.change("mondayToken")!!

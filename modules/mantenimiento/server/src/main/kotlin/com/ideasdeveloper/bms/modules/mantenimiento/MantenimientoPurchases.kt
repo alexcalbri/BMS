@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.ui.UiOpenModule
@@ -98,7 +99,15 @@ object MantenimientoPurchases {
      * Reserva la orden, crea la solicitud (borrador) con los permisos del usuario y guarda su id y folio. La reserva se libera siempre
      * que no quede guardada la solicitud. Quien llama comprueba antes que el usuario puede trabajar la orden.
      */
-    fun request(access: ModuleAccessService, tenant: Connection, companyCode: String, userId: UUID, serverOwner: Boolean, orderId: UUID): PurchaseOutcome {
+    fun request(
+        access: ModuleAccessService,
+        tenant: Connection,
+        companyCode: String,
+        userId: UUID,
+        serverOwner: Boolean,
+        orderId: UUID,
+        activity: ActivityActor,
+    ): PurchaseOutcome {
         val order = MantenimientoRepository.getOrder(tenant, orderId) ?: return PurchaseOutcome.Failed(tr("La orden ya no existe."))
         when (MantenimientoRepository.reservePurchase(tenant, orderId)) {
             MantenimientoRepository.PurchaseReservation.Reserved -> Unit
@@ -128,7 +137,7 @@ object MantenimientoPurchases {
                     PurchaseOutcome.Failed(tr("Compras no devolvió la solicitud creada."))
                 } else {
                     // Con la solicitud ya creada nunca se libera la reserva: se reintenta guardar una vez y, si falla, expira sola.
-                    val saved = (1..2).any { runCatching { MantenimientoRepository.savePurchase(tenant, orderId, created.first, created.second) }.getOrDefault(false) }
+                    val saved = (1..2).any { runCatching { MantenimientoRepository.savePurchase(tenant, orderId, created.first, created.second, activity) }.getOrDefault(false) }
                     if (!saved) log.warn("No se pudo enlazar la solicitud {} ({}) a la orden {}.", created.second, created.first, order.displayNumber)
                     PurchaseOutcome.Created(created.first, created.second)
                 }

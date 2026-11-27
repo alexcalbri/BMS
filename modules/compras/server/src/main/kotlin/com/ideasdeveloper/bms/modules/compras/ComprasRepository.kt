@@ -84,16 +84,19 @@ object ComprasRepository {
 
     fun setDefaultCurrency(tenant: Connection, actor: Actor, currency: String) {
         val code = ComprasMoney.currency(currency)
-        val before = settings(tenant).defaultCurrency
-        tenant.prepareStatement(
-            "INSERT INTO compras_settings (id, default_currency) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET default_currency = EXCLUDED.default_currency, updated_at = CURRENT_TIMESTAMP"
-        ).use { upsert ->
-            upsert.setString(1, code)
-            upsert.executeUpdate()
-        }
-        val changes = ActivityChanges.diff(mapOf("defaultCurrency" to before), mapOf("defaultCurrency" to code), ComprasActivity.SettingsLabels)
-        if (changes.isNotEmpty()) {
-            ComprasActivity.settings(tenant, actor, "settings", null, "Ajustes de compras", "Cambio la moneda por defecto de compras a $code.", changes)
+        // El cambio y su fila del registro de actividad se confirman juntos.
+        ComprasSql.transaction(tenant) {
+            val before = settings(tenant).defaultCurrency
+            tenant.prepareStatement(
+                "INSERT INTO compras_settings (id, default_currency) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET default_currency = EXCLUDED.default_currency, updated_at = CURRENT_TIMESTAMP"
+            ).use { upsert ->
+                upsert.setString(1, code)
+                upsert.executeUpdate()
+            }
+            val changes = ActivityChanges.diff(mapOf("defaultCurrency" to before), mapOf("defaultCurrency" to code), ComprasActivity.SettingsLabels)
+            if (changes.isNotEmpty()) {
+                ComprasActivity.settings(tenant, actor, "settings", null, "Ajustes de compras", "Cambio la moneda por defecto de compras a $code.", changes)
+            }
         }
     }
 
@@ -114,29 +117,32 @@ object ComprasRepository {
         val clean = name.trim()
         if (clean.isEmpty() || clean.length > 80) throw ComprasValidationException(tr("El nombre del departamento debe tener entre 1 y 80 caracteres."))
         try {
-            if (id == null) {
-                val newId = UUID.randomUUID()
-                tenant.prepareStatement(
-                    "INSERT INTO compras_departments (id, name, sort_order) VALUES (?, ?, COALESCE((SELECT max(sort_order) + 1 FROM compras_departments), 0))"
-                ).use { insert ->
-                    insert.setObject(1, newId)
-                    insert.setString(2, clean)
-                    insert.executeUpdate()
+            // El cambio y su fila del registro de actividad se confirman juntos.
+            return ComprasSql.transaction(tenant) {
+                if (id == null) {
+                    val newId = UUID.randomUUID()
+                    tenant.prepareStatement(
+                        "INSERT INTO compras_departments (id, name, sort_order) VALUES (?, ?, COALESCE((SELECT max(sort_order) + 1 FROM compras_departments), 0))"
+                    ).use { insert ->
+                        insert.setObject(1, newId)
+                        insert.setString(2, clean)
+                        insert.executeUpdate()
+                    }
+                    departmentRow(ActivityActions.Created, actor, tenant, newId, clean, "Creo el departamento $clean.",
+                        ActivityChanges.created(mapOf("name" to clean), ComprasActivity.DepartmentLabels))
+                    return@transaction newId
                 }
-                departmentRow(ActivityActions.Created, actor, tenant, newId, clean, "Creo el departamento $clean.",
-                    ActivityChanges.created(mapOf("name" to clean), ComprasActivity.DepartmentLabels))
-                return newId
+                val before = departmentName(tenant, id)
+                val updated = tenant.prepareStatement("UPDATE compras_departments SET name = ? WHERE id = ?").use { update ->
+                    update.setString(1, clean)
+                    update.setObject(2, id)
+                    update.executeUpdate()
+                }
+                if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
+                val changes = ActivityChanges.diff(mapOf("name" to before), mapOf("name" to clean), ComprasActivity.DepartmentLabels)
+                if (changes.isNotEmpty()) departmentRow(ActivityActions.Updated, actor, tenant, id, clean, "Renombro el departamento $before a $clean.", changes)
+                id
             }
-            val before = departmentName(tenant, id)
-            val updated = tenant.prepareStatement("UPDATE compras_departments SET name = ? WHERE id = ?").use { update ->
-                update.setString(1, clean)
-                update.setObject(2, id)
-                update.executeUpdate()
-            }
-            if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
-            val changes = ActivityChanges.diff(mapOf("name" to before), mapOf("name" to clean), ComprasActivity.DepartmentLabels)
-            if (changes.isNotEmpty()) departmentRow(ActivityActions.Updated, actor, tenant, id, clean, "Renombro el departamento $before a $clean.", changes)
-            return id
         } catch (failure: SQLException) {
             if (failure.sqlState == "23505") throw ComprasValidationException(tr("Ya existe un departamento con ese nombre."))
             throw failure
@@ -146,22 +152,24 @@ object ComprasRepository {
     /** Activa o desactiva un departamento (los desactivados no se ofrecen en solicitudes nuevas). Requiere manage. */
     fun setDepartmentActive(tenant: Connection, actor: Actor, id: UUID, active: Boolean) {
         requireManage(actor)
-        val before = tenant.prepareStatement("SELECT name, active FROM compras_departments WHERE id = ?").use { query ->
-            query.setObject(1, id)
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
-        } ?: throw ComprasValidationException(tr("El departamento no existe."))
-        val updated = tenant.prepareStatement("UPDATE compras_departments SET active = ? WHERE id = ?").use { update ->
-            update.setBoolean(1, active)
-            update.setObject(2, id)
-            update.executeUpdate()
-        }
-        if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
-        if (before.second != active) {
-            val (action, summary) = if (active) ActivityActions.Restored to "Reactivo el departamento ${before.first}."
-            else ActivityActions.Archived to "Desactivo el departamento ${before.first}."
-            departmentRow(action, actor, tenant, id, before.first, summary, ActivityChanges.diff(
-                mapOf("active" to before.second), mapOf("active" to active), ComprasActivity.DepartmentLabels,
-            ))
+        ComprasSql.transaction(tenant) {
+            val before = tenant.prepareStatement("SELECT name, active FROM compras_departments WHERE id = ?").use { query ->
+                query.setObject(1, id)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
+            } ?: throw ComprasValidationException(tr("El departamento no existe."))
+            val updated = tenant.prepareStatement("UPDATE compras_departments SET active = ? WHERE id = ?").use { update ->
+                update.setBoolean(1, active)
+                update.setObject(2, id)
+                update.executeUpdate()
+            }
+            if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
+            if (before.second != active) {
+                val (action, summary) = if (active) ActivityActions.Restored to "Reactivo el departamento ${before.first}."
+                else ActivityActions.Archived to "Desactivo el departamento ${before.first}."
+                departmentRow(action, actor, tenant, id, before.first, summary, ActivityChanges.diff(
+                    mapOf("active" to before.second), mapOf("active" to active), ComprasActivity.DepartmentLabels,
+                ))
+            }
         }
     }
 
@@ -240,48 +248,54 @@ object ComprasRepository {
         requireManage(actor)
         val max = maxAmount?.let { ComprasMoney.check(it) }
         val currency = ComprasMoney.currency(limitCurrency)
-        val userName = tenant.prepareStatement("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-        } ?: throw ComprasValidationException(tr("El usuario no existe."))
-        val before = approver(tenant, userId)
-        tenant.prepareStatement(
-            """
-            INSERT INTO compras_approvers (user_id, max_amount, limit_currency, active, updated_by) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (user_id) DO UPDATE SET max_amount = EXCLUDED.max_amount, limit_currency = EXCLUDED.limit_currency,
-                active = EXCLUDED.active, updated_at = CURRENT_TIMESTAMP, updated_by = EXCLUDED.updated_by
-            """.trimIndent()
-        ).use { upsert ->
-            upsert.setObject(1, userId)
-            upsert.setBigDecimal(2, max)
-            upsert.setString(3, currency)
-            upsert.setBoolean(4, active)
-            upsert.setString(5, actor.name.take(200))
-            upsert.executeUpdate()
-        }
-        val values = mapOf("name" to userName, "maxAmount" to max, "limitCurrency" to currency, "active" to active)
-        if (before == null) {
-            approverRow(tenant, actor, userId, userName, ActivityActions.Created, "Designo a $userName como aprobador.",
-                ActivityChanges.created(values, ComprasActivity.ApproverLabels))
-        } else {
-            val old = mapOf("name" to before.name, "maxAmount" to before.maxAmount, "limitCurrency" to before.limitCurrency, "active" to before.active)
-            val changes = ActivityChanges.diff(old, values, ComprasActivity.ApproverLabels)
-            if (changes.isNotEmpty()) approverRow(tenant, actor, userId, userName, ActivityActions.Updated, "Modifico el aprobador $userName.", changes)
+        // El cambio y su fila del registro de actividad se confirman juntos.
+        ComprasSql.transaction(tenant) {
+            val userName = tenant.prepareStatement("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?").use { query ->
+                query.setObject(1, userId)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            } ?: throw ComprasValidationException(tr("El usuario no existe."))
+            val before = approver(tenant, userId)
+            tenant.prepareStatement(
+                """
+                INSERT INTO compras_approvers (user_id, max_amount, limit_currency, active, updated_by) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (user_id) DO UPDATE SET max_amount = EXCLUDED.max_amount, limit_currency = EXCLUDED.limit_currency,
+                    active = EXCLUDED.active, updated_at = CURRENT_TIMESTAMP, updated_by = EXCLUDED.updated_by
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setObject(1, userId)
+                upsert.setBigDecimal(2, max)
+                upsert.setString(3, currency)
+                upsert.setBoolean(4, active)
+                upsert.setString(5, actor.name.take(200))
+                upsert.executeUpdate()
+            }
+            val values = mapOf("name" to userName, "maxAmount" to max, "limitCurrency" to currency, "active" to active)
+            if (before == null) {
+                approverRow(tenant, actor, userId, userName, ActivityActions.Created, "Designo a $userName como aprobador.",
+                    ActivityChanges.created(values, ComprasActivity.ApproverLabels))
+            } else {
+                val old = mapOf("name" to before.name, "maxAmount" to before.maxAmount, "limitCurrency" to before.limitCurrency, "active" to before.active)
+                val changes = ActivityChanges.diff(old, values, ComprasActivity.ApproverLabels)
+                if (changes.isNotEmpty()) approverRow(tenant, actor, userId, userName, ActivityActions.Updated, "Modifico el aprobador $userName.", changes)
+            }
         }
     }
 
     fun removeApprover(tenant: Connection, actor: Actor, userId: UUID) {
         requireManage(actor)
-        val before = approver(tenant, userId)
-        tenant.prepareStatement("DELETE FROM compras_approvers WHERE user_id = ?").use { delete ->
-            delete.setObject(1, userId)
-            delete.executeUpdate()
-        }
-        if (before != null) {
-            approverRow(tenant, actor, userId, before.name, ActivityActions.Deleted, "Quito a ${before.name} como aprobador.", ActivityChanges.deleted(
-                mapOf("name" to before.name, "maxAmount" to before.maxAmount, "limitCurrency" to before.limitCurrency, "active" to before.active),
-                ComprasActivity.ApproverLabels,
-            ))
+        ComprasSql.transaction(tenant) {
+            val before = approver(tenant, userId)
+            // La fila del registro se escribe antes de borrar al aprobador.
+            if (before != null) {
+                approverRow(tenant, actor, userId, before.name, ActivityActions.Deleted, "Quito a ${before.name} como aprobador.", ActivityChanges.deleted(
+                    mapOf("name" to before.name, "maxAmount" to before.maxAmount, "limitCurrency" to before.limitCurrency, "active" to before.active),
+                    ComprasActivity.ApproverLabels,
+                ))
+            }
+            tenant.prepareStatement("DELETE FROM compras_approvers WHERE user_id = ?").use { delete ->
+                delete.setObject(1, userId)
+                delete.executeUpdate()
+            }
         }
     }
 

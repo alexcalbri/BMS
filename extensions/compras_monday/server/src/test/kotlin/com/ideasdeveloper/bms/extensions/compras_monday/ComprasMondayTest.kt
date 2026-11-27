@@ -348,13 +348,16 @@ class ComprasMondayTest {
         val manifest = extension.manifest
         assertEquals("compras_monday", manifest.id)
         assertEquals("compras", manifest.module)
-        assertEquals("1.2.0", manifest.version)
+        assertEquals("1.3.0", manifest.version)
         assertEquals("0.4.0", manifest.minModuleVersion)
         assertEquals(listOf("network.outbound:api.monday.com", "secrets.write", "compras.requests.import"), manifest.permissions)
         assertEquals(listOf("import_history" to UninstallDefault.Delete), manifest.uninstall.options.map { it.id to it.default })
         assertEquals("monday", extension.id)
         assertEquals("compras_monday", extension.extensionId)
-        assertEquals(listOf("extensions/compras_monday/migrations/V001__staging.sql"), extension.migrationPaths)
+        assertEquals(
+            listOf("extensions/compras_monday/migrations/V001__staging.sql", "extensions/compras_monday/migrations/V002__applied_by_agent.sql"),
+            extension.migrationPaths,
+        )
         assertEquals(
             listOf("ext_compras_monday__settings", "ext_compras_monday__jobs", "ext_compras_monday__rows"),
             extension.runtimeTables,

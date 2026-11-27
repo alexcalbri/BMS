@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -59,7 +60,17 @@ object MantenimientoBridge {
         return denial(tool, permissions) == null
     }
 
-    /** Ejecuta la herramienta con los permisos vivos del usuario. Un error de la herramienta o de la base es [BridgeResult.Unavailable] con su mensaje. */
+    /**
+     * Quien figura en el registro de actividad del modulo que ejecuta la herramienta: la persona cuando ella pulso el boton, o, con
+     * [automation], la automatizacion de Mantenimiento que actua con los permisos de esa persona ("Automatizacion <nombre> (Ana Ruiz)").
+     */
+    fun acting(granted: ModulePermissions, automation: String?): ModulePermissions =
+        if (automation == null) granted else granted.withActivityActor(ActivityActor.automation(automation, startedBy = granted.activityActor))
+
+    /**
+     * Ejecuta la herramienta con los permisos vivos del usuario. Un error de la herramienta o de la base es [BridgeResult.Unavailable] con
+     * su mensaje. [automation] nombra la automatizacion cuando no fue una persona quien lo pidio (la publicacion en Tareas).
+     */
     fun call(
         access: ModuleAccessService,
         tenant: Connection,
@@ -68,6 +79,7 @@ object MantenimientoBridge {
         serverOwner: Boolean,
         qualifiedName: String,
         arguments: JsonObject,
+        automation: String? = null,
     ): BridgeResult {
         val (tool, permissions) = try {
             resolve(access, tenant, companyCode, userId, serverOwner, qualifiedName)
@@ -81,7 +93,7 @@ object MantenimientoBridge {
         val registered = tool ?: return BridgeResult.Unavailable("módulo no instalado", absent = true)
         val granted = permissions ?: return BridgeResult.Unavailable("módulo no activo o usuario sin acceso", absent = true)
         return try {
-            BridgeResult.Ok(registered.tool.handler(McpToolCall(arguments, granted, tenant, access, AgentName, registered.moduleId)))
+            BridgeResult.Ok(registered.tool.handler(McpToolCall(arguments, acting(granted, automation), tenant, access, AgentName, registered.moduleId)))
         } catch (failure: McpToolException) {
             BridgeResult.Unavailable(failure.message.orEmpty().ifBlank { "la herramienta rechazó la petición" })
         } catch (stop: InterruptedException) {
