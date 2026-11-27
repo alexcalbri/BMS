@@ -82,8 +82,8 @@ rotated with a restart, without a rebuild.
 
 - `true`: an unsigned module needs its hash authorized by the owner; a bad signature is always rejected.
 - `false`: unsigned modules install with a warning in the log (administrators still get the strict gate).
-- not set: on exactly when a package key is installed (requires the one-line change in `Application.kt`
-  listed in the hardening report; until then "not set" means `false` as before).
+- not set: on exactly when a package key is installed (`ModuleSignaturePolicy`); without a key it behaves
+  as `false`, as before.
 
 ## 3. Operator procedure: create the keys and turn enforcement on
 

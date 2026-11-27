@@ -239,8 +239,9 @@ fun Application.module() {
             modulePackagesRoot,
             githubToken,
             JdbcModuleUnsignedAuthorizationStore { DatabaseFactory.getDataSource().connection },
-            // Compuerta de firma de modulos: permisiva por defecto (develop/pruebas); produccion la pone en true.
-            signatureEnforced = System.getenv("MODULE_SIGNATURE_ENFORCED")?.trim()?.equals("true", ignoreCase = true) ?: false,
+            // Compuerta de firma de modulos (SIGNING.md): MODULE_SIGNATURE_ENFORCED=true/false manda; sin valor, activa
+            // solo cuando hay una llave publica de paquetes instalada.
+            signatureEnforced = com.ideasdeveloper.bms.server.modules.ModuleSignaturePolicy.enforced(),
         ),
         requestRestart = ::restartToLoadModules,
         companyFiles = companyFiles,
