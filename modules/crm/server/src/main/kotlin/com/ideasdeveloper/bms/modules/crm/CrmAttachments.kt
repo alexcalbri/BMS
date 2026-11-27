@@ -85,6 +85,7 @@ object CrmAttachments {
         content: InputStream,
         sourceRef: String,
         uploadedBy: String,
+        actor: com.ideasdeveloper.bms.server.activity.ActivityActor,
     ) {
         val fileName = cleanName(name).ifEmpty { "archivo" }
         val count = tenant.prepareStatement("SELECT count(*) FROM crm_attachments WHERE lead_id = ? AND deleted_at IS NULL").use { query ->
@@ -118,6 +119,11 @@ object CrmAttachments {
                 insert.setString(11, sourceRef.take(200))
                 insert.executeUpdate()
             }
+            // Name and size, never the content. A failing row removes the stored file (below), like any other failure.
+            CrmAudit.lead(
+                tenant, actor, leadId, null, com.ideasdeveloper.bms.server.activity.ActivityActions.AttachmentAdded, { "Importo el archivo $fileName al lead $it." },
+                listOf(com.ideasdeveloper.bms.server.activity.ActivityChange("file", "Archivo", null, "$fileName (${sizeText(stored.size)})")),
+            )
         } catch (failure: Exception) {
             runCatching { files.delete(stored) }
             throw failure
@@ -280,5 +286,12 @@ object CrmAttachments {
         if (parts.isEmpty()) return null
         val shown = parts.take(10).joinToString(", ") + if (parts.size > 10) " y ${parts.size - 10} mas" else ""
         return "$label: $shown"
+    }
+
+    /** "24 KB" / "3 MB" for the activity log (the name and the size of a file, never its content). */
+    fun sizeText(bytes: Long): String = when {
+        bytes >= 1024 * 1024 -> "${(bytes + 512 * 1024) / (1024 * 1024)} MB"
+        bytes >= 1024 -> "${(bytes + 512) / 1024} KB"
+        else -> "$bytes B"
     }
 }
