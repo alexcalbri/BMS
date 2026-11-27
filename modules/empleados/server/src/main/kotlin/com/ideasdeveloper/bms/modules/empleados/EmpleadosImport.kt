@@ -218,6 +218,38 @@ object EmpleadosImportApply {
         )
     }
 
+    // ---- registro de actividad ----
+
+    /**
+     * El actor de una importacion: [startedBy] (usuario de la empresa que la empezo) con su nombre actual leido de
+     * application_users en la misma conexion; si la fila ya no existe, "Usuario desconocido"; sin usuario, una importacion anonima.
+     */
+    fun importActor(tenant: Connection, startedBy: UUID?): ActivityActor {
+        if (startedBy == null) return ActivityActor.import(null)
+        val name = tenant.prepareStatement("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?").use { query ->
+            query.setObject(1, startedBy)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+        return ActivityActor.import(ActivityActor.user(startedBy, name?.takeIf { it.isNotBlank() } ?: "Usuario desconocido"))
+    }
+
+    /**
+     * La fila unica de una importacion terminada (quien la empezo, el origen y los totales); el llamador la escribe en la
+     * misma transaccion que cierra el trabajo. [outcome] aclara un final distinto de terminar bien.
+     */
+    fun recordImportTotal(
+        tenant: Connection,
+        activity: ActivityActor,
+        jobId: UUID?,
+        source: String,
+        board: String,
+        created: Int,
+        updated: Int,
+        skipped: Int,
+        failed: Int,
+        outcome: String = "",
+    ) = EmpleadosActivity.importTotal(tenant, activity, jobId, source, board, created, updated, skipped, failed, outcome)
+
     // ---- escritura ----
 
     /** Usuarios activos por correo en minusculas; un correo que usan varios usuarios no se ofrece (no se sabria a quien enlazar). */

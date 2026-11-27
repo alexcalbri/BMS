@@ -224,6 +224,38 @@ class EmpleadosActivityPostgresTest {
     }
 
     @Test
+    fun importActorNamesTheStarterAndTheTotalRowSaysWhoAndWhere() = withTenant { db ->
+        val activity = EmpleadosImportApply.importActor(db, ana.userId)
+        assertEquals("Importacion (Ana Ruiz)", activity.display)
+        assertEquals(ana.userId, activity.userId)
+        // Si la fila del usuario ya no existe, el nombre es "Usuario desconocido".
+        assertEquals("Importacion (Usuario desconocido)", EmpleadosImportApply.importActor(db, UUID.fromString("00000000-0000-0000-0000-0000000000ff")).display)
+        assertEquals("Importacion", EmpleadosImportApply.importActor(db, null).display)
+
+        val row = ImportedEmployee(key = "monday:7", fullName = "Pablo Soto", jobTitle = "Mesero")
+        val (_, perRecord) = ActivityLogTesting.capture { EmpleadosImportApply.apply(db, row, emptyMap(), ana.userId, activity) }
+        assertTrue(perRecord.all { it.display == "Importacion (Ana Ruiz)" })
+
+        val (_, rows) = ActivityLogTesting.capture { EmpleadosImportApply.recordImportTotal(db, activity, null, "Monday", "Personal", 4, 1, 0, 2) }
+        val total = rows.single()
+        assertEquals(ActivityActions.Imported, total.action)
+        assertEquals("Importacion (Ana Ruiz)", total.display)
+        assertEquals("4", total.change("created")!!.new)
+        assertEquals("2", total.change("failed")!!.new)
+        assertTrue(total.entry.summary.contains("Monday") && total.entry.summary.contains("Personal"), total.entry.summary)
+
+        // Escrita de verdad, queda en activity_log con quien la empezo.
+        EmpleadosImportApply.recordImportTotal(db, activity, null, "Monday", "", 1, 0, 0, 0)
+        db.prepareStatement("SELECT actor_kind, actor_user_id, actor_display, action FROM activity_log WHERE module_id = 'empleados' AND entity_type = 'import'").use { st ->
+            st.executeQuery().use { result ->
+                assertTrue(result.next())
+                assertEquals("import", result.getString(1)); assertEquals(ana.userId, result.getObject(2, UUID::class.java))
+                assertEquals("Importacion (Ana Ruiz)", result.getString(3)); assertEquals("imported", result.getString(4))
+            }
+        }
+    }
+
+    @Test
     fun rowsArePersistedAndSurviveTheDelete() = withTenant { db ->
         // Sin captura: la fila se escribe de verdad en activity_log, en la misma transaccion.
         val scope = EmpleadosService.scope(db, manager())

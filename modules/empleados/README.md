@@ -198,7 +198,7 @@ es igual; cuando cambia, inserta las franjas en un solo lote (`addBatch`/`execut
 
 ## Activity log (0.3.0, needs Core 0.12.0)
 
-Cada cambio de fichas, sedes y departamentos, horario habitual, turnos (también los que borra un día libre o una edición), ausencias (pedir, registrar, aprobar, rechazar, cancelar) y las importaciones queda en el registro de actividad de la empresa, con quien lo hizo ("Agente de …" si llegó por un agente). Los campos de ficha van como antes -> después. Las filas de importación llevan a quien la empezó.
+Cada cambio de fichas, sedes y departamentos, horario habitual, turnos (también los que borra un día libre o una edición), ausencias (pedir, registrar, aprobar, rechazar, cancelar) y las importaciones queda en el registro de actividad de la empresa, con quien lo hizo ("Agente de …" si llegó por un agente). Los campos de ficha van como antes -> después. Las filas de importación llevan a quien la empezó (`EmpleadosImportApply.importActor` lee su nombre de `application_users`; "Usuario desconocido" si ya no existe) y cada importación terminada deja una fila de totales (`recordImportTotal`: quién, origen y cifras).
 
 ## Languages (0.2.0, needs Core 0.10.0)
 
