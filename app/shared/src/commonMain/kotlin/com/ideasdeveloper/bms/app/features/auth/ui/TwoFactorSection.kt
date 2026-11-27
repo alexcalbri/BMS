@@ -35,6 +35,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
+import com.ideasdeveloper.bms.app.core.ui.QrImage
 import com.ideasdeveloper.bms.app.features.auth.data.AccountApi
 import com.ideasdeveloper.bms.app.features.auth.data.LoginException
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
@@ -245,8 +246,15 @@ private fun TwoFactorEnableDialog(
                     )
                 } else {
                     Text(
-                        tr("1. En tu aplicacion de autenticacion agrega una cuenta nueva con esta clave (o con el enlace otpauth)."),
+                        tr("1. En tu aplicacion de autenticacion agrega una cuenta nueva con el codigo QR, con esta clave o con el enlace otpauth."),
                         color = AppTheme.colors.text,
+                    )
+                    // QR para escanear; la clave y el enlace de abajo siguen como alternativa.
+                    Text(tr("Escanea este codigo con tu app de autenticacion"), color = AppTheme.colors.text)
+                    QrImage(
+                        text = currentSetup.otpauthUri,
+                        contentDescription = tr("Codigo QR para agregar la cuenta a tu aplicacion de autenticacion"),
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
                     )
                     CopyableField(
                         label = tr("Clave"),
