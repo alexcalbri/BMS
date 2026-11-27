@@ -454,7 +454,14 @@ internal object ClientesProfile {
             title = customer.name,
             children = listOfNotNull(
                 UiText(tr("Codigo de cliente: {0}", customer.code)),
-                customer.email.takeIf { it.isNotBlank() }?.let { UiText(tr("Correo: {0}", it)) },
+                customer.email.takeIf { it.isNotBlank() }?.let { email ->
+                    when (customer.emailStatus) {
+                        // A badge next to the email only for customers whose email was asked for in a form: the rest have no state.
+                        "verified" -> UiList(listOf(UiListItem(title = tr("Correo: {0}", email), badges = listOf(UiBadge(tr("Correo verificado"), UiTone.Success)))))
+                        "unverified" -> UiList(listOf(UiListItem(title = tr("Correo: {0}", email), badges = listOf(UiBadge(tr("Correo sin verificar"), UiTone.Warning)))))
+                        else -> UiText(tr("Correo: {0}", email))
+                    }
+                },
                 customer.phone.takeIf { it.isNotBlank() }?.let { UiText(tr("Telefono: {0}", it)) },
                 UiText(tr("Creado en {0}", originName), UiTextStyle.Caption),
                 UiText(linkText(linked.map { it.name }, originName), UiTextStyle.Caption),

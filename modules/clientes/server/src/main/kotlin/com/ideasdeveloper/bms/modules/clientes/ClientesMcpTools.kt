@@ -21,7 +21,7 @@ import java.util.UUID
 /** Agent tools of Clientes; the same permissions and validations as the customer routes. */
 object ClientesMcpTools {
     private const val Columns =
-        "id, display_name, primary_email, primary_phone, status, customer_type, customer_code, flexible_attributes::text AS flexible_attributes"
+        "id, display_name, primary_email, primary_phone, status, customer_type, customer_code, email_status, flexible_attributes::text AS flexible_attributes"
 
     private val customerArguments = mapOf(
         "displayName" to McpSchema.string("Nombre del cliente."),
@@ -42,6 +42,7 @@ object ClientesMcpTools {
             "Busca antes de crear para no duplicar: no se permiten dos clientes con el mismo correo. Cada cliente tiene un codigo " +
             "(customerCode) que tambien sirve para identificarlo. Los campos personalizados de la empresa se envian en dynamicFields " +
             "por su clave; consultalos con list_customer_fields. Archivar no borra al cliente: deja de aparecer en la lista y en las busquedas. " +
+            "emailStatus de cada cliente: vacio (sin estado), unverified (dio su correo en un formulario y aun no escribio el codigo que se le envio) o verified; search_customers lo filtra con emailState. Cambiar el correo borra ese estado. " +
             "get_customer_history reune lo que paso con el cliente en todos los modulos (cambios, leads, reservas, WiFi...). " +
             "Las empresas del mismo dueno se pueden vincular: al vincularlas se comparten TODOS sus clientes y los que tienen el mismo correo " +
             "Y el mismo nombre se fusionan solos (queda el mas antiguo). Con el mismo correo pero otro nombre NO se fusionan: quedan en " +
@@ -64,6 +65,7 @@ object ClientesMcpTools {
                     "query" to McpSchema.string("Inicio del nombre, correo o telefono, o codigo de cliente completo (opcional)."),
                     "limit" to McpSchema.integer("Cantidad maxima de resultados.", 1, 100),
                     "after" to McpSchema.string("Cursor nextCursor de la respuesta anterior, para la pagina siguiente (opcional)."),
+                    "emailState" to McpSchema.string("Solo clientes con ese estado del correo: verified (confirmo el codigo que se le envio), unverified (aun no lo confirma) o unknown (sin estado). Opcional."),
                 ),
             ),
         ) { call -> search(call) },
@@ -264,8 +266,10 @@ object ClientesMcpTools {
         val after = call.string("after", 400)
         val cursor = after.takeIf { it.isNotEmpty() }?.let { CustomerQuery.decodeCursor(it) ?: throw McpToolException("El cursor 'after' no es valido: usa el nextCursor de la respuesta anterior.") }
         // Sin texto ni cursor: los mas recientes. Con texto (prefijo de nombre o correo, codigo exacto) o cursor: por nombre, paginado.
-        if (query.isBlank() && cursor == null) return Json.encodeToJsonElement(CustomersResponse(recent(call, limit)))
-        return Json.encodeToJsonElement(CustomerQuery.page(call.tenant, query, cursor, limit))
+        val emailState = call.string("emailState", 20)
+        if (emailState.isNotEmpty() && emailState !in CustomerQuery.EmailStates) throw McpToolException("emailState debe ser verified, unverified o unknown.")
+        if (query.isBlank() && cursor == null && emailState.isEmpty()) return Json.encodeToJsonElement(CustomersResponse(recent(call, limit)))
+        return Json.encodeToJsonElement(CustomerQuery.page(call.tenant, query, cursor, limit, emailState))
     }
 
     private fun recent(call: McpToolCall, limit: Int): List<CustomerResponse> = call.tenant.prepareStatement(

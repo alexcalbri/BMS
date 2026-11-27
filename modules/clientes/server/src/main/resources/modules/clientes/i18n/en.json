@@ -35,6 +35,8 @@
   "Codigo de cliente: {0}": "Customer code: {0}",
   "Compartir clientes entre empresas": "Share customers between companies",
   "Correo": "Email",
+  "Correo sin verificar": "Email not verified",
+  "Correo verificado": "Email verified",
   "Correo: {0}": "Email: {0}",
   "Creado en {0}": "Created in {0}",
   "Crear cliente": "Create customer",

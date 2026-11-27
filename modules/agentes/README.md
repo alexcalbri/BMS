@@ -215,3 +215,11 @@ authorization, which follow the browser language) is available in Spanish (sourc
 The MCP tools (names, descriptions, results), the OAuth protocol answers meant for the client (`error_description`),
 the activity rows already stored and the tool titles shown in the lists stay in Spanish. Token handling, scopes and
 permission checks do not change with the language.
+
+## Hardening (0.7.0)
+
+- Public OAuth routes (`register`, `authorize`, `token`, `revoke`) read at most 64 KB; the MCP endpoint reads at most 1 MB without buffering more.
+- Redirect URIs (registration and every authorization): https, or http on a loopback host; no user info, wildcards, spaces, backslashes or
+  control characters. The `redirect_uri` of an authorization must match one of the client's registered URIs exactly, and errors are only
+  ever redirected to such a URI. Clients already registered keep working (the registration is carried in the signed client id and is
+  not changed); only a registration holding a URI that is not valid today stops being accepted.

@@ -394,3 +394,20 @@ key, masked), the revocation and restoration of user codes, the grants to networ
 exports of the visitors' report, and the CRM check and the SMTP migration when they change a setting or an
 expiry. Guest traffic (registrations, sessions that end on their own, the network guard's disconnects) is not
 logged; the access history stays in `hotspot_accesses`. See `ACTIVITY_LOG_MODULE_GUIDE.md`.
+
+## Form access: one code, one session (0.15.0, migration V014)
+
+- The guest is a customer in Clientes from the moment the form is sent (an existing customer with that email is reused, untouched).
+  A new one starts with email state "unverified" (Clientes 0.14.0, V012) and becomes "verified" when the emailed code is entered; a
+  customer that was verified or had no state is never downgraded. The verification is logged as made by "Portal WiFi" (never the code).
+  Without the Clientes columns the portal works as before, with no state.
+- The emailed code is one session shared by up to 2 devices. It starts at the first device that enters it and lasts the network's access
+  time; a second device that enters the same code (it opens the portal and sends the form with the same address, which shows the code page
+  instead of sending another email) ends at the same moment, for the minutes left (rounded up to a whole minute). A third device is
+  refused. The two slots are the primary key of `hotspot_code_devices` and the code's row is locked, so devices activating at the same time
+  never make three.
+- When the time is over the code cannot connect again, and the address cannot start a new session until the reconnection time of the network
+  (a day by default) has passed, counted from the first activation; devices that joined do not move it. 0 means no wait.
+- Abuse brakes: 6 codes per hour per device and 12 per destination address, new customers created by the form per origin address (600 per
+  hour), the per-IP limits, 16 KB bodies, 5 wrong tries per device in 15 minutes and 30 per code.
+- `hotspot_my_wifi_code` is not declared read-only (it creates the user's code the first time): read-only agent tokens cannot call it.

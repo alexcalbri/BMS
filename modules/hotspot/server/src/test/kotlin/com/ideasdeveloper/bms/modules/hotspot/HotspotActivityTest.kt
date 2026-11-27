@@ -287,10 +287,12 @@ class HotspotActivityTest {
 
     @Test
     fun theWritesOfTheModuleAreAllListed() {
-        // Every write tool of the module is covered by the tests above (ACTIVITY_LOG.md §5).
+        // Every write tool of the module is covered by the tests above (ACTIVITY_LOG.md §5), except hotspot_my_wifi_code: it is
+        // declared as a write because it creates the caller's own WiFi code the first time (exactly like opening "Accesos WiFi"),
+        // which changes no business data and is not logged, as before.
         assertEquals(
             listOf(
-                "hotspot_add_access_grant", "hotspot_delete_network", "hotspot_remove_access_grant", "hotspot_save_network",
+                "hotspot_add_access_grant", "hotspot_delete_network", "hotspot_my_wifi_code", "hotspot_remove_access_grant", "hotspot_save_network",
                 "hotspot_set_integration", "hotspot_unifi_choose_console", "hotspot_unifi_choose_site", "hotspot_update_settings",
             ),
             ActivityLogTesting.writeTools(HotspotServerModule),

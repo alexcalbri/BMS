@@ -88,7 +88,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.6.0",
+        version = "0.7.0",
         minCoreVersion = "0.12.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -190,8 +190,7 @@ object AgentesServerModule : ServerModule {
             response.header(HttpHeaders.RetryAfter, "60")
             return respond(HttpStatusCode.TooManyRequests, AgentesErrorResponse("rate_limited", "Demasiadas solicitudes; espera un minuto."))
         }
-        val body = receiveText()
-        if (body.length > MaxBodyBytes) return respond(HttpStatusCode.PayloadTooLarge)
+        val body = readBoundedText(MaxBodyBytes) ?: return respond(HttpStatusCode.PayloadTooLarge)
         val message = runCatching { Json.parseToJsonElement(body) }.getOrNull()
             ?: return respondJson(HttpStatusCode.BadRequest, AgentesMcp.error(JsonNull, AgentesMcp.ParseError, "JSON invalido."))
 

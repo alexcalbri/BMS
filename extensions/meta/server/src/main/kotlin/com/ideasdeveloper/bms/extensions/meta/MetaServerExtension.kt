@@ -27,8 +27,6 @@ import com.ideasdeveloper.bms.ui.UiJson
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.request.receiveParameters
-import io.ktor.server.request.receiveText
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
@@ -60,7 +58,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
         module = "crm",
         displayName = "Meta (WhatsApp, Messenger e Instagram)",
         description = "Recibe y responde mensajes de WhatsApp, Messenger e Instagram en el CRM, con la app de Meta de la empresa o la del servidor.",
-        version = "1.2.0",
+        version = "1.3.0",
         minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -113,12 +111,12 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
         }
         // Meta llama a estas dos con un signed_request cuando alguien quita la app o pide borrar sus datos.
         route.post("/deauthorize") {
-            val signed = call.receiveParameters()["signed_request"]
+            val signed = (MetaBodies.readForm(call) ?: return@post)["signed_request"]
             val forgotten = withContext(Dispatchers.IO) { runCatching { CrmMetaServer.forgetUser(signed) }.getOrNull() }
             call.respond(if (forgotten == null) HttpStatusCode.BadRequest else HttpStatusCode.OK)
         }
         route.post("/data-deletion") {
-            val signed = call.receiveParameters()["signed_request"]
+            val signed = (MetaBodies.readForm(call) ?: return@post)["signed_request"]
             withContext(Dispatchers.IO) { runCatching { CrmMetaServer.forgetUser(signed) }.getOrNull() }
                 ?: return@post call.respond(HttpStatusCode.BadRequest)
             val code = CrmMetaServer.confirmationCode()
@@ -146,7 +144,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
             }
             post("/{step}") {
                 val company = call.parameters["company"].orEmpty()
-                val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } }
+                val values = runCatching { UiJson.parseToJsonElement(MetaBodies.readText(call) ?: return@post).jsonObject.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } }
                     .getOrNull().orEmpty()
                 val outcome = call.connectTenant(access, company, values["t"]) { tenant, app ->
                     val step = call.parameters["step"]

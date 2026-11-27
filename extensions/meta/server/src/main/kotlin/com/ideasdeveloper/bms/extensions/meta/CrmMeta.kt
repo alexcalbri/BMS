@@ -200,7 +200,23 @@ object CrmMeta {
         return if (reconnect) merged.copy(pageToken = null, pageName = null, instagramAccountId = null, instagramUsername = null) else merged
     }
 
+    // Rechazos que cualquiera puede provocar sin credenciales: se escriben como mucho una vez por minuto y empresa, para que un flood no llene la base ni borre los eventos utiles.
+    private val unauthenticatedEvents = setOf("verificacion_rechazada", "firma_rechazada")
+    private const val RejectionIntervalMillis = 60_000L
+    private const val MaxTrackedKeys = 2_000
+    private val lastRejection = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** True si ese rechazo ya se anoto hace menos de un minuto para esa clave (empresa + evento). Acotado en memoria. */
+    fun rejectionThrottled(key: String, nowMillis: Long = System.currentTimeMillis()): Boolean {
+        if (lastRejection.size >= MaxTrackedKeys) lastRejection.entries.removeIf { nowMillis - it.value >= RejectionIntervalMillis }
+        if (lastRejection.size >= MaxTrackedKeys) return true
+        var allowed = false
+        lastRejection.compute(key) { _, last -> if (last == null || nowMillis - last >= RejectionIntervalMillis) { allowed = true; nowMillis } else last }
+        return !allowed
+    }
+
     fun log(tenant: Connection, event: String, detail: String = "") {
+        if (event in unauthenticatedEvents && rejectionThrottled("${runCatching { tenant.catalog }.getOrNull()}|$event")) return
         tenant.prepareStatement("INSERT INTO $LogTable (id, event, detail) VALUES (?, ?, ?)").use { insert ->
             insert.setObject(1, UUID.randomUUID())
             insert.setString(2, event.take(40))

@@ -76,11 +76,13 @@ object OAuthClients {
     fun secretMatches(key: ByteArray, clientId: String, secret: String?): Boolean =
         secret != null && constantEquals(secret, secret(key, clientId))
 
-    /** HTTPS redirects, or loopback HTTP for local clients (Claude Code, desktop apps); never fragments. */
+    /** HTTPS redirects, or loopback HTTP for local clients (Claude Code, desktop apps); never fragments, user info, wildcards or control characters. */
     fun validRedirectUri(uri: String): Boolean {
         if (uri.length > 500) return false
+        // Printable ASCII only, no spaces, backslashes or wildcards: what a client sends is compared exactly later.
+        if (uri.any { it.code !in 0x21..0x7e || it == '\\' || it == '*' }) return false
         val parsed = runCatching { URI(uri) }.getOrNull() ?: return false
-        if (parsed.fragment != null || parsed.host.isNullOrEmpty()) return false
+        if (parsed.fragment != null || parsed.host.isNullOrEmpty() || parsed.rawUserInfo != null) return false
         return when (parsed.scheme?.lowercase()) {
             "https" -> true
             "http" -> parsed.host in setOf("localhost", "127.0.0.1", "[::1]", "::1")
