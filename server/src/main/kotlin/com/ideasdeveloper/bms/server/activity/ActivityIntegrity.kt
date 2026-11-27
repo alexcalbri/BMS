@@ -39,6 +39,7 @@ object ActivityIntegrity {
     val Genesis: String = "0".repeat(64)
     private const val MaxProblems = 50
     private const val ChunkRows = 5_000
+    private const val MaxUnsealedReported = 20
 
     /** Rows without a seal are reported once they are older than this (an honest row is sealed when it commits). */
     const val UnsealedGraceSeconds = 120
@@ -339,21 +340,44 @@ object ActivityIntegrity {
         }
 
         // Rows without a seal (written with the trigger disabled, or a setting forged to skip it) past the grace period.
-        read { tenant.createStatement().use { statement ->
-            statement.executeQuery(
-                "SELECT a.id, pg_catalog.count(*) OVER () FROM ONLY public.activity_log a " +
-                    "WHERE a.occurred_at < pg_catalog.now() - pg_catalog.make_interval(secs => $UnsealedGraceSeconds) " +
-                    "AND NOT EXISTS (SELECT 1 FROM ONLY public.activity_log_chain c WHERE c.id = a.id) ORDER BY a.id LIMIT 20"
-            ).use { r ->
-                var total = 0L
-                while (r.next()) {
-                    total = r.getLong(2)
-                    bad(r.getLong(1), "La fila ${r.getLong(1)} no esta sellada en la cadena (se escribio sin su disparador).")
+        // Read by id range in chunks of ChunkRows positions (short statements, like the chain), never the whole table at once.
+        var unsealed = 0L
+        var reportedUnsealed = 0
+        var afterId = Long.MIN_VALUE
+        while (true) {
+            val chunkEnd = read {
+                tenant.prepareStatement(
+                    "SELECT pg_catalog.max(s.id) FROM (SELECT a.id FROM ONLY public.activity_log a WHERE a.id > ? ORDER BY a.id LIMIT ?) s"
+                ).use { query ->
+                    query.setLong(1, afterId)
+                    query.setInt(2, ChunkRows)
+                    query.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } ?: Long.MIN_VALUE else Long.MIN_VALUE }
                 }
-                if (total > 20) bad(null, "Hay $total filas sin sellar.")
-                rows += total
-            }
-        } } ?: return stopped()
+            } ?: return stopped()
+            if (chunkEnd == Long.MIN_VALUE) break
+            read {
+                tenant.prepareStatement(
+                    "SELECT a.id FROM ONLY public.activity_log a WHERE a.id > ? AND a.id <= ? " +
+                        "AND a.occurred_at < pg_catalog.now() - pg_catalog.make_interval(secs => $UnsealedGraceSeconds) " +
+                        "AND NOT EXISTS (SELECT 1 FROM ONLY public.activity_log_chain c WHERE c.id = a.id) ORDER BY a.id"
+                ).use { query ->
+                    query.setLong(1, afterId)
+                    query.setLong(2, chunkEnd)
+                    query.executeQuery().use { r ->
+                        while (r.next()) {
+                            unsealed++
+                            if (reportedUnsealed < MaxUnsealedReported) {
+                                reportedUnsealed++
+                                bad(r.getLong(1), "La fila ${r.getLong(1)} no esta sellada en la cadena (se escribio sin su disparador).")
+                            }
+                        }
+                    }
+                }
+            } ?: return stopped()
+            afterId = chunkEnd
+        }
+        if (unsealed > MaxUnsealedReported) bad(null, "Hay $unsealed filas sin sellar.")
+        rows += unsealed
         val (firstAt, lastAt) = read {
             tenant.createStatement().use { statement ->
                 statement.executeQuery("SELECT pg_catalog.min(a.occurred_at)::text, pg_catalog.max(a.occurred_at)::text FROM ONLY public.activity_log a").use { r ->

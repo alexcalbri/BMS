@@ -216,7 +216,9 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
   `activity_log_chain` and `USAGE` on the id sequence (server catch-up and `update.sh`); BEFORE UPDATE/DELETE and
   BEFORE TRUNCATE triggers refuse those operations on both tables for everyone, the owner included. These triggers
   are defence in depth, not a barrier: the runtime role is a member of the server owner's role, which owns the
-  company database and can disable them; verification reports that.
+  company database and can disable them; verification reports that. On servers where `update.sh` applied the table as the
+  PostgreSQL superuser, the owner role cannot disable the refusal triggers (it can still drop the tables as owner of the
+  schema, which verification detects).
 - **Chain.** A BEFORE INSERT trigger gives each row its id from the sequence (explicit ids are refused) and the time of
   its transaction (no backdating), and refuses a transaction that is not READ COMMITTED (a REPEATABLE READ or
   SERIALIZABLE writer would not see the chain rows committed while it waited for the lock and would fail at commit:
@@ -293,10 +295,11 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
 
 ### Known limitations
 
-- **Session advisory lock.** A session of the runtime role (or of the owner's role) that takes the chain's advisory
-  lock 735192402 at session level (`pg_advisory_lock`), or inserts a chain row ahead of the real one, makes the honest
-  commits of that company wait 10 s and fail (SQLSTATE 55P03 or a unique violation) until it lets go: a denial of
-  service, not a way to alter sealed rows. PostgreSQL offers no way to reserve an advisory lock key.
+- **Session advisory lock.** Any role with CONNECT on the company database (for example a business owner's login
+  role) can hold the chain's advisory lock 735192402 at session level (`pg_advisory_lock`) and make writes to that
+  company's log wait and fail after 10 s (SQLSTATE 55P03) until it lets go; a role that can insert into the chain
+  (the runtime role, the owner's role) can also do it with a chain row ahead of the real one (unique violation). It is
+  a denial of service, not a way to alter sealed rows. PostgreSQL offers no way to reserve an advisory lock key.
 - **Migrations as superuser in owner-owned databases.** `update.sh` (as on `develop`) runs tenant migrations and their
   grants with `psql` as the `postgres` superuser inside company databases that the server owner's role owns, so
   anything that role planted there (triggers on `schema_migrations`, functions or operators in `public`, per-database

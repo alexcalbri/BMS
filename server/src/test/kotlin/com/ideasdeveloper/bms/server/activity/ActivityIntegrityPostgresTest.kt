@@ -360,6 +360,31 @@ class ActivityIntegrityPostgresTest {
     }
 
     @Test
+    fun unsealedRowsAreFoundInEveryChunkOfTheIdRange() {
+        if (url == null) return
+        reset("chunks")
+        val honest = write("bms_ai_chunks", 2)
+        // 12,000 rows written without the seal trigger span three chunks of 5,000 positions; honest rows come after them.
+        asOwner(
+            "bms_ai_chunks", "ALTER TABLE activity_log DISABLE TRIGGER activity_log_seal",
+            "INSERT INTO public.activity_log (actor_kind, actor_name, actor_display, module_id, entity_type, action, summary) SELECT 'import', 'Importacion', 'Importacion', 'crm', 'lead', 'imported', 'Fila ' || g FROM generate_series(1, 12000) g",
+            "ALTER TABLE activity_log ENABLE TRIGGER activity_log_seal",
+            "ALTER TABLE activity_log DISABLE TRIGGER activity_log_no_change",
+            "UPDATE activity_log SET occurred_at = occurred_at - interval '1 hour' WHERE actor_kind = 'import' AND id % 2 = 0",
+            "ALTER TABLE activity_log ENABLE TRIGGER activity_log_no_change",
+        )
+        write("bms_ai_chunks", 1)
+        // Only the old half is past the grace period: 6,000 findings, the first 20 listed, none lost across chunks.
+        val report = service().verify("chunks")
+        assertFalse(report.ok)
+        val firstOld = scalar("bms_ai_chunks", "SELECT min(id) FROM activity_log WHERE actor_kind = 'import' AND id % 2 = 0")!!.toLong()
+        assertEquals(firstOld, report.firstBadId)
+        assertEquals(20, report.problems.count { it.contains("no esta sellada") }, report.problems.toString())
+        assertTrue(report.problems.any { it == "Hay 6000 filas sin sellar." }, report.problems.toString())
+        assertEquals(honest.size + 1L + 6_000L, report.rows)
+    }
+
+    @Test
     fun theServerAuditIsAppendOnlyForTheRuntimeRoleAsInstallShGrantsIt() {
         if (url == null) return
         reset()
