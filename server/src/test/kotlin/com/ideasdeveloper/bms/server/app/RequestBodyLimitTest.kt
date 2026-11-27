@@ -60,6 +60,41 @@ class RequestBodyLimitTest {
     }
 
     @Test
+    fun theCrmPastedCsvImportGetsTheLargerLimitOfItsPathOnly() = testApplication {
+        application {
+            install(RequestBodyLimit) { defaultBytes = 100; pathLimits = mapOf("/modules/crm/ui/import" to 1_000) }
+            routing {
+                post("/modules/crm/ui/{screen}") { call.respondText(call.receiveText().length.toString()) }
+            }
+        }
+        assertEquals("900", client.post("/modules/crm/ui/import") { setBody("a".repeat(900)) }.bodyAsText())
+        assertEquals(HttpStatusCode.PayloadTooLarge, client.post("/modules/crm/ui/import") { setBody("a".repeat(1_100)) }.status)
+        assertTrue(client.post("/modules/crm/ui/import") { setBody(streamed(5_000)) }.status.value >= 400)
+        // Every other screen of the same route keeps the default.
+        assertEquals(HttpStatusCode.PayloadTooLarge, client.post("/modules/crm/ui/lead") { setBody("a".repeat(900)) }.status)
+        // The production value matches the Nginx location of the same path (25 MB).
+        assertEquals(25L * 1024 * 1024, LargerBodyPaths["/modules/crm/ui/import"])
+    }
+
+    /** Nginx (scripts/ubuntu/nginx-site.sh) never refuses what the Core accepts on a route, and keeps a smaller default. */
+    @Test
+    fun nginxLimitsAreAtLeastTheCoreLimitsOfEachRoute() {
+        val script = java.io.File(com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck.repoRoot(), "scripts/ubuntu/nginx-site.sh").readText()
+        fun megabytes(value: String) = value.removeSuffix("m").toLong() * 1024 * 1024
+        fun nginxLimit(path: String): Long {
+            val line = script.lineSequence().single { it.contains("bms_nginx_location '= $path'") }
+            return megabytes(Regex("client_max_body_size ([0-9]+m);").find(line)!!.groupValues[1])
+        }
+        val default = megabytes(Regex("BMS_NGINX_DEFAULT_BODY=([0-9]+m)").find(script)!!.groupValues[1])
+        assertTrue(default <= DefaultRequestBodyBytes, "Nginx default $default")
+        LargerBodyPaths.forEach { (path, bytes) -> assertTrue(nginxLimit(path) >= bytes, path) }
+        assertTrue(nginxLimit("/companies/me/backups/import") >= com.ideasdeveloper.bms.server.company.application.BackupImportLimits.MaxBytes + 64 * 1024)
+        assertTrue(nginxLimit("/server/extensions/upload") >= com.ideasdeveloper.bms.server.extensions.packages.ExtensionPackageService.MaxZipBytes)
+        // Module attachments: no Nginx limit (the module and the company quota decide).
+        assertTrue(script.contains("printf 'client_max_body_size 0;"))
+    }
+
+    @Test
     fun everyUploadRouteIsListed() {
         listOf(
             "POST /companies/me/backups/import", "POST /server/extensions/upload", "POST /modules/crm/ui/files",

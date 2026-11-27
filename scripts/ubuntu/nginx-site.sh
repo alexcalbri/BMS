@@ -3,14 +3,16 @@
 # SELF_HOSTING.md section 13 explains every part. The site is regenerated on every update: local additions go
 # in /etc/nginx/bms.d/*.conf (included inside the HTTPS, or HTTP, server block), never in the site file itself.
 #
-# Request bodies: 2 MB everywhere (Nginx refuses more before the backend sees it), except the exact authenticated
-# upload routes found in the code:
+# Request bodies: 2 MB everywhere (Nginx refuses more before the backend sees it; the Core's own default,
+# MAX_REQUEST_BODY_BYTES, is 4 MB behind it), except the exact routes found in the code that carry more. Each one here
+# is at least the Core's limit for it (RequestBodyLimits.kt: UploadRoutes and LargerBodyPaths):
 #   POST /modules/<module>/ui/files        module attachments (CRM, Compras, Tareas, Propietarios, Mantenimiento...):
 #                                          no Nginx limit, streamed (proxy_request_buffering off); each module and
 #                                          the Core quota decide the limit.
-#   POST /modules/crm/ui/import            CRM import from pasted text (up to 20 MB, CrmImportParse).
-#   POST /companies/me/backups/import      company profile backup (ZIP).
-#   POST /server/extensions/upload         extension package ZIP (50 MB, ExtensionPackageService.MaxZipBytes).
+#   POST /modules/crm/ui/import            CRM import from pasted CSV text, JSON (25 MB, LargerBodyPaths).
+#   POST /companies/me/backups/import      company profile backup ZIP, multipart (512 MB, BackupImportLimits), streamed.
+#   POST /server/extensions/upload         extension package ZIP, multipart (50 MB, ExtensionPackageService.MaxZipBytes).
+# JSON routes that stay under 2 MB on purpose: module screen actions, the MCP endpoint of Agentes (1 MB), OAuth (64 KB).
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
 readonly BMS_NGINX_LIMITS_FILE=/etc/nginx/conf.d/bms-limits.conf
@@ -101,11 +103,11 @@ NGINX
     printf '    include %s/*.conf;\n' "$BMS_NGINX_LOCAL_DIR"
     bms_nginx_location /auth/ "$port" $'limit_req zone=bms_req burst=400 nodelay;\nlimit_req zone=bms_auth burst=40 nodelay;'
     bms_nginx_location /companies "$port"
-    # Company profile backup (ZIP); the backend reads and checks it.
-    bms_nginx_location '= /companies/me/backups/import' "$port" 'client_max_body_size 64m;'
+    # Company profile backup (ZIP, at most 512 MB in BackupImportLimits): streamed, the backend reads and checks it.
+    bms_nginx_location '= /companies/me/backups/import' "$port" "$(printf 'client_max_body_size 520m;\nproxy_request_buffering off;\nclient_body_timeout 300s;\nproxy_send_timeout 3600s;\nproxy_read_timeout 3600s;')"
     bms_nginx_location /server "$port"
     # Extension package ZIP (at most 50 MB in ExtensionPackageService), multipart.
-    bms_nginx_location '= /server/extensions/upload' "$port" 'client_max_body_size 60m;'
+    bms_nginx_location '= /server/extensions/upload' "$port" "$(printf 'client_max_body_size 60m;\nproxy_request_buffering off;')"
     printf '    # Version del Core y de los modulos (aviso de actualizaciones de la app).\n'
     bms_nginx_location '= /version' "$port"
     printf '    # Centro de notificaciones de la app.\n'
@@ -119,7 +121,7 @@ NGINX
     bms_nginx_location '~ "^/modules/[a-z][a-z0-9_]{0,62}/ui/files$"' "$port" "$(
         printf 'client_max_body_size 0;\nproxy_request_buffering off;\nclient_body_timeout 300s;\nproxy_send_timeout 3600s;\nproxy_read_timeout 3600s;\n'
         bms_nginx_headers "$scheme" '' SAMEORIGIN)"
-    printf '    # Importacion del CRM desde texto pegado (hasta 20 MB).\n'
+    printf '    # Importacion del CRM desde texto CSV pegado (25 MB, igual que el Core).\n'
     bms_nginx_location '= /modules/crm/ui/import' "$port" "$(printf 'client_max_body_size 25m;\n'; bms_nginx_headers "$scheme" '' SAMEORIGIN)"
     cat <<'NGINX'
     # No publicar los source maps: exponen la estructura del codigo fuente.

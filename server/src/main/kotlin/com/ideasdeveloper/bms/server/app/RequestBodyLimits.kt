@@ -6,6 +6,7 @@ import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ReceiveRequestBytes
 import io.ktor.server.plugins.PayloadTooLargeException
 import io.ktor.server.request.contentLength
+import io.ktor.server.request.path
 import io.ktor.server.routing.RoutingCall
 import io.ktor.server.routing.RoutingNode
 import io.ktor.server.routing.RoutingPipelineCall
@@ -25,9 +26,20 @@ import kotlinx.coroutines.Dispatchers
 class BodyLimitConfig {
     var defaultBytes: Long = DefaultRequestBodyBytes
     var unlimited: (routeKey: String) -> Boolean = ::isUploadRoute
+    // Larger limits of exact request paths (never smaller than [defaultBytes]).
+    var pathLimits: Map<String, Long> = LargerBodyPaths
 }
 
 const val DefaultRequestBodyBytes = 4L * 1024 * 1024
+
+/**
+ * JSON routes that legitimately carry more than the default: request path -> bytes. scripts/ubuntu/nginx-site.sh
+ * gives each the same client_max_body_size (its default is smaller than [DefaultRequestBodyBytes]).
+ */
+val LargerBodyPaths: Map<String, Long> = mapOf(
+    // CRM import from pasted CSV text (op=text, a JSON body; the CRM reads files of up to 20 MB, plus JSON escaping).
+    "/modules/crm/ui/import" to 25L * 1024 * 1024,
+)
 
 /**
  * Routes that receive files ("METHOD /path" as Ktor declares them). Package A's Nginx needs the same
@@ -58,11 +70,13 @@ private fun ApplicationCall.routingNode(): RoutingNode? = when (this) {
 }
 
 val RequestBodyLimit = createApplicationPlugin("BmsRequestBodyLimit", ::BodyLimitConfig) {
-    val limit = pluginConfig.defaultBytes
+    val defaultLimit = pluginConfig.defaultBytes
     val unlimited = pluginConfig.unlimited
+    val pathLimits = pluginConfig.pathLimits
     on(ReceiveRequestBytes) { call, body ->
         val key = call.routingNode()?.let(::routeKey)
         if (key != null && unlimited(key)) return@on body
+        val limit = pathLimits[call.request.path()]?.coerceAtLeast(defaultLimit) ?: defaultLimit
         val declared = call.request.contentLength()
         if (declared != null && declared > limit) throw PayloadTooLargeException(limit)
         call.application.writer(Dispatchers.IO) {

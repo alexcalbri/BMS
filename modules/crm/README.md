@@ -1039,3 +1039,7 @@ block log, the queue of outbound notices, the one-time Meta connection links and
 - `POST /files` checks the company's storage (`ModuleFiles.checkRoom`, STORAGE_QUOTA.md) before reading the body and answers
   `413 STORAGE_QUOTA_EXCEEDED`, `507 STORAGE_DISK_FULL` or `429 STORAGE_BUSY` with `{code, message}`. When a limit is reached
   while the file arrives, the upload stops, no file is left and the answer is the same. The per-file maximum does not change.
+- Body limits (Core 0.13.0): pasting CSV text in the import screen accepts up to 25 MB (Core and Nginx give
+  `POST /modules/crm/ui/import` the same limit; the other screens keep the 2 MB of Nginx). The agent tool `import_csv`
+  takes up to 1,000,000 characters, because the MCP endpoint reads at most 1 MB per request; a larger CSV goes through
+  `import_from_url` or the import screen.
