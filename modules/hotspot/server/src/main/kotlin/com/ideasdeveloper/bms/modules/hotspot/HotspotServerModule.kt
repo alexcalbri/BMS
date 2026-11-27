@@ -68,13 +68,14 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V011__portal_colors.sql",
         "modules/hotspot/migrations/V012__ip_throttle.sql",
         "modules/hotspot/migrations/V013__registrations_customer_idx.sql",
-        "modules/hotspot/migrations/V014__pending_registrations.sql",
+        "modules/hotspot/migrations/V014__form_code_sessions.sql",
     )
 
     override val runtimeTables = listOf(
         "hotspot_settings",
         "hotspot_registrations",
         "hotspot_codes",
+        "hotspot_code_devices",
         "hotspot_accesses",
         "hotspot_networks",
         "hotspot_code_sessions",

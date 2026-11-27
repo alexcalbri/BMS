@@ -43,6 +43,8 @@ object ClientesSharing {
         val archived: Boolean,
         // Whether this company may see it (its own customer or a shared copy).
         val visible: Boolean,
+        // "", "unverified" or "verified" (see V012).
+        val emailStatus: String = "",
     )
 
     // Every column copied between companies (created_at too, so the oldest customer wins a merge).
@@ -75,7 +77,7 @@ object ClientesSharing {
 
     fun customer(tenant: Connection, id: UUID, currentCode: String): Customer? = tenant.prepareStatement(
         """
-        SELECT id, display_name, primary_email, primary_phone, customer_code, origin_company_code, shared, status, $Visible AS visible
+        SELECT id, display_name, primary_email, primary_phone, customer_code, origin_company_code, shared, status, email_status, $Visible AS visible
         FROM customers WHERE id = ?
         """.trimIndent()
     ).use { query ->
@@ -95,6 +97,7 @@ object ClientesSharing {
                 archived = rows.getString("status") == "archived",
                 // The origin must be linked now: a copy of an unlinked company is not visible even when shared stayed TRUE.
                 visible = rows.getBoolean("visible"),
+                emailStatus = rows.getString("email_status").orEmpty(),
             )
         }
     }
