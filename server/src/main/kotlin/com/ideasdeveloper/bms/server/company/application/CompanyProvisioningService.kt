@@ -1277,8 +1277,13 @@ class CompanyProvisioningService(
 
     fun updateServerModuleCatalog(catalogUrl: String, actor: AuditActor): ServerModuleCatalogResponse {
         val normalized = catalogUrl.trim()
-        if (normalized.isNotBlank() && !normalized.startsWith("https://") && !normalized.startsWith("http://")) {
-            throw CompanyProvisioningException(tr("La URL del catalogo debe iniciar con http:// o https://."))
+        // Solo https al puerto 443 y sin credenciales; la IP se valida y se ancla en cada lectura (RemoteModuleCatalog).
+        if (normalized.isNotBlank()) {
+            try {
+                com.ideasdeveloper.bms.server.modules.CatalogUrlPolicy.validate(normalized)
+            } catch (_: com.ideasdeveloper.bms.server.modules.CatalogUrlException) {
+                throw CompanyProvisioningException(tr("La URL del catalogo debe ser https (puerto 443) y sin usuario ni clave."))
+            }
         }
         inCentralTransaction { connection ->
             connection.prepareStatement(

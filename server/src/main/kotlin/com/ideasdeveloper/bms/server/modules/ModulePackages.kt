@@ -48,6 +48,12 @@ import kotlin.io.path.walk
 object GitHubAuth {
     private val hosts = setOf("api.github.com", "codeload.github.com", "github.com", "raw.githubusercontent.com")
 
+    /** true si [url] es https a uno de los hosts de GitHub (los unicos a los que se sigue una redireccion de descarga). */
+    fun isGitHubHttps(url: String): Boolean {
+        val uri = runCatching { URI.create(url) }.getOrNull() ?: return false
+        return uri.scheme == "https" && uri.rawUserInfo == null && (uri.port == -1 || uri.port == 443) && uri.host?.lowercase() in hosts
+    }
+
     // Header value for [url], or null when there is no token or the URL is not GitHub over HTTPS.
     fun header(token: String?, url: String): String? {
         val value = token?.trim()?.takeIf { it.isNotEmpty() } ?: return null
@@ -56,30 +62,62 @@ object GitHubAuth {
     }
 }
 
-/** Folder of a GitHub repository that holds the module catalog, e.g. .../tree/develop/modules. */
+/**
+ * Folder of a GitHub repository that holds the module catalog, e.g. .../tree/develop/modules. The catalog
+ * resolves [ref] to its commit ([pinned]) before reading it, so what is listed is what is downloaded.
+ */
 data class GitHubLocation(val owner: String, val repo: String, val ref: String, val path: String) {
-    // One request downloads the whole branch; only the module's folder is extracted.
+    // One request downloads the whole commit (or branch); only the module's folder is extracted.
     val archiveUrl: String
         get() = "https://codeload.github.com/$owner/$repo/zip/$ref"
+
+    /** true when [ref] is already a full commit sha (40 hex). */
+    val pinned: Boolean
+        get() = CommitSha.matches(ref)
 
     companion object {
         private val treeUrl = Regex("""^https://github\.com/([^/]+)/([^/]+)/tree/([^/]+)/(.+?)/?$""")
         private val contentsUrl = Regex("""^https://api\.github\.com/repos/([^/]+)/([^/]+)/contents/([^?]+?)/?(\?(.*))?$""")
+        // Every part ends up in a fixed GitHub URL: only plain names, so no part can change the host or the query.
+        private val namePart = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+        private val refPart = Regex("[A-Za-z0-9][A-Za-z0-9._/-]{0,100}")
+        private val pathPart = Regex("[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*")
+        val CommitSha = Regex("[0-9a-f]{40}")
 
         fun parse(url: String): GitHubLocation? {
             val value = url.trim()
             treeUrl.matchEntire(value)?.let { match ->
                 val (owner, repo, ref, path) = match.destructured
-                return GitHubLocation(owner, repo.removeSuffix(".git"), ref, path.trim('/'))
+                return valid(GitHubLocation(owner, repo.removeSuffix(".git"), ref, path.trim('/')))
             }
             contentsUrl.matchEntire(value)?.let { match ->
                 val ref = match.groupValues[5].split('&')
                     .firstOrNull { it.startsWith("ref=") }?.removePrefix("ref=")?.takeIf { it.isNotBlank() } ?: "HEAD"
-                return GitHubLocation(match.groupValues[1], match.groupValues[2], ref, match.groupValues[3].trim('/'))
+                return valid(GitHubLocation(match.groupValues[1], match.groupValues[2], ref, match.groupValues[3].trim('/')))
             }
             return null
         }
+
+        private fun valid(location: GitHubLocation): GitHubLocation? = location.takeIf {
+            namePart.matches(it.owner) && namePart.matches(it.repo) && refPart.matches(it.ref) && ".." !in it.ref &&
+                pathPart.matches(it.path) && it.path.split('/').none { segment -> segment == "." || segment == ".." }
+        }
     }
+}
+
+/**
+ * Whether module packages need a signature or an authorized hash (MODULE_SIGNATURE_ENFORCED). An explicit
+ * "true" or "false" wins; when it is not set the gate is on exactly when a package signing key is installed
+ * ([com.ideasdeveloper.bms.server.extensions.packages.BMSPublicKeys.installed]), so the live server keeps
+ * installing unsigned modules until the owner installs a key (SIGNING.md).
+ */
+object ModuleSignaturePolicy {
+    fun enforced(setting: String? = System.getenv("MODULE_SIGNATURE_ENFORCED"), keyInstalled: () -> Boolean = { com.ideasdeveloper.bms.server.extensions.packages.BMSPublicKeys.installed }): Boolean =
+        when (setting?.trim()?.lowercase()) {
+            "true" -> true
+            "false" -> false
+            else -> keyInstalled()
+        }
 }
 
 class ModuleBuildException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -254,6 +292,8 @@ class ModulePackageBuilder(
 
     // Commit de 40 hex al que apunta hoy la rama del catalogo (API de GitHub, respuesta de solo el sha).
     private fun resolveCommit(source: GitHubLocation): String {
+        // The catalog already pinned its reading to this commit: inspect and build use the same code.
+        if (source.pinned) return source.ref
         if (!RefPattern.matches(source.ref)) throw ModuleBuildException("La rama del catalogo no es valida.")
         val url = "https://api.github.com/repos/${source.owner}/${source.repo}/commits/${source.ref}"
         val request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).GET()
@@ -279,6 +319,8 @@ class ModulePackageBuilder(
             if (response.statusCode() !in 300..399 || location == null) break
             if (++redirects > 5) throw ModuleBuildException("Demasiadas redirecciones al descargar el modulo.")
             current = URI.create(current).resolve(location).toString()
+            // The code only comes from GitHub over https, also after a redirect.
+            if (!GitHubAuth.isGitHubHttps(current)) throw ModuleBuildException("La descarga del modulo redirige fuera de GitHub.")
         }
         if (response.statusCode() != 200) throw ModuleBuildException("No se pudo descargar el codigo del modulo (HTTP ${response.statusCode()}).")
         if (Files.size(target) > MaxArchiveBytes) throw ModuleBuildException("El repositorio descargado es demasiado grande.")

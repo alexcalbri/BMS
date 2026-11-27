@@ -7,6 +7,12 @@
 # Este ayudante las toma, trae el codigo a un espejo propio de root y ejecuta update.sh desde ese espejo.
 # Nunca ejecuta git ni scripts como root dentro de /opt/bms/source (lo puede escribir el usuario
 # bms): todo lo que corre como root sale de /var/lib/bms/mirror.
+#
+# Cada solicitud lleva el commit exacto (40 hex) que aprobo el dueno en la app (target_commit, control V016).
+# El ayudante instala ese commit y ningun otro: debe estar en la historia de CORE_UPDATE_REF y declarar la
+# version pedida. Si existe la llave de root /usr/local/lib/bms/allowed_signers, ademas exige una firma SSH
+# valida del commit o de la etiqueta core-v<version> (SIGNING.md); sin ella queda como "unsigned".
+# Lo que escribe el backend en la tabla es entrada no confiable: se valida antes de usarlo.
 set -Eeuo pipefail
 umask 077
 
@@ -21,6 +27,7 @@ readonly MIN_INTERVAL_MINUTES=10
 readonly KEEP_LOGS=10
 readonly INSTALLED_PATH=/usr/local/sbin/bms-core-update
 readonly VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
+readonly COMMIT_PATTERN='^[0-9a-f]{40}$'
 readonly REF_PATTERN='^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$'
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -92,8 +99,9 @@ maintenance_lock_free() {
     ( flock -n 8 ) 8>>"$MAINTENANCE_LOCK_FILE"
 }
 
-# Se omite en silencio hasta que la migracion V010 este aplicada.
+# Se omite en silencio hasta que las migraciones V010 y V016 (commit fijado) esten aplicadas.
 [[ $(central_psql -Atc "SELECT to_regclass('public.core_update_requests') IS NOT NULL") == t ]] || exit 0
+[[ $(central_psql -Atc "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'core_update_requests' AND column_name = 'target_commit')") == t ]] || exit 0
 
 # Recuperacion: una fila 'running' sin proceso de mantenimiento activo quedo interrumpida.
 if [[ -n $(central_psql -Atc "SELECT 1 FROM core_update_requests WHERE status = 'running' LIMIT 1") ]] &&
@@ -108,10 +116,10 @@ fi
 # Enfriamiento: minimo 10 minutos desde que termino la ultima solicitud; la pendiente espera.
 [[ -z $(central_psql -Atc "SELECT 1 FROM core_update_requests WHERE status IN ('done', 'error') AND finished_at > now() - interval '$MIN_INTERVAL_MINUTES minutes' LIMIT 1") ]] || exit 0
 
-PENDING=$(central_psql -At -F '|' -c "SELECT id, target_version FROM core_update_requests WHERE status = 'pending' ORDER BY id LIMIT 1")
+PENDING=$(central_psql -At -F '|' -c "SELECT id, target_version, coalesce(target_commit, '') FROM core_update_requests WHERE status = 'pending' ORDER BY id LIMIT 1")
 [[ -n $PENDING ]] || exit 0
-REQUEST_ID=${PENDING%%|*}
-TARGET_VERSION=${PENDING#*|}
+# Un valor con '|' de mas cae entero en TARGET_COMMIT y no pasa la validacion de abajo.
+IFS='|' read -r REQUEST_ID TARGET_VERSION TARGET_COMMIT <<< "$PENDING"
 [[ $REQUEST_ID =~ ^[0-9]+$ ]] || die 'Identificador de solicitud invalido.'
 
 # Si hay otra instalacion o actualizacion en curso, la solicitud sigue pendiente.
@@ -130,11 +138,13 @@ log_tail() {
 finish_request() {
     local status=$1 message=$2 tail_text
     tail_text=$(log_tail)
-    central_psql -v id="$REQUEST_ID" -v status="$status" -v message="$message" -v log_tail="$tail_text" <<'SQL'
+    central_psql -v id="$REQUEST_ID" -v status="$status" -v message="$message" -v log_tail="$tail_text" \
+        -v signature="${SIGNATURE_STATUS:-}" <<'SQL'
 UPDATE core_update_requests
 SET status = :'status',
     message = NULLIF(:'message', ''),
     log_tail = NULLIF(:'log_tail', ''),
+    signature_status = coalesce(NULLIF(:'signature', ''), signature_status),
     finished_at = now()
 WHERE id = :'id'::bigint AND status IN ('pending', 'running');
 SQL
@@ -177,15 +187,30 @@ fail_request() {
     exit 1
 }
 
+SIGNATURE_STATUS=''
 [[ $TARGET_VERSION =~ $VERSION_PATTERN ]] || fail_request 'Version destino invalida.'
+[[ -n $TARGET_COMMIT ]] ||
+    fail_request 'La solicitud no indica el commit aprobado; vuelve a pedir la actualizacion desde la app.'
+[[ $TARGET_COMMIT =~ $COMMIT_PATTERN ]] || fail_request 'Commit destino invalido.'
 install -m 600 /dev/null "$LOG_FILE"
 FINALIZED=false
 
-sync_mirror "$CORE_UPDATE_REF" >> "$LOG_FILE" 2>&1 || fail_request 'No se pudo descargar el codigo desde GitHub'
-TARGET_COMMIT=$(mirror_git rev-parse HEAD)
-[[ $TARGET_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail_request 'No se pudo leer el commit descargado'
+printf '%s Solicitud %s: version %s, commit %s, rama %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$REQUEST_ID" "$TARGET_VERSION" "$TARGET_COMMIT" "$CORE_UPDATE_REF" >> "$LOG_FILE"
+CHECKED_OUT=$(sync_mirror_commit "$CORE_UPDATE_REF" "$TARGET_COMMIT" 2>> "$LOG_FILE") ||
+    fail_request "No se pudo traer el commit aprobado desde GitHub, o no esta en la rama $CORE_UPDATE_REF"
+[[ $CHECKED_OUT == "$TARGET_COMMIT" ]] || fail_request 'El espejo no quedo en el commit aprobado'
 grep -Fxq "version = \"$TARGET_VERSION\"" "$MIRROR_DIR/server/build.gradle.kts" ||
-    fail_request "El codigo descargado de $CORE_UPDATE_REF no corresponde a la version $TARGET_VERSION"
+    fail_request "El commit aprobado no corresponde a la version $TARGET_VERSION"
+SIGNATURE_STATUS=$(verify_mirror_signature "$TARGET_COMMIT" "$TARGET_VERSION" 2>> "$LOG_FILE") || {
+    SIGNATURE_STATUS=''
+    fail_request 'El commit aprobado no tiene una firma valida de la llave instalada; no se actualiza'
+}
+[[ $SIGNATURE_STATUS == verified || $SIGNATURE_STATUS == unsigned ]] || {
+    SIGNATURE_STATUS=''
+    fail_request 'No se pudo comprobar la firma del commit'
+}
+printf '%s Firma: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SIGNATURE_STATUS" >> "$LOG_FILE"
 
 # Ya desplegado: no se vuelve a compilar ni a reiniciar.
 if [[ -f $DEPLOYED_FILE && $(cat "$DEPLOYED_FILE") == "$TARGET_COMMIT" ]]; then
