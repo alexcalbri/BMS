@@ -109,6 +109,37 @@ class EventosActivityPostgresTest {
     }
 
     @Test
+    fun attendanceOfAnEventThatAlreadyStartedIsRecorded() = withTenant { db ->
+        val p = manager()
+        // Un evento que ya empezo (hace una hora): la asistencia solo se registra desde el dia del evento.
+        val started = Instant.now().minus(1, ChronoUnit.HOURS)
+        val event = EventosService.createEvent(db, access, p, publicEvent("Charla de hoy").copy(startsAt = started, endsAt = started.plus(3, ChronoUnit.HOURS)), publish = true)
+        val registration = EventosService.register(db, access, p, RegistrationInput(eventId = event.id, customerId = null), NewCustomerInput("Marta Gil", "marta@example.com")).registration!!
+
+        val (_, present) = ActivityLogTesting.capture { EventosService.setAttendance(db, access, p, registration.id, attended = true) }
+        val row = present.single()
+        assertEquals(ActivityActions.Updated, row.action)
+        assertEquals("registration", row.entry.entityType)
+        assertEquals("Ana Ruiz", row.display)
+        assertEquals("No", row.change("attended")!!.old)
+        assertEquals("Si", row.change("attended")!!.new)
+
+        // Marcarla otra vez igual no escribe fila; quitarla si.
+        val (_, same) = ActivityLogTesting.capture { EventosService.setAttendance(db, access, p, registration.id, attended = true) }
+        assertTrue(same.isEmpty())
+        val (_, absent) = ActivityLogTesting.capture { EventosService.setAttendance(db, access, p, registration.id, attended = false) }
+        assertEquals("Si", absent.single().change("attended")!!.old)
+        assertEquals("No", absent.single().change("attended")!!.new)
+
+        // Un evento que aun no empieza la rechaza y no deja fila.
+        val later = EventosService.createEvent(db, access, p, publicEvent("Charla futura"), publish = true)
+        val future = EventosService.register(db, access, p, RegistrationInput(eventId = later.id, customerId = null), NewCustomerInput("Beto Paz", "beto@example.com")).registration!!
+        val (refused, none) = ActivityLogTesting.capture { runCatching { EventosService.setAttendance(db, access, p, future.id, attended = true) } }
+        assertTrue(refused.exceptionOrNull() is EventosValidationException)
+        assertTrue(none.isEmpty())
+    }
+
+    @Test
     fun paymentCreateAndDeleteWriteRowsAndDeleteIsPersisted() = withTenant { db ->
         val p = manager()
         val customer = EventosRepository.findOrCreateCustomer(db, NewCustomerInput("Familia Ruiz", "")).customerId
@@ -182,5 +213,33 @@ class EventosActivityPostgresTest {
         assertEquals(setOf("customer", "event", "payment"), rows.map { it.entry.entityType }.toSet())
         assertTrue(rows.all { it.display == "Importacion (Ana Ruiz)" })
         assertEquals("Boda Ruiz", rows.first { it.entry.entityType == "event" }.entry.entityLabel)
+    }
+
+    @Test
+    fun importActorNamesTheStarterAndTheTotalRowSaysWhoAndWhere() = withTenant { db ->
+        val activity = EventosImportApply.importActor(db, ana.userId)
+        assertEquals("Importacion (Ana Ruiz)", activity.display)
+        assertEquals(ana.userId, activity.userId)
+        // Si la fila del usuario ya no existe, el nombre es "Usuario desconocido".
+        assertEquals("Importacion (Usuario desconocido)", EventosImportApply.importActor(db, UUID.fromString("00000000-0000-0000-0000-0000000000ff")).display)
+        assertEquals("Importacion", EventosImportApply.importActor(db, null).display)
+
+        val (_, rows) = ActivityLogTesting.capture { EventosImportApply.recordImportTotal(db, activity, null, "Monday", "Eventos 2026", 3, 2, 1, 0) }
+        val row = rows.single()
+        assertEquals(ActivityActions.Imported, row.action)
+        assertEquals("Importacion (Ana Ruiz)", row.display)
+        assertEquals("3", row.change("created")!!.new)
+        assertEquals("2", row.change("updated")!!.new)
+        assertTrue(row.entry.summary.contains("Monday") && row.entry.summary.contains("Eventos 2026"), row.entry.summary)
+
+        // Escrita de verdad, queda en activity_log con quien la empezo.
+        EventosImportApply.recordImportTotal(db, activity, null, "Monday", "", 1, 0, 0, 0)
+        db.prepareStatement("SELECT actor_kind, actor_user_id, actor_display, action FROM activity_log WHERE module_id = 'eventos' AND entity_type = 'import'").use { st ->
+            st.executeQuery().use { result ->
+                assertTrue(result.next())
+                assertEquals("import", result.getString(1)); assertEquals(ana.userId, result.getObject(2, UUID::class.java))
+                assertEquals("Importacion (Ana Ruiz)", result.getString(3)); assertEquals("imported", result.getString(4))
+            }
+        }
     }
 }

@@ -25,6 +25,7 @@ internal object EventosActivity {
     const val PaymentType = "payment"
     const val CustomerType = "customer"
     const val SettingsType = "settings"
+    const val ImportType = "import"
 
     val EventLabels: Map<String, String> = linkedMapOf(
         "title" to "Título", "description" to "Descripción", "category" to "Categoría", "series" to "Serie", "space" to "Espacio",
@@ -261,4 +262,22 @@ internal object EventosActivity {
         "spaces" to spaces.joinToString(", ").ifEmpty { null },
         "categories" to categories.joinToString(", ").ifEmpty { null },
     )
+
+    /** La fila unica de una importacion: quien la empezo (el actor), el origen y los totales. */
+    fun importTotal(tenant: Connection, actor: ActivityActor, entityId: UUID?, source: String, board: String, created: Int, updated: Int, skipped: Int, failed: Int, outcome: String = "") {
+        val total = created + updated + skipped + failed
+        val from = if (board.isBlank()) source else "$source (tablero $board)"
+        val summary = "Importa $total ${if (total == 1) "fila" else "filas"} de eventos desde $from: $created creados, $updated actualizados, $skipped omitidos y $failed con error." +
+            (if (outcome.isBlank()) "" else " $outcome")
+        write(
+            tenant, actor, ImportType, entityId, from, ActivityActions.Imported, summary,
+            listOf(
+                ActivityChange("source", "Origen", null, from),
+                ActivityChange("created", "Creados", null, created.toString()),
+                ActivityChange("updated", "Actualizados", null, updated.toString()),
+                ActivityChange("skipped", "Omitidos", null, skipped.toString()),
+                ActivityChange("failed", "Con error", null, failed.toString()),
+            ),
+        )
+    }
 }

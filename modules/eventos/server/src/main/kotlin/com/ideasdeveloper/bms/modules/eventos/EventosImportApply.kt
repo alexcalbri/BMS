@@ -116,6 +116,35 @@ object EventosImportApply {
             statement.executeUpdate()
         }
 
+    // ---- activity log ----
+
+    /**
+     * The actor of an import: [startedBy] (the company user who started it) with the current name read from application_users
+     * on the same connection; "Usuario desconocido" when the row is gone; an anonymous import without a user.
+     */
+    fun importActor(tenant: Connection, startedBy: UUID?): ActivityActor {
+        if (startedBy == null) return ActivityActor.import(null)
+        val name = tenant.rows("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?", listOf(startedBy)) { it.getString(1) }.firstOrNull()
+        return ActivityActor.import(ActivityActor.user(startedBy, name?.takeIf { it.isNotBlank() } ?: "Usuario desconocido"))
+    }
+
+    /**
+     * The single row of a finished import (who started it, the source and the totals); the caller writes it in the same
+     * transaction that closes the job. [outcome] says so when it did not end normally.
+     */
+    fun recordImportTotal(
+        tenant: Connection,
+        activity: ActivityActor,
+        jobId: UUID?,
+        source: String,
+        board: String,
+        created: Int,
+        updated: Int,
+        skipped: Int,
+        failed: Int,
+        outcome: String = "",
+    ) = EventosActivity.importTotal(tenant, activity, jobId, source, board, created, updated, skipped, failed, outcome)
+
     private class Applied(val outcome: ImportOutcome, val eventId: UUID, val customerId: UUID, val createdCustomer: Boolean)
 
     /**
