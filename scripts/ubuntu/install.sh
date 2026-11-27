@@ -208,8 +208,12 @@ ensure_install_swap() {
     INSTALL_SWAP_CREATED=true
 }
 
+# The build user's environment is clean (nothing of root's) and the build uses no local build cache (update.sh does
+# the same); stop_build_user_processes runs before root reads anything the build produced.
 run_gradle() {
-    runuser -u "$BUILD_USER" -- env \
+    runuser -u "$BUILD_USER" -- env -i \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        LANG=C.UTF-8 \
         HOME="$BUILD_HOME" \
         GRADLE_USER_HOME="$BUILD_HOME/.gradle" \
         JAVA_HOME="$JAVA_HOME" \
@@ -217,11 +221,21 @@ run_gradle() {
         bash ./gradlew \
         --no-daemon \
         --no-configuration-cache \
+        --no-build-cache \
         --max-workers=1 \
         --console=plain \
         "-Dorg.gradle.jvmargs=$GRADLE_JVM_ARGS" \
         "-Pkotlin.compiler.execution.strategy=in-process" \
         "$@"
+}
+
+stop_build_user_processes() {
+    pkill -KILL -u "$BUILD_USER" 2>/dev/null || true
+    for _ in {1..100}; do
+        pgrep -u "$BUILD_USER" >/dev/null 2>&1 || return 0
+        sleep 0.1
+    done
+    die "Siguen corriendo procesos de $BUILD_USER despues de la compilacion."
 }
 
 # Root mirror of the repository (the same as mirror.sh, which may not be next to this file): cloned and moved to
@@ -703,19 +717,24 @@ git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$TRUSTED_DIR" archiv
     runuser -u "$BUILD_USER" -- tar -x -C "$BUILD_TREE" --no-same-owner
 cd "$BUILD_TREE"
 ensure_install_swap
-runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
+runuser -u "$BUILD_USER" -- env -i PATH=/usr/bin:/bin HOME="$BUILD_HOME" JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
 run_gradle -PserverOnly=true :server:tasks --all
 run_gradle -PserverOnly=true :server:test :server:installDist
+stop_build_user_processes
 [[ -x server/build/install/server/bin/server ]] || die 'No se encontró la distribución del servidor.'
 install -d -m 755 "$APP_DIR/app"
 # Read as the build user and checked before root extracts it (dist.sh): no links, no special files.
 copy_dist_as_bms "$BUILD_TREE/server/build/install/server" "$APP_DIR/app" "$BUILD_USER"
+# The company migrations the server applies, root-owned in the distribution (MIGRATIONS_ROOT), never /opt/bms/source.
+install -d -m 755 "$APP_DIR/app/migrations"
+bms_release_migrations "$TRUSTED_DIR" "$BUILD_SHA" "$APP_DIR/app/migrations" || die 'No se pudieron copiar las migraciones a la distribucion.'
 chown -R root:root "$APP_DIR/app"
 chmod -R a+rX "$APP_DIR/app"
 chmod -R go-w "$APP_DIR/app"
 
 # Build the browser app without mobile SDKs. Gradle supplies Node and Yarn.
 run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution
+stop_build_user_processes
 WEB_DIST="$BUILD_TREE/app/webApp/build/dist/js/productionExecutable"
 [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se encontro la distribucion web completa.'
 install -d -m 755 "$APP_DIR/web"
@@ -830,7 +849,7 @@ install -d -m 700 "$CONFIG_DIR"
     printf 'DB_PROVISIONING_USER=%s\nDB_PROVISIONING_PASSWORD=%s\n' "$PROVISIONER" "$PROVISIONER_PASSWORD"
     printf 'TENANT_DATABASES_JSON=[]\n'
     printf 'TENANT_JDBC_URL_PREFIX=jdbc:postgresql://127.0.0.1:5432/\n'
-    printf 'MIGRATIONS_ROOT=%s/source\n' "$APP_DIR"
+    printf 'MIGRATIONS_ROOT=%s/app/migrations\n' "$APP_DIR"
     printf 'COMPANY_BACKUPS_ROOT=%s\n' "$COMPANY_BACKUPS_DIR"
     printf 'COMPANY_FILES_ROOT=%s\n' "$COMPANY_FILES_DIR"
     printf 'MODULE_CATALOG_URL=%s\n' "$DEFAULT_MODULE_CATALOG_URL"
@@ -888,7 +907,7 @@ WantedBy=multi-user.target
 UNIT
 chmod 644 "$SERVICE_FILE"
 # A6: sandbox as a drop-in (scripts/ubuntu/units.sh); update.sh keeps it current.
-bms_service_hardening false | bms_write_dropin bms.service >/dev/null
+bms_service_hardening false "$(bms_default_memory_max)" | bms_write_dropin bms.service >/dev/null
 systemd-analyze verify "$SERVICE_FILE"
 systemctl daemon-reload
 systemctl enable --now bms.service
@@ -1026,6 +1045,9 @@ fi
 bash "$TRUSTED_DIR/scripts/ubuntu/domains-sync.sh" --install
 bash "$TRUSTED_DIR/scripts/ubuntu/core-update.sh" --install
 bash "$TRUSTED_DIR/scripts/ubuntu/backup.sh" --install
+# What the root helper compares app update requests with (only later versions are accepted).
+printf '%s\n' "$BUILD_SHA" > "$ROOT_STATE_DIR/deployed-commit"
+chmod 600 "$ROOT_STATE_DIR/deployed-commit"
 if [[ $HARDEN_HOST == true ]]; then
     bash "$TRUSTED_DIR/scripts/ubuntu/harden-host.sh"
 fi

@@ -5,9 +5,11 @@
 
 # bms.service: the Ktor server (user bms, Java). [syscall_filter] true adds SystemCallFilter=@system-service, with
 # EPERM instead of killing the JVM on a refused call; it is opt-in (BMS_SYSCALL_FILTER=true in server.env) until
-# it has been tried on the server. MemoryMax leaves room for the module compiler the server starts (-Xmx1g).
+# it has been tried on the server. [memory_max] (for example 80% or 3G) adds MemoryMax; empty leaves it out, which is
+# the default below 8 GiB of RAM, where a cap would kill the server (with its module compiler, -Xmx1g) before the
+# kernel would (bms_default_memory_max).
 bms_service_hardening() {
-    local syscall_filter=${1:-false}
+    local syscall_filter=${1:-false} memory_max=${2:-}
     cat <<'UNIT'
 # Managed by BMS (scripts/ubuntu/units.sh); update.sh rewrites this file.
 [Service]
@@ -29,15 +31,32 @@ LockPersonality=true
 RemoveIPC=true
 KeyringMode=private
 SystemCallArchitectures=native
-MemoryMax=80%
 TasksMax=4096
 UNIT
+    if [[ $memory_max =~ ^([1-9][0-9]?%|[1-9][0-9]*[KMGT]?)$ ]]; then
+        printf 'MemoryMax=%s\n' "$memory_max"
+    fi
     if [[ $syscall_filter == true ]]; then
         cat <<'UNIT'
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 UNIT
     fi
+}
+
+# MemoryMax for bms.service: BMS_MEMORY_MAX from server.env ("none" for no cap); otherwise 80% with at least 8 GiB of
+# RAM and no cap below.
+bms_default_memory_max() {
+    local configured=${1:-} ram_kb
+    if [[ $configured == none ]]; then
+        return 0
+    elif [[ -n $configured ]]; then
+        printf '%s\n' "$configured"
+        return 0
+    fi
+    ram_kb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+    (( ${ram_kb:-0} >= 8 * 1024 * 1024 )) && printf '80%%\n'
+    return 0
 }
 
 # Root helpers (domain publisher, certificate renewal, backups): they run nginx -t, systemctl reload, certbot,

@@ -12,7 +12,8 @@
 #   BACKUP_RCLONE_REMOTE=remote:bms     off-box copy with rclone (configured by root: rclone config)
 #   BACKUP_RSYNC_TARGET=user@host:/dir  or with rsync over ssh
 #   BACKUP_RSYNC_SSH_KEY=/root/.ssh/bms-backup
-#   BACKUP_OFFSITE_INCLUDE_SECRETS=false  true also sends etc-bms-secret.tar.gz (BMS_MASTER_KEY and passwords)
+#   BACKUP_OFFSITE_INCLUDE_SECRETS=false  true also sends etc-bms-secret.tar.gz (BMS_MASTER_KEY and passwords) and
+#                                         db/roles.sql (the PostgreSQL password verifiers)
 # The off-box copy never carries the master key unless told to: keep it apart (SELF_HOSTING.md, master key escrow).
 
 readonly BMS_BACKUP_ROOT=/var/lib/bms/db-backups
@@ -82,7 +83,7 @@ bms_backup_offsite() {
     target=$(bms_backup_setting BACKUP_RSYNC_TARGET)
     include_secrets=$(bms_backup_setting BACKUP_OFFSITE_INCLUDE_SECRETS)
     name=${dir##*/}
-    local exclude=(--exclude 'etc-bms-secret.tar.gz')
+    local exclude=(--exclude 'etc-bms-secret.tar.gz' --exclude 'roles.sql')
     [[ $include_secrets == true ]] && exclude=()
     if [[ -n $remote ]]; then
         if ! command -v rclone >/dev/null 2>&1; then
@@ -117,6 +118,12 @@ bms_backup_main() {
     control_db=${db_url##*/}
     control_db=${control_db%%\?*}
     [[ $control_db =~ ^[a-z][a-z0-9_]{0,62}$ ]] || { printf 'DB_URL invalida en server.env.\n' >&2; return 1; }
+    # L3: not while an install or update runs (its own dump comes first); wait for it, at most an hour.
+    exec 7>>/run/bms-maintenance.lock
+    if ! flock -w 3600 7; then
+        bms_backup_log 'ERROR: una instalacion o actualizacion sigue en curso despues de una hora; respaldo omitido.'
+        return 1
+    fi
     keep=$(bms_backup_setting BACKUP_KEEP)
     [[ $keep =~ ^[1-9][0-9]{0,2}$ ]] || keep=7
     umask 077
