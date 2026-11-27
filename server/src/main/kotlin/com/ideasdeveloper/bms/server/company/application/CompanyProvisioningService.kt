@@ -1614,6 +1614,11 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("Activity log migration failed for company {}", companyCode, failure)
                     }
+                    try {
+                        applyTwoFactorMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Two-step verification migration failed for company {}", companyCode, failure)
+                    }
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1949,6 +1954,16 @@ class CompanyProvisioningService(
         applyCompanyMailMigration(connection)
         applyLanguageMigrations(connection)
         applyActivityLogMigration(connection)
+        applyTwoFactorMigration(connection)
+    }
+
+    // Two-step verification of the company's users (tenant V012, TWO_FACTOR.md); also brought to existing companies at startup.
+    private fun applyTwoFactorMigration(connection: Connection) {
+        val relativePath = "database/tenant/migrations/V012__create_two_factor.sql"
+        applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        listOf("application_user_two_factor", "application_user_recovery_codes").forEach { table ->
+            grantIfMissing(connection, config.runtimeUser, table, listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
+        }
     }
 
     /**

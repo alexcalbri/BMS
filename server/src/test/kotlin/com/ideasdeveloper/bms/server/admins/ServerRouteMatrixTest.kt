@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.server.admins
 
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
 import com.ideasdeveloper.bms.server.company.api.storageRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
 import com.ideasdeveloper.bms.server.extensions.ExtensionActors
 import com.ideasdeveloper.bms.server.extensions.ExtensionConnections
 import com.ideasdeveloper.bms.server.extensions.ExtensionNotifier
@@ -148,6 +149,7 @@ class ServerRouteMatrixTest {
                 extensionPackageRoutes(packageService(), uploadEnabled = true, resolver = resolver)
                 serverAdminRoutes(resolver, admins = null, audit = null)
                 storageRoutes(resolver, storage = null)
+                twoFactorPolicyRoutes(resolver, central = null)
             }
         }
         startApplication()

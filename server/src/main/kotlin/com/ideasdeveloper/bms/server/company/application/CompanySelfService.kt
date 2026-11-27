@@ -675,7 +675,9 @@ class CompanySelfService(
             else -> when (val lookup = serverActors?.resolve(accessToken)) {
                 is ServerActorLookup.Found -> if (lookup.actor.has(ServerPermission.Workspace)) lookup.actor.audit
                     else throw CompanySelfException(tr("Necesitas el permiso {0}.", ServerPermission.Workspace.id))
-                is ServerActorLookup.PasswordChangeRequired -> throw CompanySelfException(tr("Cambia tu contrasena antes de continuar."))
+                is ServerActorLookup.PasswordChangeRequired -> throw CompanySelfException(
+                    if (lookup.twoFactorSetup) tr("Activa la verificacion en dos pasos para continuar.") else tr("Cambia tu contrasena antes de continuar."),
+                )
                 else -> null
             }
         }

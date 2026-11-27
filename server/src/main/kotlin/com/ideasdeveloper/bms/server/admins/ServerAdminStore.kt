@@ -66,7 +66,7 @@ class ServerAdminRow(
  * SQL of server administrators in the central database. Before control V015 the tables do not
  * exist: reads then answer "no administrator" (SQLState 42P01), so owners keep working.
  */
-class ServerAdminStore(private val central: DataSource) {
+class ServerAdminStore(internal val central: DataSource) {
 
     private fun <T> tolerant(missing: T, block: () -> T): T = try {
         block()

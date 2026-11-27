@@ -57,9 +57,11 @@ The challenge is bound to the account, the company and the client address of ste
   into a business owner account that has two-step verification on is refused (`403 SWITCH_REJECTED`) unless the
   account the session belongs to has it on too. The server owner/administrator switcher is unchanged (the
   server person is the one who signed in; their own second step applies to their server sign-in).
-- AI agents (OAuth sign-in page of the Agentes module): the page asks for the code after the password
-  (`ModuleAccessService.signInForAgent`), and the old `verifyCredentials` refuses accounts with two-step
-  verification on.
+- AI agents (OAuth sign-in page of the Agentes module): Core's old `ModuleAccessService.verifyCredentials` now
+  refuses accounts with two-step verification on (they cannot connect agents until the page is updated);
+  `ModuleAccessService.signInForAgent(company, user, password, twoFactorCode, clientAddress, allowAuditAdmin)`
+  returns `Verified` / `SecondFactorRequired` / `InvalidCode` / `TooManyAttempts` / `Rejected`, so the page
+  (modules package) shows a code field after the password and sends both again.
 - Password recovery by email code: see §4.
 - A server administrator required to use it (§5) and not enrolled yet: see §5.
 
@@ -74,7 +76,7 @@ Session as for `/auth/profile`: `Authorization: Bearer <token>`, plus `X-Company
  "requiredByServer": false, "available": true}
 ```
 `requiredByServer`: this is a server administrator and the owner requires it. `available`: false when the server
-cannot store secrets (no `BMS_MASTER_KEY`, or the database lacks migration control V016 / tenant V012).
+cannot store secrets (no `BMS_MASTER_KEY`, or the database lacks migration control V017 / tenant V012).
 
 `POST /auth/two-factor/setup {currentPassword}` → starts (or restarts) enrolment, nothing changes at sign-in yet:
 ```
@@ -131,7 +133,8 @@ owner then gets an email "Se cambio la contrasena del dueno del servidor" and th
 `GET /server/two-factor-policy` → `{"requireForAdmins": false}`; `PUT /server/two-factor-policy
 {requireForAdmins}` → same body. Owner only (`ServerRoutePolicies`), audited
 `server.two_factor_policy_changed`. While required, an administrator without it signs in with the password only
-and gets `twoFactorSetupRequired: true` in the `LoginSuccessResponse` (and in `GET /server/me`); every server
+and gets `twoFactorSetupRequired: true` in the `LoginSuccessResponse` (later: `GET /auth/two-factor` shows
+`requiredByServer: true, enabled: false`); every server
 route except `GET /server/me`, `PUT /auth/password`, `/auth/two-factor*` and logout answers
 `403 TWO_FACTOR_SETUP_REQUIRED` "Activa la verificacion en dos pasos para continuar.", the switcher refuses, and
 company sessions they opened stop working. The app shows the enrolment screen right after sign-in. Disabling is

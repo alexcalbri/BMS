@@ -12,6 +12,8 @@ import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.bms.server.auth.api.accountProfileRoutes
 import com.ideasdeveloper.bms.server.auth.api.passwordResetRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorRoutes
 import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountPasswords
 import com.ideasdeveloper.bms.server.auth.application.AccountService
@@ -101,7 +103,7 @@ fun Application.module() {
                 refillPeriod = 60.seconds,
             )
 
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         register(RateLimitName("admin")) {
             rateLimiter(
@@ -111,7 +113,7 @@ fun Application.module() {
 
             // Siempre por IP: una clave derivada de la cabecera Authorization se evade rotando el
             // token (basta con enviar uno distinto en cada peticion) y haria crecer el mapa sin tope.
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Lecturas del Core (/version, /modules, /notifications): por IP, holgado para el uso normal
         // de la app pero evita inundaciones que abririan una conexion a la base de datos cada una.
@@ -120,7 +122,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Reads of the activity logs (/companies/me/activity*, /server/activity*): each one reads one or
         // every company database, so per client IP and tighter than the other admin routes.
@@ -129,7 +131,7 @@ fun Application.module() {
                 limit = 30,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
         // enough for webhook bursts, but it stops floods that would open a database connection each.
@@ -138,7 +140,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
     }
     DatabaseFactory.init(environment.config)
@@ -176,6 +178,10 @@ fun Application.module() {
     }
     val githubToken = environment.config.propertyOrNull("modules.githubToken")?.getString()?.trim()?.takeIf { it.isNotEmpty() }
     val remoteModuleCatalog = RemoteModuleCatalog(githubToken)
+    // Secrets are sealed with BMS_MASTER_KEY (server.env); without it the server runs but cannot store new ones.
+    val secretBox: SecretBox = MasterKeySecretBox.fromEnvironment().also { box ->
+        if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
+    }
     val loginDatabases = LoginDatabases(
         central = DatabaseFactory.getDataSource(),
         centralDatabase = DatabaseFactory.getDatabase(),
@@ -186,6 +192,8 @@ fun Application.module() {
         tenantJdbcUrlPrefix = environment.config.propertyOrNull("provisioning.tenantJdbcUrlPrefix")?.getString()
             ?: environment.config.property("database.url").getString().substringBeforeLast('/') + "/",
         lifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
+        // TOTP secrets of two-step verification are sealed with the master key (TWO_FACTOR.md).
+        secrets = secretBox,
     )
     val centralSessions = SessionService(
         sessionRepository = ApplicationSessionRepository(DatabaseFactory.getDatabase()),
@@ -193,10 +201,6 @@ fun Application.module() {
         tokenGenerator = SessionTokenGenerator(),
         sessionLifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
     )
-    // Secrets are sealed with BMS_MASTER_KEY (server.env); without it the server runs but cannot store new ones.
-    val secretBox: SecretBox = MasterKeySecretBox.fromEnvironment().also { box ->
-        if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
-    }
     val provisioningConfig = companyProvisioningConfig()
     // Set below; the integrity service notifies the server owners through it (their notifications in the workspace).
     lateinit var moduleAccessRef: ModuleAccessService
@@ -500,6 +504,7 @@ fun Application.module() {
                 switchTo = loginDatabases::switchTo,
                 logout = loginDatabases::logout,
                 includeSession = false,
+                completeTwoFactor = loginDatabases::completeTwoFactor,
             )
             passwordResetRoutes(accountService)
         }
@@ -513,6 +518,8 @@ fun Application.module() {
                 includeLogin = false,
             )
             accountProfileRoutes(accountService)
+            // The user's own two-step verification (TWO_FACTOR.md §3).
+            twoFactorRoutes(com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorAccountService(loginDatabases, passwordAttempts = passwordAttempts))
         }
         rateLimit(RateLimitName("admin")) {
             // Registra rutas de provisioning server_owner y autoservicio business_owner.
@@ -533,6 +540,7 @@ fun Application.module() {
             )
             serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity, activityIntegrity)
             // Storage quotas of the companies (STORAGE_QUOTA.md), owner only.
+            twoFactorPolicyRoutes(serverActors, DatabaseFactory.getDataSource())
             storageRoutes(serverActors, StorageAdmin(DatabaseFactory.getDataSource(), storageQuotas, storageGuard, companyFilesRoot))
             // The company's own activity log (ACTIVITY_LOG.md §3).
             companyActivityRoutes(moduleAccessService, activityModuleName)
