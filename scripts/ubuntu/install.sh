@@ -13,8 +13,31 @@ fi
 set -Eeuo pipefail
 set +x
 umask 077
+# Locale (scripts/ubuntu/tests/locale_test.sh): with the server's LANG (en_US.UTF-8 and others) bracket ranges such as
+# [!-~] or [a-z], sort orders and case conversions do not mean plain ASCII. Everything below runs as in C for ASCII while
+# text stays UTF-8 (plain C when C.UTF-8 is missing); the exact ASCII checks also set LC_ALL=C themselves (bms_ascii_match).
+if [[ $(LC_ALL=C.UTF-8 locale charmap 2>/dev/null) == UTF-8 ]]; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+unset LANGUAGE
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# BEGIN validators (pure functions; scripts/ubuntu/tests/locale_test.sh runs them under several locales)
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+valid_identifier() { bms_ascii_match "$1" '^[a-z][a-z0-9_]{0,62}$' && [[ $1 != pg_* && $1 != postgres ]]; }
+valid_git_ref() { bms_ascii_match "$1" '^[a-zA-Z0-9][a-zA-Z0-9._/-]*$' && [[ $1 != *..* ]]; }
+valid_sha() { bms_ascii_match "$1" '^[0-9a-f]{40}$'; }
+# A public DNS name in lower case: labels of letters, digits and inner hyphens, not only digits and dots, no final dot.
+valid_domain() {
+    local label labels
+    (( ${#1} <= 240 )) && [[ $1 == *.* && $1 != *. ]] || return 1
+    bms_ascii_match "$1" '^[a-z0-9.-]+$' && ! bms_ascii_match "$1" '^[0-9.]+$' || return 1
+    IFS='.' read -r -a labels <<< "$1"
+    for label in "${labels[@]}"; do
+        (( ${#label} <= 63 )) && bms_ascii_match "$label" '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' || return 1
+    done
+}
+# END validators
 trap 'printf "Instalación interrumpida (línea %s). Se conservan los archivos y datos para diagnóstico.\n" "$LINENO" >&2' ERR
 
 # Read from the terminal even when the script was downloaded via a pipe.
@@ -432,7 +455,7 @@ SQL
             [[ $role_delete_confirm == BORRAR_USUARIOS_POSTGRES ]] || die 'Cancelado antes de borrar usuarios PostgreSQL tenant.'
             (sort -u "$tenant_roles_file" | grep -Ev "^(${db_user}|${server_owner})$" || true) | while IFS= read -r tenant_role; do
                 [[ -n $tenant_role ]] || continue
-                if [[ ! $tenant_role =~ ^[a-z][a-z0-9_]{0,62}$ || $tenant_role == pg_* || $tenant_role == postgres ]]; then
+                if ! valid_identifier "$tenant_role"; then
                     printf 'Omitiendo rol tenant con nombre no permitido: %s\n' "$tenant_role"
                     continue
                 fi
@@ -478,17 +501,12 @@ if [[ $PUBLIC_SCHEME == http ]]; then
     [[ $HTTP_CONFIRM == HTTP ]] || die 'Cancelado antes de publicar por HTTP.'
 fi
 ask GIT_REF 'Rama o etiqueta de GitHub (master = estable, develop = pruebas)' master
-[[ $GIT_REF =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ && $GIT_REF != *..* ]] || die 'Referencia Git inválida.'
+valid_git_ref "$GIT_REF" || die 'Referencia Git inválida.'
 verify_branch_files
 ask DOMAIN 'Dominio público que apunta a este Ubuntu (sin https:// ni rutas)' ''
 DOMAIN=${DOMAIN,,}
-[[ ${#DOMAIN} -le 240 && $DOMAIN == *.* && $DOMAIN =~ ^[a-z0-9.-]+$ && ! $DOMAIN =~ ^[0-9.]+$ ]] ||
-    die 'Introduce un dominio válido, por ejemplo api.tuempresa.com.'
-IFS='.' read -r -a DOMAIN_LABELS <<< "$DOMAIN"
 [[ $DOMAIN != *. ]] || die 'El dominio no debe terminar en punto.'
-for label in "${DOMAIN_LABELS[@]}"; do
-    [[ ${#label} -le 63 && $label =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die 'Dominio inválido.'
-done
+valid_domain "$DOMAIN" || die 'Introduce un dominio válido, por ejemplo api.tuempresa.com.'
 
 if [[ $CLEAN_INSTALL == si ]]; then
     printf '\nAVISO: la instalacion limpia borrara archivos, servicio, usuario Linux y configuracion Nginx de BMS.\n'
@@ -527,7 +545,7 @@ if [[ $PUBLIC_SCHEME == https ]]; then
             die 'El sitio habilitado de BMS no corresponde al sitio temporal esperado.'
     fi
     ask ACME_EMAIL 'Correo para la cuenta de Lets Encrypt' ''
-    [[ $ACME_EMAIL =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die 'Correo invalido.'
+    bms_ascii_match "$ACME_EMAIL" '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' || die 'Correo invalido.'
     printf 'Los registros A/AAAA deben apuntar a este servidor; los puertos 80 y 443 deben ser accesibles desde Internet.\n'
     printf 'Se solicitara un certificado para https://%s y se aceptaran los terminos de Lets Encrypt.\n' "$DOMAIN"
 else
@@ -538,7 +556,7 @@ ask DB_USER 'Usuario PostgreSQL nuevo para la aplicación' bms_app
 # DB_NAME, DB_USER and SERVER_OWNER are set by ask (printf -v).
 # shellcheck disable=SC2153
 for identifier in "$DB_NAME" "$DB_USER"; do
-    [[ $identifier =~ ^[a-z][a-z0-9_]{0,62}$ && $identifier != pg_* && $identifier != postgres ]] ||
+    valid_identifier "$identifier" ||
         die 'Usa nombres de hasta 63 caracteres: letras minúsculas, números y guion bajo; no nombres reservados.'
 done
 
@@ -557,7 +575,7 @@ done
 unset DB_PASSWORD_AGAIN
 ask SERVER_OWNER 'Usuario de login del propietario del servidor' server_owner
 # shellcheck disable=SC2153
-[[ $SERVER_OWNER =~ ^[a-z][a-z0-9_]{0,62}$ && $SERVER_OWNER != pg_* && $SERVER_OWNER != postgres ]] ||
+valid_identifier "$SERVER_OWNER" ||
     die 'Identificador invalido: usa letras minusculas, numeros y guion bajo.'
 [[ $SERVER_OWNER != "$DB_USER" ]] || die 'La cuenta del propietario debe ser distinta del usuario interno de la aplicación.'
 # Every change is recorded with the owner's name, and the email receives password reset codes.
@@ -565,7 +583,7 @@ ask SERVER_OWNER_NAME 'Nombre completo del propietario del servidor' ''
 SERVER_OWNER_NAME=$(printf '%s' "$SERVER_OWNER_NAME" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 [[ ${#SERVER_OWNER_NAME} -ge 2 && ${#SERVER_OWNER_NAME} -le 120 ]] || die 'Escribe un nombre de 2 a 120 caracteres.'
 ask SERVER_OWNER_EMAIL 'Correo del propietario del servidor (recuperacion de contrasena)' ''
-[[ ${#SERVER_OWNER_EMAIL} -le 254 && $SERVER_OWNER_EMAIL =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die 'Correo invalido.'
+{ (( ${#SERVER_OWNER_EMAIL} <= 254 )) && bms_ascii_match "$SERVER_OWNER_EMAIL" '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'; } || die 'Correo invalido.'
 if [[ $CLEAN_INSTALL == si ]]; then
     ask CLEAN_TENANT_DATABASES 'Borrar tambien bases tenant bms_* de intentos anteriores? Escribe si o no' no
     [[ $CLEAN_TENANT_DATABASES == si || $CLEAN_TENANT_DATABASES == no ]] || die 'Responde si o no.'
@@ -604,7 +622,7 @@ if [[ $PUBLIC_SCHEME == https ]]; then
         DNS_ANSWER=$(dig @1.1.1.1 +time=5 +tries=2 +short "$DOMAIN" "$record") || die 'No se pudo consultar DNS público.'
         while IFS= read -r address; do
             # Ignore CNAME names; dig also returns their resolved addresses.
-            if [[ $address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $address == *:* ]]; then
+            if bms_ascii_match "$address" '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || [[ $address == *:* ]]; then
                 DOMAIN_IPS+=("$address")
             fi
         done <<< "$DNS_ANSWER"
@@ -692,7 +710,7 @@ JAVA_HOME="/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture)"
 [[ -x $JAVA_HOME/bin/java ]] || die 'No se encontró el JDK 21 instalado.'
 printf 'Descargando %s al espejo de root %s...\n' "$GIT_REF" "$MIRROR_DIR"
 BUILD_SHA=$(install_sync_mirror "$GIT_REF") || die "No se pudo descargar $GIT_REF desde GitHub."
-[[ $BUILD_SHA =~ ^[0-9a-f]{40}$ ]] || die 'No se pudo leer el commit descargado.'
+valid_sha "$BUILD_SHA" || die 'No se pudo leer el commit descargado.'
 readonly TRUSTED_DIR=$MIRROR_DIR
 for required_file in "${REQUIRED_FILES[@]}"; do
     [[ -f $TRUSTED_DIR/$required_file ]] || die "La rama descargada no incluye $required_file. Publica los cambios antes de instalar."

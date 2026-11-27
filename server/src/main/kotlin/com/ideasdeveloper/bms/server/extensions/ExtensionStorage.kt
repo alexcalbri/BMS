@@ -111,6 +111,58 @@ class ExtensionStorage(val secrets: SecretBox) {
         }
     }
 
+    /**
+     * The status the code of [loadedVersion] may act on (EXTENSIONS.md, Updating a package): tenant_extensions.version is
+     * the version whose migrations the company has, so an enabled row at another version counts as incompatible until
+     * the Core brings its schema up to date (ExtensionService.syncSchemas). Null when not installed.
+     */
+    fun activeStatus(tenant: Connection, extensionId: String, loadedVersion: String): String? =
+        row(tenant, extensionId)?.let { effectiveStatus(it, loadedVersion) }
+
+    /** Every row with the schema state of tenant V017 (null columns when that migration is not applied yet). */
+    fun schemaRows(tenant: Connection): List<TenantExtensionSchemaRow> {
+        val withState = hasSchemaState(tenant)
+        val sql = if (withState) {
+            "SELECT extension_id, module_id, version, status, schema_error, status_before_error FROM tenant_extensions ORDER BY extension_id"
+        } else {
+            "SELECT extension_id, module_id, version, status, NULL, NULL FROM tenant_extensions ORDER BY extension_id"
+        }
+        return tenant.prepareStatement(sql).use { query ->
+            query.executeQuery().use { rows ->
+                buildList { while (rows.next()) add(TenantExtensionSchemaRow(rowOf(rows), rows.getString(5), rows.getString(6), withState)) }
+            }
+        }
+    }
+
+    /** Applied migrations (file name without .sql) of every extension, from schema_migrations ("ext:<id>"). */
+    fun appliedMigrations(tenant: Connection): Map<String, Set<String>> =
+        tenant.prepareStatement("SELECT module, version FROM schema_migrations WHERE module LIKE 'ext:%'").use { query ->
+            query.executeQuery().use { rows ->
+                val applied = HashMap<String, MutableSet<String>>()
+                while (rows.next()) applied.getOrPut(rows.getString(1).removePrefix("ext:")) { mutableSetOf() }.add(rows.getString(2))
+                applied
+            }
+        }
+
+    /** Whether tenant V017 (schema_error, status_before_error) is applied in the company. */
+    fun hasSchemaState(tenant: Connection): Boolean =
+        tenant.prepareStatement(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'tenant_extensions' AND column_name IN ('schema_error', 'status_before_error')",
+        ).use { query -> query.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 2 } }
+
     private fun rowOf(rows: java.sql.ResultSet) =
         TenantExtensionRow(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4))
+
+    companion object {
+        fun effectiveStatus(row: TenantExtensionRow, loadedVersion: String): String =
+            if (row.status == ExtensionStatus.Enabled && row.version != loadedVersion) ExtensionStatus.Incompatible else row.status
+    }
 }
+
+/** A tenant_extensions row with its schema state: [schemaError] set means suspended because its migrations failed. */
+data class TenantExtensionSchemaRow(
+    val row: TenantExtensionRow,
+    val schemaError: String?,
+    val statusBeforeError: String?,
+    val hasSchemaState: Boolean,
+)

@@ -10,6 +10,10 @@
 # propio commit o en la etiqueta anotada core-v<version> que apunta a el. Sin ese archivo no se exige
 # firma (como hasta ahora) y el resultado es "unsigned".
 
+# Sourced: the checks here never rely on the caller's locale (bms_ascii_match, LC_ALL=C on sort and the like).
+# [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
+bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+
 readonly REPO_URL=https://github.com/alexcalbri/BMS.git
 readonly MIRROR_STATE_DIR=/var/lib/bms
 readonly MIRROR_DIR=$MIRROR_STATE_DIR/mirror
@@ -34,7 +38,7 @@ mirror_git_in() {
 
 mirror_valid_ref() {
     local ref=${1:-}
-    [[ $ref =~ $MIRROR_REF_PATTERN && $ref != *..* && $ref != *.lock ]]
+    bms_ascii_match "$ref" "$MIRROR_REF_PATTERN" && [[ $ref != *..* && $ref != *.lock ]]
 }
 
 # Clona el espejo si falta y comprueba que su remoto sea el repositorio oficial.
@@ -80,7 +84,7 @@ mirror_checkout_commit_in() {
         printf 'Referencia Git invalida para el espejo.\n' >&2
         return 1
     fi
-    if [[ ! $commit =~ $MIRROR_COMMIT_PATTERN ]]; then
+    if ! bms_ascii_match "$commit" "$MIRROR_COMMIT_PATTERN"; then
         printf 'El commit debe ser un sha completo de 40 caracteres hexadecimales.\n' >&2
         return 1
     fi
@@ -125,7 +129,7 @@ verify_mirror_signature() {
 # etiqueta anotada core-<version> (que debe apuntar a ese commit) tienen una firma SSH valida de esas llaves.
 verify_signature_in() {
     local dir=$1 signers=$2 commit=${3:-} version=${4:-} tag tagged
-    if [[ ! $commit =~ $MIRROR_COMMIT_PATTERN || ! $version =~ $MIRROR_VERSION_PATTERN ]]; then
+    if ! bms_ascii_match "$commit" "$MIRROR_COMMIT_PATTERN" || ! bms_ascii_match "$version" "$MIRROR_VERSION_PATTERN"; then
         printf 'Commit o version invalidos para verificar la firma.\n' >&2
         return 1
     fi
@@ -169,7 +173,7 @@ verify_signature_in() {
 mirror_version_in() {
     local dir=$1 commit=$2
     mirror_git_in "$dir" show "$commit:server/build.gradle.kts" 2>/dev/null |
-        sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' | head -n 1
+        LC_ALL=C sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' | head -n 1
 }
 
 # Only forward (M3 of SECURITY_FIXES.md): a request may install <target> only when the deployed commit <deployed> is
@@ -177,11 +181,11 @@ mirror_version_in() {
 # could bring back an old commit and run its old update.sh as root. Prints the reason and fails when refused.
 mirror_forward_ok_in() {
     local dir=$1 deployed=${2:-} target=${3:-} target_version=${4:-} deployed_version highest
-    if [[ ! $deployed =~ $MIRROR_COMMIT_PATTERN ]]; then
+    if ! bms_ascii_match "$deployed" "$MIRROR_COMMIT_PATTERN"; then
         printf 'No se sabe que commit esta instalado (falta %s/deployed-commit): ejecuta update.sh una vez por SSH.\n' "$MIRROR_STATE_DIR" >&2
         return 1
     fi
-    if [[ ! $target =~ $MIRROR_COMMIT_PATTERN || ! $target_version =~ $MIRROR_VERSION_PATTERN ]]; then
+    if ! bms_ascii_match "$target" "$MIRROR_COMMIT_PATTERN" || ! bms_ascii_match "$target_version" "$MIRROR_VERSION_PATTERN"; then
         printf 'Commit o version invalidos.\n' >&2
         return 1
     fi
@@ -191,11 +195,11 @@ mirror_forward_ok_in() {
         return 1
     fi
     deployed_version=$(mirror_version_in "$dir" "$deployed")
-    if [[ ! $deployed_version =~ $MIRROR_VERSION_PATTERN ]]; then
+    if ! bms_ascii_match "$deployed_version" "$MIRROR_VERSION_PATTERN"; then
         printf 'No se pudo leer la version del commit instalado %s.\n' "$deployed" >&2
         return 1
     fi
-    highest=$(printf '%s\n%s\n' "$deployed_version" "$target_version" | sort -V | tail -n 1)
+    highest=$(printf '%s\n%s\n' "$deployed_version" "$target_version" | LC_ALL=C sort -V | tail -n 1)
     if [[ $target_version == "$deployed_version" || $highest != "$target_version" ]]; then
         printf 'La version %s no es mayor que la instalada (%s).\n' "$target_version" "$deployed_version" >&2
         return 1

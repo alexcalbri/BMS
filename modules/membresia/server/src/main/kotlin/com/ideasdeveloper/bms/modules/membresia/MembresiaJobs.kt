@@ -2,6 +2,7 @@ package com.ideasdeveloper.bms.modules.membresia
 
 import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.modules.JobBackoff
 import com.ideasdeveloper.bms.server.modules.ModuleJob
 import com.ideasdeveloper.bms.server.modules.ModuleJobContext
 import com.ideasdeveloper.bms.server.modules.NotificationTarget
@@ -26,15 +27,9 @@ object MembresiaJobs {
 
     fun runImports(ctx: ModuleJobContext) {
         for (source in MembresiaImportSources.enabled(ctx.tenant, ctx.companyCode)) {
-            try {
+            // A source that keeps failing (e.g. a migration not applied) waits longer each time and is logged once (JobBackoff).
+            JobBackoff.imports.run(log, "membresia/${ctx.companyCode}/${source.sourceId}", "Membresías ${ctx.companyCode}: la fuente de importación ${source.sourceId} falló") {
                 source.runPending(ctx, Duration.ofSeconds(20))
-            } catch (cancellation: kotlin.coroutines.cancellation.CancellationException) {
-                throw cancellation
-            } catch (interrupted: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw interrupted
-            } catch (failure: Exception) {
-                log.error("Membresías {}: la fuente de importación {} falló", ctx.companyCode, source.sourceId, failure)
             }
         }
     }

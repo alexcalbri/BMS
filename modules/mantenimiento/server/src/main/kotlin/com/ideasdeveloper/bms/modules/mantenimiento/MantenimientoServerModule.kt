@@ -59,8 +59,8 @@ object MantenimientoServerModule : ServerModule {
         id = MantenimientoModule.id,
         displayName = MantenimientoModule.displayName,
         description = "Órdenes de trabajo de mantenimiento por propiedad y activo: avería reportada por cualquiera, planes preventivos que generan órdenes, proyectos con aprobación, lista de comprobación, notas, adjuntos, costos, historial por activo y avisos. Se integra con Tareas y Compras si están activos e importa desde Monday.",
-        version = "0.4.0",
-        minCoreVersion = "0.13.0",
+        version = "0.4.1",
+        minCoreVersion = "0.13.1",
         minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(
