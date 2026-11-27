@@ -212,6 +212,10 @@ queda "no disponible" y no rompe nada.
 `MantenimientoRepository` (SQL), `MantenimientoNotify`, `MantenimientoJobs`, `MantenimientoBridge`, `MantenimientoTareasSync`,
 `MantenimientoPurchases`, `MantenimientoImport` (contrato para extensiones), `MantenimientoMcpTools` y `MantenimientoServerModule`.
 
+## Registro de actividad (0.3.0, needs Core 0.12.0)
+
+Cada alta, edicion (con diferencias), nota, responsable, estado, lista de comprobacion, adjunto, propiedad, activo, plan preventivo y ajuste queda en el registro de actividad de la empresa con quien lo hizo (tambien por agente MCP; las ordenes de un plan figuran como tarea programada "Plan preventivo"). Las notas de la orden siguen igual.
+
 ## Languages (0.2.0, needs Core 0.10.0)
 
 Every text the module shows (screens, errors, confirmations, notices, permissions and the module description) is available in
