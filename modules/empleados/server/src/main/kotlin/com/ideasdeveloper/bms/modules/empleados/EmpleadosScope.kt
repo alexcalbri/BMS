@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.empleados
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import java.util.UUID
 
@@ -8,7 +9,15 @@ import java.util.UUID
  * los duenos; [canManage] es empleados.manage o dueno. Las mismas reglas se aplican en SQL en `EmpleadosRepository`
  * (listas, busquedas, desplegables y agentes), de modo que los campos que no se pueden ver ni siquiera se leen.
  */
-data class EmpleadosScope(val userId: UUID?, val myEmployeeId: UUID?, val canShifts: Boolean, val canManage: Boolean, val owner: Boolean = false) {
+data class EmpleadosScope(
+    val userId: UUID?,
+    val myEmployeeId: UUID?,
+    val canShifts: Boolean,
+    val canManage: Boolean,
+    val owner: Boolean = false,
+    // Quien hace el cambio, para el registro de actividad (con "Agente de" cuando llega por un agente).
+    val actor: ActivityActor = ActivityActor.system(),
+) {
     /** Nadie aprueba sus propias ausencias, salvo los duenos (del negocio o del servidor). */
     fun mayDecideAbsenceOf(employeeId: UUID): Boolean = owner || employeeId != myEmployeeId
 
@@ -54,6 +63,7 @@ data class EmpleadosScope(val userId: UUID?, val myEmployeeId: UUID?, val canShi
                 canShifts = manage || permissions.has(EmpleadosModule.Shifts),
                 canManage = manage,
                 owner = owner,
+                actor = permissions.activityActor,
             )
         }
     }

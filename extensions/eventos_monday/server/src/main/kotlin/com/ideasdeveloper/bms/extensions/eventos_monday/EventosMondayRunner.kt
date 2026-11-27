@@ -46,7 +46,7 @@ object EventosMondayRunner {
 
     // Limpieza de trabajos viejos (terminados, fallidos o cancelados, mas de 30 dias): nunca debe impedir la corrida.
     private fun purgeOld(tenant: Connection) {
-        runCatching { EventosMondayJobs.purgeOld(tenant) }
+        runCatching { EventosMondayJobs.purgeOldRecorded(tenant) }
             .onSuccess { if (it > 0) log.info("Importaciones de monday viejas borradas: {}", it) }
             .onFailure { log.warn("No se pudieron borrar las importaciones viejas de monday ({})", it.javaClass.simpleName, it) }
     }
@@ -84,7 +84,12 @@ object EventosMondayRunner {
     private fun fail(tenant: Connection, id: UUID, message: String) {
         runCatching {
             if (!tenant.autoCommit) tenant.rollback()
-            EventosMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+            val job = EventosMondayJobs.find(tenant, id)
+            EventosMondayJobs.inTransaction(tenant) {
+                val changed = EventosMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+                // Una importacion que ya habia aplicado filas y falla deja su fila de totales (las filas por evento ya estan).
+                if (changed && job != null && job.applied > 0) recordTotal(tenant, job, "La importación se detuvo con un error: ${message.take(200)}")
+            }
         }.onFailure { log.error("No se pudo marcar como fallida la importacion de monday {}", id, it) }
     }
 
@@ -183,6 +188,8 @@ object EventosMondayRunner {
     private fun applyBatch(context: EventosImportJobContext, job: MondayJob, deadline: Long): Int {
         val tenant = context.tenant
         val users = EventosRepository.users(tenant)
+        // Quien inicio la importacion es el actor de cada fila del registro de actividad.
+        val activity = EventosImportApply.importActor(tenant, job.createdBy)
         // Quien inicio la importacion queda como autor del historial; si ya no es usuario, "Monday".
         val author = users.firstOrNull { it.id == job.createdBy }?.name?.takeIf { it.isNotBlank() } ?: "Monday"
         var processed = 0
@@ -192,11 +199,14 @@ object EventosMondayRunner {
             // Los permisos se revisan en vivo en cada lote: si quien pidio aplicar ya no puede importar, se cancela.
             if (!EventosMondayJobs.applierAuthorized(tenant, job)) {
                 log.warn("Importacion de monday {} cancelada: quien pidio aplicarla ya no tiene permiso para importar", job.id)
-                EventosMondayJobs.changeStatus(
-                    tenant, job.id, MondayJobStatus.Cancelled,
-                    "Cancelada: quien pidio aplicar la importacion ya no tiene permiso para importar datos.", from = listOf(MondayJobStatus.Applying),
-                )
                 EventosMondayJobs.recount(tenant, job.id)
+                EventosMondayJobs.inTransaction(tenant) {
+                    val cancelled = EventosMondayJobs.changeStatus(
+                        tenant, job.id, MondayJobStatus.Cancelled,
+                        "Cancelada: quien pidio aplicar la importacion ya no tiene permiso para importar datos.", from = listOf(MondayJobStatus.Applying),
+                    )
+                    if (cancelled) EventosMondayJobs.find(tenant, job.id)?.takeIf { it.applied > 0 }?.let { recordTotal(tenant, it, "Se canceló porque quien pidió aplicarla ya no tiene permiso para importar.") }
+                }
                 return processed
             }
             val batch = EventosMondayJobs.pending(tenant, job.id, BatchSize)
@@ -209,7 +219,7 @@ object EventosMondayRunner {
                 var eventId: UUID? = null
                 try {
                     val event = MondayRowDto.decode(row.payload)
-                    when (val result = EventosImportApply.apply(context.access, tenant, event, users, author, context.today)) {
+                    when (val result = EventosImportApply.apply(context.access, tenant, event, users, author, context.today, activity)) {
                         is ImportOutcome.Created -> { outcome = "created"; eventId = result.eventId }
                         is ImportOutcome.Updated -> { outcome = "updated"; eventId = result.eventId }
                         is ImportOutcome.Skipped -> { outcome = "skipped"; message = result.reason }
@@ -236,6 +246,14 @@ object EventosMondayRunner {
     private fun finish(tenant: Connection, jobId: UUID) {
         val job = EventosMondayJobs.find(tenant, jobId) ?: return
         val message = "Importacion terminada: ${job.created} creados, ${job.updated} actualizados, ${job.skipped} omitidos y ${job.failed} con error."
-        EventosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
+        // La fila de totales (quien, origen y cifras) va en la misma transaccion que cierra el trabajo.
+        EventosMondayJobs.inTransaction(tenant) {
+            if (EventosMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))) recordTotal(tenant, job, "")
+        }
+    }
+
+    private fun recordTotal(tenant: Connection, job: MondayJob, outcome: String) {
+        val activity = EventosImportApply.importActor(tenant, job.createdBy)
+        EventosImportApply.recordImportTotal(tenant, activity, job.id, "Monday", job.boardName, job.created, job.updated, job.skipped, job.failed, outcome)
     }
 }

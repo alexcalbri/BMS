@@ -102,7 +102,7 @@ object MembresiaMondayMcpTools {
         MembresiaMondayFlow.mappingProblem(mapping, board.columns)?.let {
             throw McpToolException("$it Pide al usuario que haga el mapeo en la pantalla Importar de la app.")
         }
-        val id = MembresiaMondayFlow.startRead(call.access, call.tenant, boardId, mapping, "agente: ${call.agentName}".take(200))
+        val id = MembresiaMondayFlow.startRead(call.access, call.tenant, boardId, mapping, "agente: ${call.agentName}".take(200), call.permissions)
         return buildJsonObject {
             put("job_id", id.toString())
             putJsonArray("mapped_fields") { mapping.columns.keys.forEach { add(JsonPrimitive(it)) } }
@@ -145,7 +145,7 @@ object MembresiaMondayMcpTools {
         if (job.status == MondayJobStatus.Preview && members != null && call.int("confirm_members", -1, -1..MaxMembers) != members) {
             throw McpToolException("'confirm_members' debe ser la cantidad de miembros del resumen ($members), dictada por el usuario.")
         }
-        if (!MembresiaMondayJobs.requestApply(call.tenant, id)) {
+        if (!MembresiaMondayFlow.requestApply(call.tenant, call.permissions, job)) {
             throw McpToolException("La importacion esta en estado '${job.status}'; solo se aplica una que este en revision (preview).")
         }
         return buildJsonObject {

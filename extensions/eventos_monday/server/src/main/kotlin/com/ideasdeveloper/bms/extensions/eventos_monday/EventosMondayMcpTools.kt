@@ -145,7 +145,7 @@ object EventosMondayMcpTools {
         val id: UUID = call.requiredUuid("job_id")
         val job = EventosMondayJobs.find(call.tenant, id) ?: throw McpToolException("No se encontro la importacion.")
         EventosMondayFlow.requireJobControl(call.permissions, job)
-        if (!EventosMondayJobs.requestApply(call.tenant, id, EventosMondayFlow.actorOf(call.permissions), call.permissions.serverOwner)) {
+        if (!EventosMondayFlow.requestApply(call.tenant, call.permissions, job)) {
             throw McpToolException("La importacion esta en estado '${job.status}'; solo se aplica una que este en revision (preview).")
         }
         return buildJsonObject {

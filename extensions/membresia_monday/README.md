@@ -1,7 +1,7 @@
-# Extension `membresia_monday` (1.1.0)
+# Extension `membresia_monday` (1.2.0)
 
 One-time migration of a monday.com members board (for example Esc "Members & Memberships") into the
-**Membresia** module (0.2.0 or newer). Install it, import, check the result, then uninstall it: members,
+**Membresia** module (0.2.0 or newer; 0.5.0 for the activity log). Install it, import, check the result, then uninstall it: members,
 memberships, visits, plans and Clientes fields stay; the token and the import history go away.
 
 ## Use
@@ -41,6 +41,11 @@ memberships, visits, plans and Clientes fields stay; the token and the import hi
 
 The Core does not schedule `ServerExtension.jobs` yet, so the Membresia module job `membresia-import` (every minute)
 calls `runPending` of every enabled import source with a 20 second budget.
+
+## 1.2.0 (activity log, needs Core 0.12.0 and Membresia 0.5.0)
+
+- The rows of an import in the company activity log carry who started it ("Importacion (Ana Ruiz)"; "Usuario desconocido" when that user no longer exists) and, when it ends, one totals row with the source (Monday and the board) and the numbers. The starter is kept in `created_by_user` (migration `V002__job_starter.sql`); imports started before 1.2.0 have no user and are attributed to an anonymous import.
+- Also recorded: the monday token (only that it was saved, changed or deleted, never its value), starting, confirming and cancelling an import, and the old imports the cleanup deletes (the row is written before the delete).
 
 ## 1.1.0
 

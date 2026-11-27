@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import java.sql.Connection
@@ -115,6 +116,35 @@ object EventosImportApply {
             statement.executeUpdate()
         }
 
+    // ---- activity log ----
+
+    /**
+     * The actor of an import: [startedBy] (the company user who started it) with the current name read from application_users
+     * on the same connection; "Usuario desconocido" when the row is gone; an anonymous import without a user.
+     */
+    fun importActor(tenant: Connection, startedBy: UUID?): ActivityActor {
+        if (startedBy == null) return ActivityActor.import(null)
+        val name = tenant.rows("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?", listOf(startedBy)) { it.getString(1) }.firstOrNull()
+        return ActivityActor.import(ActivityActor.user(startedBy, name?.takeIf { it.isNotBlank() } ?: "Usuario desconocido"))
+    }
+
+    /**
+     * The single row of a finished import (who started it, the source and the totals); the caller writes it in the same
+     * transaction that closes the job. [outcome] says so when it did not end normally.
+     */
+    fun recordImportTotal(
+        tenant: Connection,
+        activity: ActivityActor,
+        jobId: UUID?,
+        source: String,
+        board: String,
+        created: Int,
+        updated: Int,
+        skipped: Int,
+        failed: Int,
+        outcome: String = "",
+    ) = EventosActivity.importTotal(tenant, activity, jobId, source, board, created, updated, skipped, failed, outcome)
+
     private class Applied(val outcome: ImportOutcome, val eventId: UUID, val customerId: UUID, val createdCustomer: Boolean)
 
     /**
@@ -128,13 +158,15 @@ object EventosImportApply {
         users: List<EventosUser>,
         author: String,
         @Suppress("UNUSED_PARAMETER") today: LocalDate,
+        // Quien importa (ActivityActor.import de quien la empezo): actor de cada fila del registro.
+        activity: ActivityActor = ActivityActor.import(null),
     ): ImportOutcome {
         val key = row.key.trim()
         if (key.isEmpty()) return ImportOutcome.Skipped("sin identificador")
         if (key.length > MaxKey) return ImportOutcome.Skipped("identificador demasiado largo: $key")
         if (row.startsAt == null) return ImportOutcome.Skipped("sin fecha")
         if (row.title.isBlank() && row.clientName.isBlank()) return ImportOutcome.Skipped("sin título ni cliente")
-        val applied = EventosRepository.transaction(tenant) { applyRow(tenant, key, row, users, author) }
+        val applied = EventosRepository.transaction(tenant) { applyRow(tenant, key, row, users, author, activity) }
         if (applied.createdCustomer) {
             runCatching { access.customerChanged(tenant, applied.customerId) }
                 .onFailure { log.warn("No se pudo avisar a Clientes de un cliente importado ({}).", it.javaClass.simpleName) }
@@ -142,7 +174,7 @@ object EventosImportApply {
         return applied.outcome
     }
 
-    private fun resolveCustomer(tenant: Connection, row: ImportedEvent, title: String): Pair<UUID, Boolean> {
+    private fun resolveCustomer(tenant: Connection, row: ImportedEvent, title: String, activity: ActivityActor): Pair<UUID, Boolean> {
         val email = cleanEmail(row.clientEmail)
         if (email.isNotEmpty()) {
             val existing = tenant.rows(
@@ -153,14 +185,16 @@ object EventosImportApply {
         }
         val id = UUID.randomUUID()
         val name = clip(row.clientName.trim().ifEmpty { title }, MaxCustomerName)
+        val phone = clip(row.clientPhone.trim(), MaxPhone)
         tenant.exec(
             "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type) VALUES (?, ?, ?, ?, 'active', 'eventos')",
-            listOf(id, name, email, clip(row.clientPhone.trim(), MaxPhone)),
+            listOf(id, name, email, phone),
         )
+        EventosActivity.customerCreated(tenant, activity, id, name, email, phone)
         return id to true
     }
 
-    private fun applyRow(tenant: Connection, key: String, row: ImportedEvent, users: List<EventosUser>, author: String): Applied {
+    private fun applyRow(tenant: Connection, key: String, row: ImportedEvent, users: List<EventosUser>, author: String, activity: ActivityActor): Applied {
         val zone = ZoneId.systemDefault()
         val startsAt = (row.startsAt ?: throw EventosValidationException("El evento no tiene fecha.")).atZone(zone).toInstant()
         val endsAt = row.endsAt?.atZone(zone)?.toInstant()?.takeIf { !it.isBefore(startsAt) }
@@ -171,7 +205,7 @@ object EventosImportApply {
             it.getObject("id", UUID::class.java) to it.getObject("client_customer_id", UUID::class.java)
         }.firstOrNull()
         var createdCustomer = false
-        val customerId = existing?.second ?: resolveCustomer(tenant, row, title).let { (id, created) ->
+        val customerId = existing?.second ?: resolveCustomer(tenant, row, title, activity).let { (id, created) ->
             createdCustomer = created
             id
         }
@@ -197,13 +231,20 @@ object EventosImportApply {
 
         val eventId: UUID
         val created: Boolean
+        val responsibleName = responsible?.name
+        val clientName = row.clientName.trim().ifEmpty { null }
         if (existing == null) {
             eventId = UUID.randomUUID()
             EventosRepository.insertEvent(tenant, eventId, input, status, settings.currency, author.ifBlank { ImportAuthor }.take(160), importKey = key)
+            EventosActivity.eventCreated(tenant, activity, eventId, input, responsibleName, clientName, "Importa el evento ${input.title} desde Monday.")
             if (status == EventStatus.Cancelled) EventosRepository.setStatus(tenant, eventId, status, cancelReason)
+            if (status == EventStatus.Cancelled) EventosActivity.eventStatusChanged(tenant, activity, eventId, input.title, EventStatus.Draft, status, cancelReason)
             created = true
         } else {
             eventId = existing.first
+            // Antes de cambiarlo: el evento tal como esta, para escribir solo lo que la importacion cambia.
+            val before = EventosRepository.getEvent(tenant, eventId)?.event
+            val beforeResponsible = before?.responsibleUserId?.let { id -> users.firstOrNull { it.id == id }?.name }
             // Only the fields Monday owns: series, host and notes stay as the team left them; the responsible changes only when matched.
             tenant.exec(
                 """
@@ -221,6 +262,18 @@ object EventosImportApply {
             val currentStatus = tenant.rows("SELECT status FROM eventos_events WHERE id = ?", listOf(eventId)) { it.getString("status") }.firstOrNull()
             if (currentStatus == EventStatus.Draft.code || status == EventStatus.Cancelled) {
                 EventosRepository.setStatus(tenant, eventId, status, cancelReason)
+                val from = EventStatus.fromCode(currentStatus) ?: EventStatus.Draft
+                if (from != status) EventosActivity.eventStatusChanged(tenant, activity, eventId, input.title, from, status, cancelReason)
+            }
+            if (before != null) {
+                // Lo que la importacion escribe: campos de Monday; el estado ya tiene su fila.
+                val after = before.copy(
+                    title = input.title, description = input.description, category = input.category, space = input.space,
+                    startsAt = startsAt, endsAt = endsAt, clientCustomerId = customerId, agreedAmount = input.agreedAmount,
+                    guests = input.guests, responsibleUserId = responsible?.id ?: before.responsibleUserId,
+                    clientName = if (customerId == before.clientCustomerId) before.clientName else clientName ?: before.clientName,
+                )
+                EventosActivity.eventChanged(tenant, activity, before, beforeResponsible, after, responsible?.name ?: beforeResponsible, "Actualiza el evento ${input.title} desde Monday.")
             }
             created = false
         }
@@ -229,14 +282,18 @@ object EventosImportApply {
             val paymentKey = payment.key.trim()
             val amount = EventosRules.money(payment.amount)
             if (paymentKey.isEmpty() || paymentKey.length > MaxKey || amount.signum() <= 0 || !EventosRules.validMoney(amount)) return@forEach
-            tenant.exec(
+            val paymentId = UUID.randomUUID()
+            val paymentNote = clip(payment.note.trim(), EventosRules.MaxAbonoNote)
+            val inserted = tenant.exec(
                 """
                 INSERT INTO eventos_payments (id, event_id, paid_on, amount, method, note, import_key, recorded_by)
                 VALUES (?, ?, ?, ?, '', ?, ?, ?)
                 ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING
                 """.trimIndent(),
-                listOf(UUID.randomUUID(), eventId, payment.paidOn, amount, clip(payment.note.trim(), EventosRules.MaxAbonoNote), paymentKey, clip(author.ifBlank { ImportAuthor }, 160)),
+                listOf(paymentId, eventId, payment.paidOn, amount, paymentNote, paymentKey, clip(author.ifBlank { ImportAuthor }, 160)),
             )
+            // Un abono ya importado (la clave existe) no se vuelve a escribir: solo el nuevo queda en el registro.
+            if (inserted == 1) EventosActivity.paymentCreated(tenant, activity, paymentId, input.title, payment.paidOn, amount, "", paymentNote)
         }
 
         return Applied(if (created) ImportOutcome.Created(eventId) else ImportOutcome.Updated(eventId), eventId, customerId, createdCustomer)

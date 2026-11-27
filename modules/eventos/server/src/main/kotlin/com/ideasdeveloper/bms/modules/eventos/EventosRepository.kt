@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.eventos
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import java.math.BigDecimal
@@ -335,20 +336,37 @@ object EventosRepository {
         )
     }
 
-    /** Job body: published or full events that ended more than 6 hours ago become Done (batch of [limit]). Idempotent. */
-    fun closeFinished(tenant: Connection, limit: Int = 500): Int = tenant.update(
-        """
-        UPDATE eventos_events SET status = 'realizado', updated_at = now()
-        WHERE id IN (
-            SELECT id FROM eventos_events
+    /**
+     * Job body: published or full events that ended more than 6 hours ago become Done (batch of [limit]). Idempotent.
+     * Each event closed gets an activity row for [actor] (the scheduled job), in the same transaction as its change.
+     */
+    fun closeFinished(tenant: Connection, limit: Int = 500, actor: ActivityActor = ActivityActor.job("Cierre automatico de eventos")): Int = transaction(tenant) {
+        val due = tenant.prepareStatement(
+            """
+            SELECT id, title, status FROM eventos_events
             WHERE status IN ('publicado', 'lleno') AND COALESCE(ends_at, starts_at) < now() - interval '6 hours'
             ORDER BY starts_at, id
             LIMIT ?
             FOR UPDATE SKIP LOCKED
-        ) AND status IN ('publicado', 'lleno')
-        """.trimIndent(),
-        listOf(limit.coerceIn(1, MaxListed)),
-    )
+            """.trimIndent(),
+        ).use { statement ->
+            statement.setInt(1, limit.coerceIn(1, MaxListed))
+            statement.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) add(Triple(rows.getObject("id", UUID::class.java), rows.getString("title"), EventStatus.fromCode(rows.getString("status")) ?: EventStatus.Published))
+                }
+            }
+        }
+        var closed = 0
+        for ((id, title, from) in due) {
+            val updated = tenant.update("UPDATE eventos_events SET status = 'realizado', updated_at = now() WHERE id = ? AND status IN ('publicado', 'lleno')", listOf(id))
+            if (updated == 1) {
+                EventosActivity.eventStatusChanged(tenant, actor, id, title, from, EventStatus.Done, "", automatic = true)
+                closed++
+            }
+        }
+        closed
+    }
 
     // ---- registrations ----
 

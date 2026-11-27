@@ -451,6 +451,33 @@ object EmpleadosMondayJobs {
         }
 
     /**
+     * Lo mismo que [purgeOld] pero dejando en el registro de actividad cada importacion que borra (la fila se escribe antes del
+     * borrado, en la misma transaccion). Es lo que usa el trabajo periodico: [purgeOld] solo borra y no registra nada.
+     */
+    fun purgeOldRecorded(tenant: Connection): Int = inTransaction(tenant) {
+        // Cada importacion que se borra queda antes en el registro de actividad, en la misma transaccion.
+        val due = tenant.prepareStatement(
+            "SELECT id, board_name, status FROM $JobsTable WHERE status IN ('done', 'failed', 'cancelled') " +
+                "AND updated_at < CURRENT_TIMESTAMP - make_interval(days => ?) ORDER BY updated_at LIMIT ? FOR UPDATE SKIP LOCKED",
+        ).use { query ->
+            query.setInt(1, RetentionDays)
+            query.setInt(2, PurgeLimit)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(Triple(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3))) } }
+        }
+        due.forEach { (id, board, status) -> EmpleadosMondayActivity.purged(tenant, id, board, EmpleadosMondayActivity.statusName(status), RetentionDays) }
+        if (due.isEmpty()) return@inTransaction 0
+        tenant.prepareStatement("DELETE FROM $JobsTable WHERE id = ANY (?)").use { delete ->
+            val ids = tenant.createArrayOf("uuid", due.map { it.first }.toTypedArray())
+            try {
+                delete.setArray(1, ids)
+                delete.executeUpdate()
+            } finally {
+                ids.free()
+            }
+        }
+    }
+
+    /**
      * Si ya hay una transaccion abierta ([Connection.getAutoCommit] en false) el bloque corre dentro de ella, sin commit ni
      * rollback propios; si no, abre una, confirma al terminar y deshace si falla (restaurando siempre el modo anterior).
      */

@@ -50,6 +50,8 @@ data class MondayJob(
     val failed: Int,
     val message: String,
     val createdBy: String,
+    /** Usuario de la empresa que empezo la importacion (null si no se conoce: importaciones anteriores o dueno del servidor). */
+    val createdByUser: UUID?,
     val createdAt: Instant,
     val updatedAt: Instant = Instant.EPOCH,
 ) {
@@ -83,19 +85,20 @@ object MembresiaMondayJobs {
     private val BusyMessage = msg("Ya hay una importacion en curso; espera a que termine o cancelala.")
 
     /** Pone en cola la lectura de un tablero. Solo hay una importacion activa a la vez (indice unico en la base). */
-    fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, author: String): UUID {
+    fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, author: String, createdByUser: UUID? = null): UUID {
         if (!MembresiaMondayClient.isBoardId(boardId)) throw MembresiaMondayException(tr("El id del tablero debe ser un numero."))
         if (recent(tenant, 20).any { it.active }) throw MembresiaMondayException(tr(BusyMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
-                "INSERT INTO $Jobs (id, board_id, board_name, status, mapping, created_by) VALUES (?, ?, ?, 'reading', CAST(? AS jsonb), ?)",
+                "INSERT INTO $Jobs (id, board_id, board_name, status, mapping, created_by, created_by_user) VALUES (?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?)",
             ).use { insert ->
                 insert.setObject(1, id)
                 insert.setString(2, boardId)
                 insert.setString(3, boardName.take(200))
                 insert.setString(4, json.encodeToString(MondayMapping.serializer(), mapping))
                 insert.setString(5, author.take(200))
+                insert.setObject(6, createdByUser)
                 insert.executeUpdate()
             }
         } catch (failure: SQLException) {
@@ -148,7 +151,7 @@ object MembresiaMondayJobs {
 
     private const val JobColumns =
         "id, board_id, board_name, status, mapping::text, cursor, page_size, pages_read, items_read, attempts, restarts, summary::text, " +
-            "total, applied, created, updated, skipped, failed, message, created_by, created_at, updated_at"
+            "total, applied, created, updated, skipped, failed, message, created_by, created_at, updated_at, created_by_user"
 
     private fun toJob(rows: ResultSet) = MondayJob(
         id = rows.getObject(1, UUID::class.java),
@@ -173,6 +176,7 @@ object MembresiaMondayJobs {
         createdBy = rows.getString(20).orEmpty(),
         createdAt = rows.getTimestamp(21).toInstant(),
         updatedAt = rows.getTimestamp(22).toInstant(),
+        createdByUser = rows.getObject(23, UUID::class.java),
     )
 
     fun find(tenant: Connection, id: UUID): MondayJob? =
@@ -230,6 +234,33 @@ object MembresiaMondayJobs {
             delete.executeUpdate()
         }
 
+    /**
+     * Lo mismo que [purgeOld] pero dejando en el registro de actividad cada importacion que borra (la fila se escribe antes del
+     * borrado, en la misma transaccion). Es lo que usa el trabajo periodico: [purgeOld] solo borra y no registra nada.
+     */
+    fun purgeOldRecorded(tenant: Connection): Int = inTransaction(tenant) {
+        // Cada importacion que se borra queda antes en el registro de actividad, en la misma transaccion.
+        val due = tenant.prepareStatement(
+            "SELECT id, board_name, status FROM $Jobs WHERE status IN ('done', 'failed', 'cancelled') " +
+                "AND updated_at < CURRENT_TIMESTAMP - make_interval(days => ?) ORDER BY updated_at LIMIT ? FOR UPDATE SKIP LOCKED",
+        ).use { query ->
+            query.setInt(1, RetentionDays)
+            query.setInt(2, PurgeLimit)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(Triple(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3))) } }
+        }
+        due.forEach { (id, board, status) -> MembresiaMondayActivity.purged(tenant, id, board, MembresiaMondayActivity.statusName(status), RetentionDays) }
+        if (due.isEmpty()) return@inTransaction 0
+        tenant.prepareStatement("DELETE FROM $Jobs WHERE id = ANY (?)").use { delete ->
+            val ids = tenant.createArrayOf("uuid", due.map { it.first }.toTypedArray())
+            try {
+                delete.setArray(1, ids)
+                delete.executeUpdate()
+            } finally {
+                ids.free()
+            }
+        }
+    }
+
     // ---- El trabajo periodico ----
 
     /**
@@ -240,7 +271,7 @@ object MembresiaMondayJobs {
         val tenant = context.tenant
         if (!MembresiaMondaySettings.extensionEnabled(tenant)) return
         val deadline = System.nanoTime() + budget.toNanos()
-        runCatching { purgeOld(tenant) }
+        runCatching { purgeOldRecorded(tenant) }
             .onSuccess { if (it > 0) log.info("Importaciones de monday viejas borradas: {}", it) }
             .onFailure { log.warn("No se pudieron borrar las importaciones viejas de monday ({})", it.javaClass.simpleName, it) }
         // Tras un fallo pasajero se espera 2, 4, 8... minutos (tope 30) para no gastar los intentos en un limite de 1-2 minutos.
@@ -270,7 +301,12 @@ object MembresiaMondayJobs {
     private fun fail(tenant: Connection, id: UUID, message: String) {
         runCatching {
             if (!tenant.autoCommit) tenant.rollback()
-            changeStatus(tenant, id, MondayJobStatus.Failed, message.take(500), from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+            val job = find(tenant, id)
+            inTransaction(tenant) {
+                val changed = changeStatus(tenant, id, MondayJobStatus.Failed, message.take(500), from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+                // Una importacion que ya habia aplicado filas y falla deja su fila de totales (las filas por registro ya estan).
+                if (changed && job != null && job.applied > 0) recordTotal(tenant, job, "La importación se detuvo con un error: ${message.take(200)}")
+            }
         }.onFailure { log.error("No se pudo marcar como fallida la importacion de monday {}", id, it) }
     }
 
@@ -437,8 +473,10 @@ object MembresiaMondayJobs {
         val tenant = context.tenant
         val summary = job.summary ?: throw MembresiaMondayException(tr("La importacion no tiene resumen; vuelve a leer el tablero."))
         // Los planes y campos de Clientes que faltan se crean con lo que dijo el resumen (idempotente: lo que ya existe se reutiliza).
-        val plans = MembresiaImportApply.ensurePlans(tenant, summary.newPlans.map { it.toProposal() })
-        val fields = MembresiaImportApply.ensureCustomerFields(tenant, summary.customerFields)
+        // Quien empezo la importacion: es el actor de cada fila del registro de actividad.
+        val activity = MembresiaImportApply.importActor(tenant, job.createdByUser)
+        val plans = MembresiaImportApply.ensurePlans(tenant, summary.newPlans.map { it.toProposal() }, activity)
+        val fields = MembresiaImportApply.ensureCustomerFields(tenant, summary.customerFields, activity)
         if (fields.skipped.isNotEmpty() && job.message.isBlank()) {
             val note = fields.skipped.joinToString(" ") { "Campo de Clientes $it no compatible: no se importa." }.take(500)
             tenant.prepareStatement("UPDATE $Jobs SET message = ? WHERE id = ? AND status = 'applying'").use { update ->
@@ -461,7 +499,7 @@ object MembresiaMondayJobs {
                     if (statusOf(tenant, job.id) != MondayJobStatus.Applying) return
                     val (outcome, message) = try {
                         val member = MondayRowDto.decode(payload)
-                        when (val result = MembresiaImportApply.apply(context.access, tenant, member, plans, fields.keys, job.createdBy, today)) {
+                        when (val result = MembresiaImportApply.apply(context.access, tenant, member, plans, fields.keys, job.createdBy, today, activity)) {
                             is ImportOutcome.Created -> "created" to ""
                             is ImportOutcome.Updated -> "updated" to ""
                             is ImportOutcome.Skipped -> "skipped" to result.reason
@@ -509,10 +547,20 @@ object MembresiaMondayJobs {
         val job = find(tenant, jobId) ?: return
         val message = "Importacion terminada: ${job.created} creadas, ${job.updated} actualizadas, ${job.skipped} omitidas y ${job.failed} con error." +
             job.message.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
-        changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
+        // La fila de totales (quien, origen y cifras) va en la misma transaccion que cierra el trabajo.
+        inTransaction(tenant) {
+            if (changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))) recordTotal(tenant, job, "")
+        }
     }
 
-    private fun <T> inTransaction(tenant: Connection, block: () -> T): T {
+    private fun recordTotal(tenant: Connection, job: MondayJob, outcome: String) {
+        val activity = MembresiaImportApply.importActor(tenant, job.createdByUser)
+        MembresiaImportApply.recordImportTotal(tenant, activity, job.id, "Monday", job.boardName, job.created, job.updated, job.skipped, job.failed, outcome)
+    }
+
+    /** Si ya hay una transaccion abierta el bloque corre dentro de ella; si no, abre una, confirma al terminar y deshace si falla. */
+    fun <T> inTransaction(tenant: Connection, block: () -> T): T {
+        if (!tenant.autoCommit) return block()
         val previous = tenant.autoCommit
         tenant.autoCommit = false
         try {

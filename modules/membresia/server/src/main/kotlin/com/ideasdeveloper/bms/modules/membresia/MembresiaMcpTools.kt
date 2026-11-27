@@ -229,7 +229,7 @@ object MembresiaMcpTools {
         val days = expiringDays(call)
         val author = MembresiaService.authorName(call.access, call.tenant, call.permissions)
         if (guestName.isNotEmpty()) {
-            return when (val outcome = MembresiaService.guestPass(call.tenant, customerId, guestName, author, today)) {
+            return when (val outcome = MembresiaService.guestPass(call.tenant, customerId, guestName, author, call.activityActor, today)) {
                 GuestPassOutcome.NoMember -> throw McpToolException("Cliente no encontrado.")
                 GuestPassOutcome.NoMembership -> throw McpToolException("El cliente no tiene membresia.")
                 is GuestPassOutcome.Done -> when (val result = outcome.result) {
@@ -246,7 +246,7 @@ object MembresiaMcpTools {
                 }
             }
         }
-        return when (val outcome = MembresiaService.checkIn(call.tenant, customerId, override, author, today)) {
+        return when (val outcome = MembresiaService.checkIn(call.tenant, customerId, override, author, call.activityActor, today)) {
             CheckInOutcome.NoMember -> throw McpToolException("Cliente no encontrado.")
             CheckInOutcome.NoMembership -> throw McpToolException("El cliente no tiene membresia.")
             is CheckInOutcome.Done -> when (val result = outcome.result) {
@@ -289,7 +289,7 @@ object MembresiaMcpTools {
             notes = call.string("notes", MembresiaRules.MaxNotesLength),
         )
         val author = MembresiaService.authorName(call.access, call.tenant, call.permissions)
-        val membership = MembresiaService.create(call.access, call.tenant, input, null, author, today)
+        val membership = MembresiaService.create(call.access, call.tenant, input, null, author, call.activityActor, today)
         return buildJsonObject {
             put("result", "created")
             put("membership", membershipJson(membership, today, days, withAmount = true))
@@ -301,7 +301,7 @@ object MembresiaMcpTools {
         val days = expiringDays(call)
         val input = RenewalInput(call.uuid("plan_id"), call.date("starts_on"), call.decimal("amount"))
         val author = MembresiaService.authorName(call.access, call.tenant, call.permissions)
-        val membership = MembresiaService.renew(call.tenant, call.requiredUuid("membership_id"), input, author, today)
+        val membership = MembresiaService.renew(call.tenant, call.requiredUuid("membership_id"), input, author, call.activityActor, today)
             ?: throw McpToolException("Membresía no encontrada.")
         return buildJsonObject {
             put("result", "renewed")

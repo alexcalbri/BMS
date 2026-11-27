@@ -1,6 +1,6 @@
 # Membresia Module
 
-Status: in development (marked with `.development`; not released to `master`). Version 0.3.1.
+Status: in development (marked with `.development`; not released to `master`). Version 0.5.0 (needs Core 0.12.0).
 
 Front desk, plans, memberships, visits and guest passes for a coworking space or club. It replaces the
 "Esc Members & Memberships (PMS)" board in Monday: the team registers members, sells and renews memberships,
@@ -189,10 +189,21 @@ Tools are named `membresia_<name>`; each respects the user's live permissions an
 
 ## Changelog
 
+- 0.5.0: activity log of the company (needs Core 0.12.0): every write path records who/what/old -> new in the same transaction; imports carry who started them and write one total row.
 - 0.3.1: the import job is marked as long running; performance. The daily WiFi pass sync only writes passes that changed (`IS DISTINCT FROM`), registers the source once and upserts in JDBC batches; expiry notices read recipients once; the reception home counts only active and expiring memberships and narrows its WHERE to current ones (uses `ends_on` index); `V003` adds a partial index for revenue.
 - 0.3.0: the customer history is a `CustomerTimeline` (permission `membresia.view`, visits aggregated per month, real dates for imports); no more writes in `customer_history`.
 - 0.2.0: import of memberships through extensions (`MembresiaImportSource`, idempotent by `import_key`, V002, permission `membresia.import`, extension `membresia_monday`); WiFi code on the member screen; agent tools list is dynamic so extensions can add tools.
 - 0.1.0: first version: plans, memberships, visits and guest passes, reception, expiry warnings to the team, customer history, revenue, Hotspot passes, `membresia_active_members` and agent tools.
+
+## Activity log (0.5.0, needs Core 0.12.0)
+
+Cada cambio de Membresías queda en el registro de actividad de la empresa, en la misma transacción que el cambio y con quien lo hizo
+("Agente de …" si llegó por un agente): planes (alta, edición, activar y desactivar), membresías (venta, renovación, edición con
+antes -> después, cancelación y los cambios de estado de la tarea diaria), visitas y pases de invitado, ajustes, clientes creados
+desde el módulo y las importaciones (una fila por importación con quien la empezó, el origen y los totales, más las filas por
+registro atribuidas a la importación y a esa persona; las visitas importadas van en una fila por membresía). Los avisos de
+vencimiento y el paso programada -> activa -> vencida figuran como "Tarea programada". No hay borrado de planes ni de visitas en
+el módulo, así que no hay filas de baja. Los pases del hotspot son un dato derivado y no se registran aquí.
 
 ## Languages (0.4.0, needs Core 0.10.0)
 
