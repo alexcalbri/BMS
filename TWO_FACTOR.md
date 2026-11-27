@@ -263,3 +263,61 @@ tengo acceso a mi autenticador ni a mis codigos" → explanation (7 days, warnin
 verification is turned off when finished) → "Iniciar recuperacion por correo" (calls 7.1, shows its `message`),
 and a field "Tengo el codigo del correo" (calls 7.4 with a fresh challenge: the app keeps the password from step 1
 only in memory, or asks for it again).
+
+## 8. Turning it off for someone else (lost authenticator and recovery codes)
+
+When a person lost their authenticator and their recovery codes, someone responsible for the account can turn
+two-step verification off for them; the person then signs in with the password only and should enrol again.
+
+### 8.1 Who may do it
+
+| Actor | Targets | Route |
+|---|---|---|
+| Business owner of a company (own session, or one opened by the business-owner switcher) | any other user of THAT company (not themself; staff never) | `POST /companies/me/users/{userId}/two-factor/disable` |
+| Server owner | any user of any company, business owners included | `POST /server/companies/{code}/users/{userId}/two-factor/disable` |
+| Server administrator with `server.users.two_factor_reset` (new, **high risk**, company scope applies) | users of companies in scope; a business owner only when every company of its owner group is in scope | same |
+| Server owner only | a server administrator | `POST /server/admins/{id}/two-factor/disable` |
+
+Nobody can reset the server owner's two-step verification this way (the owner has recovery codes and the delayed
+email recovery, §7). An administrator can never reset an administrator, themself included (the admins route is
+owner only). A company session opened from the server switcher cannot use the company route (use the server
+route, which checks the server person's own permission). Routes are in `ServerRoutePolicies` (company route under
+`/companies/me` is business-owner only like the rest of user management).
+
+### 8.2 Request and answer
+
+Body `{"currentPassword": "…"}` (the actor's own password, re-authentication). Session as usual (`Bearer`, plus
+`X-Company-Code` for the company route). Answer `200`:
+```
+{"userId": "…", "twoFactorEnabled": false, "sessionsClosed": 2, "agentsDisconnected": 1,
+ "agentsDisconnectFailed": false, "message": "Se desactivo la verificacion en dos pasos de ana. …"}
+```
+
+| Status | code | Meaning |
+|---|---|---|
+| 400 | `PASSWORD_REQUIRED` / `INVALID_PASSWORD` | The actor's password is missing / wrong. |
+| 429 | `TOO_MANY_ATTEMPTS` | Password failures, or more than 10 resets by this actor in an hour. |
+| 403 | `TWO_FACTOR_REAUTH_REQUIRED` | The actor uses two-step verification but this session did not pass a second step: sign in again with the code. |
+| 403 | `BUSINESS_OWNER_REQUIRED` / `SERVER_PERMISSION_REQUIRED` / `SERVER_OWNER_REQUIRED` | Not allowed (wrong actor, out of scope, own account, server owner as target). |
+| 404 | `USER_NOT_FOUND` | No such user in that company / no such administrator. |
+| 409 | `TWO_FACTOR_NOT_ENABLED` | The target does not have it on. |
+| 503 | `TWO_FACTOR_UNAVAILABLE` | Database/migration unavailable. |
+
+### 8.3 Effect
+
+On the target: secret and recovery codes deleted; a pending email recovery cancelled (`by: reset`); ALL its
+sessions closed (for an administrator also the company sessions it opened with the switcher); its AI agents
+disconnected (Core hook, as when it turns it on); an email to the target (its language) and an in-app notification
+saying who did it and when. A reset administrator whom the owner requires to use it gets the setup-required flow at
+the next sign-in (§5). Recorded without any secret: the company's activity log for company users ("Desactivo la
+verificacion en dos pasos de …"), and always the server audit `two_factor.reset_by_other` with the actor's kind,
+the target and the company.
+
+### 8.4 Listings (optional fields; older apps ignore them)
+
+- `GET /companies/me/users` → each `CompanyUserResponse` gains `twoFactorEnabled: Boolean?` (null when unknown,
+  e.g. before the migration).
+- `GET /companies/{code}/business-owner` → `BusinessOwnerResponse.twoFactorEnabled: Boolean?`.
+- `GET /server/admins`, `GET /server/admins/{id}` → `ServerAdminResponse.twoFactorEnabled: Boolean?`.
+The app shows the state and, for the actors of §8.1 and only when it is `true`, a "Desactivar verificacion en dos
+pasos" button that asks for the actor's password and warns that the person's sessions and agents are closed.
