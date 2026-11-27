@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.wordpress
 
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmUser
@@ -7,6 +8,9 @@ import com.ideasdeveloper.bms.modules.crm.CrmValidationException
 import com.ideasdeveloper.bms.modules.crm.CrmWordPressException
 import com.ideasdeveloper.bms.modules.crm.CrmWordPressSettings
 import com.ideasdeveloper.bms.modules.crm.WpAgent
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.tr
 import java.security.SecureRandom
 import java.sql.Connection
@@ -37,7 +41,9 @@ object WordPressSettingsStore {
     }
 
     /** Guarda el formulario de Integraciones (upsert: sin fila, la crea); el secreto no se toca aqui. */
-    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>) {
+    private val FormLabels = linkedMapOf("enabled" to "WordPress activado", "siteUrl" to "Direccion del sitio")
+
+    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, actor: ActivityActor) = CrmAudit.atomically(tenant) {
         val url = values["siteUrl"].orEmpty().trim().trimEnd('/').ifEmpty { null }
         if (url != null && !url.matches(Regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$"))) {
             throw CrmValidationException(tr("Escribe la direccion del sitio con https://, por ejemplo https://mi-inmobiliaria.com."))
@@ -53,6 +59,7 @@ object WordPressSettingsStore {
         val enabled = values["enabled"] == "true"
         val secret = load(host, tenant).secret
         if (enabled && (url == null || secret == null)) throw CrmValidationException(tr("Para activar WordPress escribe la direccion del sitio y genera el secreto."))
+        val before = load(host, tenant)
         tenant.prepareStatement(
             """
             INSERT INTO $SettingsTable (id, enabled, site_url, updated_at) VALUES (1, ?, ?, CURRENT_TIMESTAMP)
@@ -63,10 +70,14 @@ object WordPressSettingsStore {
             update.setString(2, url)
             update.executeUpdate()
         }
+        CrmAudit.settingsChanged(
+            tenant, actor, "WordPress", "Cambio los ajustes de WordPress.",
+            mapOf("enabled" to before.enabled, "siteUrl" to before.siteUrl), mapOf("enabled" to enabled, "siteUrl" to url), FormLabels,
+        )
     }
 
     /** Crea un secreto nuevo (48 letras y numeros), lo guarda sellado y lo devuelve para pegarlo en el plugin. */
-    fun newSecret(host: CrmHost, tenant: Connection): String {
+    fun newSecret(host: CrmHost, tenant: Connection, actor: ActivityActor): String = CrmAudit.atomically(tenant) {
         val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
         val secret = (1..48).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
         tenant.prepareStatement(
@@ -75,7 +86,12 @@ object WordPressSettingsStore {
             ON CONFLICT (id) DO UPDATE SET secret = EXCLUDED.secret, updated_at = CURRENT_TIMESTAMP
             """.trimIndent()
         ).use { it.setString(1, host.sealSecret(tenant, secret)); it.executeUpdate() }
-        return secret
+        // The secret itself is never stored in the log: only that it was renewed.
+        CrmAudit.record(
+            tenant, actor, CrmAudit.Settings, "WordPress", "WordPress", ActivityActions.SettingsChanged, "Genero un secreto nuevo para el plugin de WordPress.",
+            listOf(ActivityChange.secret("secret", "Secreto del plugin")),
+        )
+        secret
     }
 
     /** Anota el ultimo evento del sitio: su nombre (si lo informo) y el error (vacio = sin error). */
@@ -94,7 +110,8 @@ object WordPressSettingsStore {
     // ---- Agentes del sitio ----
 
     /** Guarda los agentes del sitio y vincula a los nuevos con el usuario de BMS que tiene su mismo correo; devuelve cuantos recibio. */
-    fun syncAgents(tenant: Connection, agents: List<WpAgent>, users: List<CrmUser>, userEmails: Map<UUID, String>): Int {
+    fun syncAgents(tenant: Connection, agents: List<WpAgent>, users: List<CrmUser>, userEmails: Map<UUID, String>, actor: ActivityActor): Int = CrmAudit.atomically(tenant) {
+        val known = agents(tenant).associate { it.wpUserId to it.userId }
         agents.forEach { agent ->
             if (agent.wpUserId <= 0) return@forEach
             val match = users.firstOrNull { user -> userEmails[user.id]?.equals(agent.email, ignoreCase = true) == true }?.id
@@ -112,7 +129,15 @@ object WordPressSettingsStore {
                 upsert.executeUpdate()
             }
         }
-        return agents.size
+        val linked = agents.count { agent -> userEmails.isNotEmpty() && known[agent.wpUserId] == null && users.any { userEmails[it.id]?.equals(agent.email, ignoreCase = true) == true } }
+        CrmAudit.record(
+            tenant, actor, "wp_agent", null, "Agentes del sitio", ActivityActions.Updated, "Sincronizo ${agents.size} agente(s) del sitio de WordPress.",
+            listOf(
+                ActivityChange("agents", "Agentes leidos", null, agents.joinToString(", ") { it.name }),
+                ActivityChange("linked", "Vinculados a un usuario por correo", null, linked.toString()),
+            ),
+        )
+        agents.size
     }
 
     fun agents(tenant: Connection): List<WpAgent> =
@@ -120,28 +145,55 @@ object WordPressSettingsStore {
             query.executeQuery().use { rows -> buildList { while (rows.next()) add(WpAgent(rows.getLong(1), rows.getString(2), rows.getString(3), rows.getObject(4, UUID::class.java))) } }
         }
 
-    fun mapAgent(tenant: Connection, wpUserId: Long, userId: UUID?) {
+    fun mapAgent(tenant: Connection, wpUserId: Long, userId: UUID?, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        fun userName(id: UUID?): String? = id?.let {
+            tenant.prepareStatement("SELECT postgres_role FROM application_users WHERE id = ?").use { query ->
+                query.setObject(1, it)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else it.toString() }
+            }
+        }
+        val before = agents(tenant).firstOrNull { it.wpUserId == wpUserId }
         tenant.prepareStatement("UPDATE $AgentsTable SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE wp_user_id = ?").use { update ->
             update.setObject(1, userId)
             update.setLong(2, wpUserId)
             update.executeUpdate()
+        }
+        if (before != null && before.userId != userId) {
+            CrmAudit.record(
+                tenant, actor, "wp_agent", wpUserId.toString(), before.name, ActivityActions.Updated, "Vinculo al agente del sitio ${before.name} con un usuario de BMS.",
+                listOf(ActivityChange.of("user", "Usuario vinculado", userName(before.userId), userName(userId))),
+            )
         }
     }
 
     /** El usuario de BMS del agente del sitio; los agentes vistos por primera vez se anotan para poder vincularlos en Integraciones. */
     fun userForAgent(tenant: Connection, wpUserId: Long?, name: String, email: String): UUID? {
         if (wpUserId == null || wpUserId <= 0) return null
-        tenant.prepareStatement(
-            """
-            INSERT INTO $AgentsTable (wp_user_id, name, email) VALUES (?, ?, ?)
-            ON CONFLICT (wp_user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email
-            RETURNING user_id
-            """.trimIndent()
-        ).use { upsert ->
-            upsert.setLong(1, wpUserId)
-            upsert.setString(2, name.take(200))
-            upsert.setString(3, email.take(254))
-            upsert.executeQuery().use { rows -> return if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+        // The agent row and its log row are saved together.
+        return CrmAudit.atomically(tenant) {
+            tenant.prepareStatement(
+                """
+                INSERT INTO $AgentsTable (wp_user_id, name, email) VALUES (?, ?, ?)
+                ON CONFLICT (wp_user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email
+                RETURNING user_id, (xmax = 0)
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setLong(1, wpUserId)
+                upsert.setString(2, name.take(200))
+                upsert.setString(3, email.take(254))
+                upsert.executeQuery().use { rows ->
+                    if (!rows.next()) return@use null
+                    // A site agent seen for the first time is kept: the website sent it.
+                    if (rows.getBoolean(2)) {
+                        CrmAudit.record(
+                            tenant, ActivityActor.integration("Sitio web"), "wp_agent", wpUserId.toString(), name.take(200), ActivityActions.Created,
+                            "Registro al agente del sitio ${name.take(200)} (visto por primera vez en un evento del sitio).",
+                            listOf(ActivityChange("name", "Nombre", null, name.take(200)), ActivityChange("email", "Correo", null, email.take(254))),
+                        )
+                    }
+                    rows.getObject(1, UUID::class.java)
+                }
+            }
         }
     }
 }

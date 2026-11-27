@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.crm.CrmAttachments
 import com.ideasdeveloper.bms.modules.crm.CrmImportException
 import com.ideasdeveloper.bms.modules.crm.CrmValidationException
@@ -69,6 +70,7 @@ object MondayFiles {
         token: String,
         leadId: UUID,
         wanted: List<MondayFile>,
+        actor: com.ideasdeveloper.bms.server.activity.ActivityActor,
         target: (MondayFile) -> Pair<String, String>?,
     ): List<String> {
         val targeted = wanted.mapNotNull { file -> target(file)?.let { file to it } }.distinctBy { it.first.asset }
@@ -108,7 +110,7 @@ object MondayFiles {
             try {
                 val (fieldKey, folder) = place
                 fetch(url) { contentType, body ->
-                    CrmAttachments.importLinked(tenant, files, leadId, fieldKey, file.name, folder, contentType, body, ref(file), "Importacion monday")
+                    CrmAttachments.importLinked(tenant, files, leadId, fieldKey, file.name, folder, contentType, body, ref(file), "Importacion monday", actor)
                 }
             } catch (failure: Exception) {
                 problems += "${file.name}: ${(failure as? CrmValidationException ?: failure as? CrmImportException)?.message ?: "no se pudo descargar"}"

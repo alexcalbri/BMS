@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.extensions.cloudbeds
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmCloudbedsSettings
 import com.ideasdeveloper.bms.modules.crm.CrmCloudbedsStore
 import com.ideasdeveloper.bms.modules.crm.CrmHost
@@ -36,7 +38,19 @@ object CloudbedsSettingsStore {
         }
     }
 
-    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>) {
+    private val FormLabels = linkedMapOf(
+        "enabled" to "Cloudbeds activado", "apiKey" to "API key", "propertyId" to "ID de la propiedad", "paymentMethod" to "Metodo de pago",
+        "welcomeEnabled" to "Correo de bienvenida", "welcomeTemplate" to "Plantilla de bienvenida", "welcomeDaysBefore" to "Dias antes del check-in",
+        "welcomeHour" to "Hora de envio", "archiveOnCheckout" to "Archivar al hacer check-out", "defaultCountry" to "Pais por defecto del huesped",
+    )
+
+    private fun valuesOf(s: CrmCloudbedsSettings, templates: List<CrmTemplate>) = mapOf(
+        "enabled" to s.enabled, "apiKey" to s.apiKey, "propertyId" to s.propertyId, "paymentMethod" to s.paymentMethod, "welcomeEnabled" to s.welcomeEnabled,
+        "welcomeTemplate" to templates.firstOrNull { it.id == s.welcomeTemplateId }?.name, "welcomeDaysBefore" to s.welcomeDaysBefore, "welcomeHour" to s.welcomeHour,
+        "archiveOnCheckout" to s.archiveOnCheckout, "defaultCountry" to s.defaultCountry.ifEmpty { null },
+    )
+
+    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>, actor: ActivityActor) = CrmAudit.atomically(tenant) {
         host.cloudbedsInactiveReason(tenant)?.let { throw CrmValidationException(it) }
         val current = load(host, tenant)
         val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !host.isSecretPlaceholder(it) } ?: current.apiKey
@@ -79,6 +93,13 @@ object CloudbedsSettingsStore {
             update.setString(10, country)
             update.executeUpdate()
         }
+        val saved = current.copy(
+            enabled = enabled, apiKey = key, propertyId = property, paymentMethod = payment, welcomeEnabled = welcome, welcomeTemplateId = template,
+            welcomeDaysBefore = days, welcomeHour = hour, archiveOnCheckout = values["archiveOnCheckout"] == "true", defaultCountry = country,
+        )
+        CrmAudit.settingsChanged(
+            tenant, actor, "Cloudbeds", "Cambio los ajustes de Cloudbeds.", valuesOf(current, templates), valuesOf(saved, templates), FormLabels, secrets = setOf("apiKey"),
+        )
     }
 
     fun recordError(host: CrmHost, tenant: Connection, error: String) {
@@ -89,10 +110,15 @@ object CloudbedsSettingsStore {
     }
 
     /** Turns the welcome email of Cloudbeds on or off (an automation of the CRM can replace it). */
-    fun setWelcomeEnabled(host: CrmHost, tenant: Connection, enabled: Boolean) {
+    fun setWelcomeEnabled(host: CrmHost, tenant: Connection, enabled: Boolean, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = load(host, tenant).welcomeEnabled
         tenant.prepareStatement("UPDATE $Table SET welcome_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1").use { update ->
             update.setBoolean(1, enabled)
             update.executeUpdate()
         }
+        CrmAudit.settingsChanged(
+            tenant, actor, "Cloudbeds", if (enabled) "Activo el correo de bienvenida de Cloudbeds." else "Apago el correo de bienvenida de Cloudbeds.",
+            mapOf("welcomeEnabled" to before), mapOf("welcomeEnabled" to enabled), mapOf("welcomeEnabled" to "Correo de bienvenida"),
+        )
     }
 }

@@ -55,7 +55,7 @@ interface CrmImportSource {
      * Acciones propias de la fuente en la pantalla de importar (op de "import:<op>", con los valores del formulario).
      * Devuelve null si la operacion no es de esta fuente; si lo es, el aviso y la pantalla a la que volver.
      */
-    fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?): CrmImportSourceResult? = null
+    fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor = com.ideasdeveloper.bms.server.activity.ActivityActor.system()): CrmImportSourceResult? = null
 
     /** Herramientas MCP propias de la fuente. */
     val mcpTools: List<McpTool> get() = emptyList()
@@ -100,8 +100,8 @@ object CrmImportSources {
     fun readQueued(tenant: Connection) = all.forEach { it.readQueued(tenant) }
 
     /** La accion de la pantalla de importar que reconoce alguna fuente, o null si ninguna la reconoce. */
-    fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?): CrmImportSourceResult? =
-        all.firstNotNullOfOrNull { it.action(tenant, op, values, userId) }
+    fun action(tenant: Connection, op: String, values: Map<String, String>, userId: UUID?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor = com.ideasdeveloper.bms.server.activity.ActivityActor.system()): CrmImportSourceResult? =
+        all.firstNotNullOfOrNull { it.action(tenant, op, values, userId, actor) }
 
     /**
      * Ejecucion del job de importacion: primero el runner generico (jobs sin fuente externa) y despues el de cada fuente

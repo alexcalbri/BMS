@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -14,7 +18,10 @@ import java.time.LocalDate
 import java.util.UUID
 
 // Who performs a change. userId is null for server owners: they are not users of the company database.
-data class CrmActor(val userId: UUID?, val name: String)
+// [activity] is the Core actor the company activity log stores ("Agente de <usuario>", "Automatizacion <nombre>", "Cloudbeds"...);
+// [name] stays the author string of the lead history. Every real call site gives [activity]: the default only keeps
+// old call sites compiling and stores "Sistema".
+data class CrmActor(val userId: UUID?, val name: String, val activity: ActivityActor = ActivityActor.system())
 
 /** Tenant database access of the CRM. Every lead query applies the caller's [CrmScope]. */
 object CrmRepository {
@@ -33,10 +40,15 @@ object CrmRepository {
             query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
         }
 
-    fun setInterestsEnabled(tenant: Connection, enabled: Boolean) {
+    fun setInterestsEnabled(tenant: Connection, enabled: Boolean, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = interestsEnabled(tenant)
         tenant.prepareStatement(
             "INSERT INTO crm_settings (id, interests_enabled) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET interests_enabled = EXCLUDED.interests_enabled, updated_at = CURRENT_TIMESTAMP"
         ).use { it.setBoolean(1, enabled); it.executeUpdate() }
+        CrmAudit.settingsChanged(
+            tenant, actor, "Intereses", if (enabled) "Activo los intereses del CRM." else "Desactivo los intereses del CRM.",
+            mapOf("enabled" to before), mapOf("enabled" to enabled), mapOf("enabled" to "Intereses activados"),
+        )
     }
 
     fun stages(tenant: Connection): List<CrmStage> =
@@ -53,7 +65,13 @@ object CrmRepository {
             }
         }
 
-    fun saveStage(tenant: Connection, id: UUID?, input: CrmStageInput) {
+    private val StageLabels = linkedMapOf("name" to "Nombre", "kind" to "Tipo", "tone" to "Color", "position" to "Posicion")
+
+    private fun stageValues(stage: CrmStage) = mapOf("name" to stage.name, "kind" to stage.kind.label, "tone" to stage.tone.label, "position" to stage.position)
+
+    fun saveStage(tenant: Connection, id: UUID?, input: CrmStageInput, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = id?.let { stages(tenant).firstOrNull { stage -> stage.id == it } }
+        val savedId = id ?: UUID.randomUUID()
         val sql = if (id == null) {
             "INSERT INTO crm_stages (name, kind, tone, position, id) VALUES (?, ?, ?, ?, ?)"
         } else {
@@ -64,9 +82,13 @@ object CrmRepository {
             statement.setString(2, input.kind.id)
             statement.setString(3, input.tone.id)
             statement.setInt(4, input.position)
-            statement.setObject(5, id ?: UUID.randomUUID())
+            statement.setObject(5, savedId)
             if (statement.executeUpdate() != 1) throw CrmValidationException(tr("Esa etapa ya no existe."))
         }
+        CrmAudit.saved(
+            tenant, actor, "stage", savedId.toString(), input.name, "la etapa", before?.let(::stageValues),
+            mapOf("name" to input.name, "kind" to input.kind.label, "tone" to input.tone.label, "position" to input.position), StageLabels,
+        )
         // Leads keep their closing date in line with the kind of the stage they are in.
         if (id != null) tenant.prepareStatement(
             """
@@ -83,13 +105,16 @@ object CrmRepository {
         }
 
     // Only stages without leads can be deleted, so no lead is left without a stage.
-    fun deleteStage(tenant: Connection, id: UUID): Boolean {
+    fun deleteStage(tenant: Connection, id: UUID, actor: ActivityActor): Boolean {
         if (stageLeadCount(tenant, id) > 0) throw CrmValidationException(tr("Mueve primero los leads de esta etapa a otra."))
-        return transaction(tenant) {
+        return CrmAudit.atomically(tenant) {
+            val old = stages(tenant).firstOrNull { it.id == id }
             // The exit automation forgets the stage; without stages left it is switched off.
             tenant.prepareStatement(
                 "UPDATE crm_settings SET exit_enabled = exit_enabled AND cardinality(array_remove(exit_stage_ids, ?)) > 0, exit_stage_ids = array_remove(exit_stage_ids, ?) WHERE id = 1"
             ).use { it.setObject(1, id); it.setObject(2, id); it.executeUpdate() }
+            // The row goes before the stage disappears.
+            if (old != null) CrmAudit.removed(tenant, actor, "stage", id.toString(), old.name, "la etapa", stageValues(old), StageLabels)
             tenant.prepareStatement("DELETE FROM crm_stages WHERE id = ?").use { it.setObject(1, id); it.executeUpdate() == 1 }
         }
     }
@@ -98,12 +123,26 @@ object CrmRepository {
         tenant.prepareStatement("SELECT count(*) FROM crm_leads").use { query -> query.executeQuery().use { rows -> rows.next(); rows.getInt(1) } }
 
     // Replaces every stage with a template. Only allowed while the company has no leads.
-    fun applyTemplate(tenant: Connection, template: CrmTemplates.Template) = transaction(tenant) {
+    fun applyTemplate(tenant: Connection, template: CrmTemplates.Template, actor: ActivityActor) = CrmAudit.atomically(tenant) {
         if (leadCount(tenant) > 0) throw CrmValidationException(tr("Las plantillas solo se aplican mientras no hay leads."))
+        val replaced = stages(tenant)
+        CrmAudit.record(
+            tenant, actor, "stage", null, template.label, ActivityActions.SettingsChanged, "Aplico la plantilla de etapas ${template.label}.",
+            listOf(ActivityChange("stages", "Etapas", replaced.joinToString(", ") { it.name }.ifEmpty { null }, template.stages.joinToString(", ") { it.name })),
+        )
         tenant.prepareStatement("DELETE FROM crm_stages").use { it.executeUpdate() }
         // The old stages are gone: the exit automation starts over.
         tenant.prepareStatement("UPDATE crm_settings SET exit_enabled = FALSE, exit_stage_ids = '{}' WHERE id = 1").use { it.executeUpdate() }
-        template.stages.forEach { saveStage(tenant, null, it) }
+        template.stages.forEach { stage ->
+            tenant.prepareStatement("INSERT INTO crm_stages (name, kind, tone, position, id) VALUES (?, ?, ?, ?, ?)").use { insert ->
+                insert.setString(1, stage.name)
+                insert.setString(2, stage.kind.id)
+                insert.setString(3, stage.tone.id)
+                insert.setInt(4, stage.position)
+                insert.setObject(5, UUID.randomUUID())
+                insert.executeUpdate()
+            }
+        }
     }
 
     fun interests(tenant: Connection): List<CrmInterest> =
@@ -113,20 +152,27 @@ object CrmRepository {
             }
         }
 
-    fun saveInterest(tenant: Connection, id: UUID?, name: String) {
+    fun saveInterest(tenant: Connection, id: UUID?, name: String, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = id?.let { interests(tenant).firstOrNull { interest -> interest.id == it } }
+        val savedId = id ?: UUID.randomUUID()
         val updated = if (id == null) {
             tenant.prepareStatement("INSERT INTO crm_interests (id, name, position) SELECT ?, ?, COALESCE(max(position) + 1, 0) FROM crm_interests").use {
-                it.setObject(1, UUID.randomUUID()); it.setString(2, name); it.executeUpdate()
+                it.setObject(1, savedId); it.setString(2, name); it.executeUpdate()
             }
         } else {
             tenant.prepareStatement("UPDATE crm_interests SET name = ? WHERE id = ?").use { it.setString(1, name); it.setObject(2, id); it.executeUpdate() }
         }
         if (updated != 1) throw CrmValidationException(tr("Ese interes ya no existe."))
+        CrmAudit.saved(tenant, actor, "interest", savedId.toString(), name, "el interes", before?.let { mapOf("name" to it.name) }, mapOf("name" to name), mapOf("name" to "Nombre"))
     }
 
     // The leads of a deleted interest go back to the reception inbox.
-    fun deleteInterest(tenant: Connection, id: UUID): Boolean =
+    fun deleteInterest(tenant: Connection, id: UUID, actor: ActivityActor): Boolean = CrmAudit.atomically(tenant) {
+        interests(tenant).firstOrNull { it.id == id }?.let { old ->
+            CrmAudit.removed(tenant, actor, "interest", id.toString(), old.name, "el interes", mapOf("name" to old.name), mapOf("name" to "Nombre"))
+        }
         tenant.prepareStatement("DELETE FROM crm_interests WHERE id = ?").use { it.setObject(1, id); it.executeUpdate() == 1 }
+    }
 
     fun userInterests(tenant: Connection): Map<UUID, Set<UUID>> =
         tenant.prepareStatement("SELECT user_id, interest_id FROM crm_user_interests").use { query ->
@@ -137,7 +183,14 @@ object CrmRepository {
             }
         }
 
-    fun setUserInterests(tenant: Connection, userId: UUID, interests: Set<UUID>) = transaction(tenant) {
+    fun setUserInterests(tenant: Connection, userId: UUID, interests: Set<UUID>, actor: ActivityActor, userName: String = "") = CrmAudit.atomically(tenant) {
+        val names = this@CrmRepository.interests(tenant).associate { it.id to it.name }
+        val before = userInterests(tenant)[userId].orEmpty()
+        fun shown(ids: Collection<UUID>) = ids.map { names[it] ?: it.toString() }.sorted()
+        CrmAudit.settingsChanged(
+            tenant, actor, "Intereses de usuarios", "Cambio los intereses de ${userName.ifBlank { "un usuario" }}.",
+            mapOf("interests" to shown(before)), mapOf("interests" to shown(interests)), mapOf("interests" to "Intereses de ${userName.ifBlank { "un usuario" }}"),
+        )
         tenant.prepareStatement("DELETE FROM crm_user_interests WHERE user_id = ?").use { it.setObject(1, userId); it.executeUpdate() }
         tenant.prepareStatement("INSERT INTO crm_user_interests (user_id, interest_id) VALUES (?, ?)").use { insert ->
             interests.forEach { interest ->
@@ -228,14 +281,14 @@ object CrmRepository {
     // [identity]: ModuleAccessService.userIdentity, so changes show the user's name.
     fun actor(tenant: Connection, permissions: ModulePermissions, identity: UserIdentity? = null): CrmActor {
         if (permissions.serverOwner || permissions.userId == null) {
-            return CrmActor(null, identity?.let { "${it.name} (dueno del servidor)" } ?: "Dueno del servidor")
+            return CrmActor(null, identity?.let { "${it.name} (dueno del servidor)" } ?: "Dueno del servidor", permissions.activityActor)
         }
-        identity?.let { return CrmActor(permissions.userId, it.name) }
+        identity?.let { return CrmActor(permissions.userId, it.name, permissions.activityActor) }
         val name = tenant.prepareStatement("SELECT postgres_role FROM application_users WHERE id = ?").use { query ->
             query.setObject(1, permissions.userId)
             query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
         }
-        return CrmActor(permissions.userId, name ?: "Usuario")
+        return CrmActor(permissions.userId, name ?: "Usuario", permissions.activityActor)
     }
 
     // ---- Leads ----
@@ -350,7 +403,7 @@ object CrmRepository {
         fun allowed(id: UUID) = acceptCustomer(scope?.let(::customerSearchRestricted) ?: false) { customerInScope(tenant, scope!!, id) }
         val existing = chosenCustomerId?.takeIf { activeCustomer(tenant, it) && allowed(it) }
             ?: matchCustomer(tenant, input.email, input.phone)?.takeIf { allowed(it) }
-        val customerId = existing?.also { CrmInbox.fillMissingContact(tenant, it, input.email, input.phone) } ?: UUID.randomUUID().also { id ->
+        val customerId = existing?.also { CrmInbox.fillMissingContact(tenant, it, input.email, input.phone, actor.activity) } ?: UUID.randomUUID().also { id ->
             tenant.prepareStatement(
                 "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type) VALUES (?, ?, ?, ?, 'prospect', 'crm')"
             ).use { insert ->
@@ -360,6 +413,11 @@ object CrmRepository {
                 insert.setString(4, input.phone)
                 insert.executeUpdate()
             }
+            // The customer is born in Clientes: its own history does not show who created it from the CRM.
+            CrmAudit.customer(
+                tenant, actor.activity, id, input.name, ActivityActions.Created, "Creo el cliente ${input.name} desde el CRM.",
+                ActivityChanges.created(CrmAudit.customerValues(input.name, input.email, input.phone), CrmAudit.CustomerLabels),
+            )
         }
         val id = UUID.randomUUID()
         tenant.prepareStatement(
@@ -374,7 +432,21 @@ object CrmRepository {
             insert.executeUpdate()
         }
         CrmAssignees.add(tenant, id, input.ownerUserIds.orEmpty())
-        addActivity(tenant, id, "created", "Lead creado en ${stage.name}.", actor, toStage = stage.id)
+        addActivity(
+            tenant, id, "created", "Lead creado en ${stage.name}.", actor, toStage = stage.id,
+            audit = CrmLeadAudit.Row(
+                ActivityActions.Created, "Creo el lead ${input.name} en la etapa ${stage.name}.",
+                ActivityChanges.created(
+                    mapOf(
+                        "name" to input.name, "email" to input.email, "phone" to input.phone, "stage" to stage.name, "source" to input.source,
+                        "language" to input.language, "message" to input.message, "details" to input.details, "estimatedValue" to input.estimatedValue,
+                        "followUpOn" to input.followUpOn, "owners" to input.ownerUserIds.orEmpty().size.takeIf { it > 0 }?.let { "$it usuario(s)" },
+                    ),
+                    CrmAudit.LeadLabels,
+                ) + CrmFields.activityChanges(fields, JsonObject(emptyMap()), CrmFields.merge(JsonObject(emptyMap()), input.custom)),
+                label = input.name,
+            ),
+        )
         linked += linkFiles(tenant, id, input, fields, actor)
         id
     }
@@ -507,6 +579,12 @@ object CrmRepository {
             update.setObject(4, lead.customerId)
             update.executeUpdate()
         }
+        // Clientes' own history does not see what the CRM changes in the customer.
+        ActivityChanges.diff(
+            CrmAudit.customerValues(lead.name, lead.email, lead.phone), CrmAudit.customerValues(input.name, input.email, input.phone), CrmAudit.CustomerLabels,
+        ).takeIf { it.isNotEmpty() }?.let { changes ->
+            CrmAudit.customer(tenant, actor.activity, lead.customerId, input.name, ActivityActions.Updated, "Modifico los datos del cliente ${input.name} desde el CRM.", changes)
+        }
         tenant.prepareStatement(
             """
             UPDATE crm_leads SET stage_id = ?, interest_id = ?, source = ?, language = ?, message = ?, details = ?,
@@ -526,10 +604,14 @@ object CrmRepository {
         }
         input.ownerUserIds?.let { wanted ->
             ownersChange = CrmAssignees.apply(tenant, lead.id, CrmAssignees.diff(ownersBefore ?: lead.ownerUserIds, wanted))
-            if (!ownersChange.isEmpty) addActivity(tenant, lead.id, "owner", ownersActivity(tenant, names, CrmAssignees.of(tenant, lead.id), ownersChange), actor)
+            if (!ownersChange.isEmpty) addActivity(
+                tenant, lead.id, "owner", ownersActivity(tenant, names, CrmAssignees.of(tenant, lead.id), ownersChange), actor,
+                audit = ownersAudit(tenant, lead, names, ownersChange),
+            )
         }
         if (input.interestId != lead.interestId) {
-            addActivity(tenant, lead.id, "interest", "Interes: ${names.interest(input.interestId)}.", actor)
+            // The interest is one of the fields of the "updated" row below.
+            addActivity(tenant, lead.id, "interest", "Interes: ${names.interest(input.interestId)}.", actor, audit = CrmLeadAudit.None)
         }
         if (input.custom.isNotEmpty()) {
             tenant.prepareStatement("UPDATE crm_leads SET custom_fields = CAST(? AS jsonb) WHERE id = ?").use { update ->
@@ -538,8 +620,18 @@ object CrmRepository {
                 update.executeUpdate()
             }
         }
-            leadChanges(lead, input, fields)?.let { addActivity(tenant, lead.id, "updated", it, actor) }
-            linked = linkFiles(tenant, lead.id, input, fields, actor)
+            val changes = CrmAudit.leadChanges(lead, input, fields, names)
+            leadChanges(lead, input, fields)?.let {
+                addActivity(
+                    tenant, lead.id, "updated", it, actor,
+                    audit = if (changes.isEmpty()) CrmLeadAudit.None else CrmLeadAudit.Row(ActivityActions.Updated, "Modifico el lead ${input.name}.", changes, label = input.name),
+                )
+            }
+            // An interest changed on its own (no other field): it still gets its row.
+            if (input.interestId != lead.interestId && changes.none { it.field == "interest" }) {
+                CrmAudit.lead(tenant, actor.activity, lead.id, input.name, ActivityActions.Updated, { "Cambio el interes del lead $it." }, changes = listOf(ActivityChange.of("interest", "Interes", names.interest(lead.interestId), names.interest(input.interestId))))
+            }
+            linked = linkFiles(tenant, lead.id, input, fields, actor, input.name)
         }
         // Name, email and phone belong to the customer: they change at once in every company it is shared with.
         CrmCustomerEvents.changed(tenant, lead.customerId)
@@ -563,14 +655,35 @@ object CrmRepository {
     /** "Campo: antes -> despues" for each changed value of the lead form, or null when nothing changed. */
     // Links the files of each files field sent in the form and records what was added or removed.
     // Returns the changes, so the caller can announce the new files once everything is saved.
-    private fun linkFiles(tenant: Connection, leadId: UUID, input: CrmLeadInput, fields: List<CrmField>, actor: CrmActor): List<CrmAttachments.Change> {
+    private fun linkFiles(tenant: Connection, leadId: UUID, input: CrmLeadInput, fields: List<CrmField>, actor: CrmActor, leadName: String? = null): List<CrmAttachments.Change> {
         val changes = input.files.map { (key, ids) -> key to CrmAttachments.link(tenant, leadId, key, ids) }
+        changes.forEach { (key, change) ->
+            val label = if (key == CrmFields.Documents) CrmFields.DocumentsLabel else fields.firstOrNull { it.key == key }?.label ?: key
+            attachmentRows(tenant, actor.activity, leadId, leadName, label, change)
+        }
         val lines = changes.mapNotNull { (key, change) ->
             val label = if (key == CrmFields.Documents) CrmFields.DocumentsLabel else fields.firstOrNull { it.key == key }?.label ?: key
             CrmAttachments.describe(label, change)
         }
-        if (lines.isNotEmpty()) addActivity(tenant, leadId, "files", lines.joinToString("\n"), actor)
+        if (lines.isNotEmpty()) addActivity(tenant, leadId, "files", lines.joinToString("\n"), actor, audit = CrmLeadAudit.None)
         return changes.map { it.second }
+    }
+
+    /** One "attachment added" and one "attachment removed" row for what a files field gained or lost: names and sizes, never the content. */
+    fun attachmentRows(tenant: Connection, actor: ActivityActor, leadId: UUID, leadName: String?, fieldLabel: String, change: CrmAttachments.Change) {
+        if (change.addedFiles.isNotEmpty() || change.added.isNotEmpty()) {
+            val files = change.addedFiles.map { "${it.name} (${CrmAttachments.sizeText(it.size)})" }.ifEmpty { change.added }
+            CrmAudit.lead(
+                tenant, actor, leadId, leadName, ActivityActions.AttachmentAdded, { "Agrego ${files.size} archivo(s) a $fieldLabel del lead $it." },
+                files.map { ActivityChange("file", "Archivo", null, it) },
+            )
+        }
+        if (change.removed.isNotEmpty()) {
+            CrmAudit.lead(
+                tenant, actor, leadId, leadName, ActivityActions.AttachmentRemoved, { "Quito ${change.removed.size} archivo(s) de $fieldLabel del lead $it." },
+                change.removed.map { ActivityChange("file", "Archivo", it, null) },
+            )
+        }
     }
 
     fun leadChanges(lead: CrmLead, input: CrmLeadInput, fields: List<CrmField> = emptyList()): String? {
@@ -650,7 +763,10 @@ object CrmRepository {
         val restored = tenant.prepareStatement(
             "UPDATE crm_leads SET archived_at = NULL, restored_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NOT NULL"
         ).use { update -> update.setObject(1, leadId); update.executeUpdate() } > 0
-        if (restored) addActivity(tenant, leadId, "updated", "Lead restaurado.", actor)
+        if (restored) addActivity(
+            tenant, leadId, "updated", "Lead restaurado.", actor,
+            audit = CrmLeadAudit.Row(ActivityActions.Restored, "Restauro el lead {lead}.", emptyList()),
+        )
         restored
     }
 
@@ -659,7 +775,10 @@ object CrmRepository {
         val archived = tenant.prepareStatement(
             "UPDATE crm_leads SET archived_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL"
         ).use { update -> update.setObject(1, leadId); update.executeUpdate() } > 0
-        if (archived) addActivity(tenant, leadId, "updated", "Lead archivado.", actor)
+        if (archived) addActivity(
+            tenant, leadId, "updated", "Lead archivado.", actor,
+            audit = CrmLeadAudit.Row(ActivityActions.Archived, "Archivo el lead {lead}.", emptyList()),
+        )
         archived
     }
 
@@ -669,9 +788,21 @@ object CrmRepository {
         tenant.prepareStatement("UPDATE crm_leads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, leadId); it.executeUpdate() }
     }
 
-    // Deletes the lead and its activity; the customer stays in Clientes.
-    fun deleteLead(tenant: Connection, id: UUID): Boolean =
-        tenant.prepareStatement("DELETE FROM crm_leads WHERE id = ?").use { it.setObject(1, id); it.executeUpdate() == 1 }
+    // Deletes the lead and its activity; the customer stays in Clientes. The activity-log row is written first: the cascade erases the lead's own history.
+    fun deleteLead(tenant: Connection, lead: CrmLead, actor: CrmActor, stageName: String? = null): Boolean = CrmAudit.atomically(tenant) {
+        CrmAudit.record(
+            tenant, actor.activity, CrmAudit.Lead, lead.id.toString(), lead.name, ActivityActions.Deleted, "Elimino el lead ${lead.name}.",
+            ActivityChanges.deleted(
+                mapOf(
+                    "name" to lead.name, "email" to lead.email, "phone" to lead.phone, "stage" to stageName, "source" to lead.source,
+                    "estimatedValue" to lead.estimatedValue, "followUpOn" to lead.followUpOn,
+                    "owners" to lead.ownerUserIds.size.takeIf { it > 0 }?.let { "$it usuario(s)" },
+                ),
+                CrmAudit.LeadLabels,
+            ),
+        )
+        tenant.prepareStatement("DELETE FROM crm_leads WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() == 1 }
+    }
 
     fun activity(tenant: Connection, leadId: UUID, limit: Int): List<CrmActivity> = tenant.prepareStatement(
         """
@@ -761,10 +892,25 @@ object CrmRepository {
         }
         if (!change.isEmpty) {
             tenant.prepareStatement("UPDATE crm_leads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() }
-            addActivity(tenant, lead.id, "owner", ownersActivity(tenant, names, CrmAssignees.of(tenant, lead.id), change, suffix), actor)
+            addActivity(
+                tenant, lead.id, "owner", ownersActivity(tenant, names, CrmAssignees.of(tenant, lead.id), change, suffix), actor,
+                audit = ownersAudit(tenant, lead, names, change),
+            )
         }
         change
     }
+
+    /** "Assigned" row: who the lead had and who it has now, by name. */
+    private fun ownersAudit(tenant: Connection, lead: CrmLead, names: CrmNames, change: CrmAssignees.Change): CrmLeadAudit.Row {
+        val now = CrmAssignees.of(tenant, lead.id)
+        return CrmLeadAudit.Row(
+            ActivityActions.Assigned, "Cambio los asignados del lead ${lead.name}.",
+            listOf(ActivityChange.of("owners", "Asignados", ownersText(tenant, names, lead.ownerUserIds), ownersText(tenant, names, now))),
+            label = lead.name,
+        )
+    }
+
+    private fun ownersText(tenant: Connection, names: CrmNames, ids: Collection<UUID>): String? = ids.takeIf { it.isNotEmpty() }?.let { displayNames(tenant, names, it) }
 
     /** [added]: the user the approval really added (to notify); [noAccess]: the suggested user can no longer have leads, so nobody was assigned. */
     data class SuggestionResult(val added: UUID?, val noAccess: Boolean)
@@ -792,13 +938,25 @@ object CrmRepository {
                 else -> "Sugerencia de ${names.user(suggested)} descartada."
             },
             actor,
+            audit = CrmLeadAudit.Row(
+                ActivityActions.Assigned,
+                when {
+                    noAccess || !approve -> "Descarto la sugerencia de asignado del lead ${lead.name}."
+                    else -> "Aprobo la sugerencia de asignado del lead ${lead.name}."
+                },
+                listOf(ActivityChange.of("suggestedOwner", "Usuario sugerido", displayNames(tenant, names, listOf(suggested)), if (added != null) "Asignado" else "Descartado")),
+                label = lead.name,
+            ),
         )
         SuggestionResult(added, noAccess)
     }
 
     fun clearReview(tenant: Connection, lead: CrmLead, actor: CrmActor) {
         tenant.prepareStatement("UPDATE crm_leads SET review_reason = '' WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() }
-        addActivity(tenant, lead.id, "updated", "Revisado: ${lead.reviewReason}", actor)
+        addActivity(
+            tenant, lead.id, "updated", "Revisado: ${lead.reviewReason}", actor,
+            audit = CrmLeadAudit.Row(ActivityActions.Updated, "Marco como revisado el lead ${lead.name}.", listOf(ActivityChange("review", "Revision pendiente", lead.reviewReason, null)), label = lead.name),
+        )
     }
 
     // Leads with a responsible suggestion waiting for approval, within the scope.
@@ -819,6 +977,8 @@ object CrmRepository {
         fromStage: UUID? = null,
         toStage: UUID? = null,
         id: UUID = UUID.randomUUID(),
+        // What goes to the company activity log next to this history entry (same transaction when the caller has one).
+        audit: CrmLeadAudit = CrmLeadAudit.Auto,
     ) {
         tenant.prepareStatement(
             "INSERT INTO crm_activity (id, lead_id, kind, body, from_stage_id, to_stage_id, user_id, author) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -832,6 +992,15 @@ object CrmRepository {
             insert.setObject(7, actor.userId)
             insert.setString(8, actor.name)
             insert.executeUpdate()
+        }
+        when (audit) {
+            CrmLeadAudit.None -> Unit
+            CrmLeadAudit.Auto -> {
+                val label = CrmAudit.leadLabel(tenant, leadId)
+                val (action, summary, changes) = CrmAudit.fromHistory(kind, body, label)
+                CrmAudit.record(tenant, actor.activity, CrmAudit.Lead, leadId.toString(), label, action, summary, changes)
+            }
+            is CrmLeadAudit.Row -> CrmAudit.lead(tenant, actor.activity, leadId, audit.label, audit.action, { audit.summary.replace("{lead}", it) }, audit.changes)
         }
     }
 

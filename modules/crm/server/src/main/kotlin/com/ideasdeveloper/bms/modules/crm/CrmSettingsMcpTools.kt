@@ -344,7 +344,7 @@ object CrmSettingsMcpTools {
     private fun setInterestsEnabled(call: McpToolCall): JsonElement {
         if (!call.has("enabled")) throw McpToolException("El argumento 'enabled' es obligatorio.")
         val enabled = call.boolean("enabled")
-        CrmRepository.setInterestsEnabled(call.tenant, enabled)
+        CrmRepository.setInterestsEnabled(call.tenant, enabled, call.activityActor)
         return result(if (enabled) "Intereses activados." else "Intereses desactivados: todos los usuarios del CRM ven todos los leads.")
     }
 
@@ -354,12 +354,12 @@ object CrmSettingsMcpTools {
         if (id != null && context.interests.none { it.id == id }) throw McpToolException("Ese interes no existe; revisa get_settings.")
         val name = validated { CrmForms.parseInterestName(mapOf("name" to call.string("name", 100))) }
         if (context.interests.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw McpToolException("Ya existe el interes $name.")
-        CrmRepository.saveInterest(call.tenant, id, name)
+        CrmRepository.saveInterest(call.tenant, id, name, call.activityActor)
         return result("Interes $name guardado.")
     }
 
     private fun deleteInterest(call: McpToolCall): JsonElement {
-        if (!CrmRepository.deleteInterest(call.tenant, call.requiredUuid("id"))) throw McpToolException("Ese interes no existe.")
+        if (!CrmRepository.deleteInterest(call.tenant, call.requiredUuid("id"), call.activityActor)) throw McpToolException("Ese interes no existe.")
         return result("Interes eliminado; sus leads estan en Recepcion.")
     }
 
@@ -370,7 +370,7 @@ object CrmSettingsMcpTools {
             context.interests.firstOrNull { it.id.toString() == wanted || it.name.equals(wanted, ignoreCase = true) }
                 ?: throw McpToolException("No existe el interes '$wanted'. Intereses: ${context.interests.joinToString { it.name }}.")
         }
-        CrmRepository.setUserInterests(call.tenant, user.id, chosen.map { it.id }.toSet())
+        CrmRepository.setUserInterests(call.tenant, user.id, chosen.map { it.id }.toSet(), call.activityActor, user.name)
         return result("Intereses de ${user.name}: ${chosen.joinToString { it.name }.ifEmpty { "ninguno" }}.")
     }
 
@@ -399,7 +399,7 @@ object CrmSettingsMcpTools {
         if (call.has("position")) values["position"] = call.int("position", 0, 0..999).toString()
         val input = validated { CrmForms.parseStage(values) }
         if (context.stages.any { it.name.equals(input.name, ignoreCase = true) && it.id != id }) throw McpToolException("Ya existe la etapa ${input.name}.")
-        CrmRepository.saveStage(call.tenant, id, input)
+        CrmRepository.saveStage(call.tenant, id, input, call.activityActor)
         return result("Etapa ${input.name} guardada.")
     }
 
@@ -407,14 +407,14 @@ object CrmSettingsMcpTools {
         val context = context(call)
         val id = call.requiredUuid("id")
         if (context.stages.size <= 1) throw McpToolException("El pipeline necesita al menos una etapa.")
-        if (!validated { CrmRepository.deleteStage(call.tenant, id) }) throw McpToolException("Esa etapa no existe.")
+        if (!validated { CrmRepository.deleteStage(call.tenant, id, call.activityActor) }) throw McpToolException("Esa etapa no existe.")
         return result("Etapa eliminada.")
     }
 
     private fun applyTemplate(call: McpToolCall): JsonElement {
         val template = CrmTemplates.find(call.requiredString("template", 40))
             ?: throw McpToolException("Plantilla desconocida. Plantillas: ${CrmTemplates.all.joinToString { it.id }}.")
-        validated { CrmRepository.applyTemplate(call.tenant, template) }
+        validated { CrmRepository.applyTemplate(call.tenant, template, call.activityActor) }
         return result("Etapas de ${template.label} aplicadas: ${template.stages.joinToString { it.name }}.")
     }
 
@@ -437,7 +437,7 @@ object CrmSettingsMcpTools {
         if (call.has("imapEnabled")) values["imapEnabled"] = call.boolean("imapEnabled").toString()
         if (call.has("imapSsl")) values["imapSsl"] = call.boolean("imapSsl").toString()
         val merged = validated { CrmMail.merge(current, values) }
-        CrmMail.save(call.tenant, merged)
+        CrmMail.save(call.tenant, merged, call.activityActor)
         return result("Correo guardado.")
     }
 
@@ -451,12 +451,12 @@ object CrmSettingsMcpTools {
             "subject" to if (call.has("subject")) call.string("subject", 400) else existing?.subject.orEmpty(),
             "body" to if (call.has("body")) call.string("body", 50_001) else existing?.body.orEmpty(),
         )
-        val name = validated { CrmMail.saveTemplate(call.tenant, id, values) }
+        val name = validated { CrmMail.saveTemplate(call.tenant, id, values, call.activityActor) }
         return result("Plantilla $name guardada.")
     }
 
     private fun deleteMessageTemplate(call: McpToolCall): JsonElement {
-        if (!CrmMail.deleteTemplate(call.tenant, call.requiredUuid("id"))) throw McpToolException("Esa plantilla no existe.")
+        if (!CrmMail.deleteTemplate(call.tenant, call.requiredUuid("id"), call.activityActor)) throw McpToolException("Esa plantilla no existe.")
         return result("Plantilla eliminada.")
     }
 
@@ -479,7 +479,7 @@ object CrmSettingsMcpTools {
             "skipKnownLeads" to (if (call.has("skipKnownLeads")) call.boolean("skipKnownLeads") else current.skipKnownLeads).toString(),
         ) + channels.associate { "channel_$it" to "true" }
         val settings = validated { CrmSpam.parse(values) }
-        CrmSpam.save(call.tenant, settings)
+        CrmSpam.save(call.tenant, settings, call.activityActor)
         return result("Reglas anti-spam guardadas.")
     }
 
@@ -497,14 +497,14 @@ object CrmSettingsMcpTools {
             notifyNewMessage = if (call.has("notifyNewMessage")) call.boolean("notifyNewMessage") else saved?.notifyNewMessage ?: true,
             notifyFollowUp = if (call.has("notifyFollowUp")) call.boolean("notifyFollowUp") else saved?.notifyFollowUp ?: true,
         )
-        validated { CrmNotify.saveUserSettings(call.tenant, settings) }
+        validated { CrmNotify.saveUserSettings(call.tenant, settings, call.activityActor, user.name) }
         return result("Avisos de ${user.name} guardados.")
     }
 
     private fun setDigestHour(call: McpToolCall): JsonElement {
         if (!call.has("hour")) throw McpToolException("El argumento 'hour' es obligatorio.")
         val hour = call.int("hour", 7, 0..23)
-        call.tenant.prepareStatement("UPDATE crm_settings SET digest_hour = ? WHERE id = 1").use { it.setInt(1, hour); it.executeUpdate() }
+        CrmNotify.setDigestHour(call.tenant, hour, call.activityActor)
         return result("El resumen diario se enviara a las $hour:00.")
     }
 
@@ -533,7 +533,7 @@ object CrmSettingsMcpTools {
         if (pending > 0 && !(call.has("confirmArchiveOverdue") && call.boolean("confirmArchiveOverdue"))) {
             throw McpToolException("Al activar se archivarian $pending leads con salida vencida. Repite con confirmArchiveOverdue=true si es lo que se quiere.")
         }
-        CrmExit.save(call.tenant, config)
+        CrmExit.save(call.tenant, config, call.activityActor)
         return result(if (config.enabled) "Automatizacion de salida activa a las ${config.hour}:00." else "Automatizacion de salida desactivada.")
     }
 }

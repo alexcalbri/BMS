@@ -55,7 +55,7 @@ object CrmExtensions {
     const val ManifestVersion = "1.0.0"
 
     /** Primera version bilingue del CRM (minCoreVersion 0.10.0): las extensiones traducidas la exigen para no ofrecerse en un Core anterior. */
-    const val MinModuleVersion = "0.30.0"
+    const val MinModuleVersion = "0.31.0"
 
     private val names = mapOf(
         CrmExtensionIds.Meta to "Meta (WhatsApp, Messenger e Instagram)",

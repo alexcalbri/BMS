@@ -194,7 +194,7 @@ object InmobiliariaMcpTools {
     private fun session(call: McpToolCall): InmobiliariaSession {
         val scope = CrmRepository.scope(call.tenant, call.permissions)
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
-        return InmobiliariaSession.of(call.tenant, call.permissions, scope, CrmActor(actor.userId, "${actor.name} (agente ${call.agentName})"))
+        return InmobiliariaSession.of(call.tenant, call.permissions, scope, CrmActor(actor.userId, "${actor.name} (agente ${call.agentName})", call.activityActor))
     }
 
     private fun text(value: String?): JsonElement = value?.let(::JsonPrimitive) ?: JsonNull

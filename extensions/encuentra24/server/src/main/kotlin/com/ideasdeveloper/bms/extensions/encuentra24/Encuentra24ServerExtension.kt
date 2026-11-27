@@ -34,8 +34,8 @@ object Encuentra24ServerExtension : ServerExtension, Encuentra24Provider {
         module = "crm",
         displayName = "Encuentra24",
         description = "Importa como leads los mensajes, chats y llamadas de los anuncios de Encuentra24 y deja el anuncio en los intereses del lead.",
-        version = "1.1.0",
-        minModuleVersion = "0.30.0", // the bilingual CRM (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/encuentra24",
@@ -69,10 +69,10 @@ object Encuentra24ServerExtension : ServerExtension, Encuentra24Provider {
 
     override fun settings(host: CrmHost, tenant: Connection): CrmEncuentra24Settings = Encuentra24SettingsStore.load(host, tenant)
 
-    override fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>) = Encuentra24SettingsStore.saveForm(host, tenant, values)
+    override fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = Encuentra24SettingsStore.saveForm(host, tenant, values, actor)
 
-    override fun sync(host: CrmHost, tenant: Connection, from: LocalDate?): CrmEncuentra24SyncResult =
-        CrmEncuentra24.sync(host, tenant, from) { leadId -> host.notifyNewLead(tenant, leadId) }
+    override fun sync(host: CrmHost, tenant: Connection, from: LocalDate?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): CrmEncuentra24SyncResult =
+        CrmEncuentra24.sync(host, tenant, from, actor) { leadId -> host.notifyNewLead(tenant, leadId) }
 
     override fun detectAd(host: CrmHost, tenant: Connection, leadId: UUID, text: String) {
         if (!host.extensionEnabled(tenant, CrmExtensionIds.Encuentra24)) return

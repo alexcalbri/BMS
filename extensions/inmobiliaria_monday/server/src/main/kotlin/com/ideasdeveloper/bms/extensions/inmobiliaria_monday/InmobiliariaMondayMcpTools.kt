@@ -166,7 +166,7 @@ object InmobiliariaMondayMcpTools {
 
     private fun apply(call: McpToolCall): JsonElement = checked {
         val id: UUID = call.requiredUuid("job")
-        if (call.has("mapping")) InmobiliariaMondayService.saveMapping(call.tenant, id, mapping(call))
+        if (call.has("mapping")) InmobiliariaMondayService.saveMapping(call.tenant, id, mapping(call), call.activityActor)
         InmobiliariaMondayService.requireTarget(call.tenant)
         InmobiliariaMondayService.apply(call.tenant, CrmImportMcpTools.actor(call), id)
         buildJsonObject {

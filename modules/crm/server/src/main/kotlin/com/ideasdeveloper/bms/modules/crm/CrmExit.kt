@@ -25,7 +25,7 @@ data class CrmExitAutomation(
 object CrmExit {
     const val DefaultHour = 14
     const val ActivityText = "Archivado automaticamente al hacer check-out."
-    private val actor = CrmActor(null, "Automatizacion de salida")
+    private val actor = CrmActor(null, "Automatizacion de salida", com.ideasdeveloper.bms.server.activity.ActivityActor.automation("de salida"))
 
     /** The company's zone; an unknown or empty one falls back to [fallback]. */
     fun zone(config: CrmExitAutomation, fallback: ZoneId = ZoneId.systemDefault()): ZoneId =
@@ -116,7 +116,16 @@ object CrmExit {
             }
         }
 
-    fun save(tenant: Connection, config: CrmExitAutomation) {
+    private val ExitLabels = linkedMapOf("enabled" to "Activada", "hour" to "Hora", "timeZone" to "Zona horaria", "stages" to "Etapas de origen")
+
+    private fun values(config: CrmExitAutomation, stageNames: Map<UUID, String>) = mapOf(
+        "enabled" to config.enabled, "hour" to config.hour, "timeZone" to config.timeZone,
+        "stages" to config.stageIds.map { stageNames[it] ?: it.toString() }.sorted(),
+    )
+
+    fun save(tenant: Connection, config: CrmExitAutomation, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmAudit.atomically(tenant) {
+        val names = CrmRepository.stages(tenant).associate { it.id to it.name }
+        val before = load(tenant)
         tenant.prepareStatement(
             "UPDATE crm_settings SET exit_enabled = ?, exit_hour = ?, exit_time_zone = ?, exit_stage_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
         ).use { update ->
@@ -126,6 +135,7 @@ object CrmExit {
             update.setArray(4, tenant.createArrayOf("uuid", config.stageIds.sortedBy { it.toString() }.toTypedArray()))
             update.executeUpdate()
         }
+        CrmAudit.settingsChanged(tenant, actor, "Archivo automatico al salir", "Cambio la automatizacion de salida (archivo tras el check-out).", values(before, names), values(config, names), ExitLabels)
     }
 
     /**
@@ -198,7 +208,12 @@ object CrmExit {
                 update.bindDue(2, cloudbeds.ready, gate)
                 update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
             }
-            ids.forEach { CrmRepository.addActivity(tenant, it, "updated", ActivityText, actor) }
+            ids.forEach {
+                CrmRepository.addActivity(
+                    tenant, it, "updated", ActivityText, actor,
+                    audit = CrmLeadAudit.Row(com.ideasdeveloper.bms.server.activity.ActivityActions.Archived, "Archivo el lead {lead} al hacer check-out.", emptyList()),
+                )
+            }
             ids.size
         }
     }

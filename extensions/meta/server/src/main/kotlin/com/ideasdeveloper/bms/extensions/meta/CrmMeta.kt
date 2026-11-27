@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.meta
 
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmInbound
@@ -12,6 +13,7 @@ import com.ideasdeveloper.bms.modules.crm.MetaLogEntry
 import com.ideasdeveloper.bms.modules.crm.MetaNameFill
 import com.ideasdeveloper.bms.modules.crm.MetaSetup
 import com.ideasdeveloper.bms.modules.crm.WhatsAppNumber
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -77,8 +79,31 @@ object CrmMeta {
         }
     }
 
-    /** Guarda los ajustes (upsert: sin fila, la crea); los secretos se sellan. */
-    fun save(tenant: Connection, settings: CrmMetaSettings) {
+    private val SettingsLabels = linkedMapOf(
+        "enabled" to "Meta activado", "connectionMode" to "Modo de conexion", "appSecret" to "App Secret", "verifyToken" to "Verify token",
+        "systemToken" to "Token de WhatsApp", "pageId" to "Pagina de Facebook", "pageName" to "Nombre de la pagina", "pageToken" to "Token de la pagina",
+        "instagramAccountId" to "Cuenta de Instagram", "instagramUsername" to "Usuario de Instagram", "wabaId" to "WhatsApp Business Account",
+        "phoneNumberId" to "Numero de WhatsApp", "recordEchoes" to "Registrar los mensajes enviados desde el telefono", "sharedTokens" to "Mismo acceso para Messenger e Instagram",
+        "messengerToken" to "Token de Messenger", "instagramToken" to "Token de Instagram", "oauthToken" to "Token del inicio de sesion", "metaUserId" to "Usuario de Meta",
+    )
+
+    private fun values(s: CrmMetaSettings) = mapOf(
+        "enabled" to s.enabled, "connectionMode" to s.connectionMode, "appSecret" to s.appSecret, "verifyToken" to s.verifyToken, "systemToken" to s.systemToken,
+        "pageId" to s.pageId, "pageName" to s.pageName, "pageToken" to s.pageToken, "instagramAccountId" to s.instagramAccountId, "instagramUsername" to s.instagramUsername,
+        "wabaId" to s.wabaId, "phoneNumberId" to s.phoneNumberId, "recordEchoes" to s.recordEchoes, "sharedTokens" to s.sharedTokens, "messengerToken" to s.messengerToken,
+        "instagramToken" to s.instagramToken, "oauthToken" to s.oauthToken, "metaUserId" to s.metaUserId,
+    )
+
+    private val SecretFields = setOf("appSecret", "verifyToken", "systemToken", "pageToken", "messengerToken", "instagramToken", "oauthToken")
+
+    /** Guarda los ajustes (upsert: sin fila, la crea); los secretos se sellan. Deja en el registro de actividad lo que cambio (los secretos solo como "cambiado"). */
+    fun save(tenant: Connection, settings: CrmMetaSettings, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = load(tenant)
+        write(tenant, settings)
+        CrmAudit.settingsChanged(tenant, actor, "Meta", "Cambio los ajustes de Meta (WhatsApp, Messenger e Instagram).", values(before), values(settings), SettingsLabels, SecretFields)
+    }
+
+    private fun write(tenant: Connection, settings: CrmMetaSettings) {
         tenant.prepareStatement(
             """
             INSERT INTO $SettingsTable (id, enabled, app_secret, verify_token, system_token, page_id, page_name,
@@ -324,7 +349,7 @@ object CrmMeta {
                             channel = "whatsapp", name = event.name, phone = "+${event.from}", message = event.text,
                             messageId = event.id.ifEmpty { null }, source = "WhatsApp", sentAt = event.at,
                         ),
-                        onNewLead,
+                        onNewLead = onNewLead,
                     )
                     log(tenant, "wa_${resultName(result)}", "+${event.from}")
                     if (result is CrmIntakeResult.Created || result is CrmIntakeResult.Updated) stored++
@@ -337,7 +362,7 @@ object CrmMeta {
                         log(tenant, "wa_eco_sin_lead", "+${event.to}")
                         return@forEach
                     }
-                    CrmHost.inboxAdd(tenant, lead, "out", "whatsapp", "", event.text, event.id.ifEmpty { null }, "sent", "", null, "WhatsApp Business", event.at)
+                    CrmHost.inboxAdd(tenant, lead, "out", "whatsapp", "", event.text, event.id.ifEmpty { null }, "sent", "", null, "WhatsApp Business", ActivityActor.integration("WhatsApp Business"), event.at)
                     stored++
                 }
                 is MetaEvent.PageMessage -> {
@@ -349,7 +374,7 @@ object CrmMeta {
                             channel = event.platform, name = name, identity = event.senderId, message = event.text,
                             messageId = event.id.ifEmpty { null }, source = CrmHost.inboxLabel(event.platform), sentAt = event.at,
                         ),
-                        onNewLead,
+                        onNewLead = onNewLead,
                     )
                     // A contact that wrote before Meta gave its name gets it now.
                     if (name.isNotEmpty() && result is CrmIntakeResult.Updated && CrmHost.inboxFillName(tenant, event.platform, event.senderId, name)) {
@@ -470,7 +495,7 @@ object CrmMeta {
      * Account, choosing its number when it has only one. Saves the result; a failing step does not
      * stop the others.
      */
-    fun setup(tenant: Connection, start: CrmMetaSettings, page: Boolean = true, whatsApp: Boolean = true): MetaSetup {
+    fun setup(tenant: Connection, start: CrmMetaSettings, actor: ActivityActor, page: Boolean = true, whatsApp: Boolean = true): MetaSetup {
         CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.Meta)?.let { throw CrmMetaException(it) }
         var settings = start
         val done = mutableListOf<String>()
@@ -523,7 +548,7 @@ object CrmMeta {
                 problems += tr("WhatsApp: {0}", failure.message)
             }
         }
-        save(tenant, settings)
+        save(tenant, settings, actor)
         return MetaSetup(settings, done, problems, numbers)
     }
 
@@ -578,7 +603,7 @@ object CrmMeta {
      * Asks Meta the name of the Messenger and Instagram contacts that still have none (up to [limit]
      * per platform). Names already set are never replaced.
      */
-    fun fillNames(tenant: Connection, settings: CrmMetaSettings, limit: Int = 100): MetaNameFill {
+    fun fillNames(tenant: Connection, settings: CrmMetaSettings, actor: ActivityActor, limit: Int = 100): MetaNameFill {
         CrmHost.extensionInactiveReason(tenant, CrmExtensionIds.Meta)?.let { throw CrmMetaException(it) }
         var reviewed = 0
         var filled = 0
@@ -586,7 +611,7 @@ object CrmMeta {
             CrmHost.inboxUnnamedIdentities(tenant, platform, limit).forEach { senderId ->
                 reviewed++
                 val name = senderName(tenant, settings, senderId, platform)
-                if (name.isNotEmpty() && CrmHost.inboxFillName(tenant, platform, senderId, name)) {
+                if (name.isNotEmpty() && CrmHost.inboxFillName(tenant, platform, senderId, name, actor)) {
                     filled++
                     log(tenant, "nombre_guardado", "$platform $senderId: $name")
                 }

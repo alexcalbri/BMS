@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.meta
 
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmMetaException
 import com.ideasdeveloper.bms.modules.crm.CrmMetaServerApp
@@ -7,6 +8,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmMetaSettings
 import com.ideasdeveloper.bms.modules.crm.CrmModule
 import com.ideasdeveloper.bms.modules.crm.CrmValidationException
 import com.ideasdeveloper.bms.server.i18n.I18n
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.modules.crm.MetaPaths
@@ -86,7 +88,28 @@ object CrmMetaServer {
         }
     }
 
-    fun saveApp(tenant: Connection, app: CrmMetaServerApp) {
+    private val AppLabels = linkedMapOf(
+        "enabled" to "App del servidor activa", "appId" to "App ID", "appSecret" to "App Secret", "verifyToken" to "Verify token",
+        "pagesConfigId" to "Configuracion de Messenger e Instagram", "whatsAppConfigId" to "Configuracion de WhatsApp",
+    )
+
+    private fun appValues(app: CrmMetaServerApp) = mapOf(
+        "enabled" to app.enabled, "appId" to app.appId, "appSecret" to app.appSecret, "verifyToken" to app.verifyToken,
+        "pagesConfigId" to app.pagesConfigId, "whatsAppConfigId" to app.whatsAppConfigId,
+    )
+
+    /** Who the activity log shows for what the connection page of Meta writes (the person came with a one-time link). */
+    private val ConnectActor = ActivityActor.integration("Meta")
+
+    fun saveApp(tenant: Connection, app: CrmMetaServerApp, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = loadApp(tenant)
+        writeApp(tenant, app)
+        CrmAudit.settingsChanged(
+            tenant, actor, "App de Meta del servidor", "Cambio la app de Meta del servidor.", appValues(before), appValues(app), AppLabels, setOf("appSecret", "verifyToken"),
+        )
+    }
+
+    private fun writeApp(tenant: Connection, app: CrmMetaServerApp) {
         tenant.prepareStatement(
             """
             INSERT INTO $ServerAppTable (id, enabled, app_id, app_secret, verify_token, pages_config_id, whatsapp_config_id)
@@ -306,7 +329,7 @@ object CrmMetaServer {
         val (meStatus, me) = CrmMeta.request("${CrmMeta.Graph}/me?fields=id", token)
         val userId = me["id"].jStr().takeIf { meStatus == 200 && numericId.matches(it) }
         val saved = CrmMeta.load(tenant)
-        CrmMeta.save(tenant, saved.copy(connectionMode = ServerMode, oauthToken = token, metaUserId = userId ?: saved.metaUserId))
+        CrmMeta.save(tenant, saved.copy(connectionMode = ServerMode, oauthToken = token, metaUserId = userId ?: saved.metaUserId), ConnectActor)
         if (userId != null) withServerWorkspace { server -> claim(server, "user", userId, company) }
         val pages = pagesOf(token)
         CrmMeta.log(tenant, "login_meta", "${pages.size} pagina(s)")
@@ -371,7 +394,7 @@ object CrmMetaServer {
             instagramAccountId = instagramId, instagramUsername = instagram?.get("username").jStr().ifEmpty { null },
         )
         try {
-            CrmMeta.save(tenant, settings)
+            CrmMeta.save(tenant, settings, ConnectActor)
         } catch (failure: Exception) {
             withServerWorkspace { server -> release(server, company, setOf("page")) }
             throw failure
@@ -403,7 +426,7 @@ object CrmMetaServer {
             }
             if (!instagramOk) {
                 // Without its route and subscription the account would not receive anything: it is not kept as connected.
-                CrmMeta.save(tenant, settings.copy(instagramAccountId = null, instagramUsername = null))
+                CrmMeta.save(tenant, settings.copy(instagramAccountId = null, instagramUsername = null), ConnectActor)
                 withServerWorkspace { server -> release(server, company, setOf("instagram")) }
             }
         } else {
@@ -464,6 +487,7 @@ object CrmMetaServer {
             CrmMeta.save(
                 tenant,
                 CrmMeta.load(tenant).copy(enabled = true, connectionMode = ServerMode, systemToken = token, wabaId = wabaId, phoneNumberId = phoneNumberId),
+                ConnectActor,
             )
         } catch (failure: Exception) {
             withServerWorkspace { server -> release(server, company, setOf("waba")) }
@@ -484,7 +508,7 @@ object CrmMetaServer {
     }
 
     /** Forgets every Meta token and asset of the company and stops routing its webhooks. */
-    fun disconnect(tenant: Connection, company: String) {
+    fun disconnect(tenant: Connection, company: String, actor: ActivityActor) {
         val settings = CrmMeta.load(tenant)
         // Best effort: Meta stops sending this page's and account's events to the app. A failure is only logged.
         unsubscribe(tenant, settings.pageId, settings.pageToken)
@@ -495,6 +519,7 @@ object CrmMetaServer {
                 enabled = false, systemToken = null, pageId = null, pageName = null, pageToken = null, instagramAccountId = null,
                 instagramUsername = null, wabaId = null, phoneNumberId = null, oauthToken = null, metaUserId = null,
             ),
+            actor,
         )
         withServerWorkspace { server -> release(server, company) }
         CrmMeta.log(tenant, "desconectado", "app del servidor")
@@ -583,7 +608,7 @@ object CrmMetaServer {
             companiesOfUser(server, userId)
         } ?: return null
         companies.forEach { company ->
-            runCatching { service.tenantConnectionForWebhook(company, CrmModule.id)?.use { tenant -> disconnect(tenant, company) } }
+            runCatching { service.tenantConnectionForWebhook(company, CrmModule.id)?.use { tenant -> disconnect(tenant, company, ActivityActor.integration("Meta")) } }
         }
         return companies.size
     }

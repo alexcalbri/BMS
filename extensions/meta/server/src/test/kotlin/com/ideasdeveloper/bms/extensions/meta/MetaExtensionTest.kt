@@ -37,7 +37,7 @@ class MetaExtensionTest {
         assertEquals(CrmExtensionIds.Meta, manifest.id)
         assertTrue(ExtensionIdPattern.matches(manifest.id))
         assertEquals("crm", manifest.module)
-        assertEquals("0.30.0", manifest.minModuleVersion)
+        assertEquals("0.31.0", manifest.minModuleVersion)
         assertTrue(manifest.displayName.isNotBlank() && manifest.description.isNotBlank())
         // Habla con la API de Meta, recibe llamadas publicas y guarda secretos.
         assertTrue("network.outbound:graph.facebook.com" in manifest.permissions)

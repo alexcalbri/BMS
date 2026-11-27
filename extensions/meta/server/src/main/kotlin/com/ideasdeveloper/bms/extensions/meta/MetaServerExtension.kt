@@ -60,8 +60,8 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
         module = "crm",
         displayName = "Meta (WhatsApp, Messenger e Instagram)",
         description = "Recibe y responde mensajes de WhatsApp, Messenger e Instagram en el CRM, con la app de Meta de la empresa o la del servidor.",
-        version = "1.1.0",
-        minModuleVersion = "0.30.0", // the bilingual CRM (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/meta",
@@ -231,27 +231,27 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
 
     override fun settings(host: CrmHost, tenant: Connection): CrmMetaSettings = CrmMeta.load(tenant)
 
-    override fun save(host: CrmHost, tenant: Connection, settings: CrmMetaSettings) = CrmMeta.save(tenant, settings)
+    override fun save(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmMeta.save(tenant, settings, actor)
 
     override fun merge(current: CrmMetaSettings, values: Map<String, String>): CrmMetaSettings = CrmMeta.merge(current, values)
 
     override fun toFormValues(settings: CrmMetaSettings): Map<String, String> = CrmMeta.toFormValues(settings)
 
-    override fun setup(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, page: Boolean, whatsApp: Boolean): MetaSetup =
-        CrmMeta.setup(tenant, settings, page, whatsApp)
+    override fun setup(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, page: Boolean, whatsApp: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): MetaSetup =
+        CrmMeta.setup(tenant, settings, actor, page, whatsApp)
 
     override fun log(host: CrmHost, tenant: Connection, event: String, detail: String) = CrmMeta.log(tenant, event, detail)
 
     override fun recent(host: CrmHost, tenant: Connection): List<MetaLogEntry> = CrmMeta.recent(tenant)
 
-    override fun fillNames(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, limit: Int): MetaNameFill = CrmMeta.fillNames(tenant, settings, limit)
+    override fun fillNames(host: CrmHost, tenant: Connection, settings: CrmMetaSettings, limit: Int, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): MetaNameFill = CrmMeta.fillNames(tenant, settings, actor, limit)
 
     override fun sendWhatsApp(host: CrmHost, settings: CrmMetaSettings, toDigits: String, text: String): String = CrmMeta.sendWhatsApp(settings, toDigits, text)
 
     override fun sendPage(host: CrmHost, settings: CrmMetaSettings, recipient: String, text: String, platform: String): String =
         CrmMeta.sendPage(settings, recipient, text, platform)
 
-    override fun disconnect(host: CrmHost, tenant: Connection, company: String) = CrmMetaServer.disconnect(tenant, company)
+    override fun disconnect(host: CrmHost, tenant: Connection, company: String, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmMetaServer.disconnect(tenant, company, actor)
 
     override fun serverApp(host: CrmHost): CrmMetaServerApp? = CrmMetaServer.app()
 
@@ -259,7 +259,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
 
     override fun loadApp(host: CrmHost, tenant: Connection): CrmMetaServerApp = CrmMetaServer.loadApp(tenant)
 
-    override fun saveApp(host: CrmHost, tenant: Connection, app: CrmMetaServerApp) = CrmMetaServer.saveApp(tenant, app)
+    override fun saveApp(host: CrmHost, tenant: Connection, app: CrmMetaServerApp, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmMetaServer.saveApp(tenant, app, actor)
 
     override fun mergeApp(current: CrmMetaServerApp, values: Map<String, String>): CrmMetaServerApp = CrmMetaServer.mergeApp(current, values)
 

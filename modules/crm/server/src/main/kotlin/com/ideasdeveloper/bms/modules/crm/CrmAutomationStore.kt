@@ -75,8 +75,21 @@ object CrmAutomationStore {
             query.executeQuery().use { rows -> buildList { while (rows.next()) rows.automation()?.let { add(it) } } }
         }
 
+    private val AutomationLabels = linkedMapOf(
+        "name" to "Nombre", "enabled" to "Activa", "trigger" to "Disparador", "conditions" to "Condiciones", "actions" to "Acciones",
+        "warnBeforeMinutes" to "Avisar antes (minutos)", "notifyUsers" to "Usuarios avisados", "position" to "Posicion",
+    )
+
+    private fun automationValues(automation: CrmAutomation) = mapOf(
+        "name" to automation.name.trim(), "enabled" to automation.enabled, "trigger" to CrmAutomationJson.trigger(automation.trigger).toString(),
+        "conditions" to automation.conditions.takeIf { it.isNotEmpty() }?.let { CrmAutomationJson.conditions(it).toString() },
+        "actions" to CrmAutomationJson.actions(automation.actions).toString(), "warnBeforeMinutes" to automation.warnBeforeMinutes,
+        "notifyUsers" to automation.notifyUserIds.takeIf { it.isNotEmpty() }?.let { CrmAutomationJson.ids(it).toString() }, "position" to automation.position,
+    )
+
     /** Inserts or updates [automation] (already validated). */
-    fun save(tenant: Connection, automation: CrmAutomation, exists: Boolean) {
+    fun save(tenant: Connection, automation: CrmAutomation, exists: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = if (exists) find(tenant, automation.id) else null
         val sql = if (exists) {
             """
             UPDATE crm_automations SET name = ?, enabled = ?, trigger_type = ?, trigger_config = CAST(? AS jsonb), conditions = CAST(? AS jsonb),
@@ -108,18 +121,34 @@ object CrmAutomationStore {
             if (failure.sqlState == "23505") throw CrmValidationException(tr("Ya existe la automatizacion {0}.", automation.name.trim()))
             throw failure
         }
+        CrmAudit.saved(
+            tenant, actor, "automation", automation.id.toString(), automation.name.trim(), "la automatizacion",
+            before?.let(::automationValues), automationValues(automation), AutomationLabels,
+        )
     }
 
-    fun setEnabled(tenant: Connection, id: UUID, enabled: Boolean): Boolean =
-        tenant.prepareStatement("UPDATE crm_automations SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
+    fun setEnabled(tenant: Connection, id: UUID, enabled: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Boolean = CrmAudit.atomically(tenant) {
+        val before = find(tenant, id)
+        val changed = tenant.prepareStatement("UPDATE crm_automations SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
             update.setBoolean(1, enabled)
             update.setObject(2, id)
             update.executeUpdate() == 1
         }
+        if (changed && before != null && before.enabled != enabled) {
+            CrmAudit.record(
+                tenant, actor, "automation", id.toString(), before.name, com.ideasdeveloper.bms.server.activity.ActivityActions.Updated,
+                if (enabled) "Activo la automatizacion ${before.name}." else "Apago la automatizacion ${before.name}.",
+                com.ideasdeveloper.bms.server.activity.ActivityChanges.diff(mapOf("enabled" to before.enabled), mapOf("enabled" to enabled), mapOf("enabled" to "Activa")),
+            )
+        }
+        changed
+    }
 
     /** Deletes the rule with its runs (cascade). Buttons that pointed to it stop finding it. */
-    fun delete(tenant: Connection, id: UUID): Boolean =
+    fun delete(tenant: Connection, id: UUID, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Boolean = CrmAudit.atomically(tenant) {
+        find(tenant, id)?.let { old -> CrmAudit.removed(tenant, actor, "automation", id.toString(), old.name, "la automatizacion", automationValues(old), AutomationLabels) }
         tenant.prepareStatement("DELETE FROM crm_automations WHERE id = ?").use { delete -> delete.setObject(1, id); delete.executeUpdate() == 1 }
+    }
 
     fun nextPosition(tenant: Connection): Int =
         tenant.prepareStatement("SELECT COALESCE(max(position) + 1, 0) FROM crm_automations").use { query -> query.executeQuery().use { rows -> rows.next(); rows.getInt(1) } }

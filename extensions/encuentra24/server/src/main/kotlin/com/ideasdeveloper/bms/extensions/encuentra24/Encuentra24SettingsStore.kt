@@ -1,10 +1,12 @@
 package com.ideasdeveloper.bms.extensions.encuentra24
 
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmEncuentra24Ads
 import com.ideasdeveloper.bms.modules.crm.CrmEncuentra24Settings
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmValidationException
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.tr
 import java.sql.Connection
 import java.sql.Timestamp
@@ -27,7 +29,9 @@ object Encuentra24SettingsStore {
         }
     }
 
-    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>) {
+    private val FormLabels = linkedMapOf("enabled" to "Encuentra24 activado", "slug" to "Slug de la empresa", "apiKey" to "API key")
+
+    fun saveForm(host: CrmHost, tenant: Connection, values: Map<String, String>, actor: ActivityActor) = CrmAudit.atomically(tenant) {
         host.extensionInactiveReason(tenant, CrmExtensionIds.Encuentra24)?.let { throw CrmValidationException(it) }
         val current = load(host, tenant)
         val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !host.isSecretPlaceholder(it) } ?: current.apiKey
@@ -49,6 +53,11 @@ object Encuentra24SettingsStore {
             update.setString(3, slug)
             update.executeUpdate()
         }
+        CrmAudit.settingsChanged(
+            tenant, actor, "Encuentra24", "Cambio los ajustes de Encuentra24.",
+            mapOf("enabled" to current.enabled, "slug" to current.slug, "apiKey" to current.apiKey), mapOf("enabled" to enabled, "slug" to slug, "apiKey" to key), FormLabels,
+            secrets = setOf("apiKey"),
+        )
     }
 
     /** Guarda el resultado de la ultima importacion (upsert: sin fila no se pierde el resultado). */

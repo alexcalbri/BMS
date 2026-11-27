@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.crm
 
 import com.ideasdeveloper.bms.server.i18n.msg
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
 import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
@@ -72,6 +74,7 @@ object CrmBulkActions {
         val skipped = linkedMapOf<String, Int>()
         if (readOnly.isNotEmpty()) skipped[tr(ReadOnlyReason)] = readOnly.size
         var done = 0
+        val doneLeads = mutableListOf<CrmLead>()
         leads.forEach { lead ->
             // "Sin asignar" takes everybody out; a replacement keeps the assigned users that can no longer be chosen.
             val target = if (mode == CrmAssignees.Mode.Replace && ids.isEmpty()) emptyList()
@@ -90,6 +93,7 @@ object CrmBulkActions {
                 val change = CrmRepository.assign(context.tenant, lead, mode, if (mode == CrmAssignees.Mode.Replace) target else ids, context.names, actor, " (en lote)", origin)
                 CrmNotify.assigned(context.tenant, notifier, lead.id, change.added, actor.userId)
                 done++
+                doneLeads += lead
             } catch (failure: CrmValidationException) {
                 val reason = failure.message.orEmpty().ifBlank { tr("no se pudieron asignar") }
                 skipped[reason] = (skipped[reason] ?: 0) + 1
@@ -101,6 +105,17 @@ object CrmBulkActions {
             CrmAssignees.Mode.Remove -> tr("lead(s) sin {0} entre los asignados.", who)
             CrmAssignees.Mode.Replace -> if (ids.isEmpty()) tr("lead(s) sin asignados.") else tr("lead(s) asignados a {0}.", who)
         }
+        // One row per lead was written by CrmRepository.assign; this is the one of the whole operation.
+        val whoStored = CrmAssignees.names(context.names, ids)
+        recordBulk(
+            context, actor, ActivityActions.Assigned, doneLeads, requested.size,
+            when (mode) {
+                CrmAssignees.Mode.Add -> "Anadio a $whoStored a los asignados de ${doneLeads.size} lead(s) en lote."
+                CrmAssignees.Mode.Remove -> "Quito a $whoStored de los asignados de ${doneLeads.size} lead(s) en lote."
+                CrmAssignees.Mode.Replace -> if (ids.isEmpty()) "Dejo sin asignados a ${doneLeads.size} lead(s) en lote." else "Asigno ${doneLeads.size} lead(s) a $whoStored en lote."
+            },
+            "Asignados", when (mode) { CrmAssignees.Mode.Add -> "Anadir: $whoStored"; CrmAssignees.Mode.Remove -> "Quitar: $whoStored"; CrmAssignees.Mode.Replace -> if (ids.isEmpty()) "Sin asignar" else "Reemplazar por: $whoStored" },
+        )
         return summary(done, doneText, skipped)
     }
 
@@ -126,7 +141,7 @@ object CrmBulkActions {
         return when (action) {
             CrmImportScreens.ActionStage -> {
                 val stage = context.stages.firstOrNull { it.name == value } ?: throw CrmActionNotice(tr("Elige la etapa."))
-                var done = 0
+                val doneLeads = mutableListOf<CrmLead>()
                 leads.forEach { lead ->
                     if (CrmRepository.wonNeedsReservation(tenant, lead.id, stage)) {
                         skip(tr("tienen habitaciones elegidas sin reserva: confirma la reserva desde su ficha"))
@@ -134,12 +149,13 @@ object CrmBulkActions {
                     }
                     try {
                         CrmRepository.moveLead(tenant, lead, stage, context.stages, actor, origin)
-                        done++
+                        doneLeads += lead
                     } catch (failure: CrmValidationException) {
                         skip(failure.message.orEmpty().ifBlank { tr("no se pudieron mover") })
                     }
                 }
-                summary(done, tr("lead(s) movidos a {0}.", stage.name), skipped)
+                recordBulk(context, actor, ActivityActions.StatusChanged, doneLeads, leads.size, "Movio ${doneLeads.size} lead(s) a la etapa ${stage.name} en lote.", "Etapa", stage.name)
+                summary(doneLeads.size, tr("lead(s) movidos a {0}.", stage.name), skipped)
             }
             CrmImportScreens.ActionAddOwner, CrmImportScreens.ActionRemoveOwner ->
                 assign(
@@ -150,21 +166,41 @@ object CrmBulkActions {
             // "Sin asignar": takes everybody out.
             CrmImportScreens.ActionClearOwners -> assign(context, leads, CrmAssignees.Mode.Replace, emptyList(), actor, notifier, origin)
             CrmImportScreens.ActionArchive -> {
-                val archived = leads.count { CrmRepository.archiveLead(tenant, it.id, actor) }
+                val doneLeads = leads.filter { CrmRepository.archiveLead(tenant, it.id, actor) }
+                val archived = doneLeads.size
                 if (archived < leads.size) skip(tr("ya estaban archivados"), leads.size - archived)
+                recordBulk(context, actor, ActivityActions.Archived, doneLeads, leads.size, "Archivo $archived lead(s) en lote.", "Accion", "Archivar")
                 summary(archived, tr("lead(s) archivados."), skipped)
             }
             CrmImportScreens.ActionRestore -> {
-                val restored = leads.count { CrmRepository.restoreLead(tenant, it.id, actor) }
+                val doneLeads = leads.filter { CrmRepository.restoreLead(tenant, it.id, actor) }
+                val restored = doneLeads.size
                 if (restored < leads.size) skip(tr("ya estaban abiertos"), leads.size - restored)
+                recordBulk(context, actor, ActivityActions.Restored, doneLeads, leads.size, "Restauro $restored lead(s) en lote.", "Accion", "Restaurar")
                 summary(restored, tr("lead(s) restaurados."), skipped)
             }
             CrmImportScreens.ActionDelete -> {
                 if (!context.permissions.has(CrmScreens.Delete)) throw CrmActionNotice(tr("No tienes permiso para eliminar leads."))
-                leads.forEach { CrmRepository.deleteLead(tenant, it.id) }
+                leads.forEach { CrmRepository.deleteLead(tenant, it, actor, context.stage(it.stageId)?.name) }
+                recordBulk(context, actor, ActivityActions.Deleted, leads, leads.size, "Elimino ${leads.size} lead(s) en lote.", "Accion", "Eliminar")
                 summary(leads.size, tr("lead(s) eliminados (los clientes quedan en Clientes)."), skipped)
             }
             else -> throw CrmActionNotice(tr("Elige la accion."))
         }
+    }
+
+    /** The one row of a whole bulk operation (spec §4): the leads it reached are in `changes`; each of them has its own row. */
+    private fun recordBulk(
+        context: CrmScreens.Context, actor: CrmActor, action: String, leads: List<CrmLead>, selected: Int, summary: String, detailLabel: String, detail: String,
+    ) {
+        if (leads.isEmpty()) return
+        CrmAudit.record(
+            context.tenant, actor.activity, "bulk_action", null, "Accion en lote: ${leads.size} lead(s)", action, summary,
+            listOf(
+                ActivityChange("count", "Leads afectados", null, "${leads.size} de $selected"),
+                ActivityChange("detail", detailLabel, null, detail),
+                ActivityChange("leads", "Leads", null, leads.joinToString(", ") { it.name }),
+            ),
+        )
     }
 }

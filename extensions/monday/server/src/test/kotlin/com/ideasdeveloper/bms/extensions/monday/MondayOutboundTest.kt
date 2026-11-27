@@ -22,7 +22,7 @@ class MondayOutboundTest {
         val fromDisk = Json { ignoreUnknownKeys = true }.decodeFromString(ExtensionManifest.serializer(), text)
         val manifest = MondayServerExtension.manifest
         assertEquals(fromDisk, manifest)
-        assertEquals("1.2.0", manifest.version)
+        assertEquals("1.3.0", manifest.version)
         assertTrue(CrmExtensionPermissions.LeadsExport in manifest.permissions)
         assertTrue(ExtensionConnectionPermission in manifest.permissions)
         assertEquals("connections.monday", ExtensionConnectionPermission)

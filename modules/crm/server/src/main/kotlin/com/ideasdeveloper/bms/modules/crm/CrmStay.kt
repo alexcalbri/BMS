@@ -79,7 +79,8 @@ object CrmStay {
     }
 
     /** Saves the mapping and brings the internal copy of the dates of every lead in line with it. */
-    fun save(tenant: Connection, mapping: CrmStayMapping): Int = CrmRepository.transaction(tenant) {
+    fun save(tenant: Connection, mapping: CrmStayMapping, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Int = CrmAudit.atomically(tenant) {
+        val before = load(tenant)
         tenant.prepareStatement(
             "INSERT INTO crm_settings (id, stay_start_field, stay_end_field) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET stay_start_field = EXCLUDED.stay_start_field, stay_end_field = EXCLUDED.stay_end_field, updated_at = CURRENT_TIMESTAMP"
         ).use { insert ->
@@ -87,6 +88,14 @@ object CrmStay {
             insert.setString(2, mapping.endKey)
             insert.executeUpdate()
         }
+        // The dates are custom fields: the log names them by their label.
+        val labels = CrmFields.all(tenant).associate { it.key to it.label }
+        fun shown(key: String) = labels[key] ?: key.ifEmpty { null }
+        CrmAudit.settingsChanged(
+            tenant, actor, "Fechas de estadia", "Cambio los campos de ingreso y salida de la estadia.",
+            mapOf("start" to shown(before.startKey), "end" to shown(before.endKey)), mapOf("start" to shown(mapping.startKey), "end" to shown(mapping.endKey)),
+            mapOf("start" to "Campo de ingreso (check-in)", "end" to "Campo de salida (check-out)"),
+        )
         resync(tenant)
     }
 
