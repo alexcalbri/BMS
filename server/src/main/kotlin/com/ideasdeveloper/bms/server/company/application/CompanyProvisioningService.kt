@@ -915,7 +915,7 @@ class CompanyProvisioningService(
                 loginDatabases.twoFactor.takeIf { it.available(connection) }?.isEnabled(connection, owner.id)
             }
         }.getOrNull()
-        return BusinessOwnerResponse(owner.role, owner.displayName.orEmpty(), owner.email.orEmpty(), twoFactor)
+        return BusinessOwnerResponse(owner.role, owner.displayName.orEmpty(), owner.email.orEmpty(), twoFactor, owner.id.toString())
     }
 
     /**

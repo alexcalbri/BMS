@@ -656,6 +656,75 @@ class TwoFactorPostgresTest {
         assertFailsWith<TwoFactorException> { TwoFactorAccountService(db).replaceSetup(withTotp.accessToken, "acme", userPassword, null) }
         assertNotNull(later.replaceSetup(signed.accessToken, "acme", userPassword, codes[1]))
     }
+
+    // TWO_FACTOR.md §8.1: through a company session opened by the server switcher, the server person acts.
+    @Test
+    fun theServerPersonInsideACompanyResetsAsThemself() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        enrol(db, "luis", userPassword, "beta")
+        val self = selfService(db)
+        val luis = userId("bms_tf_beta", "luis")
+        val betaOwner = userId("bms_tf_beta", "tf_beta_owner")
+        // The beta owner uses it (before any switcher session: enabling closes the account's other sessions), so the
+        // server owner (tf_acme_owner on the server) enters beta from a session that passed a second step.
+        enrol(db, "tf_beta_owner", ownerPassword, "beta")
+        val (ownerSecret, _) = enrol(db, "tf_acme_owner", ownerPassword, null)
+        val ownerSession = db.completeTwoFactor(challenge { login(db, "tf_acme_owner", ownerPassword, null) }.token, codeAt(ownerSecret), "10.0.0.1")
+        val inBeta = db.switchTo(null, ownerSession.accessToken, "beta")!!.accessToken
+        val rows = self.users("beta", inBeta).users
+        assertEquals(true, rows.single { it.username == "luis" }.canResetTwoFactor)
+        assertEquals(false, rows.single { it.username == "eva" }.canResetTwoFactor)
+        self.disableUserTwoFactor("beta", inBeta, luis, ownerPassword)
+        assertTrue(scalar(central, "SELECT details::text FROM provisioning_audit_log WHERE action = 'two_factor.reset_by_other' AND actor_role = 'tf_acme_owner'")!!.contains("server_owner"))
+        // It may reset the business owner too.
+        assertEquals(true, self.users("beta", inBeta).users.single { it.isBusinessOwner }.canResetTwoFactor)
+        self.disableUserTwoFactor("beta", inBeta, betaOwner, ownerPassword)
+        assertEquals("0", scalar("bms_tf_beta", "SELECT count(*) FROM application_user_two_factor"))
+
+        // An administrator: the permission is needed, and the password is the administrator's own.
+        enrol(db, "eva", userPassword, "beta")
+        val eva = userId("bms_tf_beta", "eva")
+        val anaInBeta = db.switchTo(null, login(db, "tf_ana", adminPassword, null)!!.accessToken, "beta")!!.accessToken
+        assertEquals(false, self.users("beta", anaInBeta).users.single { it.username == "eva" }.canResetTwoFactor)
+        assertFailsWith<com.ideasdeveloper.bms.server.company.application.CompanySelfException> { self.disableUserTwoFactor("beta", anaInBeta, eva, adminPassword) }
+        connect(central).use { it.run("INSERT INTO server_admin_permissions (user_id, permission) VALUES ('$adminId', 'server.users.two_factor_reset')") }
+        assertEquals(true, self.users("beta", anaInBeta).users.single { it.username == "eva" }.canResetTwoFactor)
+        // The company owner's password does not count: the opener's does.
+        assertEquals("INVALID_PASSWORD", assertFailsWith<AccountException> { self.disableUserTwoFactor("beta", anaInBeta, eva, userPassword) }.code)
+        self.disableUserTwoFactor("beta", anaInBeta, eva, adminPassword)
+        assertTrue(scalar(central, "SELECT details::text FROM provisioning_audit_log WHERE action = 'two_factor.reset_by_other' AND actor_role = 'tf_ana'")!!.contains("server_admin"))
+        // Out of scope: the administrator can no longer use the company session at all.
+        connect(central).use { c ->
+            c.run("UPDATE server_admins SET all_companies = FALSE WHERE user_id = '$adminId'")
+            c.run("INSERT INTO server_admin_companies (user_id, company_code) VALUES ('$adminId', 'acme')")
+        }
+        enrol(db, "luis", userPassword, "beta")
+        assertFailsWith<com.ideasdeveloper.bms.server.company.application.CompanySelfException> { self.disableUserTwoFactor("beta", anaInBeta, luis, adminPassword) }
+    }
+
+    // A session of the business-owner switcher acts as an owner of the group with its OWN account, never on the owner row.
+    @Test
+    fun theBusinessOwnerSwitcherResetsWithItsOwnAccount() {
+        if (url == null) return
+        reset()
+        val db = databases()
+        enrol(db, "luis", userPassword, "beta")
+        val self = selfService(db)
+        enrol(db, "tf_beta_owner", ownerPassword, "beta")
+        val (acmeSecret, _) = enrol(db, "tf_acme_owner", ownerPassword, "acme")
+        val acme = db.completeTwoFactor(challenge { login(db, "tf_acme_owner", ownerPassword, "acme") }.token, codeAt(acmeSecret), "10.0.0.1")
+        val inBeta = db.switchTo("acme", acme.accessToken, "beta")!!.accessToken
+        val rows = self.users("beta", inBeta).users
+        assertEquals(true, rows.single { it.username == "luis" }.canResetTwoFactor)
+        assertEquals(false, self.users("beta", inBeta).users.single { it.isBusinessOwner }.canResetTwoFactor)
+        assertFailsWith<com.ideasdeveloper.bms.server.company.application.CompanySelfException> {
+            self.disableUserTwoFactor("beta", inBeta, userId("bms_tf_beta", "tf_beta_owner"), ownerPassword)
+        }
+        self.disableUserTwoFactor("beta", inBeta, userId("bms_tf_beta", "luis"), ownerPassword)
+        assertTrue(scalar(central, "SELECT actor_role FROM provisioning_audit_log WHERE action = 'two_factor.reset_by_other'") == "tf_acme_owner")
+    }
 }
 
 internal fun awaitStepMargin() {

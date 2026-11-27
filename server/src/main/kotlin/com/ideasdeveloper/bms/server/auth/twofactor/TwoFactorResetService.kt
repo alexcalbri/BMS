@@ -66,12 +66,23 @@ class TwoFactorResetService(
     private val stamp = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'").withZone(ZoneOffset.UTC)
 
     /** Who acts: [companyCode] is the actor's company for a business owner, null for a server person. */
-    class Actor(val audit: AuditActor, val userId: UUID, val login: String, val name: String, val companyCode: String?, val activity: ActivityActor)
+    class Actor(
+        val audit: AuditActor,
+        val userId: UUID,
+        val login: String,
+        val name: String,
+        // The actor's own account: its company (null: a server account); its password and its two-step state are read there.
+        val companyCode: String?,
+        val activity: ActivityActor,
+        // Where the acting session lives when it is not the actor's own account (a company session opened by a
+        // switcher, whose second-step mark was inherited): its company; null = the actor's own [companyCode].
+        val sessionCompanyCode: String? = companyCode,
+    )
 
     /** The actor's guardrails: their password, a passed second step when they use one, and the rate. */
     fun checkActor(actor: Actor, token: String, currentPassword: String?) {
         val actorUsesIt = loginDatabases.accountSource(actor.companyCode)?.connection?.use { store.isEnabled(it, actor.userId) } == true
-        if (actorUsesIt && !loginDatabases.sessionPassedSecondFactor(actor.companyCode, token)) {
+        if (actorUsesIt && !loginDatabases.sessionPassedSecondFactor(actor.sessionCompanyCode, token)) {
             throw TwoFactorResetException("TWO_FACTOR_REAUTH_REQUIRED", 403, tr("Para hacerlo tienes que haber iniciado sesion con tu codigo de verificacion en dos pasos. Cierra sesion y vuelve a entrar con tu codigo."))
         }
         PasswordConfirmation.require(currentPassword, passwordAttempts, "two-factor-reset/${actor.companyCode.orEmpty()}/${actor.login}", tr("Escribe tu contrasena actual.")) { password ->

@@ -280,6 +280,15 @@ class LoginDatabases(
         return scope.secondFactorOf(token)
     }
 
+    /** The login of user [userId] in the active company [companyCode], or null. */
+    fun loginOf(companyCode: String, userId: java.util.UUID): String? =
+        accountSource(companyCode)?.connection?.use { connection ->
+            connection.prepareStatement("SELECT postgres_role FROM application_users WHERE id = ? AND is_active").use { query ->
+                query.setObject(1, userId)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        }
+
     /** The business owner user id of the active company [companyCode], or null. */
     fun businessOwnerId(companyCode: String): java.util.UUID? =
         activeDatabase(companyCode)?.let { tenantScope(it) }?.businessOwner()?.let { java.util.UUID.fromString(it.id.toString()) }

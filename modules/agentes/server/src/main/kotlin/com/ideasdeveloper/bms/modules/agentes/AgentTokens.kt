@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.agentes
 
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.bms.server.i18n.msg
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
@@ -74,6 +75,13 @@ data class TokenOpener(val kind: String, val userId: UUID?, val companyCode: Str
  * the URL and one header; only the SHA-256 of the whole token is stored, so it is shown once.
  */
 object AgentTokens {
+    // Who/what revoked a connection when the account's credentials changed (stored as written, shown with tr()).
+    val RevokedTwoFactorEnabled = msg("verificacion en dos pasos activada")
+    val RevokedTwoFactorReset = msg("verificacion en dos pasos desactivada por otra persona")
+    val RevokedTwoFactorReplaced = msg("autenticador cambiado")
+    val RevokedPasswordReset = msg("contrasena restablecida")
+    val RevokedCredentialsChanged = msg("credenciales cambiadas")
+
     const val Prefix = "bmsmcp"
     const val RefreshPrefix = "bmsmcpr"
     private const val Columns =
@@ -308,7 +316,14 @@ object AgentTokens {
      * account's (owner or administrator) in the server workspace. Nothing when the module is not used there.
      */
     fun revokeForCredentialsChange(access: com.ideasdeveloper.bms.server.modules.ModuleAccessService, event: com.ideasdeveloper.bms.server.auth.application.CredentialsChanged): Int {
-        val by = if (event.reason == com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorEnabled) "verificacion en dos pasos activada" else "contrasena restablecida"
+        // Stored in Spanish (shown with tr()): one truthful label per reason.
+        val by = when (event.reason) {
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorEnabled -> RevokedTwoFactorEnabled
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorReset -> RevokedTwoFactorReset
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorReplaced -> RevokedTwoFactorReplaced
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.PasswordReset -> RevokedPasswordReset
+            else -> RevokedCredentialsChanged
+        }
         val home = event.companyCode ?: com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code
         var revoked = 0
         // Every active company and the server workspace: the account's own connections where it lives, and in

@@ -85,6 +85,8 @@ data class BusinessOwnerResponse(
     val email: String = "",
     // Two-step verification on (TWO_FACTOR.md §8.4); null when it cannot be told.
     val twoFactorEnabled: Boolean? = null,
+    // The owner's user id in the company, for POST /server/companies/{code}/users/{userId}/two-factor/disable.
+    val userId: String? = null,
 )
 
 /** New data of a business owner. [password] blank keeps it; renaming the user requires one. */

@@ -231,7 +231,7 @@ object AgentesScreens {
                 UiListItem(tr("Creado"), trailing = format(token.createdAt)),
                 UiListItem(tr("Vence"), trailing = token.expiresAt?.let(::format) ?: tr("Nunca")),
                 UiListItem(tr("Ultimo uso"), trailing = token.lastUsedAt?.let(::format) ?: tr("Sin uso")),
-            ) + listOfNotNull(token.revokedAt?.let { UiListItem(tr("Revocado"), trailing = tr("{0} por {1}", format(it), token.revokedBy.orEmpty())) }),
+            ) + listOfNotNull(token.revokedAt?.let { UiListItem(tr("Revocado"), trailing = tr("{0} por {1}", format(it), token.revokedBy?.let { by -> tr(by) }.orEmpty())) }),
         )
         val activity = UiTimeline(
             AgentTokens.activity(context.tenant, token.id, 50).map { entry ->

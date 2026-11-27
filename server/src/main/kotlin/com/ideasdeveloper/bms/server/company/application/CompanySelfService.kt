@@ -359,25 +359,78 @@ class CompanySelfService(
         val resets = twoFactorResets ?: throw CompanySelfException(tr("La verificacion en dos pasos no esta disponible en este servidor."))
         if (companyCode.trim() == ServerWorkspace.Code) throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
         val context = authorizeBusinessOwner(companyCode, accessToken)
-        if (loginDatabases.companySessionOpener(context.companyCode, accessToken) != null) {
-            throw CompanySelfException(tr("Desde el selector del servidor usa la opcion del servidor para desactivarla."))
+        val authority = resetAuthority(context, accessToken)
+            ?: throw CompanySelfException(tr("Necesitas el permiso {0}.", ServerPermission.UsersTwoFactorReset.id))
+        val isOwnerRow = userId == context.businessOwnerUserId
+        if (!authority.mayTarget(isOwnerRow)) {
+            throw CompanySelfException(if (isOwnerRow && !authority.server) tr("No puedes desactivar asi tu propia verificacion en dos pasos.") else tr("Una empresa de este business owner no esta en tu alcance."))
         }
-        val ownerId = context.businessOwnerUserId ?: throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
-        if (ownerId == userId) throw CompanySelfException(tr("No puedes desactivar asi tu propia verificacion en dos pasos."))
-        val role = context.businessOwnerRole.orEmpty()
-        val actor = com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(
-            AuditActor.businessOwner(role), ownerId, role, context.activity.name, context.companyCode, context.activity,
-        )
-        resets.checkActor(actor, accessToken, currentPassword)
-        return resets.reset(actor, context.companyCode, userId)
+        resets.checkActor(authority.actor, accessToken, currentPassword)
+        return resets.reset(authority.actor, context.companyCode, userId)
     }
+
+    /**
+     * Who may reset two-step verification through a company session (TWO_FACTOR.md §8.1), or null:
+     * - the business owner's own session: acts as that owner, never on the owner row;
+     * - a session of the business-owner switcher (owner of another company of the group): the switcher treats
+     *   both owners as one person, so it acts as that owner too, but with its OWN account (password, second-step
+     *   mark of this session) and never on the owner row of either company;
+     * - a session of the server switcher: acts as the server person (owner, or administrator holding
+     *   server.users.two_factor_reset with this company in scope), password of the server account; it may target
+     *   the business owner when the whole owner group is in scope.
+     */
+    private fun resetAuthority(context: BusinessOwnerContext, accessToken: String): ResetAuthority? {
+        val ownerId = context.businessOwnerUserId ?: return null
+        val role = context.businessOwnerRole.orEmpty()
+        val code = context.companyCode
+        val opener = loginDatabases.sessionOpener(code, accessToken)
+        return when (opener?.kind) {
+            null -> ResetAuthority(
+                com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(AuditActor.businessOwner(role), ownerId, role, context.activity.name, code, context.activity),
+                server = false,
+            ) { isOwnerRow -> !isOwnerRow }
+            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Company -> {
+                val origin = opener.companyCode ?: return null
+                val login = loginDatabases.loginOf(origin, opener.userId) ?: return null
+                ResetAuthority(
+                    com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(
+                        AuditActor.businessOwner(login), opener.userId, login, context.activity.name, origin, context.activity, sessionCompanyCode = code,
+                    ),
+                    server = false,
+                ) { isOwnerRow -> !isOwnerRow }
+            }
+            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Server -> {
+                val actor = (ServerOwnerAuthorizer.liveActor(loginDatabases.admins, central, opener.userId) as? ServerActorLookup.Found)?.actor ?: return null
+                if (!actor.isOwner && !(actor.has(ServerPermission.UsersTwoFactorReset) && actor.mayActOn(code))) return null
+                val groupInScope = actor.isOwner || actor.companyScope == null || (loginDatabases.ownerGroupOf(code) + code).all { actor.mayActOn(it) }
+                val name = actor.displayName?.takeIf { it.isNotBlank() } ?: actor.login
+                ResetAuthority(
+                    com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(actor.audit, actor.userId, actor.login, name, null, context.activity, sessionCompanyCode = code),
+                    server = true,
+                ) { isOwnerRow -> !isOwnerRow || groupInScope }
+            }
+            else -> null
+        }
+    }
+
+    private class ResetAuthority(
+        val actor: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor,
+        val server: Boolean,
+        val mayTarget: (isOwnerRow: Boolean) -> Boolean,
+    )
 
     fun users(companyCode: String, accessToken: String): CompanyUsersResponse {
         val context = authorizeUserAdministrator(companyCode, accessToken)
+        // What this caller may reset (TWO_FACTOR.md §8.4): the same rules as the reset itself.
+        val authority = if (context.businessOwnerUserId == null || twoFactorResets == null) null else runCatching { resetAuthority(context, accessToken) }.getOrNull()
         tenantConnection(context.tenant).use { connection ->
             syncPermissionCatalog(connection)
             return CompanyUsersResponse(
-                users = loadUsers(connection),
+                users = loadUsers(connection).map { user ->
+                    user.copy(canResetTwoFactor = user.twoFactorEnabled?.let { enabled ->
+                        enabled && authority?.mayTarget(user.userId == context.businessOwnerUserId.toString()) == true
+                    })
+                },
                 permissions = loadPermissions(connection),
             )
         }

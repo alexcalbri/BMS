@@ -273,15 +273,18 @@ two-step verification off for them; the person then signs in with the password o
 
 | Actor | Targets | Route |
 |---|---|---|
-| Business owner of a company (own session, or one opened by the business-owner switcher) | any other user of THAT company (not themself; staff never) | `POST /companies/me/users/{userId}/two-factor/disable` |
+| Business owner of a company, own session | any other user of THAT company (not themself; staff never) | `POST /companies/me/users/{userId}/two-factor/disable` |
+| Business owner of another company of the owner group, through the business-owner switcher | the users of the company it entered, never its business owner | same company route; password of its OWN account |
+| Server owner, or administrator with `server.users.two_factor_reset` and the company in scope, inside the company through the server switcher | any user of the company, its business owner too (administrator: whole owner group in scope) | same company route; password of the SERVER account, recorded as the server person |
 | Server owner | any user of any company, business owners included | `POST /server/companies/{code}/users/{userId}/two-factor/disable` |
 | Server administrator with `server.users.two_factor_reset` (new, **high risk**, company scope applies) | users of companies in scope; a business owner only when every company of its owner group is in scope | same |
 | Server owner only | a server administrator | `POST /server/admins/{id}/two-factor/disable` |
 
 Nobody can reset the server owner's two-step verification this way (the owner has recovery codes and the delayed
 email recovery, §7). An administrator can never reset an administrator, themself included (the admins route is
-owner only). A company session opened from the server switcher cannot use the company route (use the server
-route, which checks the server person's own permission). Routes are in `ServerRoutePolicies` (company route under
+owner only). In a company session opened by a switcher, the real person behind it acts: the second-step mark of
+that session (inherited from the session it was switched from) is required when that person uses two-step
+verification, and the throttle is that person's. Routes are in `ServerRoutePolicies` (company route under
 `/companies/me` is business-owner only like the rest of user management).
 
 ### 8.2 Request and answer
@@ -316,8 +319,10 @@ the target and the company.
 ### 8.4 Listings (optional fields; older apps ignore them)
 
 - `GET /companies/me/users` → each `CompanyUserResponse` gains `twoFactorEnabled: Boolean?` (null when unknown,
-  e.g. before the migration).
-- `GET /companies/{code}/business-owner` → `BusinessOwnerResponse.twoFactorEnabled: Boolean?`.
+  e.g. before the migration) and `canResetTwoFactor: Boolean?` (whether THIS caller may turn it off for that row
+  now, with every rule above; the app shows the button only when it is `true`).
+- `GET /companies/{code}/business-owner` → `BusinessOwnerResponse.twoFactorEnabled: Boolean?` and `userId: String?`
+  (for the server route).
 - `GET /server/admins`, `GET /server/admins/{id}` → `ServerAdminResponse.twoFactorEnabled: Boolean?`.
 The app shows the state and, for the actors of §8.1 and only when it is `true`, a "Desactivar verificacion en dos
 pasos" button that asks for the actor's password and warns that the person's sessions and agents are closed.
