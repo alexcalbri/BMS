@@ -42,6 +42,10 @@ object OAuthClients {
         if (uris.isEmpty() || uris.size > 5) throw OAuthError("invalid_redirect_uri", "Envia entre 1 y 5 redirect_uris.")
         uris.firstOrNull { !validRedirectUri(it) }?.let { throw OAuthError("invalid_redirect_uri", "redirect_uri no permitida: $it") }
         val name = (request["client_name"] as? JsonPrimitive)?.contentOrNull?.trim()?.take(100)?.ifEmpty { null } ?: "Agente IA"
+        // The activity log names the client: it may not pass for one of the log's own markers ("Agente de Ana").
+        if (com.ideasdeveloper.bms.server.activity.ActivityNames.hasMarker(name)) {
+            throw OAuthError("invalid_client_metadata", "client_name no puede contener \"Agente de\", \"desde el servidor\", \"Importacion (\" ni \"Automatizacion\".")
+        }
         // RFC 7591 default when the client does not say.
         val method = (request["token_endpoint_auth_method"] as? JsonPrimitive)?.contentOrNull ?: "client_secret_basic"
         if (method !in AuthMethods) throw OAuthError("invalid_client_metadata", "token_endpoint_auth_method no soportado: $method")

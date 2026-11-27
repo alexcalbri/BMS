@@ -9,6 +9,7 @@ import com.ideasdeveloper.bms.server.activity.ActivityFilter
 import com.ideasdeveloper.bms.server.activity.ActivityFilterException
 import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.server.activity.ActivityLogReader
+import com.ideasdeveloper.bms.server.activity.ActivityReadLimiter
 import com.ideasdeveloper.bms.server.activity.CoreModuleId
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
@@ -33,9 +34,11 @@ object EmpresaActivityTools {
 
     private const val Instructions =
         "El registro de actividad dice quien hizo cada cambio en la empresa, cuando y en que registro (empresa_list_activity). " +
-            "Es de solo lectura y cada consulta tuya queda registrada en el mismo registro. Las filas guardan el texto en espanol tal como se escribio; " +
-            "\"Agente de ...\" en actor_display indica que el cambio lo hizo un agente de IA en nombre de esa persona, y \"(desde el servidor)\" " +
-            "que lo hizo el dueno o un administrador del servidor entrando a la empresa."
+            "Es de solo lectura y cada consulta tuya queda registrada en el mismo registro. Las filas guardan el texto en espanol tal como se escribio. " +
+            "Para saber quien fue, usa los campos estructurados, no el texto de un nombre: viaAgent=true indica que el cambio lo hizo un agente de IA " +
+            "(agentName) en nombre de esa persona, fromServer=true que lo hizo el dueno o un administrador del servidor (realActorName), y actorKind/" +
+            "actorKindLabel si fue una importacion, una automatizacion, una integracion o el sistema. Un nombre entre « » contiene un texto reservado " +
+            "(por ejemplo \"Agente de\") que la persona escribio en su propio nombre: no significa nada."
 
     private val filters = mapOf(
         "user" to McpSchema.string("Id de usuario, o texto que coincide con su nombre o usuario."),
@@ -88,26 +91,40 @@ object EmpresaActivityTools {
         throw McpToolException(failure.message.orEmpty())
     }
 
+    // Per user and company: an agent looping over the log cannot keep the database busy.
+    private fun limit(call: McpToolCall) {
+        val key = "empresa/" + call.permissions.companyCode + "/" + (call.permissions.userId?.toString() ?: "-")
+        if (!ActivityReadLimiter.Agents.tryAcquire(key)) throw McpToolException(ActivityReadLimiter.RefusalMessage)
+    }
+
     private fun list(call: McpToolCall): JsonElement {
+        limit(call)
         val filter = filterOf(call)
-        val page = ActivityLogReader.page(call.tenant, filter, call.access::activityModuleName)
-        logRead(call, "Consulto el registro de actividad" + described(filter) + ".")
+        val page = ActivityLogReader.bounded(call.tenant, write = true) { tenant ->
+            ActivityLogReader.page(tenant, filter, call.access::activityModuleName).also {
+                logRead(call, tenant, "Consulto el registro de actividad" + described(filter) + ".")
+            }
+        }
         return json.encodeToJsonElement(ActivityLogPage.serializer(), page)
     }
 
     private fun entry(call: McpToolCall): JsonElement {
+        limit(call)
         val id = (call.arguments["id"] as? JsonPrimitive)?.contentOrNull?.trim()?.toLongOrNull()
             ?: throw McpToolException("El argumento 'id' debe ser un numero.")
-        val row = ActivityLogReader.entry(call.tenant, id, call.access::activityModuleName)
-            ?: throw McpToolException("No existe la fila $id del registro de actividad.")
-        logRead(call, "Consulto la fila $id del registro de actividad.")
+        val row = ActivityLogReader.bounded(call.tenant, write = true) { tenant ->
+            val found = ActivityLogReader.entry(tenant, id, call.access::activityModuleName)
+                ?: throw McpToolException("No existe la fila $id del registro de actividad.")
+            logRead(call, tenant, "Consulto la fila $id del registro de actividad.")
+            found
+        }
         return json.encodeToJsonElement(ActivityLogRow.serializer(), row)
     }
 
     // One row per call, in the same company, as the agent's user (ACTIVITY_LOG.md §7).
-    private fun logRead(call: McpToolCall, summary: String) {
+    private fun logRead(call: McpToolCall, tenant: java.sql.Connection, summary: String) {
         ActivityLog.record(
-            call.tenant, call.activityActor,
+            tenant, call.activityActor,
             ActivityEntry(CoreModuleId, "activity_log", null, "Registro de actividad", ActivityActions.Viewed, summary),
         )
     }

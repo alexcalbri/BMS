@@ -643,6 +643,15 @@ class ModuleAccessService(
      * Only for public module endpoints (for example a captive portal) that resolved the
      * company from server-side data such as a registered domain, never from client input.
      */
+    /**
+     * Pooled runtime connection to a company database by its name, active or not (the server's reads of the
+     * companies' activity logs); null when the name is not a configured or valid tenant database.
+     */
+    fun tenantConnectionForDatabase(databaseName: String): Connection? {
+        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null
+        return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
+    }
+
     fun tenantConnectionForCompany(companyCode: String): Connection? {
         val databaseName = findActiveDatabase(companyCode) ?: return null
         val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null

@@ -10,6 +10,10 @@ Spec: `ACTIVITY_LOG.md`. Every snippet below compiles (`ActivityLogGuideExamples
 - Importer: `ActivityActor.import(permissions.activityActor)`. Automation: `ActivityActor.automation(rule.name, startedBy = permissions.activityActor)`
   (`startedBy = null` when no person pressed a button). Job (`ModuleJob`): `ActivityActor.job("Recordatorios")`.
   Webhook / inbound integration: `ActivityActor.integration("Sitio web")` (or "Cloudbeds"…).
+- A job that keeps who started it: store `actor.toStoredJson()` and rebuild it with `ActivityActor.restoreImport(stored)`
+  (always an import, validated); `ActivityActor.restore` is deprecated. Names that contain the log's own markers
+  ("Agente de", "(desde el servidor)"…) are quoted by Core; screens and agents read `viaAgent`, `fromServer` and
+  `actorKind`, never markers inside a name.
 
 **2. Record in the SAME connection and transaction, before `commit()`. Never catch its exception.**
 ```kotlin

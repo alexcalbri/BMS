@@ -110,6 +110,9 @@ readonly REQUIRED_FILES=(
     # Tenant migrations are applied by the server when it creates a company; the activity log
     # (append-only, ACTIVITY_LOG.md) must ship with the source.
     database/tenant/migrations/V011__create_activity_log.sql
+    # Owner bms_audit for every company's activity log (ACTIVITY_LOG.md §9), run hourly as root.
+    scripts/ubuntu/activity-harden.sh
+    scripts/ubuntu/activity-harden.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -284,6 +287,8 @@ clean_files_and_services() {
     rm -f /etc/systemd/system/bms-domains{,-renew}.{service,timer} /usr/local/sbin/bms-domains-sync
     systemctl disable --now bms-core-update.timer >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/bms-core-update.{service,timer} /usr/local/sbin/bms-core-update
+    systemctl disable --now bms-activity-harden.timer >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/bms-activity-harden.{service,timer} /usr/local/sbin/bms-activity-harden /usr/local/share/bms/activity-harden.sql
     rm -f /etc/nginx/sites-enabled/bms "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/bms-domain-* /etc/nginx/sites-available/bms-domain-*
     recover_stale_swaps
@@ -1101,6 +1106,9 @@ UNIT
 fi
 bash "$APP_DIR/source/scripts/ubuntu/domains-sync.sh" --install
 bash "$APP_DIR/source/scripts/ubuntu/core-update.sh" --install
+# Creates the role bms_audit (outside the runtime role's membership) and hardens the companies' logs hourly.
+bash "$APP_DIR/source/scripts/ubuntu/activity-harden.sh" --install
+bash "$APP_DIR/source/scripts/ubuntu/activity-harden.sh"
 printf 'Configuracion: /etc/bms/server.env\nLogs: sudo journalctl -u bms -f\n'
 printf 'Correo SMTP del servidor: completa SMTP_* en server.env y ejecuta sudo systemctl restart bms.\n'
 printf 'Login disponible: POST %s://%s/auth/login\n' "$PUBLIC_SCHEME" "$DOMAIN"

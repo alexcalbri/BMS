@@ -84,7 +84,16 @@ company and by the server at startup): who changed what, when and where. The
 service user gets only `SELECT, INSERT` on `activity_log` and a trigger refuses
 `UPDATE`, `DELETE` and `TRUNCATE`; there is no retention purge, so include it in
 the company database backups as usual. Server sign-ins and failures go to
-`provisioning_audit_log`. See `ACTIVITY_LOG.md`.
+`provisioning_audit_log`. Every row is sealed into a hash chain that the server
+verifies hourly against anchors in `provisioning_audit_log` (owner route
+`GET /server/activity/verify`). `install.sh`/`update.sh` install
+`bms-activity-harden.timer` (`/usr/local/sbin/bms-activity-harden`, run as root
+through the `postgres` superuser, PostgreSQL 16+), which gives each company's log
+to the NOLOGIN role `bms_audit`, outside the service user's role membership, and
+hardens companies created from the app within the hour; its log is
+`/var/log/bms-activity-harden.log`. When restoring a `pg_dump` of a company, do it
+as the superuser with the role `bms_audit` present. See `ACTIVITY_LOG.md` §9 for
+what this does and does not guarantee.
 
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless

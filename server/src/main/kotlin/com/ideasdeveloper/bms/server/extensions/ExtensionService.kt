@@ -196,7 +196,8 @@ class ExtensionService(
                         "Cambio los ajustes de la extension ${manifest.displayName}.",
                         changes.keys.sorted().map { key ->
                             val definition = definitions.getValue(key)
-                            if (definition.secret) com.ideasdeveloper.bms.server.activity.ActivityChange.secret(key, definition.label)
+                            // Only settings the manifest marks as plain show their values (and even then not when they look secret).
+                            if (!definition.valueLoggable) com.ideasdeveloper.bms.server.activity.ActivityChange.secret(key, definition.label)
                             else com.ideasdeveloper.bms.server.activity.ActivityChange.of(key, definition.label, current[key], merged[key])
                         },
                     )

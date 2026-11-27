@@ -110,6 +110,8 @@ class ServerAdminsPostgresTest {
                 .forEach { db.run(migration("database/core/migrations/$it.sql")) }
             listOf("V001__create_business_owner", "V003__create_tenant_modules", "V004__create_application_permissions", "V005__create_application_user_credentials")
                 .forEach { db.run(migration("database/tenant/migrations/$it.sql")) }
+            // The workspace's own activity log (its staff accounts closed with an administrator are recorded there).
+            db.run(migration("database/tenant/migrations/V011__create_activity_log.sql"))
         }
         companies.forEach { code ->
             connect("bms_sa_$code").use { db ->
@@ -663,6 +665,11 @@ class ServerAdminsPostgresTest {
         val closed = auditRows("server_workspace.staff_deactivated").single()
         assertEquals("sa_owner", closed.first)
         assertTrue(staff.userId in closed.second && "admin_deactivated" in closed.second, closed.second)
+        // And in the workspace's own activity log: one row per account closed, by the owner, from the server.
+        listOf(staff.userId, other.userId).forEach { id ->
+            assertEquals("1", scalar(workspaceDb, "SELECT count(*) FROM activity_log WHERE action = 'status_changed' AND entity_id = '$id' AND summary LIKE 'Desactivo al usuario %ya no tiene acceso (admin_deactivated).'"))
+        }
+        assertEquals("server_owner", scalar(workspaceDb, "SELECT DISTINCT actor_kind FROM activity_log WHERE action = 'status_changed' AND summary LIKE '%admin_deactivated%'"))
 
         // Losing server.workspace does the same for the accounts of ana: one she created, and one of the
         // owner whose email she changed (password recovery would go to her mailbox).

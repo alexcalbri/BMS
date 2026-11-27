@@ -33,7 +33,8 @@ data class ActivityFilter(
     val pageSize: Int = ActivityLogReader.DefaultPageSize,
 ) {
     val size: Int get() = pageSize.coerceIn(1, ActivityLogReader.MaxPageSize)
-    val pageIndex: Int get() = page.coerceAtLeast(0)
+    // Deep OFFSETs make the database read and drop every row before them: past MaxPage, narrow the dates.
+    val pageIndex: Int get() = page.coerceIn(0, ActivityLogReader.MaxPage)
 
     /** The filters actually used, for the log of reads made by agents (never more than short texts). */
     fun describe(): Map<String, String> = buildMap {
@@ -59,7 +60,9 @@ data class ActivityFilter(
             text = parameters("q") ?: parameters("text"),
             from = day(parameters("from")),
             to = day(parameters("to")),
-            page = parameters("page")?.trim()?.toIntOrNull() ?: 0,
+            page = parameters("page")?.trim()?.toIntOrNull()?.also { number ->
+                if (number > ActivityLogReader.MaxPage) throw ActivityFilterException(tr("La pagina debe estar entre 0 y {0}: acota las fechas para ver registros mas antiguos.", ActivityLogReader.MaxPage))
+            } ?: 0,
             pageSize = parameters("pageSize")?.trim()?.toIntOrNull() ?: ActivityLogReader.DefaultPageSize,
         )
 
@@ -73,6 +76,42 @@ data class ActivityFilter(
 class ActivityFilterException(message: String) : Exception(message)
 
 /**
+ * Limit of the agents' reads of the logs (empresa_list_activity, servidor_list_company_activity...): at most
+ * [limit] calls per key (user and company) in each [windowMillis]; the routes use Ktor's RateLimit
+ * ([ActivityRateLimit]). Memory is bounded: past [maxKeys] keys the oldest windows are dropped.
+ */
+class ActivityReadLimiter(
+    private val limit: Int = 30,
+    private val windowMillis: Long = 60_000,
+    private val maxKeys: Int = 10_000,
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
+    private class Window(val start: Long, var count: Int)
+    private val windows = LinkedHashMap<String, Window>()
+
+    /** True when one more call of [key] is allowed now (and counts it). */
+    @Synchronized
+    fun tryAcquire(key: String): Boolean {
+        val now = clock()
+        val current = windows[key]?.takeIf { now - it.start < windowMillis }
+            ?: Window(now, 0).also {
+                windows.remove(key)
+                if (windows.size >= maxKeys) windows.entries.iterator().let { oldest -> oldest.next(); oldest.remove() }
+                windows[key] = it
+            }
+        if (current.count >= limit) return false
+        current.count++
+        return true
+    }
+
+    companion object {
+        /** The one shared by every agent tool that reads an activity log or the server audit. */
+        val Agents = ActivityReadLimiter()
+        const val RefusalMessage = "Demasiadas consultas al registro de actividad en poco tiempo; espera un minuto y vuelve a intentarlo."
+    }
+}
+
+/**
  * Reads the activity log of one company database, newest first. Never writes. A company whose
  * database does not have the table yet (before tenant V011) has an empty log.
  */
@@ -80,6 +119,38 @@ object ActivityLogReader {
     const val DefaultPageSize = 50
     const val MaxPageSize = 200
     const val MaxExportRows = 10_000
+    const val MaxPage = 1_000
+    // Bound of one read of the company route (and of the agent tools): a slow or huge log never holds a connection for long.
+    const val StatementTimeout = "15s"
+
+    /**
+     * Runs [block] on [tenant] in a read-only transaction with [StatementTimeout] (SET LOCAL), restoring the
+     * connection's auto-commit afterwards. [write] lets the block also insert (the export's own row): then the
+     * transaction is not read-only and commits.
+     */
+    fun <T> bounded(tenant: Connection, write: Boolean = false, block: (Connection) -> T): T {
+        if (!tenant.autoCommit) {
+            // Already inside the caller's transaction: only bound it; the caller commits or rolls back.
+            tenant.createStatement().use { it.execute("SET LOCAL statement_timeout = '$StatementTimeout'") }
+            return block(tenant)
+        }
+        val autoCommit = tenant.autoCommit
+        tenant.autoCommit = false
+        try {
+            tenant.createStatement().use { statement ->
+                if (!write) statement.execute("SET TRANSACTION READ ONLY")
+                statement.execute("SET LOCAL statement_timeout = '$StatementTimeout'")
+            }
+            val result = block(tenant)
+            if (write) tenant.commit() else tenant.rollback()
+            return result
+        } catch (failure: Throwable) {
+            runCatching { tenant.rollback() }
+            throw failure
+        } finally {
+            runCatching { tenant.autoCommit = autoCommit }
+        }
+    }
 
     /** [moduleName] turns a module id into its name (Spanish, as stored); [companyCode] tags rows of the server route. */
     fun page(tenant: Connection, filter: ActivityFilter, moduleName: (String) -> String, companyCode: String? = null): ActivityLogPage {
@@ -154,7 +225,7 @@ object ActivityLogReader {
             SELECT id, occurred_at, actor_kind, actor_user_id, actor_name, actor_display, agent_name, real_actor_kind,
                    real_actor_user_id, real_actor_name, module_id, entity_type, entity_id, entity_label, action, summary,
                    changes::text, origin
-            FROM activity_log
+            FROM public.activity_log
             $where
             ORDER BY occurred_at DESC, id DESC
             LIMIT ? OFFSET ?
@@ -168,6 +239,8 @@ object ActivityLogReader {
                     while (rows.next()) {
                         val module = rows.getString(11)
                         val action = rows.getString(15)
+                        // Who it was, rebuilt from the structured columns: the stored display is never shown.
+                        val who = ActivityDisplay.of(rows.getString(3), rows.getString(5), rows.getString(7), rows.getString(8), rows.getString(10))
                         add(
                             ActivityLogRow(
                                 id = rows.getLong(1),
@@ -176,7 +249,7 @@ object ActivityLogReader {
                                 actorKind = rows.getString(3),
                                 actorUserId = rows.getObject(4)?.toString(),
                                 actorName = rows.getString(5),
-                                actorDisplay = rows.getString(6),
+                                actorDisplay = who.display,
                                 agentName = rows.getString(7),
                                 realActorKind = rows.getString(8),
                                 realActorUserId = rows.getObject(9)?.toString(),
@@ -191,6 +264,9 @@ object ActivityLogReader {
                                 summary = rows.getString(16),
                                 changes = changes(rows.getString(17)),
                                 origin = rows.getString(18),
+                                viaAgent = who.viaAgent,
+                                fromServer = who.fromServer,
+                                actorKindLabel = who.kindLabel,
                             ),
                         )
                     }
@@ -223,7 +299,7 @@ object ActivityLogReader {
         val header = buildList {
             add("Fecha")
             if (withCompany) add("Empresa")
-            addAll(listOf("Quien", "Agente", "Modulo", "Tipo", "Id", "Registro", "Accion", "Resumen", "Cambios", "Origen"))
+            addAll(listOf("Quien", "Tipo de actor", "Agente", "Modulo", "Tipo", "Id", "Registro", "Accion", "Resumen", "Cambios", "Origen"))
         }
         append(header.joinToString(",") { cell(it) })
         append("\r\n")
@@ -234,7 +310,7 @@ object ActivityLogReader {
             val cells = buildList {
                 add(row.occurredAt)
                 if (withCompany) add(row.companyCode.orEmpty())
-                addAll(listOf(row.actorDisplay, row.agentName.orEmpty(), row.moduleName, row.entityType, row.entityId.orEmpty(), row.entityLabel,
+                addAll(listOf(row.actorDisplay, row.actorKindLabel, row.agentName?.let(ActivityNames::neutral).orEmpty(), row.moduleName, row.entityType, row.entityId.orEmpty(), row.entityLabel,
                     row.actionLabel, row.summary, changes, row.origin.orEmpty()))
             }
             append(cells.joinToString(",") { cell(it) })

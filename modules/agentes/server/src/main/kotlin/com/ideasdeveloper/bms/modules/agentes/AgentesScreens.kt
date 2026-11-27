@@ -321,6 +321,10 @@ object AgentesScreens {
     fun parseNewToken(values: Map<String, String>, toolModules: List<String>, now: Instant = Instant.now()): NewTokenRequest {
         val name = values["name"].orEmpty().trim()
         if (name.isEmpty() || name.length > 80) throw AgentesValidationException(tr("Escribe un nombre de hasta 80 caracteres."))
+        // The activity log shows it as the agent of a person ("Agente de Ana"): it may not fake the log's own markers.
+        if (com.ideasdeveloper.bms.server.activity.ActivityNames.hasMarker(name)) {
+            throw AgentesValidationException(tr("El nombre no puede contener \"Agente de\", \"desde el servidor\", \"Importacion (\" ni \"Automatizacion\"."))
+        }
         val chosen = toolModules.filter { values["$ModuleFieldPrefix$it"] == "true" }.toSet()
         if (chosen.isEmpty()) throw AgentesValidationException(tr("Elige al menos un modulo."))
         val expiration = values["expires"].orEmpty()

@@ -194,7 +194,10 @@ class ActivityLogPostgresTest {
         assertEquals("1", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE action = 'signed_in' AND actor_name = 'Eva acme'"))
         // Five failures of one login and address: one row now; the other four wait for the window.
         assertEquals("1", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE action = 'sign_in_failed' AND entity_label = 'eva_acme'"))
-        assertEquals("system", scalar("bms_al_acme", "SELECT actor_kind FROM activity_log WHERE action = 'sign_in_failed' AND entity_label = 'nadie'"))
+        // An unknown login is never stored as typed (it may be a password typed in the wrong box).
+        assertEquals("system", scalar("bms_al_acme", "SELECT actor_kind FROM activity_log WHERE action = 'sign_in_failed' AND entity_label = '(usuario desconocido)'"))
+        assertEquals("0", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE summary LIKE '%nadie%' OR entity_label LIKE '%nadie%' OR changes::text LIKE '%nadie%'"))
+        assertEquals("1", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE action = 'sign_in_failed' AND summary LIKE '%(usuario desconocido)%'"))
         assertEquals("0", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE summary LIKE '%mala%'"))
         databases.logout("acme", ok!!.accessToken)
         assertEquals("1", scalar("bms_al_acme", "SELECT count(*) FROM activity_log WHERE action = 'signed_out'"))
@@ -284,7 +287,8 @@ class ActivityLogPostgresTest {
         assertEquals(ownerId, switcher.realUserId)
         assertEquals(evaId, switcher.userId)
         assertEquals("Agente de Duena (desde el servidor)", switcher.viaAgent("Claude").display)
-        assertEquals("Duena", access.serverPersonActor(ownerId, "servidor").display)
+        // In the workspace too the row says it came from the server (the kind is server_owner).
+        assertEquals("Duena (desde el servidor)", access.serverPersonActor(ownerId, "servidor").display)
         assertEquals("Duena (desde el servidor)", access.serverPersonActor(ownerId, "acme").display)
     }
 }

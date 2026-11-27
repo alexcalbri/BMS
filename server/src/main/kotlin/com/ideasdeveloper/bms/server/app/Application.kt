@@ -120,6 +120,15 @@ fun Application.module() {
             )
             requestKey { call -> clientAddress(call) }
         }
+        // Reads of the activity logs (/companies/me/activity*, /server/activity*): each one reads one or
+        // every company database, so per client IP and tighter than the other admin routes.
+        register(RateLimitName(com.ideasdeveloper.bms.server.activity.ActivityRateLimit)) {
+            rateLimiter(
+                limit = 30,
+                refillPeriod = 60.seconds,
+            )
+            requestKey { call -> clientAddress(call) }
+        }
         // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
         // enough for webhook bursts, but it stops floods that would open a database connection each.
         register(RateLimitName("extensions")) {
@@ -178,6 +187,24 @@ fun Application.module() {
         if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
     }
     val provisioningConfig = companyProvisioningConfig()
+    // Set below; the integrity service notifies the server owners through it (their notifications in the workspace).
+    lateinit var moduleAccessRef: ModuleAccessService
+    // Tamper evidence of the company activity logs (ACTIVITY_LOG.md §9): verification, anchors, hourly job.
+    val activityIntegrity = com.ideasdeveloper.bms.server.activity.ActivityIntegrityService(
+        central = DatabaseFactory.getDataSource(),
+        // Not pooled: a full check reads a whole log and must not hold one of the requests' few connections.
+        connect = { databaseName ->
+            loginDatabases.tenantConfig(databaseName)?.let { tenant ->
+                org.postgresql.ds.PGSimpleDataSource().apply {
+                    setURL(tenant.jdbcUrl)
+                    user = tenant.user
+                    password = tenant.password
+                }.connection
+            }
+        },
+        notifyOwners = { title, text -> notifyServerOwners(DatabaseFactory.getDataSource(), moduleAccessRef, title, text) },
+    )
+    com.ideasdeveloper.bms.server.activity.CoreActivity.integrityAlarm = activityIntegrity::alarm
     // What the owner asked to install and is not finished: resumed after a restart, which waits for every build.
     val installQueue = PackageInstallQueue(modulePackagesRoot.toAbsolutePath().resolve("pending-installs.json"), ::restartToLoadModules)
     val companyProvisioning = CompanyProvisioningService(
@@ -200,6 +227,7 @@ fun Application.module() {
         installQueue = installQueue,
         // A resumed install runs with the current rights of who asked for it (SERVER_ADMINS.md §8).
         queuedActors = com.ideasdeveloper.bms.server.admins.QueuedInstallActors(loginDatabases.admins::queuedInstallActor),
+        activityIntegrity = activityIntegrity,
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without
     // delaying startup.
@@ -223,15 +251,8 @@ fun Application.module() {
     }
     val serverActivity = com.ideasdeveloper.bms.server.activity.ServerActivity(
         central = DatabaseFactory.getDataSource(),
-        openTenant = { databaseName ->
-            loginDatabases.tenantConfig(databaseName)?.let { tenant ->
-                org.postgresql.ds.PGSimpleDataSource().apply {
-                    setURL(tenant.jdbcUrl)
-                    user = tenant.user
-                    password = tenant.password
-                }.connection
-            }
-        },
+        // The same pooled connections as the requests of each company (a few per company, never one per read).
+        openTenant = { databaseName -> moduleAccessRef.tenantConnectionForDatabase(databaseName) },
         moduleName = activityModuleName,
     )
     val serverAudit = ServerAudit(DatabaseFactory.getDataSource())
@@ -275,7 +296,7 @@ fun Application.module() {
             }
         },
         moduleNames = { id -> moduleRegistry.availableDefinition(id)?.displayName },
-    )
+    ).also { moduleAccessRef = it }
     // Extensions installed per company (EXTENSIONS.md): bundled in the modules or loaded from packages.
     val extensionConnections = ExtensionConnections.from(moduleAccessService)
     val extensionStorage = ExtensionStorage(secretBox)
@@ -420,7 +441,18 @@ fun Application.module() {
         secrets = secretBox,
         serverActors = serverActors,
     ).also { companySelfServiceRef = it }
+    // Hourly: every company's chain verified and anchored in provisioning_audit_log, after the startup catch-up.
+    val integrityJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "activity-integrity").apply { isDaemon = true } }
+    integrityJob.scheduleWithFixedDelay({
+        try {
+            migrationsDone.await()
+            activityIntegrity.runAll()
+        } catch (failure: Throwable) {
+            log.error("Activity log verification failed to run", failure)
+        }
+    }, 10, 60, java.util.concurrent.TimeUnit.MINUTES)
     monitor.subscribe(ApplicationStopped) {
+        integrityJob.shutdownNow()
         moduleJobs.stop()
         moduleAccessService.close()
         remoteModuleCatalog.close()
@@ -488,7 +520,7 @@ fun Application.module() {
                 ),
                 addToScope = { userId, code -> loginDatabases.admins.addCompany(userId, code) },
             )
-            serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity)
+            serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity, activityIntegrity)
             // The company's own activity log (ACTIVITY_LOG.md §3).
             companyActivityRoutes(moduleAccessService, activityModuleName)
         }
@@ -511,6 +543,28 @@ fun Application.module() {
         // Routes of every extension, mounted once behind ExtensionGate (status per company).
         rateLimit(RateLimitName("extensions")) {
             extensionRegistry.installRoutes(this, moduleAccessService, extensionStorage)
+        }
+    }
+}
+
+/**
+ * A notification to every active server owner, in the server workspace (where their bell reads them); nothing when the
+ * workspace does not exist yet. Used for integrity failures of the activity logs.
+ */
+private fun notifyServerOwners(central: DataSource, access: ModuleAccessService, title: String, text: String) {
+    val (workspace, owners) = central.connection.use { connection ->
+        val database = connection.prepareStatement("SELECT database_name FROM companies WHERE is_server_workspace").use { query ->
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+        val ids = connection.prepareStatement(
+            "SELECT owners.user_id FROM server_owners owners JOIN application_users users ON users.id = owners.user_id WHERE users.is_active"
+        ).use { query -> query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, java.util.UUID::class.java)) } } }
+        database to ids
+    }
+    if (workspace == null || owners.isEmpty()) return
+    access.tenantConnectionForDatabase(workspace)?.use { tenant ->
+        owners.forEach { owner ->
+            access.notifications.notify(tenant, com.ideasdeveloper.bms.server.modules.NewNotification(owner, com.ideasdeveloper.bms.server.activity.CoreModuleId, title, text))
         }
     }
 }

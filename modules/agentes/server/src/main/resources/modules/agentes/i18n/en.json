@@ -44,6 +44,7 @@
   "El agente deja de funcionar de inmediato. Continuar?": "The agent stops working immediately. Continue?",
   "El cliente no esta registrado en este servidor. Vuelve a agregar el conector.": "The client is not registered on this server. Add the connector again.",
   "El codigo de empresa no es valido.": "The company code is not valid.",
+  "El nombre no puede contener \"Agente de\", \"desde el servidor\", \"Importacion (\" ni \"Automatizacion\".": "The name cannot contain \"Agente de\", \"desde el servidor\", \"Importacion (\" or \"Automatizacion\".",
   "Elige al menos un modulo.": "Choose at least one module.",
   "Elige cuando vence el token.": "Choose when the token expires.",
   "Empresa": "Company",

@@ -4,8 +4,10 @@ import kotlinx.serialization.Serializable
 
 /**
  * Contract of the company activity log (ACTIVITY_LOG.md, Core 0.12.0): the JSON of
- * GET /companies/me/activity and GET /server/activity. Texts (actorDisplay, summary, labels) are stored
- * in Spanish and returned as stored.
+ * GET /companies/me/activity and GET /server/activity. Texts (summary, labels) are stored in Spanish and
+ * returned as stored. [ActivityLogRow.actorDisplay] is rebuilt by the server from the structured actor
+ * fields when the row is read (never the stored text): show the kind from [ActivityLogRow.actorKind],
+ * [ActivityLogRow.viaAgent] and [ActivityLogRow.fromServer], not from markers inside a name.
  */
 object ActivityPermissionIds {
     // Company permission (module empresa): read the company's activity log.
@@ -31,6 +33,7 @@ data class ActivityLogRow(
     val actorKind: String,
     val actorUserId: String? = null,
     val actorName: String,
+    // Rebuilt at read time from actorKind, actorName, agentName and realActor*; names holding a marker are quoted.
     val actorDisplay: String,
     val agentName: String? = null,
     val realActorKind: String? = null,
@@ -46,7 +49,36 @@ data class ActivityLogRow(
     val summary: String,
     val changes: List<ActivityLogChange> = emptyList(),
     val origin: String? = null,
+    // The action came through an AI agent or OAuth connection (agentName is set).
+    val viaAgent: Boolean = false,
+    // A server owner or administrator did it (directly, or inside the company through a switcher session).
+    val fromServer: Boolean = false,
+    // Spanish labels of the actor's kind for CSV and agents: "Agente IA", "Desde el servidor", "Importacion"...
+    val actorKindLabel: String = "",
 )
+
+/** Result of GET /server/activity/verify (owner only): the hash chain of one company's log against its anchors. */
+@Serializable
+data class ActivityIntegrityReport(
+    val companyCode: String,
+    val ok: Boolean,
+    // The log's table and functions belong to bms_audit, outside the runtime role (scripts/ubuntu/activity-harden.sh).
+    val hardened: Boolean,
+    val rows: Long = 0,
+    val lastSeq: Long = 0,
+    val lastId: Long? = null,
+    val lastHash: String? = null,
+    val anchorsChecked: Int = 0,
+    // Id of the first row where the chain breaks (changed, unsealed, or right after missing rows).
+    val firstBadId: Long? = null,
+    val problems: List<String> = emptyList(),
+    // Why the log is not hardened yet, when it is not.
+    val notHardenedReasons: List<String> = emptyList(),
+    val checkedAt: String = "",
+)
+
+@Serializable
+data class ActivityIntegritySummary(val reports: List<ActivityIntegrityReport>)
 
 @Serializable
 data class ActivityLogPage(

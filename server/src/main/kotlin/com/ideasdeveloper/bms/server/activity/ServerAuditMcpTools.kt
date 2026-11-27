@@ -58,6 +58,8 @@ class ServerAuditMcpTools(
         val actor = (liveActor(userId) as? ServerActorLookup.Found)?.actor
             ?: throw McpToolException("Tu usuario ya no puede leer la auditoria del servidor.")
         if (!actor.has(ServerPermission.AuditView)) throw McpToolException("Necesitas el permiso ${ServerPermission.AuditView.id}.")
+        // Per server user, shared by both tools: an agent looping over the logs cannot keep every company database busy.
+        if (!ActivityReadLimiter.Agents.tryAcquire("servidor/$userId")) throw McpToolException(ActivityReadLimiter.RefusalMessage)
         return actor
     }
 
@@ -130,7 +132,8 @@ class ServerAuditMcpTools(
             name = ListCompanyActivity,
             title = "Actividad en empresas",
             description = "Lista el registro de actividad de una empresa (company) o, sin company, lo mas reciente de todas las empresas a tu alcance: " +
-                "quien (actor_display), modulo, registro, accion, resumen y cambios. Filtra por usuario, modulo, tipo e id de registro, accion, texto y fechas.",
+                "quien (actorDisplay; viaAgent, fromServer y actorKindLabel dicen si fue un agente de IA, alguien del servidor, una importacion...), " +
+                "modulo, registro, accion, resumen y cambios. Filtra por usuario, modulo, tipo e id de registro, accion, texto y fechas.",
             permission = Permission,
             readOnly = true,
             inputSchema = McpSchema.obj(
