@@ -79,20 +79,19 @@ class ActivitySecurityTest {
     }
 
     @Test
-    fun theHashesTheVerificationExpectsAreTheOnesTheMigrationAndTheHardeningCreate() {
+    fun theHashesTheVerificationExpectsAreTheOnesTheMigrationCreates() {
         val root = com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck.repoRoot()
         val migration = java.io.File(root, "database/tenant/migrations/V011__create_activity_log.sql").readText()
         val bodies = Regex("CREATE OR REPLACE FUNCTION public\\.(\\w+)\\(\\).*?AS \\$\\$(.*?)\\$\\$;", RegexOption.DOT_MATCHES_ALL)
             .findAll(migration).associate { it.groupValues[1] to ActivityIntegrity.sha256(it.groupValues[2]) }
         assertEquals(bodies, ActivityIntegrity.versions.single { it.migration == ActivityIntegrity.Migration }.functions)
-        val harden = java.io.File(root, "scripts/ubuntu/activity-harden.sql").readText()
-        val guard = Regex("\\\$guard_body\\\$(.*?)\\\$guard_body\\\$", RegexOption.DOT_MATCHES_ALL).find(harden)!!.groupValues[1]
-        assertEquals(ActivityIntegrity.sha256(guard), ActivityIntegrity.GuardSha256)
-        // activity-harden.sh splices the migration where this line is, and installs the deviation query the server uses.
-        assertEquals(1, harden.lines().count { it == "-- @canonical@" })
-        val script = java.io.File(root, "scripts/ubuntu/activity-harden.sh").readText()
-        assertTrue(script.contains("server/src/main/resources/activity/activity-deviations.sql"))
-        assertTrue(ActivityIntegrity.deviationQuery.contains("bms.audit_functions"))
+        // Nothing in the log runs with more rights than its writer, and no head table to update.
+        assertTrue(migration.lines().filter { it.startsWith("LANGUAGE") }.none { it.contains("SECURITY DEFINER") })
+        assertFalse(migration.contains("activity_log_chain_head"))
+        assertTrue(ActivityIntegrity.deviationQuery.contains("bms.activity_functions"))
+        // Detection reads catalogs only: no row of the company's own tables.
+        val tables = Regex("(?:FROM|JOIN)\\s+([a-z_.]+)", RegexOption.IGNORE_CASE).findAll(ActivityIntegrity.deviationQuery).map { it.groupValues[1] }.toSet()
+        assertTrue(tables.none { it.startsWith("public.") || it.startsWith("activity_log") }, tables.toString())
     }
 
     @Test

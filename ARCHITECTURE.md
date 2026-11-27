@@ -383,7 +383,10 @@ company.
   `GET /companies/me/activity` (`empresa.activity.view`) and `GET /server/activity`
   (`server.audit.view` within the scope). The one exception to "server-level
   agents are owner only": an administrator with `server.audit.view` may connect
-  an agent that gets only the two audit read tools.
+  an agent that gets only the two audit read tools. Tamper evidence, not
+  prevention against database access: every row is sealed into a hash chain at
+  commit, checked hourly against anchors in `provisioning_audit_log`
+  (`GET /server/activity/verify`, owner only); see `ACTIVITY_LOG.md` §9.
 - Ownership transfer replaces the company's owner atomically; it must not
   leave an active company without an owner or with multiple owners.
 - The server administration UI is visible only to `server_owner`. Ktor

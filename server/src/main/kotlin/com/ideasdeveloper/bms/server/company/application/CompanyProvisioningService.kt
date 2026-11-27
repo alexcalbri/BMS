@@ -1953,25 +1953,17 @@ class CompanyProvisioningService(
 
     /**
      * Company activity log (tenant V011, ACTIVITY_LOG.md): append-only, so the runtime role gets only
-     * SELECT and INSERT (plus the id sequence) and loses anything else it might hold on it. Also
-     * brought to existing companies at startup.
+     * SELECT and INSERT on the log and its chain (the sealing trigger runs as the writer and appends to the
+     * chain), plus the id sequence, and loses anything else it might hold on the log. Also brought to
+     * existing companies at startup.
      */
     private fun applyActivityLogMigration(connection: Connection) {
-        // A log already given to bms_audit gets the migrations of its own objects from activity-harden.sh, as the
-        // superuser (ACTIVITY_LOG.md §9, "Migrations"): this role can no longer change them, and must not try.
-        if (activityLogOwner(connection) == com.ideasdeveloper.bms.server.activity.ActivityIntegrity.AuditRole) return
         val relativePath = "database/tenant/migrations/V011__create_activity_log.sql"
         applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         grantIfMissing(connection, config.runtimeUser, ActivityLogTable, listOf("SELECT", "INSERT"))
-        grantSequenceIfMissing(connection, config.runtimeUser, ActivityLogTable, "activity_log_id_seq", listOf("USAGE", "SELECT"))
-        grantIfMissing(connection, config.runtimeUser, "activity_log_chain", listOf("SELECT"))
-        grantIfMissing(connection, config.runtimeUser, "activity_log_chain_head", listOf("SELECT"))
+        grantIfMissing(connection, config.runtimeUser, "activity_log_chain", listOf("SELECT", "INSERT"))
+        grantSequenceIfMissing(connection, config.runtimeUser, ActivityLogTable, "activity_log_id_seq", listOf("USAGE"))
         revokeIfPresent(connection, config.runtimeUser, ActivityLogTable, listOf("UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"))
-    }
-
-    private fun activityLogOwner(connection: Connection): String? = connection.createStatement().use { statement ->
-        statement.executeQuery("SELECT pg_catalog.pg_get_userbyid(c.relowner) FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass('public.activity_log')")
-            .use { rows -> if (rows.next()) rows.getString(1) else null }
     }
 
     /** Takes [privileges] on [table] away from [runtimeUser] when it holds any of them (as the table owner). */
@@ -2449,8 +2441,9 @@ class CompanyProvisioningService(
 
     /**
      * The company's activity row for a change made from the server by [actor], on [tenant] (the change's own
-     * connection, in its transaction). A provisioning connection runs as the server owner's role, which a hardened
-     * log does not let insert: the row is written as the login (runtime) role and the role is set back.
+     * connection, in its transaction). A provisioning connection runs as the server owner's role, which may hold no
+     * grant on a log another role owns (update.sh applies V011 as the superuser): the row is written as the login
+     * (runtime) role, which has them, and the role is set back.
      */
     private fun recordOnTenant(
         tenant: Connection, actor: AuditActor, entityType: String, entityId: String?, label: String, action: String, summary: String,

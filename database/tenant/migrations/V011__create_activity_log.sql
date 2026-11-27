@@ -4,9 +4,10 @@ BEGIN;
 -- as the change. Append-only: the runtime role gets only SELECT and INSERT (granted by the server),
 -- and the triggers below refuse UPDATE, DELETE and TRUNCATE for everyone, the table owner included.
 -- Tamper evidence (ACTIVITY_LOG.md §9): every committed row is sealed into a hash chain
--- (activity_log_chain: chain_seq, id, prev_hash, row_hash) at commit time; scripts/ubuntu/activity-harden.sh
--- later gives these tables and their functions to the role bms_audit, outside the runtime role's membership,
--- and normalizes them to exactly what this file creates (activity-harden.sql carries the same definitions).
+-- (activity_log_chain: chain_seq, id, prev_hash, row_hash) at commit time; the server recomputes it and compares
+-- it with anchors it keeps in the control database. This detects changes, it does not prevent them: the owner of
+-- these tables can disable the triggers. Nothing here runs with more rights than the role that writes the row
+-- (no SECURITY DEFINER), so it means the same whichever role applied it.
 -- Every name is schema-qualified so the file means the same whatever search_path it runs with.
 CREATE TABLE IF NOT EXISTS public.activity_log (
     id BIGSERIAL PRIMARY KEY,
@@ -34,28 +35,16 @@ CREATE INDEX IF NOT EXISTS activity_log_actor_idx ON public.activity_log (actor_
 CREATE INDEX IF NOT EXISTS activity_log_module_idx ON public.activity_log (module_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS activity_log_entity_idx ON public.activity_log (entity_type, entity_id);
 
--- The chain: one row per sealed activity_log row, in commit order. Insert-only, written only by the sealing
--- function; the runtime role may read it. A separate narrow table (rather than columns updated at commit)
--- keeps sealing a large transaction cheap and lets activity_log refuse every UPDATE.
+-- The chain: one row per sealed activity_log row, in commit order. Insert-only, written by the sealing trigger
+-- (as the role that writes the log, which therefore gets SELECT, INSERT on it); its last row is the head. A
+-- separate narrow table (rather than columns updated at commit) keeps sealing a large transaction cheap and lets
+-- activity_log refuse every UPDATE.
 CREATE TABLE IF NOT EXISTS public.activity_log_chain (
     chain_seq BIGINT PRIMARY KEY,
     id BIGINT NOT NULL UNIQUE,
     prev_hash TEXT NOT NULL,
     row_hash TEXT NOT NULL
 );
-
--- Head of the chain (one row). Only the sealing function writes last_seq/last_hash; the runtime role may read it.
--- hardened_at / hardened_seq: when activity-harden.sh first gave the log to bms_audit and how far the chain
--- reached then (rows up to hardened_seq were written while the server owner's role owned the log: not covered).
-CREATE TABLE IF NOT EXISTS public.activity_log_chain_head (
-    id SMALLINT PRIMARY KEY CHECK (id OPERATOR(pg_catalog.=) 1),
-    last_seq BIGINT NOT NULL,
-    last_hash TEXT NOT NULL,
-    hardened_at TIMESTAMPTZ NULL,
-    hardened_seq BIGINT NULL
-);
-INSERT INTO public.activity_log_chain_head (id, last_seq, last_hash)
-VALUES (1, 0, pg_catalog.repeat('0', 64)) ON CONFLICT (id) DO NOTHING;
 
 -- UPDATE, DELETE and TRUNCATE of the log and of its chain are refused, for everyone.
 CREATE OR REPLACE FUNCTION public.activity_log_append_only() RETURNS trigger
@@ -72,9 +61,8 @@ $$;
 -- trigger (its WHEN), and the seal starts reading at its id. A value set by hand can only make the seal
 -- read more, or leave the transaction's rows unsealed, which verification reports.
 -- Writers chain at commit under one lock per company: a transaction in REPEATABLE READ or SERIALIZABLE would
--- fail there when another one committed first, so it is refused here, clearly; and a writer without a
--- lock_timeout gets 10 s for the rest of its transaction, so a commit waiting for that lock fails instead of
--- hanging (statement_timeout does not apply to COMMIT).
+-- not see the chain rows committed while it waited for that lock (its snapshot is older) and fail there, so it is
+-- refused here, clearly.
 CREATE OR REPLACE FUNCTION public.activity_log_before_insert() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
@@ -84,9 +72,6 @@ BEGIN
     IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION 'activity_log rows must be written in a READ COMMITTED transaction (this one is %)',
             pg_catalog.current_setting('transaction_isolation') USING ERRCODE = 'feature_not_supported';
-    END IF;
-    IF pg_catalog.current_setting('lock_timeout') = '0' THEN
-        PERFORM pg_catalog.set_config('lock_timeout', '10s', true);
     END IF;
     IF pg_catalog.current_setting('bms.activity_seal_pending', true) IS DISTINCT FROM 'on' THEN
         PERFORM pg_catalog.set_config('bms.activity_seal_pending', 'on', true);
@@ -100,10 +85,12 @@ $$;
 -- Seals the transaction's rows into the chain when it commits (deferred), under one transaction advisory
 -- lock held only until that commit ends, so concurrent writers chain in commit order without holding a lock
 -- for the rest of their work. One firing per transaction: it seals every unsealed row from the first id of
--- the transaction on, in id order, in one INSERT, and writes the head once: O(n) whatever the size.
+-- the transaction on, in id order, in one INSERT: O(n) whatever the size. The head is the chain's last row.
+-- lock_timeout applies only while this function runs: a commit that waits more than 10 s for the lock fails
+-- (SQLSTATE 55P03) instead of hanging, and the rest of the writer's transaction keeps its own setting.
 -- row_hash = sha256(prev_hash || '|' || canonical JSON of the stored fields); ActivityIntegrity recomputes it.
 CREATE OR REPLACE FUNCTION public.activity_log_seal() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp SET lock_timeout = '10s' AS $$
 DECLARE
     first_text TEXT := pg_catalog.current_setting('bms.activity_seal_first', true);
     first_id BIGINT := NEW.id;
@@ -119,9 +106,12 @@ BEGIN
         first_id := first_text::BIGINT;
     END IF;
     PERFORM pg_catalog.pg_advisory_xact_lock(735192402);
-    SELECT last_seq, last_hash INTO head_seq, head_hash FROM public.activity_log_chain_head WHERE id = 1 FOR UPDATE;
+    -- A new statement after the lock: it sees every chain row committed before (READ COMMITTED).
+    SELECT link.chain_seq, link.row_hash INTO head_seq, head_hash
+    FROM public.activity_log_chain AS link ORDER BY link.chain_seq DESC LIMIT 1;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'activity_log_chain_head is missing';
+        head_seq := 0;
+        head_hash := pg_catalog.repeat('0', 64);
     END IF;
     -- Rows of other transactions are either sealed already (committed) or invisible (in progress).
     FOR pending IN
@@ -148,7 +138,6 @@ BEGIN
         SELECT sealing.seq, sealing.id, sealing.prev, sealing.hash
         FROM ROWS FROM (pg_catalog.unnest(seqs), pg_catalog.unnest(ids), pg_catalog.unnest(prevs), pg_catalog.unnest(hashes))
             AS sealing (seq, id, prev, hash);
-        UPDATE public.activity_log_chain_head SET last_seq = head_seq, last_hash = head_hash WHERE id = 1;
     END IF;
     -- Rows inserted after this (after SET CONSTRAINTS ... IMMEDIATE) queue a new firing.
     PERFORM pg_catalog.set_config('bms.activity_seal_pending', '', true);
@@ -189,9 +178,7 @@ CREATE TRIGGER activity_log_chain_no_truncate
     BEFORE TRUNCATE ON public.activity_log_chain
     FOR EACH STATEMENT EXECUTE FUNCTION public.activity_log_append_only();
 
--- Nobody but the owner (through the sealing function) writes the chain and its head.
+-- Only the roles granted SELECT, INSERT (the runtime role, by the server and update.sh) write the chain.
 REVOKE ALL ON public.activity_log_chain FROM PUBLIC;
-REVOKE ALL ON public.activity_log_chain_head FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.activity_log_seal() FROM PUBLIC;
 
 COMMIT;

@@ -62,8 +62,6 @@ data class ActivityLogRow(
 data class ActivityIntegrityReport(
     val companyCode: String,
     val ok: Boolean,
-    // The log's table and functions belong to bms_audit, outside the runtime role (scripts/ubuntu/activity-harden.sh).
-    val hardened: Boolean,
     val rows: Long = 0,
     val lastSeq: Long = 0,
     val lastId: Long? = null,
@@ -72,15 +70,7 @@ data class ActivityIntegrityReport(
     // Id of the first row where the chain breaks (changed, unsealed, or right after missing rows).
     val firstBadId: Long? = null,
     val problems: List<String> = emptyList(),
-    // Why the log is not hardened yet, when it is not.
-    val notHardenedReasons: List<String> = emptyList(),
     val checkedAt: String = "",
-    // When activity-harden.sh first gave the log to bms_audit and how far the chain reached then: rows up to that
-    // position were written while the server owner's role could still change them and are not covered.
-    val hardenedAt: String? = null,
-    val hardenedSeq: Long? = null,
-    // What the guarantee covers, in one Spanish sentence.
-    val coverage: String? = null,
     // Facts that are not problems (a database restored with the same chain...).
     val notes: List<String> = emptyList(),
 )
