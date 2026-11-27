@@ -1024,3 +1024,12 @@ translation, notices, stay dates, exit automation and the integrations' settings
 bulk actions (one row per lead plus one row for the operation) and imports (one row for the import with its totals plus the
 rows of each lead). The extensions record through `CrmAudit` and the `CrmHost` facade (`actor` parameters). Not logged: the spam
 block log, the queue of outbound notices, the one-time Meta connection links and read-only calls.
+
+## Hardening (0.32.0)
+
+- XLSX/CSV imports are bounded: at most 200 columns, 20,000 rows, 1,000,000 non-empty cells, 32,768 characters per cell,
+  500,000 shared strings, 32 M characters of text and 80 MB once decompressed (every entry of the ZIP counts, the ones that are
+  ignored too). Sheets and shared strings are read as a stream; a DOCTYPE is refused. The cell reference (`ZZZZ1`) can no longer
+  make the parser allocate a row of that width.
+- Attachments are served with the stored type only if it is on a short safe list (`CrmDownloads`); anything else (HTML, SVG...)
+  is `application/octet-stream`, always as an attachment and with `X-Content-Type-Options: nosniff`.

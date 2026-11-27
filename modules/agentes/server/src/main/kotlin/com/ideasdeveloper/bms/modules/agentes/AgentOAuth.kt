@@ -11,8 +11,6 @@ import io.ktor.http.Parameters
 import io.ktor.http.encodeURLParameter
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.header
-import io.ktor.server.request.receiveParameters
-import io.ktor.server.request.receiveText
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
@@ -180,10 +178,15 @@ object AgentOAuth {
         )
     }
 
+    private suspend fun ApplicationCall.tooLarge() {
+        response.header(HttpHeaders.CacheControl, "no-store")
+        respond(HttpStatusCode.PayloadTooLarge)
+    }
+
     // ---- Registration ----
 
     private suspend fun ApplicationCall.register(access: ModuleAccessService) {
-        val request = runCatching { Json.parseToJsonElement(receiveText()) as JsonObject }.getOrNull()
+        val request = runCatching { Json.parseToJsonElement(readBoundedText(MaxOAuthBodyBytes) ?: return tooLarge()) as JsonObject }.getOrNull()
             ?: return respondOAuthError(HttpStatusCode.BadRequest, OAuthError("invalid_client_metadata", "El cuerpo debe ser un objeto JSON."))
         val key = withContext(Dispatchers.IO) { signingKey(access) }
         val (client, secret) = try {
@@ -224,6 +227,8 @@ object AgentOAuth {
         val redirectUri = params["redirect_uri"] ?: client.redirectUris.singleOrNull()
             ?: return Validation.Page(tr("Falta redirect_uri."))
         if (redirectUri !in client.redirectUris) return Validation.Page(tr("La direccion de retorno no pertenece a este cliente."))
+        // Exact match against the registration, and the URI must still be one we would register today (https or loopback, no userinfo or wildcards): never redirect (not even an error) to anything else.
+        if (!OAuthClients.validRedirectUri(redirectUri)) return Validation.Page(tr("La direccion de retorno no es valida."))
         val state = params["state"]
         fun fail(error: String, description: String) = Validation.Redirect(redirect(redirectUri, mapOf("error" to error, "error_description" to description, "state" to state)))
         if (params["response_type"] != "code") return fail("unsupported_response_type", "Solo se admite response_type=code.")
@@ -249,7 +254,7 @@ object AgentOAuth {
     }
 
     private suspend fun ApplicationCall.authorizeSubmit(access: ModuleAccessService) {
-        val form = receiveParameters()
+        val form = readBoundedForm() ?: return tooLarge()
         when (form["step"]) {
             "signin" -> signIn(access, form)
             "consent", "cancel" -> consent(access, form)
@@ -362,7 +367,7 @@ object AgentOAuth {
     }
 
     private suspend fun ApplicationCall.token(access: ModuleAccessService) {
-        val form = receiveParameters()
+        val form = readBoundedForm() ?: return tooLarge()
         val key = withContext(Dispatchers.IO) { signingKey(access) }
         val result = try {
             val client = authenticatedClient(key, form)
@@ -465,7 +470,7 @@ object AgentOAuth {
 
     // RFC 7009: always 200, whether or not the token existed.
     private suspend fun ApplicationCall.revoke(access: ModuleAccessService) {
-        val form = receiveParameters()
+        val form = readBoundedForm() ?: return tooLarge()
         val key = withContext(Dispatchers.IO) { signingKey(access) }
         val clientId = try {
             authenticatedClient(key, form).id

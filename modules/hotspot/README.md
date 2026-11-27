@@ -394,3 +394,12 @@ key, masked), the revocation and restoration of user codes, the grants to networ
 exports of the visitors' report, and the CRM check and the SMTP migration when they change a setting or an
 expiry. Guest traffic (registrations, sessions that end on their own, the network guard's disconnects) is not
 logged; the access history stays in `hotspot_accesses`. See `ACTIVITY_LOG_MODULE_GUIDE.md`.
+
+## Hardening (0.15.0, migration V014)
+
+- The guest is created in Clientes only when the emailed code is entered (before, the first form submission created the customer
+  for any address typed). The pending registration has no customer until then (V014 allows it for form registrations).
+- Codes are limited per device (6 per hour) and per destination address (12 per hour), and a pending code belongs to the device that
+  asked for it: another device typing the same address gets its own code instead of "we already sent you a code".
+- The public forms read at most 16 KB.
+- `hotspot_my_wifi_code` is no longer declared read-only (it creates the user's code the first time): read-only agent tokens cannot call it.

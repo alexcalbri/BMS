@@ -259,7 +259,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.31.0",
+        version = "0.32.0",
         minCoreVersion = "0.12.0",
         minAppVersion = "0.7.0",
         supportsExtensions = true,
@@ -303,6 +303,9 @@ object CrmServerModule : ServerModule {
                 val contentType = call.request.contentType().withoutParameters().toString()
                 val companyCode = access.companyCode(call)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", tr("La empresa es requerida.")))
+                // TODO(security D8): once Core's storage-quota API (STORAGE_QUOTA.md, B9) is in this branch, call
+                // files.checkRoom(Content-Length) before reading the body and map StorageQuotaException (code/httpStatus) to the response.
+                // Not done yet: ModuleFiles.checkRoom and StorageQuotaException do not exist here.
                 // The body goes straight to the file storage; it is never held in memory whole.
                 val body = call.receiveChannel().toInputStream()
                 val result = withContext(Dispatchers.IO) {
@@ -343,7 +346,9 @@ object CrmServerModule : ServerModule {
                     HttpHeaders.ContentDisposition,
                     ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.ref.name).toString(),
                 )
-                val type = runCatching { ContentType.parse(file.contentType) }.getOrDefault(ContentType.Application.OctetStream)
+                // The type was written by whoever uploaded the file: only a short safe list is respected, the rest is octet-stream.
+                val type = CrmDownloads.contentType(file.contentType)
+                call.response.header("X-Content-Type-Options", "nosniff")
                 val content = withContext(Dispatchers.IO) { file.open() }
                     ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("missing_content", tr("El archivo ya no esta en el almacenamiento del servidor.")))
                 call.respondOutputStream(type) { content.use { it.copyTo(this) } }

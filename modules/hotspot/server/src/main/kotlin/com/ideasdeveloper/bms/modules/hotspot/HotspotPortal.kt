@@ -14,7 +14,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.host
-import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
@@ -46,12 +45,11 @@ import java.util.UUID
 class HotspotPortal(private val access: ModuleAccessService) {
     private val log = LoggerFactory.getLogger(HotspotPortal::class.java)
     private val random = SecureRandom()
-    private val macPattern = Regex("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+    private val macPattern = HotspotGuestCodes.MacPattern
     private val emailPattern = Regex("^[^\\s@<>\"]+@[^\\s@<>\"]+\\.[^\\s@<>\"]{2,}$")
     private val phonePattern = Regex("^[+0-9][0-9 ()-]{5,19}$")
     private val maxCodeAttempts = 5
     // A new code is not emailed while the previous one for the same address is younger than this.
-    private val resendInterval = Duration.ofSeconds(60)
     // Wrong customer codes: per device within the window, and for the whole company per minute.
     private val maxCodeFailuresPerDevice = 5
     private val codeFailureWindow = Duration.ofMinutes(15)
@@ -178,7 +176,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private suspend fun ApplicationCall.register() {
         val ip = clientIp()
         if (overMemoryIpLimit(ip, "register", maxRegisterPerIp)) return respondHtml(tooManyRequestsHtml(), HttpStatusCode.TooManyRequests)
-        val form = receiveParameters()
+        val form = HotspotGuestCodes.readForm(this) ?: return
         val guest = guestContext(form)
         val values = FormValues(
             name = form["name"].orEmpty().trim(),
@@ -199,7 +197,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     private suspend fun ApplicationCall.verify() {
-        val form = receiveParameters()
+        val form = HotspotGuestCodes.readForm(this) ?: return
         val pendingId = form["pending"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         val code = form["code"].orEmpty().filter { it.isDigit() }
         val continueUrl = safeUrl(form["url"])
@@ -216,7 +214,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private suspend fun ApplicationCall.customerCode() {
         val ip = clientIp()
         if (overMemoryIpLimit(ip, "code", maxCodePerIp)) return respondHtml(tooManyRequestsHtml(), HttpStatusCode.TooManyRequests)
-        val form = receiveParameters()
+        val form = HotspotGuestCodes.readForm(this) ?: return
         val guest = guestContext(form)
         val code = HotspotNetworks.normalizeCustomerCode(form["code"].orEmpty().take(40))
         var limited = false
@@ -256,26 +254,22 @@ class HotspotPortal(private val access: ModuleAccessService) {
             return HotspotPortalPages.wait(settings, remaining)
         }
 
-        recentPendingCode(connection, values.email)?.let { pendingId ->
+        // The pending code of THIS address on THIS device (another device that typed the same address gets its own code).
+        HotspotGuestCodes.recentPending(connection, values.email, guest.mac)?.let { pendingId ->
             return HotspotPortalPages.code(settings, pendingId.toString(), values.email, guest.continueUrl, tr("Ya te enviamos un codigo hace un momento. Revisa tu correo."))
+        }
+        // Per device and per destination address, so nobody can fill a mailbox that is not theirs nor use up the codes of someone else's device.
+        if (HotspotGuestCodes.overSendLimit(connection, values.email, guest.mac)) {
+            return retry(tr("Ya se enviaron varios codigos. Espera un rato y vuelve a intentarlo."))
         }
 
         val code = (0 until 6).joinToString("") { random.nextInt(10).toString() }
         val codeId = UUID.randomUUID()
-        transaction(connection) {
-            val customerId = findOrCreateCustomer(connection, values)
-            val registrationId = UUID.randomUUID()
-            insertRegistration(connection, registrationId, Owner.Customer(customerId), values, birthday, guest, HotspotNetworks.Form)
-            connection.prepareStatement(
-                "INSERT INTO hotspot_codes (id, registration_id, code_hash, expires_at) VALUES (?, ?, ?, ?)"
-            ).use { insert ->
-                insert.setObject(1, codeId)
-                insert.setObject(2, registrationId)
-                insert.setString(3, codeHash(codeId, code))
-                insert.setTimestamp(4, Timestamp.from(Instant.now().plus(Duration.ofMinutes(settings.codeTtlMinutes.toLong()))))
-                insert.executeUpdate()
-            }
-        }
+        // No customer yet: it is created when the guest enters the code (the address is then proven).
+        HotspotGuestCodes.insertPending(
+            connection, UUID.randomUUID(), codeId, values, birthday, guest, codeHash(codeId, code),
+            Instant.now().plus(Duration.ofMinutes(settings.codeTtlMinutes.toLong())),
+        )
 
         try {
             MailSender.sendText(
@@ -300,7 +294,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val pending = connection.prepareStatement(
             """
             SELECT codes.code_hash, codes.expires_at, codes.attempts, codes.used_at,
-                   registrations.id AS registration_id, registrations.name, registrations.email, registrations.mac,
+                   registrations.id AS registration_id, registrations.name, registrations.email, registrations.phone, registrations.mac,
                    registrations.ssid
             FROM hotspot_codes codes
             JOIN hotspot_registrations registrations ON registrations.id = codes.registration_id
@@ -317,6 +311,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
                     registrationId = rows.getObject("registration_id", UUID::class.java),
                     name = rows.getString("name"),
                     email = rows.getString("email"),
+                    phone = rows.getString("phone").orEmpty(),
                     mac = rows.getString("mac"),
                     ssid = rows.getString("ssid").orEmpty(),
                 )
@@ -352,6 +347,17 @@ class HotspotPortal(private val access: ModuleAccessService) {
             update.executeUpdate() == 1
         }
         if (!claimed) return HotspotPortalPages.message(settings, tr("Codigo ya utilizado"), tr("Cada codigo se usa una sola vez."))
+
+        // The address is proven now: only here the guest becomes a customer in Clientes.
+        try {
+            HotspotGuestCodes.linkVerifiedCustomer(connection, pending.registrationId, pending.name, pending.email, pending.phone)
+        } catch (failure: Exception) {
+            connection.prepareStatement("UPDATE hotspot_codes SET used_at = NULL WHERE id = ?").use { update ->
+                update.setObject(1, codeId)
+                update.executeUpdate()
+            }
+            throw failure
+        }
 
         val result = target.controller.authorizeGuest(settings, pending.mac, pending.ssid)
         recordAccess(connection, pending.registrationId, Owner.Customer(null), pending.email, pending.mac, result, settings.accessMinutes)
@@ -753,29 +759,10 @@ class HotspotPortal(private val access: ModuleAccessService) {
         accessMode: String,
         // The company whose access this device continues here (shared networks).
         roamedFrom: String? = null,
-    ) {
-        connection.prepareStatement(
-            """
-            INSERT INTO hotspot_registrations (id, customer_id, name, email, phone, birthday, mac, ap_mac, ssid, access_mode, user_id, user_company, roamed_from)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent()
-        ).use { insert ->
-            insert.setObject(1, id)
-            insert.setObject(2, (owner as? Owner.Customer)?.id)
-            insert.setString(3, values.name)
-            insert.setString(4, values.email.ifBlank { null })
-            insert.setString(5, values.phone.ifBlank { null })
-            insert.setObject(6, birthday)
-            insert.setString(7, guest.mac)
-            insert.setString(8, guest.apMac.takeIf { macPattern.matches(it) })
-            insert.setString(9, guest.ssid.take(64).takeIf { it.isNotBlank() })
-            insert.setString(10, accessMode)
-            insert.setObject(11, (owner as? Owner.User)?.id)
-            insert.setString(12, (owner as? Owner.User)?.company)
-            insert.setString(13, roamedFrom)
-            insert.executeUpdate()
-        }
-    }
+    ) = HotspotGuestCodes.insertRegistration(
+        connection, id, (owner as? Owner.Customer)?.id, (owner as? Owner.User)?.id, (owner as? Owner.User)?.company,
+        values, birthday, guest, accessMode, roamedFrom,
+    )
 
     private fun recordAccess(
         connection: Connection,
@@ -823,28 +810,6 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val remaining = Duration.between(Instant.now(), nextAllowed)
         return if (remaining.isNegative || remaining.isZero) null else (remaining.toSeconds() + 59) / 60
     }
-
-    private fun recentPendingCode(connection: Connection, email: String): UUID? = connection.prepareStatement(
-        """
-        SELECT codes.id
-        FROM hotspot_codes codes
-        JOIN hotspot_registrations registrations ON registrations.id = codes.registration_id
-        WHERE lower(registrations.email) = lower(?)
-          AND codes.used_at IS NULL
-          AND codes.expires_at > CURRENT_TIMESTAMP
-          AND codes.created_at > ?
-        ORDER BY codes.created_at DESC
-        LIMIT 1
-        """.trimIndent()
-    ).use { query ->
-        query.setString(1, email)
-        query.setTimestamp(2, Timestamp.from(Instant.now().minus(resendInterval)))
-        query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
-    }
-
-    // Guests are kept in Clientes. Existing customers are linked without changing their data or type.
-    private fun findOrCreateCustomer(connection: Connection, values: FormValues): UUID =
-        HotspotActivity.findOrCreateGuestCustomer(connection, values.name, values.email, values.phone)
 
     /** Resolves Host -> company -> tenant, checks the module is enabled and runs [block]; responds itself on failure. */
     private suspend fun ApplicationCall.withPortal(block: (PortalTarget) -> String): String? {
@@ -919,19 +884,6 @@ class HotspotPortal(private val access: ModuleAccessService) {
         MessageDigest.getInstance("SHA-256").digest("$codeId:$code".toByteArray(Charsets.UTF_8))
     )
 
-    private fun transaction(connection: Connection, block: () -> Unit) {
-        connection.autoCommit = false
-        try {
-            block()
-            connection.commit()
-        } catch (failure: Exception) {
-            connection.rollback()
-            throw failure
-        } finally {
-            connection.autoCommit = true
-        }
-    }
-
     private suspend fun ApplicationCall.respondHtml(html: String, status: HttpStatusCode = HttpStatusCode.OK) {
         response.header("Cache-Control", "no-store")
         response.header("X-Frame-Options", "DENY")
@@ -948,6 +900,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val registrationId: UUID,
         val name: String,
         val email: String,
+        val phone: String,
         val mac: String,
         val ssid: String,
     )

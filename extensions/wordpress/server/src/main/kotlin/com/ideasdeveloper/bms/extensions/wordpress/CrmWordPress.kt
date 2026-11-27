@@ -28,12 +28,11 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.math.BigDecimal
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
+import java.net.InetAddress
+import com.ideasdeveloper.bms.server.net.PinnedHost
+import com.ideasdeveloper.bms.server.net.PinnedHostException
 import java.security.MessageDigest
 import java.sql.Connection
-import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -50,7 +49,10 @@ object CrmWordPress {
     private const val MaxResponseBytes = 1024 * 1024
     private const val MaxSkewSeconds = 300L
     private val json = Json { ignoreUnknownKeys = true }
-    private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
+    private const val MaxSeenSignatures = 50_000
+
+    // Firmas ya aceptadas (empresa + firma) con su caducidad: una firma valida no se acepta dos veces mientras su fecha siga dentro de la ventana.
+    private val seenSignatures = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     // ---- Ajustes ----
 
@@ -73,6 +75,29 @@ object CrmWordPress {
         return MessageDigest.isEqual(sign(secret, timestamp, body).toByteArray(), signature.lowercase().toByteArray())
     }
 
+    /**
+     * Anti-replay: true la primera vez que se ve [signature] de [company] dentro de la ventana, false si ya se uso
+     * (un atacante que capture una peticion firmada no puede repetirla durante los 5 minutos de validez de la fecha, en ningun sentido).
+     * Solo se guardan firmas validas (las comprueba el llamador antes), asi que no se pueden inventar entradas.
+     * Con la tabla llena (50.000 firmas vivas) falla cerrado.
+     */
+    fun firstUse(company: String, signature: String, now: Instant = Instant.now()): Boolean {
+        val nowSeconds = now.epochSecond
+        if (seenSignatures.size >= MaxSeenSignatures / 2) seenSignatures.entries.removeIf { it.value <= nowSeconds }
+        if (seenSignatures.size >= MaxSeenSignatures) return false
+        // La fecha firmada puede ir hasta MaxSkewSeconds por delante: la firma es valida hasta 2 * MaxSkewSeconds desde ahora.
+        var first = false
+        seenSignatures.compute("$company:${signature.lowercase()}") { _, expires ->
+            if (expires == null || expires <= nowSeconds) { first = true; nowSeconds + 2 * MaxSkewSeconds + 1 } else expires
+        }
+        return first
+    }
+
+    /** Olvida una firma (el evento no se pudo procesar y el plugin lo reintentara con la misma firma si coincide el segundo). */
+    fun forget(company: String, signature: String) {
+        seenSignatures.remove("$company:${signature.lowercase()}")
+    }
+
     // ---- API del plugin (BMS -> sitio) ----
 
     /** True for addresses a site must never resolve to: loopback, link-local, private (RFC1918), CGNAT 100.64/10, IPv6 ULA fc00::/7, multicast and "this network". */
@@ -83,10 +108,7 @@ object CrmWordPress {
      * (so a name that later points inside the network is still refused). [resolve] is replaceable for tests.
      */
     fun checkSite(url: String, resolve: (String) -> List<java.net.InetAddress> = { host -> java.net.InetAddress.getAllByName(host).toList() }) {
-        val host = runCatching { URI.create(url).host }.getOrNull()?.lowercase()
-        if (host.isNullOrBlank() || !host.contains('.') || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".localhost")) {
-            throw CrmWordPressException(tr("La direccion del sitio debe ser un dominio publico (con punto)."))
-        }
+        val host = siteHost(url)
         val addresses = try {
             resolve(host)
         } catch (failure: Exception) {
@@ -95,26 +117,48 @@ object CrmWordPress {
         if (addresses.isEmpty() || addresses.any(::blockedAddress)) throw CrmWordPressException(tr("La direccion del sitio apunta a una red privada o local: no se permite."))
     }
 
+    private fun siteHost(url: String): String {
+        val host = runCatching { URI.create(url).host }.getOrNull()?.lowercase()
+        if (host.isNullOrBlank() || !host.contains('.') || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".localhost")) {
+            throw CrmWordPressException(tr("La direccion del sitio debe ser un dominio publico (con punto)."))
+        }
+        return host
+    }
+
+    /** Respuesta de una peticion anclada: estado y cuerpo (acotado). */
+    class SiteAnswer(val status: Int, val bytes: ByteArray)
+
+    /** Envia la peticion a la IP ya validada ([address]); sustituible en las pruebas. */
+    var fetch: (URI, InetAddress, Map<String, String>, ByteArray) -> SiteAnswer = { uri, address, headers, body ->
+        PinnedHost.openPinnedHttps(
+            uri, address, uri.host, method = "POST", headers = headers, body = body,
+            timeoutMillis = 20_000, totalMillis = 30_000, maxBodyBytes = MaxResponseBytes + 1L,
+        ).use { response -> SiteAnswer(response.status, response.body.readNBytes(MaxResponseBytes + 1)) }
+    }
+
+    /** Resuelve y valida el host UNA vez; la conexion va a esa misma IP (un DNS que cambie entre la comprobacion y la conexion no sirve). */
+    var resolve: (String) -> InetAddress = { host -> PinnedHost.resolveValidated(host) }
+
     internal fun rpc(settings: CrmWordPressSettings, action: String, extra: JsonObject = JsonObject(emptyMap())): JsonElement {
         val site = settings.siteUrl ?: throw CrmWordPressException(tr("Escribe la direccion del sitio en Integraciones."))
         val secret = settings.secret?.takeIf { !CrmHost.isSecretUnreadable(it) }
             ?: throw CrmWordPressException(if (CrmHost.isSecretUnreadable(settings.secret)) tr("{0}. Genera un secreto nuevo.", CrmHost.UnreadableSecretText) else tr("Genera el secreto y pegalo en el plugin."))
-        checkSite(site)
+        val host = siteHost(site)
         val body = JsonObject(mapOf("action" to JsonPrimitive(action)) + extra).toString().toByteArray()
         val timestamp = Instant.now().epochSecond.toString()
-        val request = HttpRequest.newBuilder(URI.create("$site/wp-json/bms/v1/rpc"))
-            .timeout(Duration.ofSeconds(20))
-            .header("Content-Type", "application/json")
-            .header("X-BMS-Timestamp", timestamp)
-            .header("X-BMS-Signature", sign(secret, timestamp, body))
-            .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-            .build()
+        val uri = runCatching { URI.create("$site/wp-json/bms/v1/rpc") }.getOrNull()?.takeIf { it.scheme == "https" && it.host != null }
+            ?: throw CrmWordPressException(tr("La direccion del sitio debe ser un dominio publico (con punto)."))
+        val address = try {
+            resolve(host)
+        } catch (failure: PinnedHostException) {
+            throw CrmWordPressException(if (failure.message.orEmpty().startsWith("No se encontro")) tr("No se encontro el sitio {0}.", host) else tr("La direccion del sitio apunta a una red privada o local: no se permite."))
+        }
+        val headers = mapOf("Content-Type" to "application/json", "X-BMS-Timestamp" to timestamp, "X-BMS-Signature" to sign(secret, timestamp, body), "Accept" to "application/json", "User-Agent" to "BMS-Server")
         val (status, text) = try {
-            val response = http.send(request, HttpResponse.BodyHandlers.ofInputStream())
             // The answer of a site is never read whole beyond MaxResponseBytes.
-            val bytes = response.body().use { it.readNBytes(MaxResponseBytes + 1) }
-            if (bytes.size > MaxResponseBytes) throw CrmWordPressException(tr("El sitio respondio algo demasiado grande."))
-            response.statusCode() to String(bytes, Charsets.UTF_8)
+            val answer = fetch(uri, address, headers, body)
+            if (answer.bytes.size > MaxResponseBytes) throw CrmWordPressException(tr("El sitio respondio algo demasiado grande."))
+            answer.status to String(answer.bytes, Charsets.UTF_8)
         } catch (failure: CrmWordPressException) {
             throw failure
         } catch (failure: Exception) {

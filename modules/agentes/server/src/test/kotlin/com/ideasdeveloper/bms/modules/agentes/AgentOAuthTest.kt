@@ -9,6 +9,14 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.util.Base64
 import java.util.UUID
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.server.response.respond
+import io.ktor.server.routing.post
+import io.ktor.server.routing.routing
+import io.ktor.server.response.respondText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -66,6 +74,40 @@ class AgentOAuthTest {
         assertFalse(OAuthClients.validRedirectUri("https://claude.ai/cb#frag"))
         assertFalse(OAuthClients.validRedirectUri("javascript:alert(1)"))
         assertFalse(OAuthClients.validRedirectUri("myapp://callback"))
+        // User info, wildcards, backslashes, spaces and control characters never pass.
+        assertFalse(OAuthClients.validRedirectUri("https://claude.ai@evil.example/cb"))
+        assertFalse(OAuthClients.validRedirectUri("https://user:pw@claude.ai/cb"))
+        assertFalse(OAuthClients.validRedirectUri("https://*.example.com/cb"))
+        assertFalse(OAuthClients.validRedirectUri("https://ok.example/cb/*"))
+        assertFalse(OAuthClients.validRedirectUri("https://ok.example/c b"))
+        assertFalse(OAuthClients.validRedirectUri("https://ok.example/cb\\x"))
+        assertFalse(OAuthClients.validRedirectUri("https://ok.example/cb\r\nSet-Cookie: x=1"))
+        assertFalse(OAuthClients.validRedirectUri("http://localhost@evil.example/cb"))
+        assertFailsWith<OAuthError> { OAuthClients.register(key, registration("""{"redirect_uris":["https://ok.example/cb","https://*.example.com/cb"]}""")) }
+    }
+
+    @Test
+    fun oauthBodiesAreBounded() = io.ktor.server.testing.testApplication {
+        application {
+            routing {
+                post("/t") {
+                    val text = call.readBoundedText(MaxOAuthBodyBytes)
+                    if (text == null) call.respond(io.ktor.http.HttpStatusCode.PayloadTooLarge) else call.respondText(text.length.toString())
+                }
+                post("/f") {
+                    val form = call.readBoundedForm()
+                    if (form == null) call.respond(io.ktor.http.HttpStatusCode.PayloadTooLarge) else call.respondText(form["a"].orEmpty())
+                }
+            }
+        }
+        val small = client.post("/t") { setBody("x".repeat(1000)) }
+        assertEquals("1000", small.bodyAsText())
+        assertEquals(io.ktor.http.HttpStatusCode.PayloadTooLarge, client.post("/t") { setBody("x".repeat(MaxOAuthBodyBytes + 1)) }.status)
+        assertEquals(io.ktor.http.HttpStatusCode.PayloadTooLarge, client.post("/f") { setBody("a=" + "x".repeat(MaxOAuthBodyBytes)) }.status)
+        assertEquals("hola mundo", client.post("/f") {
+            header(io.ktor.http.HttpHeaders.ContentType, "application/x-www-form-urlencoded")
+            setBody("a=hola+mundo")
+        }.bodyAsText())
     }
 
     @Test

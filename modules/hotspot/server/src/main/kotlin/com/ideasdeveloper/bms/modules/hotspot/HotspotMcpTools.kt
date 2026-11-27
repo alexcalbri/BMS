@@ -166,8 +166,8 @@ object HotspotMcpTools {
             title = "Mi codigo WiFi",
             description = "Devuelve el codigo de acceso WiFi del usuario conectado, para redes con acceso por codigo de usuario.",
             permission = HotspotScreens.View,
-            // Creates the code the first time, exactly like opening "Accesos WiFi"; no data of anyone else changes.
-            readOnly = true,
+            // Creates the user's code the first time, exactly like opening "Accesos WiFi": it writes, so a read-only agent cannot call it.
+            readOnly = false,
         ) { call -> myCode(call) },
         McpTool(
             name = "export_report",

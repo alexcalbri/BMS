@@ -404,6 +404,7 @@
   "Volver a empezar": "Start over",
   "Vuelve a empezar el registro.": "Start the registration again.",
   "Vuelve a registrarte para recibir un codigo nuevo.": "Register again to receive a new code.",
+  "Ya se enviaron varios codigos. Espera un rato y vuelve a intentarlo.": "Several codes have already been sent. Wait a while and try again.",
   "Ya te enviamos un codigo hace un momento. Revisa tu correo.": "We just sent you a code. Check your email.",
   "Ya usaste tu acceso": "You already used your access",
   "codigo de cliente": "customer code",

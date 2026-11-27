@@ -59,6 +59,7 @@
   "Inicia sesion. El agente solo podra usar las funciones que tu usuario tiene permitidas.": "Sign in. The agent will only be able to use the functions your user is allowed.",
   "La autorizacion vencio. Vuelve a intentarlo desde tu aplicacion.": "The authorization expired. Try again from your application.",
   "La conexion vence en": "The connection expires in",
+  "La direccion de retorno no es valida.": "The return address is not valid.",
   "La direccion de retorno no pertenece a este cliente.": "The return address does not belong to this client.",
   "Lectura y escritura": "Read and write",
   "Limites": "Limits",

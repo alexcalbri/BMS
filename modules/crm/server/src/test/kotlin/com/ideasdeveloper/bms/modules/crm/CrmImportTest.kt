@@ -50,6 +50,48 @@ class CrmImportTest {
         assertFailsWith<CrmImportException> { CrmImportParse.xlsx(evil) }
     }
 
+    private fun xlsxZip(vararg entries: Pair<String, String>) = ByteArrayOutputStream().also { output ->
+        ZipOutputStream(output).use { zip -> entries.forEach { (name, text) -> zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray()); zip.closeEntry() } }
+    }.toByteArray()
+
+    private fun sheet(rows: String) = xlsxZip("xl/worksheets/sheet1.xml" to """<worksheet><sheetData>$rows</sheetData></worksheet>""")
+
+    @Test
+    fun xlsxRefusesHugeColumnIndex() {
+        // A1 with a column like "XFD" is fine, "ZZZZZZZZ" must not allocate a huge row.
+        assertFailsWith<CrmImportException> { CrmImportParse.xlsx(sheet("""<row><c r="A1"><v>a</v></c><c r="ZZZZ1"><v>x</v></c></row>""")) }
+        assertFailsWith<CrmImportException> { CrmImportParse.xlsx(sheet("""<row><c r="A1"><v>a</v></c><c r="GT1"><v>x</v></c></row>""")) }
+        val ok = CrmImportParse.xlsx(sheet("""<row><c r="A1"><v>a</v></c><c r="B1"><v>b</v></c></row><row><c r="A2"><v>1</v></c></row>"""))
+        assertEquals(listOf("a", "b"), ok.columns)
+    }
+
+    @Test
+    fun xlsxRefusesTooManyRowsLongCellsAndZipBombs() {
+        val rows = (1..CrmImportParse.MaxRows + 2).joinToString("") { """<row><c r="A$it"><v>1</v></c></row>""" }
+        assertFailsWith<CrmImportException> { CrmImportParse.xlsx(sheet(rows)) }
+        val long = "x".repeat(CrmImportParse.MaxCellChars + 1)
+        assertFailsWith<CrmImportException> { CrmImportParse.xlsx(sheet("""<row><c r="A1" t="inlineStr"><is><t>$long</t></is></c></row>""")) }
+        val shared = xlsxZip("xl/sharedStrings.xml" to "<sst><si><t>$long</t></si></sst>", "xl/worksheets/sheet1.xml" to "<worksheet><sheetData/></worksheet>")
+        assertFailsWith<CrmImportException> { CrmImportParse.xlsx(shared) }
+        // Compressed bomb: highly compressible parts well past the decompressed budget, also in an ignored entry.
+        val filler = "a".repeat(1024 * 1024)
+        val bomb = ByteArrayOutputStream().also { output ->
+            ZipOutputStream(output).use { zip ->
+                zip.putNextEntry(ZipEntry("docProps/junk.bin"))
+                repeat(100) { zip.write(filler.toByteArray()) }
+                zip.closeEntry()
+            }
+        }.toByteArray()
+        assertTrue(bomb.size < 1024 * 1024)
+        assertFailsWith<CrmImportException> { CrmImportParse.xlsx(bomb) }
+    }
+
+    @Test
+    fun csvRefusesTooManyColumnsAndLongCells() {
+        assertFailsWith<CrmImportException> { CrmImportParse.csv("a" + ",a".repeat(CrmImportParse.MaxColumns + 5)) }
+        assertFailsWith<CrmImportException> { CrmImportParse.csv("a,b\n" + "x".repeat(CrmImportParse.MaxCellChars + 1) + ",1") }
+    }
+
     @Test
     fun mapsRowValuesWithValueMaps() {
         val stages = listOf(CrmStage(UUID.randomUUID(), "Nuevo", StageKind.Open, StageTone.Info, 0), CrmStage(UUID.randomUUID(), "Reservado", StageKind.Won, StageTone.Success, 1))
