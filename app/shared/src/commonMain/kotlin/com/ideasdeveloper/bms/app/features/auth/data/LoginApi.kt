@@ -19,6 +19,9 @@ import kotlinx.serialization.json.Json
 @Serializable
 private data class TwoFactorLoginRequest(val challengeToken: String, val code: String)
 
+@Serializable
+private data class EmailRecoveryStartRequest(val challengeToken: String)
+
 // Cliente HTTP encargado solo del inicio de sesion.
 class LoginApi(serverUrl: String) {
 
@@ -86,7 +89,7 @@ class LoginApi(serverUrl: String) {
                 // Contrasena correcta con verificacion en dos pasos: aun no hay sesion, falta el segundo paso.
                 val challenge = error.challengeToken
                 if (response.status == HttpStatusCode.Unauthorized && error.code == "TWO_FACTOR_REQUIRED" && !challenge.isNullOrBlank()) {
-                    throw TwoFactorRequiredException(error.message, challenge, error.expiresInSeconds ?: 300L)
+                    throw TwoFactorRequiredException(error.message, challenge, error.expiresInSeconds ?: 300L, error.methods)
                 }
                 throw LoginException(error.message, error.code)
             }
@@ -109,9 +112,11 @@ class LoginApi(serverUrl: String) {
 
     // Segundo paso: cambia el reto de /auth/login y el codigo por la sesion. Errores: TWO_FACTOR_INVALID_CODE
     // (con attemptsLeft), TWO_FACTOR_CHALLENGE_EXPIRED (volver al paso 1) y TWO_FACTOR_TOO_MANY_ATTEMPTS (esperar).
-    suspend fun completeTwoFactor(challengeToken: String, code: String): LoginResponse {
+    // [emailRecovery]: el codigo es el XXXX-XXXX-XXXX que llego por correo tras la espera (TWO_FACTOR.md seccion 7.4).
+    suspend fun completeTwoFactor(challengeToken: String, code: String, emailRecovery: Boolean = false): LoginResponse {
         try {
-            val response = client.post("$baseUrl/auth/login/two-factor") {
+            val path = if (emailRecovery) "/auth/login/two-factor/email-recovery/complete" else "/auth/login/two-factor"
+            val response = client.post("$baseUrl$path") {
                 contentType(ContentType.Application.Json)
                 setBody(TwoFactorLoginRequest(challengeToken, code.trim()))
             }
@@ -139,6 +144,32 @@ class LoginApi(serverUrl: String) {
             throw LoginException(
                 tr("No se pudo comunicar con el servidor o su respuesta no es válida.")
             )
+        }
+    }
+
+    // Inicia la recuperacion por correo (aviso inmediato; el codigo llega tras la espera). Responde 202 siempre igual;
+    // errores: TWO_FACTOR_CHALLENGE_EXPIRED (volver al primer paso) y MAIL_NOT_CONFIGURED (503).
+    suspend fun startEmailRecovery(challengeToken: String): EmailRecoveryStarted {
+        try {
+            val response = client.post("$baseUrl/auth/login/two-factor/email-recovery") {
+                contentType(ContentType.Application.Json)
+                setBody(EmailRecoveryStartRequest(challengeToken))
+            }
+            if (response.status == HttpStatusCode.Accepted || response.status == HttpStatusCode.OK) {
+                return response.body<EmailRecoveryStarted>()
+            }
+            val error = runCatching { response.body<LoginErrorResponse>() }.getOrNull()
+            if (response.status == HttpStatusCode.TooManyRequests) {
+                throw LoginException(error?.message ?: tr("Demasiados intentos. Espera un minuto."), error?.code)
+            }
+            if (error != null) throw LoginException(error.message, error.code)
+            throw LoginException(tr("El servidor no pudo completar la operacion."))
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: LoginException) {
+            throw exception
+        } catch (_: Exception) {
+            throw LoginException(tr("No se pudo comunicar con el servidor o su respuesta no es válida."))
         }
     }
 
@@ -170,4 +201,10 @@ class LoginException(message: String, val code: String? = null, val attemptsLeft
 
 // El servidor acepto la contrasena pero la cuenta tiene verificacion en dos pasos: no hay sesion hasta
 // enviar el codigo con [challengeToken] (valido [expiresInSeconds] segundos).
-class TwoFactorRequiredException(message: String, val challengeToken: String, val expiresInSeconds: Long) : Exception(message)
+class TwoFactorRequiredException(
+    message: String,
+    val challengeToken: String,
+    val expiresInSeconds: Long,
+    // Metodos que ofrece el servidor; "email_recovery" habilita la recuperacion por correo.
+    val methods: List<String> = emptyList(),
+) : Exception(message)

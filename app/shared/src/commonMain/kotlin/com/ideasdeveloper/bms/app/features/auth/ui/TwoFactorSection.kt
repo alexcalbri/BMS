@@ -1,10 +1,13 @@
 package com.ideasdeveloper.bms.app.features.auth.ui
 
 import com.ideasdeveloper.bms.app.core.i18n.tr
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -70,6 +73,9 @@ fun TwoFactorSection(
     var loading by remember(session.accessToken) { mutableStateOf(false) }
     var reloadTick by remember { mutableStateOf(0) }
     var dialog by remember { mutableStateOf<TwoFactorDialog?>(null) }
+    val scope = rememberCoroutineScope()
+    var cancellingRecovery by remember { mutableStateOf(false) }
+    var recoveryError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(serverUrl, session.accessToken, session.companyCode, reloadTick) {
         val url = serverUrl ?: return@LaunchedEffect
@@ -113,6 +119,52 @@ fun TwoFactorSection(
                 }
                 if (current.requiredByServer) {
                     Text(tr("El dueno del servidor exige la verificacion en dos pasos a los administradores."), color = colors.muted)
+                }
+                current.emailRecovery.pending?.let { pending ->
+                    // Alguien (o la propia persona) pidio recuperar el acceso por correo: aviso con la opcion de cancelar.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(colors.surfaceAlt, MaterialTheme.shapes.small)
+                            .border(1.5.dp, colors.warning, MaterialTheme.shapes.small)
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(tr("Recuperacion del acceso por correo en curso"), fontWeight = FontWeight.SemiBold, color = colors.text)
+                        Text(
+                            tr("Alguien inicio la recuperacion del acceso por correo el {0} desde {1}.", utcText(pending.startedAt), pending.startedFrom.ifBlank { "-" }),
+                            color = colors.text,
+                        )
+                        Text(
+                            when {
+                                !pending.codeSent -> tr("El codigo se enviara al correo de la cuenta el {0}. Con ese codigo se entra sin la aplicacion y se desactiva la verificacion en dos pasos.", utcText(pending.codeDueAt))
+                                pending.codeExpiresAt != null -> tr("El codigo ya se envio al correo de la cuenta y vence el {0}.", utcText(pending.codeExpiresAt))
+                                else -> tr("El codigo ya se envio al correo de la cuenta.")
+                            },
+                            color = colors.text,
+                        )
+                        Text(tr("Si no fuiste tu, cancela la recuperacion y cambia tu contrasena."), color = colors.warning)
+                        OutlinedButton(
+                            enabled = !cancellingRecovery,
+                            onClick = {
+                                val url = serverUrl ?: return@OutlinedButton
+                                cancellingRecovery = true
+                                recoveryError = null
+                                scope.launch {
+                                    try {
+                                        AccountApi(url).use { api -> api.cancelEmailRecovery(session.accessToken, session.companyCode) }
+                                        reloadTick += 1
+                                    } catch (exception: LoginException) {
+                                        // Ya no habia ninguna abierta (la cancelaron o vencio): solo se actualiza el estado.
+                                        if (exception.code == "EMAIL_RECOVERY_NOT_PENDING") reloadTick += 1 else recoveryError = exception.message
+                                    } finally {
+                                        cancellingRecovery = false
+                                    }
+                                }
+                            },
+                        ) { Text(tr("Cancelar la recuperacion"), color = colors.danger) }
+                        recoveryError?.let { Text(it, color = colors.danger) }
+                    }
                 }
                 if (!current.enabled) {
                     Button(onClick = { dialog = TwoFactorDialog.Enable }, colors = accentButtonColors()) {
@@ -404,6 +456,9 @@ private fun TwoFactorCodeDialog(
     )
 }
 
+// Instante ISO 8601 del servidor (UTC) como "2026-11-27 10:00 UTC".
+private fun utcText(iso: String): String = iso.replace('T', ' ').removeSuffix("Z").take(16) + " UTC"
+
 // Los 10 codigos de recuperacion con aviso, boton para copiarlos y la casilla que confirma que se guardaron.
 @Composable
 private fun RecoveryCodesContent(codes: List<String>, saved: Boolean, onSavedChange: (Boolean) -> Unit) {
@@ -473,6 +528,30 @@ fun RecoveryCodeUsedDialog(codesLeft: Int?, onDismiss: () -> Unit) {
                     tr("Genera codigos nuevos en Ajustes, en Verificacion en dos pasos, y revisa que tu aplicacion de autenticacion siga disponible."),
                     color = AppTheme.colors.muted,
                 )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(tr("Entendido")) } },
+    )
+}
+
+/**
+ * Aviso tras iniciar sesion: la recuperacion por correo dejo la verificacion en dos pasos desactivada (hay que
+ * activarla de nuevo) y/o se cancelo una recuperacion por correo que estaba en curso porque se entro con normalidad.
+ */
+@Composable
+fun TwoFactorNoticeDialog(twoFactorDisabled: Boolean, emailRecoveryCancelled: Boolean, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (twoFactorDisabled) tr("Verificacion en dos pasos desactivada") else tr("Recuperacion por correo cancelada")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (twoFactorDisabled) {
+                    Text(tr("Entraste con el codigo de recuperacion por correo, asi que la verificacion en dos pasos de tu cuenta quedo desactivada."))
+                    Text(tr("Activala de nuevo cuanto antes en Ajustes, en Verificacion en dos pasos."), color = AppTheme.colors.warning)
+                }
+                if (emailRecoveryCancelled) {
+                    Text(tr("Se cancelo la recuperacion por correo que estaba en curso, porque entraste con normalidad."))
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text(tr("Entendido")) } },

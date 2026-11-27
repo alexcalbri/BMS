@@ -17,6 +17,33 @@ data class TwoFactorStatus(
     val requiredByServer: Boolean = false,
     // Falso cuando el servidor no puede guardar secretos (sin llave maestra o sin migraciones).
     val available: Boolean = true,
+    // Recuperacion por correo (TWO_FACTOR.md seccion 7); ausente en servidores anteriores.
+    val emailRecovery: EmailRecoveryStatus = EmailRecoveryStatus(),
+)
+
+@Serializable
+data class EmailRecoveryStatus(
+    // Hay correo en el servidor, la cuenta tiene dos pasos y un correo valido.
+    val available: Boolean = false,
+    val pending: EmailRecoveryPending? = null,
+)
+
+@Serializable
+// Recuperacion abierta: fechas en UTC (ISO 8601), desde que direccion se inicio y si el codigo ya se envio.
+data class EmailRecoveryPending(
+    val startedAt: String = "",
+    val startedFrom: String = "",
+    val codeDueAt: String = "",
+    val codeSent: Boolean = false,
+    val codeExpiresAt: String? = null,
+)
+
+@Serializable
+// 202 de POST /auth/login/two-factor/email-recovery.
+data class EmailRecoveryStarted(
+    val status: String = "",
+    val message: String = "",
+    val waitDays: Long = 7,
 )
 
 @Serializable

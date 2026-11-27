@@ -45,6 +45,7 @@ import com.ideasdeveloper.bms.app.features.serveradmin.ui.ServerAdminsScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.LoginScreen
 import com.ideasdeveloper.bms.app.features.auth.ui.ProfileDialog
 import com.ideasdeveloper.bms.app.features.auth.ui.RecoveryCodeUsedDialog
+import com.ideasdeveloper.bms.app.features.auth.ui.TwoFactorNoticeDialog
 import com.ideasdeveloper.bms.app.features.auth.ui.TwoFactorSetupRequiredScreen
 import com.ideasdeveloper.bms.app.features.auth.data.AccountApi
 import com.ideasdeveloper.bms.app.features.auth.data.LoginException
@@ -424,6 +425,15 @@ fun App(initialServerUrl: String = "") {
             RecoveryCodeUsedDialog(
                 codesLeft = used.recoveryCodesLeft,
                 onDismiss = { SessionStore.update { it.copy(recoveryCodeUsed = false, recoveryCodesLeft = null) } },
+            )
+        }
+
+        // Recuperacion por correo: la verificacion en dos pasos quedo desactivada y/o se cancelo una recuperacion en curso.
+        currentSession?.takeIf { it.twoFactorDisabled || it.emailRecoveryCancelled }?.let { notice ->
+            TwoFactorNoticeDialog(
+                twoFactorDisabled = notice.twoFactorDisabled,
+                emailRecoveryCancelled = notice.emailRecoveryCancelled,
+                onDismiss = { SessionStore.update { it.copy(twoFactorDisabled = false, emailRecoveryCancelled = false) } },
             )
         }
 

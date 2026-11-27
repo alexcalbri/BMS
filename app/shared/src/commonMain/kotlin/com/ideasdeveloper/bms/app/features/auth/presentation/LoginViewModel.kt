@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 // Segundo paso pendiente: el servidor acepto la contrasena y espera el codigo de dos pasos (o de recuperacion).
-data class TwoFactorChallenge(val token: String, val expiresInSeconds: Long)
+data class TwoFactorChallenge(val token: String, val expiresInSeconds: Long, val emailRecoveryOffered: Boolean = false)
 
 data class LoginUiState(
     val isLoading: Boolean = false,
@@ -31,6 +31,9 @@ data class LoginUiState(
     val challenge: TwoFactorChallenge? = null,
     // Intentos que quedan con el reto actual tras un codigo incorrecto.
     val attemptsLeft: Int? = null,
+    // Mensaje informativo del segundo paso (p. ej. la recuperacion por correo ya se inicio) y dias de espera que informo el servidor.
+    val notice: String? = null,
+    val waitDays: Long? = null,
 )
 
 // Datos del primer paso que el segundo necesita para terminar de iniciar sesion.
@@ -77,19 +80,21 @@ class LoginViewModel : ViewModel() {
     }
 
     // Segundo paso: envia el codigo de 6 digitos (o de recuperacion) con el reto del primero.
-    fun submitTwoFactor(code: String) {
+    // [emailRecovery]: [code] es el que llego por correo tras la espera de la recuperacion (no el de la app).
+    fun submitTwoFactor(code: String, emailRecovery: Boolean = false) {
         val challenge = _state.value.challenge ?: return
         val pending = pendingSignIn ?: return
         if (_state.value.isLoading || code.isBlank()) return
 
-        _state.value = LoginUiState(isLoading = true, challenge = challenge)
+        val previous = _state.value
+        _state.value = LoginUiState(isLoading = true, challenge = challenge, notice = previous.notice, waitDays = previous.waitDays)
 
         viewModelScope.launch {
             var api: LoginApi? = null
 
             try {
                 api = LoginApi(pending.serverUrl)
-                val response = api.completeTwoFactor(challenge.token, code)
+                val response = api.completeTwoFactor(challenge.token, code, emailRecovery)
                 finishSignIn(pending.serverUrl, pending.companyCode, pending.keepSignedIn, response)
                 pendingSignIn = null
                 _state.value = LoginUiState(succeeded = true)
@@ -101,7 +106,13 @@ class LoginViewModel : ViewModel() {
                     pendingSignIn = null
                     _state.value = LoginUiState(error = exception.message)
                 } else {
-                    _state.value = LoginUiState(challenge = challenge, error = exception.message, attemptsLeft = exception.attemptsLeft)
+                    _state.value = LoginUiState(
+                        challenge = challenge,
+                        error = exception.message,
+                        attemptsLeft = exception.attemptsLeft,
+                        notice = previous.notice,
+                        waitDays = previous.waitDays,
+                    )
                 }
             } catch (_: IllegalArgumentException) {
                 pendingSignIn = null
@@ -112,7 +123,42 @@ class LoginViewModel : ViewModel() {
                 _state.value = LoginUiState(
                     challenge = challenge,
                     error = tr("No se pudo completar el inicio de sesión."),
+                    notice = previous.notice,
+                    waitDays = previous.waitDays,
                 )
+            } finally {
+                api?.close()
+            }
+        }
+    }
+
+    // Pide la recuperacion por correo: el servidor avisa al correo de la cuenta y el codigo llega tras la espera.
+    fun startEmailRecovery() {
+        val challenge = _state.value.challenge ?: return
+        val pending = pendingSignIn ?: return
+        if (_state.value.isLoading) return
+
+        _state.value = LoginUiState(isLoading = true, challenge = challenge)
+
+        viewModelScope.launch {
+            var api: LoginApi? = null
+
+            try {
+                api = LoginApi(pending.serverUrl)
+                val started = api.startEmailRecovery(challenge.token)
+                _state.value = LoginUiState(challenge = challenge, notice = started.message, waitDays = started.waitDays)
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: LoginException) {
+                if (exception.code == "TWO_FACTOR_CHALLENGE_EXPIRED") {
+                    pendingSignIn = null
+                    _state.value = LoginUiState(error = exception.message)
+                } else {
+                    // Incluye MAIL_NOT_CONFIGURED: el servidor no puede enviar correo.
+                    _state.value = LoginUiState(challenge = challenge, error = exception.message)
+                }
+            } catch (_: Exception) {
+                _state.value = LoginUiState(challenge = challenge, error = tr("No se pudo completar el inicio de sesión."))
             } finally {
                 api?.close()
             }
@@ -177,7 +223,7 @@ class LoginViewModel : ViewModel() {
             } catch (exception: TwoFactorRequiredException) {
                 // Contrasena correcta: se pide el segundo paso sin perder lo escrito en el primero.
                 pendingSignIn = PendingSignIn(serverUrl, code, keepSignedIn)
-                _state.value = LoginUiState(challenge = TwoFactorChallenge(exception.challengeToken, exception.expiresInSeconds))
+                _state.value = LoginUiState(challenge = TwoFactorChallenge(exception.challengeToken, exception.expiresInSeconds, "email_recovery" in exception.methods))
             } catch (exception: LoginException) {
                 _state.value = LoginUiState(error = exception.message)
             } catch (_: IllegalArgumentException) {

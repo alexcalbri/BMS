@@ -11,4 +11,6 @@ data class LoginErrorResponse(
     val challengeToken: String? = null,
     val expiresInSeconds: Long? = null,
     val attemptsLeft: Int? = null,
+    // Solo en TWO_FACTOR_REQUIRED: "totp", "recovery_code" y, si el servidor tiene correo, "email_recovery".
+    val methods: List<String> = emptyList(),
 )

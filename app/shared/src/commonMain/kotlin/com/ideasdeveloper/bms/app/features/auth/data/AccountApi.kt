@@ -10,6 +10,7 @@ import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -215,6 +216,24 @@ class AccountApi(serverUrl: String) {
                 companyCode?.let { header("X-Company-Code", it) }
                 contentType(ContentType.Application.Json)
                 setBody(TwoFactorPasswordCodeBody(currentPassword, code.trim()))
+            }
+            if (response.status.isSuccess()) return
+            throw failure(response)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: LoginException) {
+            throw exception
+        } catch (_: Exception) {
+            throw LoginException(tr("No se pudo comunicar con el servidor."))
+        }
+    }
+
+    // Cancela la recuperacion por correo abierta (204). Sin ninguna abierta responde 409 EMAIL_RECOVERY_NOT_PENDING.
+    suspend fun cancelEmailRecovery(accessToken: String, companyCode: String?) {
+        try {
+            val response = client.delete("$baseUrl/auth/two-factor/email-recovery") {
+                bearerAuth(accessToken)
+                companyCode?.let { header("X-Company-Code", it) }
             }
             if (response.status.isSuccess()) return
             throw failure(response)

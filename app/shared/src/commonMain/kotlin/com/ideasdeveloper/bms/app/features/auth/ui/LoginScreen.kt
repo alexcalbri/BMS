@@ -198,8 +198,12 @@ fun LoginScreen(
                 TwoFactorSignInStep(
                     error = state.error,
                     attemptsLeft = state.attemptsLeft,
+                    notice = state.notice,
+                    emailRecoveryOffered = state.challenge?.emailRecoveryOffered == true,
+                    waitDays = state.waitDays,
                     isLoading = isLoading,
-                    onSubmit = { loginViewModel.submitTwoFactor(it) },
+                    onSubmit = { code, emailRecovery -> loginViewModel.submitTwoFactor(code, emailRecovery) },
+                    onStartEmailRecovery = { loginViewModel.startEmailRecovery() },
                     onCancel = { loginViewModel.cancelTwoFactor() },
                 )
             } else {

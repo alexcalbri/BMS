@@ -39,4 +39,8 @@ data class LoginResponse(
     // El segundo paso se hizo con un codigo de recuperacion: avisa y dice cuantos quedan (null si no se uso).
     val recoveryCodeUsed: Boolean = false,
     val recoveryCodesLeft: Int? = null,
+    // Entro con el codigo de recuperacion por correo: la verificacion en dos pasos de la cuenta quedo desactivada.
+    val twoFactorDisabled: Boolean = false,
+    // Una recuperacion por correo en curso se cancelo porque la persona entro con normalidad.
+    val emailRecoveryCancelled: Boolean = false,
 )
