@@ -6,6 +6,7 @@ import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.activity.ActivityEntry
 import com.ideasdeveloper.bms.server.activity.ActivityLog
+import com.ideasdeveloper.bms.server.modules.CustomerSql
 import java.sql.Connection
 import java.time.LocalDate
 import java.util.UUID
@@ -76,8 +77,49 @@ object HotspotActivity {
         }
     }
 
-    private fun record(connection: Connection, actor: ActivityActor, entityType: String, entityId: String?, label: String, action: String, summary: String, changes: List<ActivityChange> = emptyList()) {
-        ActivityLog.record(connection, actor, ActivityEntry(ModuleId, entityType, entityId, label, action, summary, changes))
+    /** Who the log shows for the customers the guest portal creates. */
+    private val PortalActor = ActivityActor.integration("Portal WiFi")
+
+    private val GuestCustomerLabels = linkedMapOf("name" to "Nombre", "email" to "Correo", "phone" to "Telefono")
+
+    /**
+     * The customer of Clientes a guest of the portal is: an existing one (linked, untouched) or a new one of type hotspot, whose
+     * creation is recorded in the activity log in the same transaction. The rest of the guest traffic is not logged.
+     */
+    fun findOrCreateGuestCustomer(connection: Connection, name: String, email: String, phone: String): UUID {
+        connection.prepareStatement(
+            "SELECT id FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' AND ${CustomerSql.Visible} ORDER BY created_at LIMIT 1"
+        ).use { query ->
+            query.setString(1, email)
+            query.executeQuery().use { rows -> if (rows.next()) return rows.getObject(1, UUID::class.java) }
+        }
+        val id = UUID.randomUUID()
+        // The portal calls this inside its own transaction; alone, it opens one so the row and the customer are saved together.
+        val write = {
+            connection.prepareStatement(
+                """
+                INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type)
+                VALUES (?, ?, ?, ?, 'active', 'hotspot')
+                """.trimIndent()
+            ).use { insert ->
+                insert.setObject(1, id)
+                insert.setString(2, name)
+                insert.setString(3, email)
+                insert.setString(4, phone)
+                insert.executeUpdate()
+            }
+            // The record is a Clientes one, so the row is Clientes' (the portal only says who made it).
+            record(
+                connection, PortalActor, "customer", id.toString(), name, ActivityActions.Created, "Registro al cliente $name desde el portal WiFi.",
+                ActivityChanges.created(mapOf("name" to name, "email" to email, "phone" to phone), GuestCustomerLabels), module = "clientes",
+            )
+        }
+        if (connection.autoCommit) transaction(connection) { write() } else write()
+        return id
+    }
+
+    private fun record(connection: Connection, actor: ActivityActor, entityType: String, entityId: String?, label: String, action: String, summary: String, changes: List<ActivityChange> = emptyList(), module: String = ModuleId) {
+        ActivityLog.record(connection, actor, ActivityEntry(module, entityType, entityId, label, action, summary, changes))
     }
 
     // ---- Settings (Configuracion, Integraciones de UniFi aparte) ----

@@ -96,6 +96,29 @@ class HotspotActivityTest {
     )
 
     @Test
+    fun theGuestPortalLogsTheCustomerItCreatesAsPortalWifiAndNothingForAnExistingOne() {
+        val created = ActivityLogTesting.rows { HotspotActivity.findOrCreateGuestCustomer(tenant(), "Rosa Pinto", "rosa@example.com", "+5076000") }
+        val row = created.single()
+        assertEquals(ActivityActions.Created, row.action)
+        assertEquals("customer", row.entry.entityType)
+        assertEquals("clientes", row.entry.moduleId)
+        assertEquals("Rosa Pinto", row.entry.entityLabel)
+        assertEquals("Portal WiFi", row.display)
+        assertEquals("integration", row.actor.kind)
+        assertEquals("rosa@example.com", row.change("email")!!.new)
+        assertEquals("+5076000", row.change("phone")!!.new)
+        assertEquals("Rosa Pinto", row.change("name")!!.new)
+
+        // A guest that is already a customer is linked: no row, no insert.
+        val known = UUID.randomUUID()
+        val existing = tenant { sql -> if (sql.startsWith("SELECT id FROM customers")) listOf(mapOf("id" to known)) else emptyList() }
+        events.clear()
+        val rows = ActivityLogTesting.rows { assertEquals(known, HotspotActivity.findOrCreateGuestCustomer(existing, "Rosa Pinto", "rosa@example.com", "")) }
+        assertTrue(rows.isEmpty())
+        assertTrue(events.none { it.startsWith("sql:INSERT INTO customers") }, events.toString())
+    }
+
+    @Test
     fun networkCreateEditAndDeleteWriteTheirRows() {
         val id = UUID.randomUUID()
         val created = ActivityLogTesting.rows { HotspotActivity.saveNetwork(tenant(), ana, null, network(id, "WiFi Sala")) }
