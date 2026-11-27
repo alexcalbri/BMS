@@ -132,7 +132,7 @@ class ActivityLogApi(serverUrl: String) {
         }
     }
 
-    private suspend fun callText(failure: String, request: () -> HttpResponse): String {
+    private suspend fun callText(failure: String, request: suspend () -> HttpResponse): String {
         try {
             val response = request()
             if (response.status.isSuccess()) return response.bodyAsText()
