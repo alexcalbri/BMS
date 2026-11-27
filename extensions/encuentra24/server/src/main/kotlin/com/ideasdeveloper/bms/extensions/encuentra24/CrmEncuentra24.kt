@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.encuentra24
 
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmEncuentra24Ads
 import com.ideasdeveloper.bms.modules.crm.CrmEncuentra24Exception
 import com.ideasdeveloper.bms.modules.crm.CrmEncuentra24Settings
@@ -8,6 +9,9 @@ import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmInbound
 import com.ideasdeveloper.bms.modules.crm.CrmIntakeResult
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -57,15 +61,22 @@ object CrmEncuentra24 {
      * Links the listing a lead asked about (by listing id, or by link when it has none). A listing
      * already linked is left as it is.
      */
-    fun rememberAd(host: CrmHost, tenant: Connection, leadId: UUID, id: String, url: String, title: String): Boolean {
+    fun rememberAd(host: CrmHost, tenant: Connection, leadId: UUID, id: String, url: String, title: String, actor: ActivityActor = ActivityActor.integration("Encuentra24")): Boolean {
         val key = id.ifEmpty { url.lowercase().removeSuffix("/") }.ifEmpty { return false }.take(200)
         if (host.items(tenant, leadId, CrmEncuentra24Ads.Source).any { it.externalId == key }) return false
-        return host.linkItem(
-            tenant, leadId, CrmEncuentra24Ads.Source, key,
-            title = title.ifEmpty { if (id.isNotEmpty()) "Anuncio $id" else "Anuncio de Encuentra24" },
-            subtitle = "Encuentra24" + if (id.isNotEmpty() && title.isNotEmpty()) " - anuncio $id" else "",
-            url = url,
-        )
+        val shown = title.ifEmpty { if (id.isNotEmpty()) "Anuncio $id" else "Anuncio de Encuentra24" }
+        // The link and its row are saved together (or neither is).
+        return CrmAudit.atomically(tenant) {
+            val added = host.linkItem(
+                tenant, leadId, CrmEncuentra24Ads.Source, key,
+                title = shown,
+                subtitle = "Encuentra24" + if (id.isNotEmpty() && title.isNotEmpty()) " - anuncio $id" else "",
+                url = url,
+            )
+            // The listing joins the lead's interests: the lead's own history does not say it.
+            if (added) CrmAudit.lead(tenant, actor, leadId, null, ActivityActions.Updated, { "Agrego el anuncio $shown a los intereses del lead $it." }, listOf(ActivityChange("item", "Anuncio", null, shown)))
+            added
+        }
     }
 
     private fun JsonElement?.obj() = this as? JsonObject
@@ -144,7 +155,7 @@ object CrmEncuentra24 {
      * last 7 days the first time), oldest first. Leads already imported are skipped by their id; the
      * listing of each lead is linked to it. Encuentra24 leads never get a suggested responsible.
      */
-    fun sync(host: CrmHost, tenant: Connection, fromDate: LocalDate? = null, onNewLead: (UUID) -> Unit = {}): CrmEncuentra24SyncResult {
+    fun sync(host: CrmHost, tenant: Connection, fromDate: LocalDate? = null, actor: ActivityActor = ActivityActor.integration("Encuentra24"), onNewLead: (UUID) -> Unit = {}): CrmEncuentra24SyncResult {
         host.extensionInactiveReason(tenant, CrmExtensionIds.Encuentra24)?.let { throw CrmEncuentra24Exception(it) }
         val settings = Encuentra24SettingsStore.load(host, tenant)
         if (settings.apiKey.isNullOrBlank() || host.isSecretUnreadable(settings.apiKey) || settings.slug.isNullOrBlank()) throw CrmEncuentra24Exception(tr("Falta la API key o el slug de Encuentra24."))
@@ -154,13 +165,13 @@ object CrmEncuentra24 {
         }
         if (!locked) throw CrmEncuentra24Exception(tr("Ya hay una importacion de Encuentra24 en curso; intenta en unos minutos."))
         try {
-            return syncLocked(host, tenant, settings, fromDate, onNewLead)
+            return syncLocked(host, tenant, settings, fromDate, actor, onNewLead)
         } finally {
             tenant.prepareStatement("SELECT pg_advisory_unlock(?)").use { it.setLong(1, LockKey); it.executeQuery().close() }
         }
     }
 
-    private fun syncLocked(host: CrmHost, tenant: Connection, settings: CrmEncuentra24Settings, fromDate: LocalDate?, onNewLead: (UUID) -> Unit): CrmEncuentra24SyncResult {
+    private fun syncLocked(host: CrmHost, tenant: Connection, settings: CrmEncuentra24Settings, fromDate: LocalDate?, actor: ActivityActor, onNewLead: (UUID) -> Unit): CrmEncuentra24SyncResult {
         val started = Instant.now()
         val from = fromDate ?: settings.lastSync?.atZone(ZoneOffset.UTC)?.toLocalDate()?.minusDays(1) ?: LocalDate.now(ZoneOffset.UTC).minusDays(7)
         var imported = 0
@@ -181,11 +192,12 @@ object CrmEncuentra24 {
                                 channel = CrmEncuentra24Ads.Source, name = lead.name, email = lead.email, phone = lead.phone,
                                 message = messageText(lead), messageId = "e24:${lead.id}", source = "Encuentra24", sentAt = lead.createdAt,
                             ),
+                            actor,
                             onNewLead,
                         ).also { result ->
                             val leadId = (result as? CrmIntakeResult.Created)?.leadId ?: (result as? CrmIntakeResult.Updated)?.leadId
                             // The message is already stored: a listing that fails to link does not fail the lead.
-                            if (leadId != null && lead.adId.isNotEmpty()) runCatching { rememberAd(host, tenant, leadId, lead.adId, "", lead.title) }
+                            if (leadId != null && lead.adId.isNotEmpty()) runCatching { rememberAd(host, tenant, leadId, lead.adId, "", lead.title, actor) }
                         }
                     } catch (failure: Exception) {
                         failed++
@@ -207,6 +219,19 @@ object CrmEncuentra24 {
             Encuentra24SettingsStore.record(tenant, null, "", failure.message.orEmpty())
             throw failure
         }
-        return CrmEncuentra24SyncResult(imported, existing, withoutContact, spam, failed, firstError).also { Encuentra24SettingsStore.record(tenant, started, "Desde $from: $it", "") }
+        return CrmEncuentra24SyncResult(imported, existing, withoutContact, spam, failed, firstError).also { result ->
+            Encuentra24SettingsStore.record(tenant, started, "Desde $from: $result", "")
+            // One row for the whole import (who started it, or the integration when it was the job); each lead has its own row.
+            if (imported > 0 || failed > 0) {
+                CrmAudit.record(
+                    tenant, actor, "import", null, "Encuentra24", ActivityActions.Imported, "Importo $imported contacto(s) de Encuentra24 desde $from ($failed con error).",
+                    listOf(
+                        ActivityChange("imported", "Importados", null, imported.toString()), ActivityChange("existing", "Ya existentes", null, existing.toString()),
+                        ActivityChange("withoutContact", "Sin contacto", null, withoutContact.toString()), ActivityChange("spam", "Spam", null, spam.toString()),
+                        ActivityChange("failed", "Con error", null, failed.toString()),
+                    ),
+                )
+            }
+        }
     }
 }

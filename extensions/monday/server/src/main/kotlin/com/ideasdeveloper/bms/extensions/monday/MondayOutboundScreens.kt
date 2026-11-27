@@ -134,7 +134,7 @@ object MondayOutboundScreens {
                         done(UiTone.Info, tr("Se sugirieron {0} columna(s). Revisalas y pulsa Guardar.", suggested.size), values + suggested)
                     } else {
                         val result = MondayOutboundUi.applyConfigForm(values, type, schema)
-                        MondayOutbound.config.save(tenant, result.config)
+                        MondayAudit.acting(context.permissions.activityActor) { MondayOutbound.config.save(tenant, result.config) }
                         if (result.warnings.isEmpty()) done(UiTone.Success, tr("Configuracion guardada."))
                         else done(UiTone.Warning, tr("Configuracion guardada.") + " " + result.warnings.joinToString(" "))
                     }

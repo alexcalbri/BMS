@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.extensions.inmobiliaria_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import java.sql.Connection
 
@@ -16,7 +18,8 @@ object InmobiliariaMondaySettingsStore {
         }
 
     /** Guarda el token sellado (upsert: sin fila, la crea); null o vacio lo borra. */
-    fun saveToken(tenant: Connection, token: String?) {
+    fun saveToken(tenant: Connection, token: String?, actor: ActivityActor) = CrmAudit.atomically(tenant) {
+        val before = loadToken(tenant)
         tenant.prepareStatement(
             """
             INSERT INTO $Table (id, token) VALUES (1, ?)
@@ -26,5 +29,11 @@ object InmobiliariaMondaySettingsStore {
             update.setString(1, CrmHost.sealSecret(tenant, token?.trim()?.takeIf { it.isNotEmpty() }))
             update.executeUpdate()
         }
+        // Only that the token changed, never its value.
+        val after = token?.trim()?.takeIf { it.isNotEmpty() }
+        CrmAudit.settingsChanged(
+            tenant, actor, "Importacion de monday para Inmobiliaria", if (after == null) "Borro el token de la API de monday de la importacion de Inmobiliaria." else "Guardo el token de la API de monday de la importacion de Inmobiliaria.",
+            mapOf("token" to before), mapOf("token" to after), mapOf("token" to "Token de la API de monday"), secrets = setOf("token"),
+        )
     }
 }

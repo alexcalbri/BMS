@@ -6,6 +6,10 @@ import com.ideasdeveloper.bms.modules.crm.CrmRepository
 import com.ideasdeveloper.bms.modules.crm.CrmUser
 import com.ideasdeveloper.bms.modules.crm.CrmWordPressException
 import com.ideasdeveloper.bms.modules.crm.WpListing
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
@@ -199,6 +203,10 @@ object InmobiliariaService {
             InmobiliariaStore.createProperty(s.tenant, checked, code, currency, validPrice, status, s.access.userId, importKey).also {
                 // Captada a mano con propietario: queda en su historial (las importaciones no: intakeEvents lo decide por importKey).
                 InmobiliariaCustomerEvents.intake(s.tenant, it, s.actor.name)
+                InmobiliariaAudit.created(
+                    s.tenant, s.actor.activity, InmobiliariaAudit.PropertyType, it.id, InmobiliariaAudit.propertyLabel(it), "la propiedad",
+                    InmobiliariaAudit.propertyValues(s.tenant, it), InmobiliariaAudit.PropertyLabels,
+                )
             }
         }
     }
@@ -210,9 +218,16 @@ object InmobiliariaService {
         val checked = checkedFields(s, fields, current.ownerCustomerId)
         InmobiliariaStore.inTransaction(s.tenant) {
             InmobiliariaStore.updateProperty(s.tenant, id, checked, checked.code?.takeIf { it.isNotEmpty() } ?: current.code, checked.currency ?: current.currency)
+            val saved = InmobiliariaStore.findProperty(s.tenant, id)
             // Propietario nuevo o cambiado a mano: entrada de captacion para el nuevo.
             if (checked.ownerCustomerId != null && checked.ownerCustomerId != current.ownerCustomerId) {
-                InmobiliariaStore.findProperty(s.tenant, id)?.let { InmobiliariaCustomerEvents.intake(s.tenant, it, s.actor.name) }
+                saved?.let { InmobiliariaCustomerEvents.intake(s.tenant, it, s.actor.name) }
+            }
+            saved?.let {
+                InmobiliariaAudit.updated(
+                    s.tenant, s.actor.activity, InmobiliariaAudit.PropertyType, id, InmobiliariaAudit.propertyLabel(it), "la propiedad",
+                    InmobiliariaAudit.propertyValues(s.tenant, current), InmobiliariaAudit.propertyValues(s.tenant, it), InmobiliariaAudit.PropertyLabels,
+                )
             }
         }
         return requireProperty(s, id)
@@ -224,7 +239,16 @@ object InmobiliariaService {
         requireEditableProperty(s, id)
         val valid = InmobiliariaInput.requireMoney(price, msg("El precio"))
         if (note.length > 500) throw InmobiliariaException(tr("La nota del cambio de precio admite hasta 500 caracteres."))
-        InmobiliariaStore.changePrice(s.tenant, id, valid, s.access.userId, note.trim())
+        InmobiliariaStore.inTransaction(s.tenant) {
+            val current = requireProperty(s, id)
+            if (InmobiliariaStore.changePrice(s.tenant, id, valid, s.access.userId, note.trim())) {
+                CrmAudit.record(
+                    s.tenant, s.actor.activity, InmobiliariaAudit.PropertyType, id.toString(), InmobiliariaAudit.propertyLabel(current), ActivityActions.Updated,
+                    "Cambio el precio de la propiedad ${InmobiliariaAudit.propertyLabel(current)}.",
+                    listOfNotNull(ActivityChange.of("price", "Precio", current.price, valid), note.trim().takeIf { it.isNotEmpty() }?.let { ActivityChange.of("note", "Nota del cambio", null, it) }),
+                )
+            }
+        }
         return requireProperty(s, id)
     }
 
@@ -239,7 +263,14 @@ object InmobiliariaService {
             if ((status == PropertyStatus.Sold || status == PropertyStatus.Withdrawn) && InmobiliariaStore.openDealCount(s.tenant, id, null) > 0) {
                 throw InmobiliariaException(tr("Cierra o cancela primero sus transacciones abiertas."))
             }
+            val before = requireProperty(s, id)
             InmobiliariaStore.changeStatus(s.tenant, id, status, soldOn)
+            val after = requireProperty(s, id)
+            InmobiliariaAudit.status(
+                s.tenant, s.actor.activity, InmobiliariaAudit.PropertyType, id, InmobiliariaAudit.propertyLabel(after),
+                "Cambio el estado de la propiedad ${InmobiliariaAudit.propertyLabel(after)} a ${status.label}.",
+                ActivityChanges.diff(InmobiliariaAudit.propertyValues(s.tenant, before), InmobiliariaAudit.propertyValues(s.tenant, after), InmobiliariaAudit.PropertyLabels.filterKeys { it in setOf("status", "soldOn", "publishedOn") }),
+            )
         }
         return requireProperty(s, id)
     }
@@ -249,7 +280,15 @@ object InmobiliariaService {
         requireCreate(s)
         val property = requireEditableProperty(s, id)
         if (property.status != PropertyStatus.Intake) throw InmobiliariaException(tr("Solo se publica una propiedad en captacion."))
-        InmobiliariaStore.changeStatus(s.tenant, id, PropertyStatus.ForSale)
+        InmobiliariaStore.inTransaction(s.tenant) {
+            InmobiliariaStore.changeStatus(s.tenant, id, PropertyStatus.ForSale)
+            val after = requireProperty(s, id)
+            InmobiliariaAudit.status(
+                s.tenant, s.actor.activity, InmobiliariaAudit.PropertyType, id, InmobiliariaAudit.propertyLabel(after),
+                "Publico la propiedad ${InmobiliariaAudit.propertyLabel(after)}.",
+                ActivityChanges.diff(InmobiliariaAudit.propertyValues(s.tenant, property), InmobiliariaAudit.propertyValues(s.tenant, after), InmobiliariaAudit.PropertyLabels.filterKeys { it in setOf("status", "publishedOn") }),
+            )
+        }
         return requireProperty(s, id)
     }
 
@@ -263,7 +302,18 @@ object InmobiliariaService {
             if (label.isEmpty() || label.length > 60) throw InmobiliariaException(tr("El nombre del enlace debe tener entre 1 y 60 caracteres."))
             LinkInput(label, InmobiliariaInput.requireUrl(link.url, tr("El enlace '{0}'", label)))
         }
-        InmobiliariaStore.replaceLinks(s.tenant, id, clean)
+        InmobiliariaStore.inTransaction(s.tenant) {
+            val before = InmobiliariaStore.links(s.tenant, id).map { "${it.label}: ${it.url}" }
+            InmobiliariaStore.replaceLinks(s.tenant, id, clean)
+            val property = requireProperty(s, id)
+            val changes = ActivityChanges.diff(mapOf("links" to before), mapOf("links" to clean.map { "${it.label}: ${it.url}" }), mapOf("links" to "Enlaces por portal"))
+            if (changes.isNotEmpty()) {
+                CrmAudit.record(
+                    s.tenant, s.actor.activity, InmobiliariaAudit.PropertyType, id.toString(), InmobiliariaAudit.propertyLabel(property), ActivityActions.Updated,
+                    "Cambio los enlaces por portal de la propiedad ${InmobiliariaAudit.propertyLabel(property)}.", changes,
+                )
+            }
+        }
         return InmobiliariaStore.links(s.tenant, id)
     }
 
@@ -384,6 +434,10 @@ object InmobiliariaService {
             val id = InmobiliariaStore.createDeal(s.tenant, property.id, stage.id, edit, s.access.userId, draft.importKey)
             InmobiliariaStore.replaceParties(s.tenant, id, parties)
             val created = requireNotNull(InmobiliariaStore.findDeal(s.tenant, id)) { "La transaccion recien creada no existe" }
+            InmobiliariaAudit.created(
+                s.tenant, s.actor.activity, InmobiliariaAudit.DealType, id, InmobiliariaAudit.dealLabel(created), "la transaccion",
+                InmobiliariaAudit.dealValues(s.tenant, created), InmobiliariaAudit.DealLabels,
+            )
             enterStage(s, created, null, stage, null, effects, applyPropertyEffects, external)
             requireNotNull(InmobiliariaStore.findDeal(s.tenant, id))
         }
@@ -406,7 +460,12 @@ object InmobiliariaService {
             InmobiliariaStore.updateDeal(s.tenant, id, checked)
             if (parties != null) InmobiliariaStore.replaceParties(s.tenant, id, checkedParties(s, parties, current.parties))
             if (current.stageOutcome == DealOutcome.Won && checked.agreedPrice != current.agreedPrice) syncSoldItemPrice(s, current, checked.agreedPrice)
-            requireNotNull(InmobiliariaStore.findDeal(s.tenant, id))
+            val saved = requireNotNull(InmobiliariaStore.findDeal(s.tenant, id))
+            InmobiliariaAudit.updated(
+                s.tenant, s.actor.activity, InmobiliariaAudit.DealType, id, InmobiliariaAudit.dealLabel(saved), "la transaccion",
+                InmobiliariaAudit.dealValues(s.tenant, current), InmobiliariaAudit.dealValues(s.tenant, saved), InmobiliariaAudit.DealLabels,
+            )
+            saved
         }
     }
 
@@ -447,8 +506,23 @@ object InmobiliariaService {
             if (current.stageId != stage.id) {
                 InmobiliariaStore.moveDeal(s.tenant, dealId, stage.id)
                 enterStage(s, current, current.stageOutcome, stage, closedOn, effects, applyPropertyEffects, external)
+                val moved = InmobiliariaStore.findDeal(s.tenant, dealId)
+                InmobiliariaAudit.status(
+                    s.tenant, s.actor.activity, InmobiliariaAudit.DealType, dealId, InmobiliariaAudit.dealLabel(current),
+                    "Movio la transaccion de ${current.propertyCode} - ${current.propertyTitle} a la etapa ${stage.name}.",
+                    listOfNotNull(
+                        ActivityChange("stage", "Etapa", current.stageName, stage.name),
+                        moved?.takeIf { it.closedOn != current.closedOn }?.let { ActivityChange.of("closedOn", "Cierre real", current.closedOn, it.closedOn) },
+                    ),
+                )
             } else if (stage.outcome == DealOutcome.Won && closedOn != null) {
                 InmobiliariaStore.setClosedOn(s.tenant, dealId, closedOn)
+                if (current.closedOn != closedOn) {
+                    CrmAudit.record(
+                        s.tenant, s.actor.activity, InmobiliariaAudit.DealType, dealId.toString(), InmobiliariaAudit.dealLabel(current), ActivityActions.Updated,
+                        "Cambio la fecha de cierre de la transaccion ${InmobiliariaAudit.dealLabel(current)}.", listOf(ActivityChange.of("closedOn", "Cierre real", current.closedOn, closedOn)),
+                    )
+                }
                 // La fecha de venta de la propiedad sigue a la fecha de cierre de su venta.
                 val property = InmobiliariaStore.findProperty(s.tenant, current.propertyId)
                 if (applyPropertyEffects && property != null && property.status == PropertyStatus.Sold && property.soldOn != closedOn) {
@@ -543,7 +617,7 @@ object InmobiliariaService {
         val sale = effects.sale ?: return
         if (!CrmHost.wordpressActive(s.tenant)) return
         try {
-            CrmHost.wordpressMarkSold(s.tenant, sale.listingId, sale.price, sale.date)
+            CrmHost.wordpressMarkSold(s.tenant, sale.listingId, sale.price, sale.date, s.actor.activity)
         } catch (failure: CrmWordPressException) {
             effects.warnings += tr("El cierre quedo guardado, pero no se pudo marcar vendida en el sitio WordPress.")
         } catch (failure: Exception) {
@@ -562,14 +636,32 @@ object InmobiliariaService {
         if (clean.map { it.name.lowercase() }.toSet().size != clean.size) throw InmobiliariaException(tr("Los nombres de las etapas no pueden repetirse."))
         if (clean.none { it.outcome == DealOutcome.Open }) throw InmobiliariaException(tr("Debe haber al menos una etapa abierta."))
         if (clean.none { it.outcome == DealOutcome.Won }) throw InmobiliariaException(tr("Debe haber al menos una etapa ganada."))
-        InmobiliariaStore.saveStages(s.tenant, clean)
+        InmobiliariaStore.inTransaction(s.tenant) {
+            val before = InmobiliariaStore.stages(s.tenant)
+            InmobiliariaStore.saveStages(s.tenant, clean)
+            val after = InmobiliariaStore.stages(s.tenant)
+            fun shown(stages: List<DealStage>) = stages.joinToString(", ") { "${it.name} (${it.outcome.label})" }
+            CrmAudit.settingsChanged(
+                s.tenant, s.actor.activity, "Etapas de las transacciones", "Cambio las etapas de las transacciones de corretaje.",
+                mapOf("stages" to shown(before)), mapOf("stages" to shown(after)), mapOf("stages" to "Etapas"),
+            )
+        }
     }
 
     /** Ajustes: moneda y comision por defecto (permiso de configuracion). */
     fun saveSettings(s: InmobiliariaSession, settings: Settings) {
         if (!s.access.canEditStages) throw InmobiliariaException(tr("No tienes permiso para cambiar los ajustes."))
         if (!InmobiliariaInput.isCurrency(settings.currency)) throw InmobiliariaException(tr("La moneda es un codigo de 3 letras mayusculas (USD)."))
-        InmobiliariaStore.saveSettings(s.tenant, settings.copy(defaultCommissionPct = InmobiliariaInput.requirePercent(settings.defaultCommissionPct, msg("La comision por defecto"))))
+        val saved = settings.copy(defaultCommissionPct = InmobiliariaInput.requirePercent(settings.defaultCommissionPct, msg("La comision por defecto")))
+        InmobiliariaStore.inTransaction(s.tenant) {
+            val before = InmobiliariaStore.loadSettings(s.tenant)
+            InmobiliariaStore.saveSettings(s.tenant, saved)
+            CrmAudit.settingsChanged(
+                s.tenant, s.actor.activity, "Inmobiliaria", "Cambio los ajustes de Inmobiliaria.",
+                mapOf("currency" to before.currency, "defaultCommissionPct" to before.defaultCommissionPct), mapOf("currency" to saved.currency, "defaultCommissionPct" to saved.defaultCommissionPct),
+                mapOf("currency" to "Moneda", "defaultCommissionPct" to "Comision por defecto (%)"),
+            )
+        }
     }
 
     // ---- WordPress ----

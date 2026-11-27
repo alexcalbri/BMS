@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.cloudbeds
 
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.modules.crm.CrmReservations
+import com.ideasdeveloper.bms.modules.crm.CrmLeadAudit
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CbGuest
 import com.ideasdeveloper.bms.modules.crm.CbRoom
 import com.ideasdeveloper.bms.modules.crm.CbRoomRequest
@@ -54,8 +59,8 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         module = "crm",
         displayName = "Cloudbeds",
         description = "Busca habitaciones libres, crea reservas y hace el check-in en Cloudbeds desde el lead; envia la bienvenida y archiva al salir el huesped.",
-        version = "1.1.0",
-        minModuleVersion = "0.30.0", // the bilingual CRM (minCoreVersion 0.10.0: tr)
+        version = "1.2.0",
+        minModuleVersion = "0.31.0", // the CRM with the company activity log (minCoreVersion 0.12.0)
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
             "https://github.com/alexcalbri/bms/tree/0000000000000000000000000000000000000000/extensions/cloudbeds",
@@ -120,14 +125,14 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
     override fun availability(host: CrmHost, tenant: Connection, start: LocalDate, end: LocalDate, adults: Int, children: Int): List<CbRoom> =
         CrmCloudbeds.availability(host, tenant, start, end, adults, children)
 
-    override fun saveSettings(host: CrmHost, tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>) =
-        CloudbedsSettingsStore.saveForm(host, tenant, values, templates)
+    override fun saveSettings(host: CrmHost, tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) =
+        CloudbedsSettingsStore.saveForm(host, tenant, values, templates, actor)
 
     override fun settings(host: CrmHost, tenant: Connection): CrmCloudbedsSettings = CloudbedsSettingsStore.load(host, tenant)
 
     override fun recordError(host: CrmHost, tenant: Connection, error: String) = CloudbedsSettingsStore.recordError(host, tenant, error)
 
-    override fun setWelcomeEnabled(host: CrmHost, tenant: Connection, enabled: Boolean) = CloudbedsSettingsStore.setWelcomeEnabled(host, tenant, enabled)
+    override fun setWelcomeEnabled(host: CrmHost, tenant: Connection, enabled: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = CloudbedsSettingsStore.setWelcomeEnabled(host, tenant, enabled, actor)
 
     override fun sendWelcomes(host: CrmHost, tenant: Connection, now: LocalDateTime): Int = CrmCloudbeds.sendWelcomes(host, tenant, now)
 
@@ -137,7 +142,14 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         val reservation = host.reservationsForLead(tenant, leadId).firstOrNull { it.status in host.CheckInStatuses }
             ?: throw CrmValidationException(tr("El lead no tiene una reserva de Cloudbeds pendiente de check-in."))
         CrmCloudbeds.checkIn(host, tenant, reservation)
-        host.addActivity(tenant, leadId, "item", "Check-in hecho en Cloudbeds: reserva ${reservation.reservationId}.", actor)
+        CrmAudit.atomically(tenant) {
+            host.addActivity(tenant, leadId, "item", "Check-in hecho en Cloudbeds: reserva ${reservation.reservationId}.", actor, CrmLeadAudit.None)
+            CrmAudit.record(
+                tenant, actor.activity, "reservation", reservation.id.toString(), "Reserva ${reservation.reservationId}", ActivityActions.StatusChanged,
+                "Hizo el check-in de la reserva ${reservation.reservationId} en Cloudbeds.",
+                listOf(ActivityChange("status", "Estado", CrmReservations.statusLabels[reservation.status] ?: reservation.status, CrmReservations.statusLabels["checked_in"])),
+            )
+        }
         return tr("Check-in hecho en la reserva {0}.", reservation.reservationId)
     }
 
@@ -164,7 +176,13 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
             price = params["total"]?.toBigDecimalOrNull(), status = "chosen", startsOn = stay.start, endsOn = stay.end,
             data = mapOf("roomTypeId" to params["type"].orEmpty(), "max" to params["max"].orEmpty(), "adults" to stay.adults.toString(), "children" to stay.children.toString()),
         )
-        host.addActivity(tenant, lead.id, "item", "Habitacion asignada: $title, del ${stay.start} al ${stay.end}.", actor)
+        host.addActivity(
+            tenant, lead.id, "item", "Habitacion asignada: $title, del ${stay.start} al ${stay.end}.", actor,
+            CrmLeadAudit.Row(
+                ActivityActions.Updated, "Asigno la habitacion $title al lead {lead}.",
+                listOf(ActivityChange("room", "Habitacion", null, title), ActivityChange("stay", "Estadia", null, "${stay.start} al ${stay.end}")),
+            ),
+        )
         return CrmLeadItemActions.Reservation(tr("{0} asignada a {1}.", title, lead.name), warning = false)
     }
 
@@ -206,7 +224,15 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
             host.setItemStatus(tenant, room, "booked")
             host.setItemData(tenant, room, room.data + mapOf("adults" to request.adults.toString(), "children" to request.children.toString(), "reservation" to result.reservationId))
         }
-        host.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor)
+        host.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor, CrmLeadAudit.None)
+        CrmAudit.record(
+            tenant, actor.activity, "reservation", result.reservationId, "Reserva ${result.reservationId}", ActivityActions.Created,
+            "Creo la reserva ${result.reservationId} en Cloudbeds para el lead ${lead.name}.",
+            listOfNotNull(
+                ActivityChange("lead", "Lead", null, lead.name), ActivityChange("rooms", "Habitaciones", null, roomNames), ActivityChange("stay", "Estadia", null, "$start al $end"),
+                result.total?.let { ActivityChange("total", "Total", null, it.toPlainString()) },
+            ),
+        )
         return if (result.unassigned > 0) {
             CrmLeadItemActions.Reservation(tr("Reserva {0} creada, pero Cloudbeds dejo {1} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", result.reservationId, result.unassigned), warning = true)
         } else {

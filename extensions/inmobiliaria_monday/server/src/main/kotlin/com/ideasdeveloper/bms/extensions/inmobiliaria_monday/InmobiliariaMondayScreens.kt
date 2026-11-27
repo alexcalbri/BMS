@@ -267,18 +267,18 @@ object InmobiliariaMondayScreens {
                 "token" -> {
                     val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && !CrmHost.isSecretPlaceholder(it) }
                     if (typed == null && InmobiliariaMondayService.token(tenant) == null) return result(UiTone.Danger, tr("Escribe el token de la API de monday."), emptyMap())
-                    typed?.let { InmobiliariaMondayService.saveToken(tenant, it) }
+                    typed?.let { InmobiliariaMondayService.saveToken(tenant, it, actor.activity) }
                     result(UiTone.Success, tr("Token de monday guardado."), mapOf("boards" to "1"))
                 }
                 "forget" -> {
-                    InmobiliariaMondayService.saveToken(tenant, null)
+                    InmobiliariaMondayService.saveToken(tenant, null, actor.activity)
                     result(UiTone.Success, tr("Token de monday borrado."), emptyMap())
                 }
                 "start" -> start(tenant, actor, values)
                 "saveMapping" -> {
                     val id = job ?: throw InmobiliariaMondayException(tr("Falta la importacion."))
                     val current = InmobiliariaMondayService.job(tenant, id)
-                    InmobiliariaMondayService.saveMapping(tenant, id, mappingFrom(current, values))
+                    InmobiliariaMondayService.saveMapping(tenant, id, mappingFrom(current, values), actor.activity)
                     result(UiTone.Success, tr("Mapeo guardado."), keep)
                 }
                 "apply" -> {
@@ -287,11 +287,11 @@ object InmobiliariaMondayScreens {
                 }
                 "cancel" -> {
                     val id = job ?: throw InmobiliariaMondayException(tr("Falta la importacion."))
-                    val text = InmobiliariaMondayService.cancel(tenant, id)
+                    val text = InmobiliariaMondayService.cancel(tenant, id, actor.activity)
                     result(UiTone.Success, text, if (InmobiliariaMondayStore.find(tenant, id) == null) emptyMap() else keep)
                 }
                 "discard" -> {
-                    InmobiliariaMondayService.discard(tenant, job ?: throw InmobiliariaMondayException(tr("Falta la importacion.")))
+                    InmobiliariaMondayService.discard(tenant, job ?: throw InmobiliariaMondayException(tr("Falta la importacion.")), actor.activity)
                     result(UiTone.Success, tr("Importacion descartada."), emptyMap())
                 }
                 else -> result(UiTone.Warning, tr("Esa accion no existe."), params - "op")

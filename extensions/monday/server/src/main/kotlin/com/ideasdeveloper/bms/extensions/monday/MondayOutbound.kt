@@ -21,7 +21,7 @@ const val MondayConnectionService = "monday"
 object MondayOutbound : MondayOutboundSink(
     sinkId = MondayConnectionService,
     moduleId = "crm",
-    config = JdbcMondayOutboundConfigStore(MondayOutboundTable),
+    config = AuditedMondayConfigStore(JdbcMondayOutboundConfigStore(MondayOutboundTable)),
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(MondayOutbound::class.java)
 

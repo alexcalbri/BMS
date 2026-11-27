@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.extensions.inmobiliaria_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CrmActor
 import com.ideasdeveloper.bms.modules.crm.CrmHost
 import com.ideasdeveloper.bms.modules.crm.CrmImportKind
@@ -168,14 +172,30 @@ object InmobiliariaMondayRunner {
             InmobiliariaMondayStore.transition(tenant, job.id, MondayJobState.Applying, MondayJobState.Failed, PermissionLost)
             return 0
         }
-        val actor = CrmActor(applier, job.appliedByName)
+        // The activity log names the import and, with it, the person who pressed Apply.
+        val activity = ActivityActor.import(ActivityActor.user(applier, job.appliedByName))
+        val actor = CrmActor(applier, job.appliedByName, activity)
         var applied = 0
         while (Instant.now().isBefore(deadline)) {
             // Si se cancelo mientras corria, el lote siguiente ni se lee.
             if (InmobiliariaMondayStore.find(tenant, job.id)?.state != MondayJobState.Applying) return applied
             val rows = InmobiliariaMondayStore.rows(tenant, job.id, MondayRowState.Pending, MondayMapping.BatchSize)
             if (rows.isEmpty()) {
-                InmobiliariaMondayStore.transition(tenant, job.id, MondayJobState.Applying, MondayJobState.Done)
+                // The import is over: one row with its totals next to the per-record rows each batch wrote.
+                CrmAudit.atomically(tenant) {
+                    if (InmobiliariaMondayStore.transition(tenant, job.id, MondayJobState.Applying, MondayJobState.Done)) {
+                        val done = InmobiliariaMondayStore.find(tenant, job.id) ?: job
+                        CrmAudit.record(
+                            tenant, activity, "import", job.id.toString(), "monday ${job.boardName.ifEmpty { job.boardId }}", ActivityActions.Imported,
+                            "Importo ${done.created} nuevo(s) y actualizo ${done.updated} de ${done.rowsRead} fila(s) de monday ${job.boardName.ifEmpty { job.boardId }} (${done.failed} con error).",
+                            listOf(
+                                ActivityChange("rows", "Filas", null, done.rowsRead.toString()), ActivityChange("created", "Creados", null, done.created.toString()),
+                                ActivityChange("updated", "Actualizados", null, done.updated.toString()), ActivityChange("skipped", "Omitidos", null, done.skipped.toString()),
+                                ActivityChange("failed", "Con error", null, done.failed.toString()),
+                            ),
+                        )
+                    }
+                }
                 return applied
             }
             applyBatch(tenant, job, kind, target, actor, rows)
