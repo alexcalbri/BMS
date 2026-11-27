@@ -98,19 +98,23 @@ fun AssistantServerScreen(
         val url = serverUrl ?: return@LaunchedEffect
         val accessToken = token ?: return@LaunchedEffect
         loading = true
+        // Un administrador sin alcance sobre todas las empresas recibe 403 en los ajustes y la clave: se muestra el
+        // mensaje del servidor y la lista de empresas sigue disponible.
         try {
             show(AssistantApi(url).use { api -> api.serverSettings(accessToken) })
             error = null
         } catch (exception: CompanyException) {
             error = exception.message
-            loading = false
-            return@LaunchedEffect
         }
         try {
             companies = AssistantApi(url).use { api -> api.serverCompanies(accessToken) }
+        } catch (exception: CompanyException) {
+            if (error == null) error = exception.message
+        }
+        try {
             usage = AssistantApi(url).use { api -> api.serverUsage(accessToken, null) }
         } catch (exception: CompanyException) {
-            error = exception.message
+            if (error == null) error = exception.message
         } finally {
             loading = false
         }
@@ -316,7 +320,7 @@ fun AssistantServerScreen(
                         }
                     }
 
-                    if (settings != null) {
+                    if (!loading) {
                         CollapsibleSection(
                             tr("Empresas"),
                             colors.accent,

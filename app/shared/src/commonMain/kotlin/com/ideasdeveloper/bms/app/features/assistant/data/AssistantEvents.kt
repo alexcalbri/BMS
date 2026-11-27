@@ -92,10 +92,6 @@ fun parseAssistantEvent(name: String, payload: String): AssistantEvent? {
         }
         AssistantIds.EventConfirmationRequired -> {
             val confirmationId = obj.text("confirmationId") ?: return null
-            val rows = (obj["summary"] as? JsonArray).orEmpty().mapNotNull { row ->
-                val rowObject = row as? JsonObject ?: return@mapNotNull null
-                AssistantSummaryRow(rowObject.text("label").orEmpty(), rowObject.text("value").orEmpty())
-            }
             AssistantEvent.ConfirmationRequired(
                 AssistantConfirmation(
                     confirmationId = confirmationId,
@@ -104,8 +100,11 @@ fun parseAssistantEvent(name: String, payload: String): AssistantEvent? {
                     label = obj.text("label").orEmpty(),
                     module = obj.text("module").orEmpty(),
                     destructive = obj.flag("destructive"),
-                    summary = rows,
+                    summary = obj.rows("summary"),
                     expiresAt = obj.text("expiresAt").orEmpty(),
+                    outbound = obj.flag("outbound"),
+                    preview = obj.rows("preview"),
+                    previewError = obj.text("previewError")?.takeIf { it.isNotBlank() },
                 ),
             )
         }
@@ -126,3 +125,9 @@ private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive
 private fun JsonObject.flag(key: String): Boolean = (this[key] as? JsonPrimitive)?.booleanOrNull == true
 
 private fun JsonObject.number(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
+
+// Filas de resumen o de vista previa; lo que no sea una fila valida se ignora.
+private fun JsonObject.rows(key: String): List<AssistantSummaryRow> = (this[key] as? JsonArray).orEmpty().mapNotNull { row ->
+    val rowObject = row as? JsonObject ?: return@mapNotNull null
+    AssistantSummaryRow(rowObject.text("label").orEmpty(), rowObject.text("value").orEmpty(), rowObject.flag("hiddenCharacters"))
+}

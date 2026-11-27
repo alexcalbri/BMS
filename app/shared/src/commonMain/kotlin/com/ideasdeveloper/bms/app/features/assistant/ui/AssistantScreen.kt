@@ -271,6 +271,7 @@ fun AssistantScreen(
                                 // Si el servidor rechaza el mensaje antes de empezar, el texto vuelve al campo.
                                 chat.send(text) { rejected -> draft = rejected }
                             },
+                            onNewConversation = ::newConversation,
                             modifier = panelModifier,
                             onBack = if (withBack) ({ chatOpen = false }) else null,
                         )
@@ -376,6 +377,7 @@ private fun ConversationRow(
             val caption = when {
                 conversation.state == "awaiting_confirmation" || conversation.pendingConfirmations > 0 -> tr("Espera tu aprobacion")
                 conversation.state == "running" -> tr("Respondiendo...")
+                conversation.state == "closed" -> tr("Cerrada")
                 else -> dateTimeText(conversation.updatedAt)
             }
             Text(

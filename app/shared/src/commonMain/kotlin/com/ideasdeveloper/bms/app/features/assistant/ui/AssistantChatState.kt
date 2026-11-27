@@ -189,7 +189,7 @@ internal class AssistantChatState(
                 onRejected(text)
                 if (exception.status == 403) onStatusChanged()
                 // Otra pantalla o dispositivo dejo un turno o una confirmacion abiertos: se ve tal como esta en el servidor.
-                if (exception.code == "CONVERSATION_BUSY" || exception.code == "CONFIRMATION_PENDING") reload()
+                if (exception.code == "CONVERSATION_BUSY" || exception.code == "CONFIRMATION_PENDING" || exception.code == "CONVERSATION_CLOSED") reload()
             }
         }
     }
@@ -369,6 +369,7 @@ internal fun noticeText(code: String): String = when (code) {
     "MAX_TOKENS" -> tr("La respuesta se corto porque alcanzo su longitud maxima.")
     "FALLBACK" -> tr("Se uso un modelo alternativo para responder.")
     "COMPACTED" -> tr("La conversacion se resumio para seguir.")
+    "CLOSED" -> tr("Esta conversacion no puede continuar. Empieza una conversacion nueva.")
     else -> ""
 }
 
@@ -380,5 +381,9 @@ internal fun errorText(code: String): String = when (code) {
     "TURN_TOO_LONG" -> tr("La respuesta tardo demasiado y se detuvo.")
     "TOO_MANY_TOOL_CALLS" -> tr("El asistente hizo demasiadas consultas en una respuesta y se detuvo.")
     "LIMIT_REACHED" -> tr("Se alcanzo el limite mensual del asistente.")
+    "ASSISTANT_BUSY" -> tr("El asistente esta ocupado, intentalo en un momento.")
+    "ASSISTANT_RATE_LIMITED" -> tr("Demasiadas solicitudes al asistente; espera un minuto.")
+    "CONVERSATION_BUSY" -> tr("Esta conversacion ya tiene una respuesta en curso.")
+    "TOO_MANY_CONVERSATIONS" -> tr("Tienes demasiadas conversaciones; elimina o archiva alguna.")
     else -> tr("El asistente no pudo completar la respuesta.")
 }
