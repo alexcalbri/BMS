@@ -29,15 +29,18 @@ import kotlin.test.assertTrue
  * separate NOINHERIT login that may SET ROLE to the server owner's role (and to the runtime role). Creating,
  * changing, duplicating, catching up and deleting companies keep working, and the runtime role can use every company
  * table but cannot drop, alter or disable anything of the activity log. Runs only with BMS_TEST_PG_URL (or
- * BMS_ACTIVITY_PG_URL) of a DISPOSABLE server: it creates and drops bms_seca_* databases and seca_* roles.
+ * BMS_ACTIVITY_PG_URL) of a DISPOSABLE server: it creates and drops bms_seca<random>_* databases and seca<random>_* roles
+ * of its own (a new prefix per test, so concurrent runs and the script tests never touch each other's objects).
  */
 class ProvisioningRolesPostgresTest {
+    // Unique per test instance: every database and role name of this test starts with it.
+    private val tag = "seca" + (1..6).map { ('a'..'z').random() }.joinToString("")
     private val url: String? = (System.getenv("BMS_TEST_PG_URL") ?: System.getenv("BMS_ACTIVITY_PG_URL"))?.takeIf { it.isNotBlank() }
     private val root = I18nCatalogCheck.repoRoot()
-    private val central = "bms_seca_central"
-    private val owner = "seca_owner"
-    private val runtimeRole = "seca_runtime"
-    private val provisioner = "seca_provisioner"
+    private val central = "bms_${tag}_central"
+    private val owner = "${tag}_owner"
+    private val runtimeRole = "${tag}_runtime"
+    private val provisioner = "${tag}_provisioner"
     private val ownerId = UUID.randomUUID()
     private val opened = mutableListOf<LoginDatabases>()
 
@@ -59,10 +62,10 @@ class ProvisioningRolesPostgresTest {
 
     private fun dropEverything() {
         superuser("postgres").use { admin ->
-            admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname LIKE 'bms\\_seca\\_%' AND pid <> pg_backend_pid()")
-            val databases = admin.createStatement().use { st -> st.executeQuery("SELECT datname FROM pg_database WHERE datname LIKE 'bms\\_seca\\_%'").use { r -> buildList { while (r.next()) add(r.getString(1)) } } }
+            admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname LIKE 'bms\\_${tag}\\_%' AND pid <> pg_backend_pid()")
+            val databases = admin.createStatement().use { st -> st.executeQuery("SELECT datname FROM pg_database WHERE datname LIKE 'bms\\_${tag}\\_%'").use { r -> buildList { while (r.next()) add(r.getString(1)) } } }
             databases.forEach { admin.run("DROP DATABASE IF EXISTS \"$it\" WITH (FORCE)") }
-            val roles = admin.createStatement().use { st -> st.executeQuery("SELECT rolname FROM pg_roles WHERE rolname LIKE 'seca\\_%'").use { r -> buildList { while (r.next()) add(r.getString(1)) } } }
+            val roles = admin.createStatement().use { st -> st.executeQuery("SELECT rolname FROM pg_roles WHERE rolname LIKE '${tag}\\_%'").use { r -> buildList { while (r.next()) add(r.getString(1)) } } }
             roles.forEach { admin.run("DROP OWNED BY \"$it\" CASCADE") }
             roles.forEach { admin.run("DROP ROLE IF EXISTS \"$it\"") }
         }
@@ -139,8 +142,8 @@ class ProvisioningRolesPostgresTest {
                 "TRUNCATE customers",
                 "CREATE TABLE intrusa (id INT)",
                 "SET ROLE $owner",
-                "CREATE DATABASE bms_seca_intrusa",
-                "CREATE ROLE seca_intrusa",
+                "CREATE DATABASE bms_${tag}_intrusa",
+                "CREATE ROLE ${tag}_intrusa",
             ).forEach { sql -> assertFailsWith<SQLException>(sql) { db.run(sql) } }
             // Every ordinary table of the company stays usable.
             db.run("UPDATE customers SET status = status WHERE FALSE")
@@ -178,32 +181,37 @@ class ProvisioningRolesPostgresTest {
         val provisioning = provisioning(databases, integrity)
         val actor = AuditActor.owner(owner, ownerId)
         provisioning.createCompany(
-            CreateCompanyRequest("seca_acme", "Acme", "seca_dueno_acme", "clave-del-dueno-123", "Dueno Acme", "dueno@acme.example"), owner, actor,
+            CreateCompanyRequest("${tag}_acme", "Acme", "${tag}_dueno_acme", "clave-del-dueno-123", "Dueno Acme", "dueno@acme.example"), owner, actor,
         )
-        assertEquals(owner, scalar("postgres", "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'bms_seca_acme'"))
-        assertRuntimeIsPlain("bms_seca_acme")
-        assertTrue(integrity.verify("seca_acme").let { it.ok }, integrity.verify("seca_acme").problems.toString())
+        assertEquals(owner, scalar("postgres", "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'bms_${tag}_acme'"))
+        assertRuntimeIsPlain("bms_${tag}_acme")
+        assertTrue(integrity.verify("${tag}_acme").let { it.ok }, integrity.verify("${tag}_acme").problems.toString())
         // A change from the server writes its row as the runtime role on the provisioning connection.
-        provisioning.updateCompany("seca_acme", UpdateCompanyRequest("Acme SA", null, "#112233", "#445566", "#778899"), owner, actor)
-        assertEquals("1", scalar("bms_seca_acme", "SELECT count(*) FROM activity_log WHERE summary = 'Cambio desde el servidor los datos de la empresa.'"))
-        provisioning.resetBusinessOwnerPassword("seca_acme", "otra-clave-del-dueno-456", owner, actor)
+        provisioning.updateCompany("${tag}_acme", UpdateCompanyRequest("Acme SA", null, "#112233", "#445566", "#778899"), owner, actor)
+        assertEquals("1", scalar("bms_${tag}_acme", "SELECT count(*) FROM activity_log WHERE summary = 'Cambio desde el servidor los datos de la empresa.'"))
+        provisioning.resetBusinessOwnerPassword("${tag}_acme", "otra-clave-del-dueno-456", owner, actor)
         // The startup catch-up and a duplicate.
         provisioning.applyPendingModuleMigrations()
         assertEquals(
             "0",
-            scalar("bms_seca_acme", "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = '$runtimeRole' AND table_name LIKE 'activity\\_log%' AND privilege_type NOT IN ('SELECT', 'INSERT')"),
+            scalar("bms_${tag}_acme", "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = '$runtimeRole' AND table_name LIKE 'activity\\_log%' AND privilege_type NOT IN ('SELECT', 'INSERT')"),
         )
-        provisioning.duplicateCompany("seca_acme", "seca_copia", owner, actor)
-        assertRuntimeIsPlain("bms_seca_copia")
+        provisioning.duplicateCompany("${tag}_acme", "${tag}_copia", owner, actor)
+        assertRuntimeIsPlain("bms_${tag}_copia")
         val reports = integrity.verifyAll()
         assertTrue(reports.all { it.ok }, reports.flatMap { it.problems }.toString())
         // Deactivation and deletion.
-        provisioning.setCompanyActive("seca_copia", false, owner, actor)
-        provisioning.deleteInactiveCompany("seca_copia", owner, actor)
-        assertEquals("0", scalar("postgres", "SELECT count(*) FROM pg_database WHERE datname = 'bms_seca_copia'"))
+        provisioning.setCompanyActive("${tag}_copia", false, owner, actor)
+        // A runtime session still on the database (a pool, or one closed a moment ago) does not stop the deletion: the
+        // owner's role may not end it, so it is ended as the runtime role.
+        val stillOpen = runtime("bms_${tag}_copia")
+        provisioning.deleteInactiveCompany("${tag}_copia", owner, actor)
+        assertFailsWith<SQLException> { stillOpen.run("SELECT 1") }
+        runCatching { stillOpen.close() }
+        assertEquals("0", scalar("postgres", "SELECT count(*) FROM pg_database WHERE datname = 'bms_${tag}_copia'"))
         // The pool's role still cannot create anything at server level.
         runtime(central).use { db ->
-            assertFailsWith<SQLException> { db.run("CREATE DATABASE bms_seca_intrusa") }
+            assertFailsWith<SQLException> { db.run("CREATE DATABASE bms_${tag}_intrusa") }
             assertFailsWith<SQLException> { db.run("SET ROLE $owner") }
             assertFailsWith<SQLException> { db.run("DELETE FROM provisioning_audit_log") }
         }
@@ -232,18 +240,18 @@ class ProvisioningRolesPostgresTest {
         val provisioning = provisioning(databases, integrity, registry)
         val actor = AuditActor.owner(owner, ownerId)
         provisioning.createCompany(
-            CreateCompanyRequest("seca_mod", "Modulos", "seca_dueno_mod", "clave-del-dueno-123", "Dueno", "dueno@mod.example"), owner, actor,
+            CreateCompanyRequest("${tag}_mod", "Modulos", "${tag}_dueno_mod", "clave-del-dueno-123", "Dueno", "dueno@mod.example"), owner, actor,
         )
-        val database = "bms_seca_mod"
-        provisioning.setModuleEnabled("seca_mod", "tareas", true, owner, actor)
-        provisioning.setModuleEnabled("seca_mod", "crm", true, owner, actor)
+        val database = "bms_${tag}_mod"
+        provisioning.setModuleEnabled("${tag}_mod", "tareas", true, owner, actor)
+        provisioning.setModuleEnabled("${tag}_mod", "crm", true, owner, actor)
         // An extension package carries its migrations as resources of its own class loader (here, a test resource).
         val extension = object : com.ideasdeveloper.bms.server.extensions.ServerExtension {
             override val manifest = com.ideasdeveloper.bms.server.extensions.ExtensionManifest(id = "wordpress", module = "crm", displayName = "WordPress", version = "0.1.0")
             override val migrationPaths = listOf("provisioning-roles/V001__ext_items.sql")
             override val runtimeTables = listOf("ext_secatest__items")
         }
-        provisioning.applyExtensionMigrations("seca_mod", extension)
+        provisioning.applyExtensionMigrations("${tag}_mod", extension)
         assertTrue(scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'tareas'")!!.toInt() > 0)
         assertTrue(scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'crm'")!!.toInt() > 0)
         assertEquals("1", scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'ext:wordpress'"))
@@ -259,14 +267,20 @@ class ProvisioningRolesPostgresTest {
         // Startup catch-up on a company that lacks tenant V012, with a table an older update.sh created as postgres.
         superuser(database).use { db ->
             db.run("DROP TABLE application_user_recovery_codes, application_user_two_factor, application_user_2fa_email_recovery")
-            db.run("DELETE FROM schema_migrations WHERE module = 'tenant' AND version IN ('V012__create_two_factor', 'V013__create_two_factor_email_recovery')")
-            db.run("CREATE TABLE seca_de_postgres (id INT)")
+            db.run("ALTER TABLE application_sessions DROP COLUMN second_factor_at")
+            db.run("DELETE FROM schema_migrations WHERE module = 'tenant' AND version IN ('V012__create_two_factor', 'V013__create_two_factor_email_recovery', 'V014__session_second_factor_mark')")
+            db.run("CREATE TABLE ${tag}_de_postgres (id INT)")
         }
         provisioning.applyPendingModuleMigrations()
         assertEquals(owner, scalar(database, "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'application_user_two_factor'"))
         assertEquals(owner, scalar(database, "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'application_user_2fa_email_recovery'"))
-        assertEquals("2", scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'tenant' AND version IN ('V012__create_two_factor', 'V013__create_two_factor_email_recovery')"))
-        superuser(database).use { it.run("DROP TABLE seca_de_postgres") }
+        assertEquals("3", scalar(database, "SELECT count(*) FROM schema_migrations WHERE module = 'tenant' AND version IN ('V012__create_two_factor', 'V013__create_two_factor_email_recovery', 'V014__session_second_factor_mark')"))
+        // The runtime role writes the new columns of tenant V014 through its table grants.
+        runtime(database).use { db ->
+            db.run("UPDATE application_sessions SET second_factor_at = CURRENT_TIMESTAMP WHERE FALSE")
+            db.run("UPDATE application_user_2fa_email_recovery SET warning_mailed_at = CURRENT_TIMESTAMP, notice_base = 'x' WHERE FALSE")
+        }
+        superuser(database).use { it.run("DROP TABLE ${tag}_de_postgres") }
         assertRuntimeIsPlain(database)
     }
 }

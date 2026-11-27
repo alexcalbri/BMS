@@ -679,9 +679,7 @@ class CompanyProvisioningService(
             admin.createStatement().use { statement ->
                 if (tenantDatabaseExists) {
                     statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(company.databaseName)} FROM PUBLIC")
-                    statement.executeQuery(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${quoteLiteral(company.databaseName)}"
-                    ).use { }
+                    terminateSessions(statement, company.databaseName)
                     statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(company.databaseName)}")
                     tenantDatabaseDropped = true
                 }
@@ -2637,6 +2635,27 @@ class CompanyProvisioningService(
 
     private fun quoteLiteral(value: String): String = "'" + value.replace("'", "''") + "'"
 
+
+    /**
+     * Ends the sessions on [database] before it is dropped. The provisioning connection runs as the server owner's role,
+     * which may only signal sessions of roles whose privileges it has: asking PostgreSQL to end any other one (the
+     * runtime role's pool, or a runtime connection closed a moment ago that is still exiting) fails the whole call with
+     * "permission denied to terminate process". So each pass only ends what the current role may end, and the runtime
+     * role's sessions are ended as the runtime role (the provisioning login may SET ROLE to it), then the role is set back.
+     */
+    private fun terminateSessions(statement: java.sql.Statement, database: String) {
+        val sql = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${quoteLiteral(database)} " +
+            "AND pid <> pg_backend_pid() AND usesysid IS NOT NULL AND pg_has_role(current_user, usesysid, 'USAGE')"
+        statement.executeQuery(sql).use { }
+        val current = statement.executeQuery("SELECT current_user").use { rows -> rows.next(); rows.getString(1) }
+        if (current == config.runtimeUser) return
+        statement.execute("SET ROLE ${quoteIdentifier(config.runtimeUser)}")
+        try {
+            statement.executeQuery(sql).use { }
+        } finally {
+            statement.execute("SET ROLE ${quoteIdentifier(current)}")
+        }
+    }
 
     private fun Connection.setProvisioningRole(role: String) {
         createStatement().use { statement ->
