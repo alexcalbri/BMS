@@ -98,7 +98,7 @@ object TareasMondayRunner {
                 val job = TareasMondayJobs.find(tenant, id)
                 if (TareasMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying)) && job != null) {
                     TareasImportApply.recordImport(
-                        tenant, TareasLog.importer(tenant, job.createdBy), "monday", job.boardName, job.id, job.created, job.updated, job.skipped, job.failed,
+                        tenant, TareasLog.importer(tenant, job.createdBy, job.startedActor), "monday", job.boardName, job.id, job.created, job.updated, job.skipped, job.failed,
                         job.filesDone, job.filesFailed, ok = false,
                     )
                 }
@@ -220,7 +220,7 @@ object TareasMondayRunner {
         val users = TareasRepository.users(tenant)
         // Idempotente: el tablero se busca por su clave (o es el elegido), asi cada corrida llega al mismo.
         // What this import writes is attributed to it and to the person who started it ("Importacion (Ana Ruiz)").
-        val importer = TareasLog.importer(tenant, job.createdBy)
+        val importer = TareasLog.importer(tenant, job.createdBy, job.startedActor)
         val boardId = TareasImportApply.ensureBoard(
             tenant, BoardKeyPrefix + job.boardId, job.boardName.ifBlank { "Monday ${job.boardId}" }, job.targetBoardId, job.createdBy, importer,
         )
@@ -367,7 +367,7 @@ object TareasMondayRunner {
         TareasRepository.transaction(tenant) {
             if (TareasMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))) {
                 TareasImportApply.recordImport(
-                    tenant, TareasLog.importer(tenant, job.createdBy), "monday", job.boardName, job.id, job.created, job.updated, job.skipped, job.failed,
+                    tenant, TareasLog.importer(tenant, job.createdBy, job.startedActor), "monday", job.boardName, job.id, job.created, job.updated, job.skipped, job.failed,
                     job.filesDone, job.filesFailed,
                 )
             }

@@ -148,7 +148,7 @@ object CrmImport {
         if (table.rows.isEmpty()) throw CrmImportException(tr("No hay filas para importar."))
         val id = UUID.randomUUID()
         transaction(tenant) {
-            insertJob(tenant, id, source, name, "mapping", emptyList(), userId)
+            insertJob(tenant, id, source, name, "mapping", emptyList(), userId, actor)
             storeRows(tenant, id, name, table)
             jobCreated(tenant, actor, id, name, source, table.rows.size)
         }
@@ -167,9 +167,12 @@ object CrmImport {
     }
 
     /** Inserts a job; [boards] are the source ids an external source still has to read (status "reading"). */
-    fun insertJob(tenant: Connection, id: UUID, source: String, name: String, status: String, boards: List<String>, userId: UUID?) {
+    fun insertJob(
+        tenant: Connection, id: UUID, source: String, name: String, status: String, boards: List<String>, userId: UUID?,
+        starter: ActivityActor? = null,
+    ) {
         tenant.prepareStatement(
-            "INSERT INTO crm_import_jobs (id, source, name, status, boards, created_by) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)"
+            "INSERT INTO crm_import_jobs (id, source, name, status, boards, created_by, started_actor) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?)"
         ).use { insert ->
             insert.setObject(1, id)
             insert.setString(2, source)
@@ -177,6 +180,7 @@ object CrmImport {
             insert.setString(4, status)
             insert.setString(5, JsonArray(boards.map { JsonPrimitive(it) }).toString())
             insert.setObject(6, userId)
+            insert.setString(7, starter?.toStoredJson())
             insert.executeUpdate()
         }
     }
@@ -445,6 +449,12 @@ object CrmImport {
 
     /** The person who created the job: the one the import runs for ("Importacion (Ana Ruiz)"); null when nobody (server owner, source without user). */
     fun startedBy(tenant: Connection, jobId: UUID): ActivityActor? {
+        // The actor kept when the job started (an AI agent, a server owner or administrator...): rebuilt exactly.
+        tenant.prepareStatement("SELECT started_actor FROM crm_import_jobs WHERE id = ?").use { query ->
+            query.setObject(1, jobId)
+            query.executeQuery().use { rows -> if (rows.next()) ActivityActor.restore(rows.getString(1)) else null }
+        }?.let { return it }
+        // Jobs from before the column kept only the user id.
         val user = tenant.prepareStatement(
             """
             SELECT j.created_by, COALESCE(NULLIF(u.display_name, ''), u.postgres_role), EXISTS (SELECT 1 FROM business_owner o WHERE o.user_id = u.id)

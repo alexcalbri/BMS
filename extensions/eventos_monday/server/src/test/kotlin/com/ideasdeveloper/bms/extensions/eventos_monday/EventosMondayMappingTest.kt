@@ -357,7 +357,7 @@ class EventosMondayMappingTest {
         assertEquals(fromDisk, EventosMondayServerExtension.manifest)
         assertEquals(EventosMondayId, EventosMondayServerExtension.sourceId)
         assertEquals(
-            listOf("extensions/eventos_monday/migrations/V001__settings.sql", "extensions/eventos_monday/migrations/V002__rendimiento.sql"),
+            listOf("extensions/eventos_monday/migrations/V001__settings.sql", "extensions/eventos_monday/migrations/V002__rendimiento.sql", "extensions/eventos_monday/migrations/V003__started_actor.sql"),
             EventosMondayServerExtension.migrationPaths,
         )
         EventosMondayServerExtension.migrationPaths.forEach { assertTrue(repoFile(it).isFile, it) }

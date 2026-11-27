@@ -189,7 +189,7 @@ object EventosMondayRunner {
         val tenant = context.tenant
         val users = EventosRepository.users(tenant)
         // Quien inicio la importacion es el actor de cada fila del registro de actividad.
-        val activity = EventosImportApply.importActor(tenant, job.createdBy)
+        val activity = EventosImportApply.importActor(tenant, job.createdBy, job.startedActor)
         // Quien inicio la importacion queda como autor del historial; si ya no es usuario, "Monday".
         val author = users.firstOrNull { it.id == job.createdBy }?.name?.takeIf { it.isNotBlank() } ?: "Monday"
         var processed = 0
@@ -253,7 +253,7 @@ object EventosMondayRunner {
     }
 
     private fun recordTotal(tenant: Connection, job: MondayJob, outcome: String) {
-        val activity = EventosImportApply.importActor(tenant, job.createdBy)
+        val activity = EventosImportApply.importActor(tenant, job.createdBy, job.startedActor)
         EventosImportApply.recordImportTotal(tenant, activity, job.id, "Monday", job.boardName, job.created, job.updated, job.skipped, job.failed, outcome)
     }
 }

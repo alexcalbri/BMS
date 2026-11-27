@@ -110,7 +110,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
             queueView = OutboundQueueView(MondayConnectionService),
             token = { MondayOutbound.token(it) },
             inactive = { CrmHost.extensionInactiveReason(it, CrmExtensionIds.MondayImport) },
-        ).map(MondayAudit::guarded)
+        )
     }
 
     override fun screen(context: CrmScreens.Context, screen: String, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
@@ -164,7 +164,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport,
         if (choices[CreatedFieldsOption] == UninstallDefault.Delete) {
             val ids = createdFieldIds(context)
             // Cada campo sale con sus valores en los leads; los leads no se tocan.
-            CrmFields.all(tenant).filter { it.id.toString() in ids }.forEach { CrmFields.remove(tenant, it, com.ideasdeveloper.bms.server.activity.ActivityActor.system()) }
+            CrmFields.all(tenant).filter { it.id.toString() in ids }.forEach { CrmFields.remove(tenant, it, context.activityActor) }
         } else {
             // Se conservan: pasan a ser campos de la empresa.
             CrmExtensions.update(tenant, "UPDATE crm_field_definitions SET extension_id = NULL WHERE extension_id = ?", CrmExtensionIds.MondayImport)

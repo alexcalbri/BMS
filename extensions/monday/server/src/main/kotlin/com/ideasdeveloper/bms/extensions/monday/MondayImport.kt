@@ -460,7 +460,7 @@ object MondayImport : CrmImportSource {
         if (boardIds.isEmpty() || boardIds.any { !it.matches(idPattern) }) throw CrmImportException(tr("Marca al menos un tablero."))
         val id = UUID.randomUUID()
         CrmAudit.atomically(tenant) {
-            CrmImport.insertJob(tenant, id, Source, "monday ${boardIds.joinToString()}", "reading", boardIds, userId)
+            CrmImport.insertJob(tenant, id, Source, "monday ${boardIds.joinToString()}", "reading", boardIds, userId, actor)
             CrmImport.jobCreated(tenant, actor, id, "monday ${boardIds.joinToString()}", Source, null)
         }
         return id

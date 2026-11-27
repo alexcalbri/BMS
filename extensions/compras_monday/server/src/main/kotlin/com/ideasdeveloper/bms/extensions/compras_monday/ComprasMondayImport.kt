@@ -154,7 +154,7 @@ object ComprasMondayImport : ComprasImportSource {
         val actor = ctx.actor ?: throw ComprasValidationException(tr("No se pudo identificar al usuario."))
         ComprasMondayStore.transaction(ctx.tenant) {
             // Si confirma un agente de IA se guarda su nombre: las filas importadas dicen "Importacion (Agente de <usuario>)".
-            if (!ComprasMondayStore.startApplying(ctx.tenant, job.id, actor.userId, actor.name, actor.activity.agentName)) {
+            if (!ComprasMondayStore.startApplying(ctx.tenant, job.id, actor.userId, actor.name, actor.activity.agentName, actor.activity)) {
                 throw ComprasValidationException(tr("La importacion cambio de estado; actualiza la pantalla."))
             }
             ComprasMondayActivity.applyRequested(ctx.tenant, actor.activity, job)
@@ -563,10 +563,12 @@ object ComprasMondayImport : ComprasImportSource {
     }
 
     /** Quien cuenta como actor de las filas de la importacion: el usuario que la confirmo (o la inicio), con su agente si lo hubo. */
-    private fun startedBy(job: MondayJob, user: ActivityActor): ActivityActor = job.appliedByAgent?.let(user::viaAgent) ?: user
+    private fun startedBy(job: MondayJob, user: ActivityActor): ActivityActor =
+        ActivityActor.restore(job.startedActor) ?: job.appliedByAgent?.let(user::viaAgent) ?: user
 
     /** "Importacion (<quien>)" para la fila de totales: con los permisos vivos de quien confirmo; si ya no se pueden leer, su nombre guardado. */
     private fun importActivity(ctx: ComprasImportContext, job: MondayJob): ActivityActor {
+        ActivityActor.restore(job.startedActor)?.let { return ActivityActor.import(it) }
         val userId = job.appliedBy ?: job.createdBy
         val live = userId?.let { modules?.userAccess(ctx.tenant, ctx.companyCode, it, false)?.permissions(ComprasModule.id)?.activityActor }
         val user = live ?: userId?.let { ActivityActor.user(it, job.appliedByName.ifEmpty { job.createdByName }) }

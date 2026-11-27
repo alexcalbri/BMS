@@ -51,7 +51,7 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
         ),
         // El token se guarda en ext_tareas_monday__settings y se edita en la pantalla Importar: ningun ajuste es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__rendimiento.sql"),
+        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__rendimiento.sql", "migrations/V003__started_actor.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday", UninstallDefault.Delete)),
         ),
@@ -60,6 +60,7 @@ object TareasMondayServerExtension : ServerExtension, TareasImportSource {
     override val migrationPaths = listOf(
         "extensions/tareas_monday/migrations/V001__settings.sql",
         "extensions/tareas_monday/migrations/V002__rendimiento.sql",
+        "extensions/tareas_monday/migrations/V003__started_actor.sql",
     )
 
     override val runtimeTables = listOf(

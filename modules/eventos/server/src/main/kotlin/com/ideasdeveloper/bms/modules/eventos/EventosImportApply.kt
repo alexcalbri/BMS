@@ -122,7 +122,9 @@ object EventosImportApply {
      * The actor of an import: [startedBy] (the company user who started it) with the current name read from application_users
      * on the same connection; "Usuario desconocido" when the row is gone; an anonymous import without a user.
      */
-    fun importActor(tenant: Connection, startedBy: UUID?): ActivityActor {
+    fun importActor(tenant: Connection, startedBy: UUID?, stored: String? = null): ActivityActor {
+        // The actor kept with the job when it started (an AI agent, a server owner...): rebuilt exactly; old jobs fall back to the user id.
+        ActivityActor.restore(stored)?.let { return ActivityActor.import(it) }
         if (startedBy == null) return ActivityActor.import(null)
         val name = tenant.rows("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?", listOf(startedBy)) { it.getString(1) }.firstOrNull()
         return ActivityActor.import(ActivityActor.user(startedBy, name?.takeIf { it.isNotBlank() } ?: "Usuario desconocido"))

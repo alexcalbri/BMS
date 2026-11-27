@@ -4,6 +4,7 @@ import com.ideasdeveloper.bms.modules.membresia.ImportedMember
 import com.ideasdeveloper.bms.modules.membresia.ImportedVisit
 import com.ideasdeveloper.bms.modules.membresia.MembresiaModule
 import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.activity.ActivityLogTesting
 import com.ideasdeveloper.bms.server.activity.ActivityLogTesting.throughAgent
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
@@ -159,6 +160,32 @@ class MembresiaMondayActivityPostgresTest {
         assertEquals("1", total.change("created")!!.new)
         assertTrue(total.entry.summary.contains("Monday") && total.entry.summary.contains("Miembros"), total.entry.summary)
         assertEquals("done", MembresiaMondayJobs.find(db, job)!!.status)
+    }
+
+    @Test
+    fun anImportStartedThroughAnAgentOrFromTheServerKeepsTheWholeIdentityOfItsStarter() = withTenant { db ->
+        val context = ModuleJobContext("acme", db, access, access.notificationsFor(MembresiaModule.Id))
+        val agent = permissions().throughAgent("Claude").activityActor
+        val luis = UUID.fromString("00000000-0000-0000-0000-00000000b0b0")
+        val switcher = ActivityActor.switcher(ana.userId!!, "Ana Ruiz", ActivityActor.Kinds.ServerAdmin, luis, "Luis Mora")
+        for ((starter, display) in listOf(agent to "Importacion (Agente de Ana Ruiz)", switcher to "Importacion (Luis Mora (desde el servidor))")) {
+            db.run("DELETE FROM ext_membresia_monday__jobs")
+            // The job is queued the way the screen does (it keeps the starter) and then applied by the minute job.
+            val id = MembresiaMondayJobs.queueRead(db, "123", "Miembros", MondayMapping(), "Ana Ruiz", ana.userId, starter)
+            assertEquals(starter, ActivityActor.restore(MembresiaMondayJobs.find(db, id)!!.startedActor))
+            db.run("DELETE FROM ext_membresia_monday__jobs WHERE id <> '$id'")
+            val summary = MondaySummaryDto.encode(MondaySummaryDto(1, 2, listOf(MondayPlanDto("Coworking", "80.00", 30, 1)), listOf("Documento")))
+            db.prepareStatement("UPDATE ext_membresia_monday__jobs SET status = 'applying', total = 1, summary = CAST(? AS jsonb) WHERE id = ?").use { st ->
+                st.setString(1, summary); st.setObject(2, id); st.executeUpdate()
+            }
+            db.prepareStatement("INSERT INTO ext_membresia_monday__rows (job_id, row_no, payload) VALUES (?, 1, CAST(? AS jsonb))").use { st ->
+                st.setObject(1, id); st.setString(2, MondayRowDto.encode(member("monday:${starter.kind}", "Marta Gil"))); st.executeUpdate()
+            }
+            val (_, rows) = ActivityLogTesting.capture { MembresiaMondayJobs.runPending(context, Duration.ofSeconds(60)) }
+            assertTrue(rows.isNotEmpty())
+            assertTrue(rows.all { it.display == display }, rows.map { it.display }.toString())
+            assertTrue(rows.all { it.actor.kind == "import" })
+        }
     }
 
     @Test

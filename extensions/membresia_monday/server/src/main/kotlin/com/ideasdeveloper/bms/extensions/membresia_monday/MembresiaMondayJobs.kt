@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.membresia_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.membresia.ImportOutcome
 import com.ideasdeveloper.bms.modules.membresia.ImportedMember
 import com.ideasdeveloper.bms.modules.membresia.MembresiaImportApply
@@ -54,6 +55,8 @@ data class MondayJob(
     val createdByUser: UUID?,
     val createdAt: Instant,
     val updatedAt: Instant = Instant.EPOCH,
+    /** ActivityActor.toStoredJson de quien empezo la importacion (null en las anteriores a la columna). */
+    val startedActor: String? = null,
 ) {
     val active: Boolean get() = status == MondayJobStatus.Reading || status == MondayJobStatus.Applying
 }
@@ -85,13 +88,13 @@ object MembresiaMondayJobs {
     private val BusyMessage = msg("Ya hay una importacion en curso; espera a que termine o cancelala.")
 
     /** Pone en cola la lectura de un tablero. Solo hay una importacion activa a la vez (indice unico en la base). */
-    fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, author: String, createdByUser: UUID? = null): UUID {
+    fun queueRead(tenant: Connection, boardId: String, boardName: String, mapping: MondayMapping, author: String, createdByUser: UUID? = null, starter: ActivityActor? = null): UUID {
         if (!MembresiaMondayClient.isBoardId(boardId)) throw MembresiaMondayException(tr("El id del tablero debe ser un numero."))
         if (recent(tenant, 20).any { it.active }) throw MembresiaMondayException(tr(BusyMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
-                "INSERT INTO $Jobs (id, board_id, board_name, status, mapping, created_by, created_by_user) VALUES (?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?)",
+                "INSERT INTO $Jobs (id, board_id, board_name, status, mapping, created_by, created_by_user, started_actor) VALUES (?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?, ?)",
             ).use { insert ->
                 insert.setObject(1, id)
                 insert.setString(2, boardId)
@@ -99,6 +102,7 @@ object MembresiaMondayJobs {
                 insert.setString(4, json.encodeToString(MondayMapping.serializer(), mapping))
                 insert.setString(5, author.take(200))
                 insert.setObject(6, createdByUser)
+                insert.setString(7, starter?.toStoredJson())
                 insert.executeUpdate()
             }
         } catch (failure: SQLException) {
@@ -151,7 +155,7 @@ object MembresiaMondayJobs {
 
     private const val JobColumns =
         "id, board_id, board_name, status, mapping::text, cursor, page_size, pages_read, items_read, attempts, restarts, summary::text, " +
-            "total, applied, created, updated, skipped, failed, message, created_by, created_at, updated_at, created_by_user"
+            "total, applied, created, updated, skipped, failed, message, created_by, created_at, updated_at, created_by_user, started_actor"
 
     private fun toJob(rows: ResultSet) = MondayJob(
         id = rows.getObject(1, UUID::class.java),
@@ -177,6 +181,7 @@ object MembresiaMondayJobs {
         createdAt = rows.getTimestamp(21).toInstant(),
         updatedAt = rows.getTimestamp(22).toInstant(),
         createdByUser = rows.getObject(23, UUID::class.java),
+        startedActor = rows.getString(24),
     )
 
     fun find(tenant: Connection, id: UUID): MondayJob? =
@@ -474,7 +479,7 @@ object MembresiaMondayJobs {
         val summary = job.summary ?: throw MembresiaMondayException(tr("La importacion no tiene resumen; vuelve a leer el tablero."))
         // Los planes y campos de Clientes que faltan se crean con lo que dijo el resumen (idempotente: lo que ya existe se reutiliza).
         // Quien empezo la importacion: es el actor de cada fila del registro de actividad.
-        val activity = MembresiaImportApply.importActor(tenant, job.createdByUser)
+        val activity = MembresiaImportApply.importActor(tenant, job.createdByUser, job.startedActor)
         val plans = MembresiaImportApply.ensurePlans(tenant, summary.newPlans.map { it.toProposal() }, activity)
         val fields = MembresiaImportApply.ensureCustomerFields(tenant, summary.customerFields, activity)
         if (fields.skipped.isNotEmpty() && job.message.isBlank()) {
@@ -554,7 +559,7 @@ object MembresiaMondayJobs {
     }
 
     private fun recordTotal(tenant: Connection, job: MondayJob, outcome: String) {
-        val activity = MembresiaImportApply.importActor(tenant, job.createdByUser)
+        val activity = MembresiaImportApply.importActor(tenant, job.createdByUser, job.startedActor)
         MembresiaImportApply.recordImportTotal(tenant, activity, job.id, "Monday", job.boardName, job.created, job.updated, job.skipped, job.failed, outcome)
     }
 

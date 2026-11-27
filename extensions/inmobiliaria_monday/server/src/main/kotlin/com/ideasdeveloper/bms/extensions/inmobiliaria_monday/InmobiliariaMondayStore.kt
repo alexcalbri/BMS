@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.inmobiliaria_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.crm.CrmScreens
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -28,7 +29,7 @@ object InmobiliariaMondayStore {
     private const val JobColumns =
         "id, board_id, board_name, kind, new_listings, mapping::text, columns::text, state, read_started, read_cursor, rows_read, " +
             "created_count, updated_count, skipped_count, failed_count, problems::text, error, created_by, created_by_name, " +
-            "applied_by, applied_by_name, read_attempts, updated_at"
+            "applied_by, applied_by_name, read_attempts, updated_at, started_actor"
 
     // ---- JSON de las columnas jsonb ----
 
@@ -81,6 +82,7 @@ object InmobiliariaMondayStore {
         appliedByName = rows.getString(21).orEmpty(),
         readAttempts = rows.getInt(22),
         updatedAt = rows.getTimestamp(23).toInstant(),
+        startedActor = rows.getString(24),
     )
 
     fun find(tenant: Connection, id: UUID): MondayJob? =
@@ -191,13 +193,14 @@ object InmobiliariaMondayStore {
     }
 
     /** Pasa de lista a aplicando y guarda quien pulso Aplicar (es quien actua en Inmobiliaria); false si ya no estaba lista. */
-    fun startApplying(tenant: Connection, id: UUID, by: UUID?, byName: String): Boolean = guardActive {
+    fun startApplying(tenant: Connection, id: UUID, by: UUID?, byName: String, starter: ActivityActor? = null): Boolean = guardActive {
         tenant.prepareStatement(
-            "UPDATE $JobsTable SET state = 'applying', error = '', applied_by = ?, applied_by_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND state = 'ready'",
+            "UPDATE $JobsTable SET state = 'applying', error = '', applied_by = ?, applied_by_name = ?, started_actor = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND state = 'ready'",
         ).use { update ->
             update.setObject(1, by)
             update.setString(2, byName.take(200))
-            update.setObject(3, id)
+            update.setString(3, starter?.toStoredJson())
+            update.setObject(4, id)
             update.executeUpdate() > 0
         }
     }

@@ -137,6 +137,8 @@ data class MondayJob(
     val message: String,
     val createdBy: UUID?,
     val createdAt: Instant,
+    /** ActivityActor.toStoredJson de quien empezo la importacion (null en las anteriores a la columna). */
+    val startedActor: String? = null,
     /** Elementos por pagina de la lectura: baja a la mitad cuando monday se queja de complejidad y queda guardado. */
     val pageSize: Int = TareasMondayClient.PageSize,
     /** Relecturas desde cero por cursor vencido (se permite una). */
@@ -174,7 +176,7 @@ object TareasMondayJobs {
         try {
             TareasRepository.transaction(tenant) {
                 tenant.prepareStatement(
-                    "INSERT INTO $JobsTable (id, board_id, board_name, target_board_id, status, mapping, created_by) VALUES (?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?)",
+                    "INSERT INTO $JobsTable (id, board_id, board_name, target_board_id, status, mapping, created_by, started_actor) VALUES (?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?)",
                 ).use { insert ->
                     insert.setObject(1, id)
                     insert.setString(2, boardId)
@@ -182,6 +184,7 @@ object TareasMondayJobs {
                     insert.setObject(4, targetBoardId)
                     insert.setString(5, json.encodeToString(MondayMapping.serializer(), mapping))
                     insert.setObject(6, createdBy)
+                    insert.setString(7, actor.toStoredJson())
                     insert.executeUpdate()
                 }
                 TareasLog.record(
@@ -247,7 +250,7 @@ object TareasMondayJobs {
 
     private const val JobColumns =
         "id, board_id, board_name, target_board_id, status, cursor, pages, retries, summary::text, mapping::text, total, applied, created, updated, skipped, failed, " +
-            "files_done, files_failed, message, created_by, created_at, page_size, restarts, updated_at"
+            "files_done, files_failed, message, created_by, created_at, page_size, restarts, updated_at, started_actor"
 
     private fun toJob(rows: ResultSet) = MondayJob(
         id = rows.getObject(1, UUID::class.java),
@@ -274,6 +277,7 @@ object TareasMondayJobs {
         pageSize = rows.getInt(22),
         restarts = rows.getInt(23),
         updatedAt = rows.getTimestamp(24).toInstant(),
+        startedActor = rows.getString(25),
     )
 
     fun find(tenant: Connection, id: UUID): MondayJob? =

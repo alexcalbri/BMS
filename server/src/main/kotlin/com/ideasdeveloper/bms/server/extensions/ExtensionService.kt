@@ -521,7 +521,7 @@ class ExtensionService(
                 if (missing.isNotEmpty()) {
                     throw ExtensionException("missing_required_settings", tr("Faltan ajustes obligatorios: {0}.", missing.joinToString(", ")))
                 }
-                extension.onEnable(ExtensionContext(companyCode, tenant, manifest.id, storage.settings(tenant, manifest.id)))
+                extension.onEnable(ExtensionContext(companyCode, tenant, manifest.id, storage.settings(tenant, manifest.id), activityOf(actor)))
                 setStatus(tenant, manifest.id, ExtensionStatus.Enabled)
                 recordActivity(tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Enabled, "Activo la extension ${manifest.displayName}.")
             }
@@ -534,7 +534,19 @@ class ExtensionService(
             // One transaction: an extension that throws leaves settings, objects and status as they were.
             tenant.inTransaction {
                 requireLocked(tenant, manifest.id)
-                extension.uninstall(ExtensionContext(companyCode, tenant, manifest.id, storage.settings(tenant, manifest.id)), choices)
+                val context = ExtensionContext(companyCode, tenant, manifest.id, storage.settings(tenant, manifest.id), activityOf(actor))
+                // What the choices are about to remove, counted by the extension before it does (stored text is Spanish).
+                // A savepoint keeps a failing count from spoiling the uninstall itself.
+                val savepoint = tenant.setSavepoint()
+                val preview = try {
+                    com.ideasdeveloper.bms.server.i18n.I18n.withLanguage(com.ideasdeveloper.bms.server.i18n.I18n.Source) { extension.uninstallPreview(context) }
+                        .also { runCatching { tenant.releaseSavepoint(savepoint) } }
+                } catch (failure: Exception) {
+                    log.warn("Uninstall preview of extension {} failed before uninstalling: {}", manifest.id, failure.javaClass.simpleName)
+                    runCatching { tenant.rollback(savepoint) }
+                    emptyList()
+                }
+                extension.uninstall(context, choices)
                 tenant.prepareStatement("DELETE FROM tenant_extension_settings WHERE extension_id = ?").use {
                     it.setString(1, manifest.id)
                     it.executeUpdate()
@@ -548,10 +560,8 @@ class ExtensionService(
                     it.executeUpdate()
                 }
                 setStatus(tenant, manifest.id, ExtensionStatus.Removed)
-                recordActivity(
-                    tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Uninstalled, "Desinstalo la extension ${manifest.displayName}.",
-                    choices.toSortedMap().map { (option, choice) -> com.ideasdeveloper.bms.server.activity.ActivityChange(option, option, null, choice) },
-                )
+                val (summary, changes) = UninstallSummary.of(manifest.displayName, preview, choices)
+                recordActivity(tenant, actor, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Uninstalled, summary, changes)
             }
         }
         // After the commit; what lives outside the company's database is released here, best effort.
@@ -846,6 +856,9 @@ class ExtensionService(
             extension.manifest.displayName, action, summary, changes,
         )
     }
+
+    private fun activityOf(actor: ExtensionActor?): com.ideasdeveloper.bms.server.activity.ActivityActor =
+        actor?.activityActor ?: com.ideasdeveloper.bms.server.activity.ActivityActor.system()
 
     private fun setStatus(tenant: Connection, extensionId: String, status: String) {
         tenant.prepareStatement(

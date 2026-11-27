@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.compras_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.compras.ComprasImportContext
 import com.ideasdeveloper.bms.modules.compras.ComprasValidationException
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -31,6 +32,8 @@ data class MondayJob(
     val appliedByName: String,
     /** Agente de IA que confirmo la importacion (null: una persona en la pantalla, o una importacion anterior a la columna). */
     val appliedByAgent: String? = null,
+    /** ActivityActor.toStoredJson de quien confirmo la importacion (null: anterior a la columna o aun sin confirmar). */
+    val startedActor: String? = null,
     val createdAt: Instant,
     val updatedAt: Instant,
 ) {
@@ -54,7 +57,7 @@ object ComprasMondayStore {
 
     private const val JobColumns =
         "id, board_id, board_name, groups::text AS groups, mapping::text AS mapping, status, cursor, attempts, pages, read_count, " +
-            "created_count, existing_count, failed_count, error, created_by, created_by_name, applied_by, applied_by_name, created_at, updated_at, applied_by_agent"
+            "created_count, existing_count, failed_count, error, created_by, created_by_name, applied_by, applied_by_name, created_at, updated_at, applied_by_agent, started_actor"
 
     // ---- Token (sellado con la llave de la empresa) ----
 
@@ -110,6 +113,7 @@ object ComprasMondayStore {
         createdAt = getTimestamp("created_at").toInstant(),
         updatedAt = getTimestamp("updated_at").toInstant(),
         appliedByAgent = getString("applied_by_agent"),
+        startedActor = getString("started_actor"),
     )
 
     fun job(tenant: Connection, id: UUID): MondayJob? =
@@ -183,14 +187,15 @@ object ComprasMondayStore {
      * Pasa de "lista" a "aplicando" y deja anotado quien pulso Importar (con sus permisos se crean las solicitudes) y, si fue un
      * agente de IA, su nombre ([agent]): asi cada fila del registro de actividad dice "Agente de <usuario>".
      */
-    fun startApplying(tenant: Connection, id: UUID, userId: UUID?, userName: String, agent: String? = null): Boolean =
+    fun startApplying(tenant: Connection, id: UUID, userId: UUID?, userName: String, agent: String? = null, starter: ActivityActor? = null): Boolean =
         tenant.prepareStatement(
-            "UPDATE $JobsTable SET status = 'applying', applied_by = ?, applied_by_name = ?, applied_by_agent = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'ready'"
+            "UPDATE $JobsTable SET status = 'applying', applied_by = ?, applied_by_name = ?, applied_by_agent = ?, started_actor = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'ready'"
         ).use { update ->
             update.setObject(1, userId)
             update.setString(2, userName.take(200))
             update.setString(3, agent?.take(200))
-            update.setObject(4, id)
+            update.setString(4, starter?.toStoredJson())
+            update.setObject(5, id)
             update.executeUpdate() > 0
         }
 

@@ -190,16 +190,35 @@ class CrmActivityLogPostgresTest {
         // The runner of the job (as the minute job does) attributes the rows to the import and to the person who created it.
         assertEquals(3, CrmImport.runPending(db, 300, LocalDate.of(2026, 11, 1)))
         assertEquals("2", scalar("SELECT count(*) FROM activity_log WHERE entity_type = 'lead' AND action = 'created'"))
-        assertEquals("Importacion (Ana Ruiz)", scalar("SELECT DISTINCT actor_display FROM activity_log WHERE entity_type = 'lead'"))
+        // The job kept who started it (here the agent), so the rows read "Importacion (Agente de Ana Ruiz)".
+        assertEquals("Importacion (Agente de Ana Ruiz)", scalar("SELECT DISTINCT actor_display FROM activity_log WHERE entity_type = 'lead'"))
+        assertEquals("Claude", scalar("SELECT DISTINCT agent_name FROM activity_log WHERE entity_type = 'lead'"))
         assertEquals(person.userId.toString(), scalar("SELECT DISTINCT actor_user_id::text FROM activity_log WHERE entity_type = 'lead'"))
         assertEquals("imported", scalar("SELECT action FROM activity_log WHERE entity_type = 'import' ORDER BY id DESC LIMIT 1"))
         assertEquals("2", scalar("SELECT c ->> 'new' FROM activity_log, jsonb_array_elements(changes) c WHERE action = 'imported' AND c ->> 'field' = 'created'"))
         assertEquals("1", scalar("SELECT c ->> 'new' FROM activity_log, jsonb_array_elements(changes) c WHERE action = 'imported' AND c ->> 'field' = 'skipped'"))
-        assertEquals("Importacion (Ana Ruiz)", scalar("SELECT actor_display FROM activity_log WHERE action = 'imported'"))
+        assertEquals("Importacion (Agente de Ana Ruiz)", scalar("SELECT actor_display FROM activity_log WHERE action = 'imported'"))
         assertEquals("import", scalar("SELECT origin FROM activity_log WHERE action = 'imported'"))
         // Created, started (with the whole identity of who pressed start, here the agent) and finished.
         assertEquals("created,status_changed,imported", scalar("SELECT string_agg(action, ',' ORDER BY id) FROM activity_log WHERE entity_type = 'import'"))
         assertEquals("Agente de Ana Ruiz", scalar("SELECT actor_display FROM activity_log WHERE entity_type = 'import' AND action = 'status_changed'"))
+    }
+
+    @Test
+    fun anImportStartedFromTheServerKeepsTheRealPersonAndOldJobsFallBackToTheUser() {
+        if (url == null) return
+        val db = fresh()
+        val luis = UUID.fromString("00000000-0000-0000-0000-00000000b0b0")
+        val switcher = ActivityActor.switcher(person.userId!!, "Ana Ruiz", ActivityActor.Kinds.ServerAdmin, luis, "Luis Mora")
+        val table = CrmTable(listOf("Nombre", "Correo"), listOf(mapOf("Nombre" to "Marta Gil", "Correo" to "marta@example.com")))
+        val id = CrmImport.create(db, "file", "Clientes 2026", table, person.userId, switcher)
+        // Rebuilt exactly: the real person "(desde el servidor)", not the business owner the session belongs to.
+        assertEquals(ActivityActor.import(switcher), CrmImport.activityOf(db, id))
+        assertEquals("Importacion (Luis Mora (desde el servidor))", CrmImport.activityOf(db, id).display)
+        assertEquals("server_admin", CrmImport.activityOf(db, id).realKind)
+        // A job from before the column (nothing stored) is attributed to its user as it always was.
+        db.createStatement().use { it.execute("UPDATE crm_import_jobs SET started_actor = NULL") }
+        assertEquals("Importacion (Ana Ruiz)", CrmImport.activityOf(db, id).display)
     }
 
     @Test

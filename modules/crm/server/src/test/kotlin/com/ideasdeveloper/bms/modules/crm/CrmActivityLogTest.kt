@@ -253,6 +253,9 @@ class CrmActivityLogTest {
         assertEquals(ActivityActions.Archived, summary.action)
         assertEquals("2 de 2", summary.change("count")!!.new)
         assertEquals("Luis Mora, Rosa Pinto", summary.change("leads")!!.new)
+        // Leads are separate transactions: the summary is written first ("Inicio ..."), so no per-lead row lacks it.
+        assertTrue(summary.entry.summary.startsWith("Inicio"), summary.entry.summary)
+        assertTrue(rows.indexOfFirst { it.entry.entityType == "bulk_action" } < rows.indexOfFirst { it.entry.entityType == "lead" })
         assertTrue(rows.all { it.display == "Agente de Ana Ruiz" })
     }
 

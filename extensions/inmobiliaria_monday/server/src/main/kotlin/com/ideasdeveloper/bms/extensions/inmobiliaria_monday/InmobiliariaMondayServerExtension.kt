@@ -65,13 +65,13 @@ object InmobiliariaMondayServerExtension : ServerExtension, CrmScreenProvider, C
         ),
         // El token se guarda en ext_inmobiliaria_monday__settings y se edita en la pantalla de la extension.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__inmobiliaria_monday.sql"),
+        migrations = listOf("migrations/V001__inmobiliaria_monday.sql", "migrations/V002__started_actor.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday", UninstallDefault.Delete)),
         ),
     )
 
-    override val migrationPaths = listOf("extensions/inmobiliaria_monday/migrations/V001__inmobiliaria_monday.sql")
+    override val migrationPaths = listOf("extensions/inmobiliaria_monday/migrations/V001__inmobiliaria_monday.sql", "extensions/inmobiliaria_monday/migrations/V002__started_actor.sql")
 
     override val runtimeTables = listOf(InmobiliariaMondayStore.SettingsTable, InmobiliariaMondayStore.JobsTable, InmobiliariaMondayStore.RowsTable)
 

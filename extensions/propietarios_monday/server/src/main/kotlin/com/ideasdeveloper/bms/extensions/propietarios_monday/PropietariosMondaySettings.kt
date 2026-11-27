@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.extensions.propietarios_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.propietarios.ImportedLot
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
 import com.ideasdeveloper.bms.server.i18n.msg
@@ -129,6 +130,8 @@ data class MondayJob(
     val updatedAt: Instant = createdAt,
     /** Agente de IA que inicio la importacion (null: una persona en la pantalla, o una importacion anterior a la columna). */
     val createdByAgent: String? = null,
+    /** ActivityActor.toStoredJson de quien empezo la importacion (null en las anteriores a la columna). */
+    val startedActor: String? = null,
 ) {
     val active: Boolean get() = status == MondayJobStatus.Reading || status == MondayJobStatus.Applying
 
@@ -160,13 +163,14 @@ object PropietariosMondayJobs {
         mapping: MondayMapping,
         createdBy: UUID?,
         createdByAgent: String? = null,
+        starter: ActivityActor? = null,
     ): UUID {
         if (!PropietariosMondayClient.isBoardId(boardId)) throw PropietariosMondayException(tr("El id del tablero debe ser un numero."))
         if (recent(tenant, 20).any { it.open }) throw PropietariosMondayException(tr(OpenJobMessage))
         val id = UUID.randomUUID()
         try {
             tenant.prepareStatement(
-                "INSERT INTO $JobsTable (id, board_id, board_name, target_development_id, status, mapping, created_by, created_by_agent) VALUES (?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?)",
+                "INSERT INTO $JobsTable (id, board_id, board_name, target_development_id, status, mapping, created_by, created_by_agent, started_actor) VALUES (?, ?, ?, ?, 'reading', CAST(? AS jsonb), ?, ?, ?)",
             ).use { insert ->
                 insert.setObject(1, id)
                 insert.setString(2, boardId)
@@ -175,6 +179,7 @@ object PropietariosMondayJobs {
                 insert.setString(5, json.encodeToString(MondayMapping.serializer(), mapping))
                 insert.setObject(6, createdBy)
                 insert.setString(7, createdByAgent?.take(200))
+                insert.setString(8, starter?.toStoredJson())
                 insert.executeUpdate()
             }
         } catch (failure: SQLException) {
@@ -207,7 +212,7 @@ object PropietariosMondayJobs {
 
     private const val JobColumns =
         "id, board_id, board_name, target_development_id, status, cursor, pages, retries, summary::text, mapping::text, total, applied, created, updated, skipped, failed, " +
-            "files_done, files_failed, message, created_by, created_at, page_size, restarts, updated_at, created_by_agent"
+            "files_done, files_failed, message, created_by, created_at, page_size, restarts, updated_at, created_by_agent, started_actor"
 
     private fun toJob(rows: ResultSet) = MondayJob(
         id = rows.getObject(1, UUID::class.java),
@@ -235,6 +240,7 @@ object PropietariosMondayJobs {
         restarts = rows.getInt(23),
         updatedAt = rows.getTimestamp(24).toInstant(),
         createdByAgent = rows.getString(25),
+        startedActor = rows.getString(26),
     )
 
     fun find(tenant: Connection, id: UUID): MondayJob? =

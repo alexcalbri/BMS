@@ -63,6 +63,8 @@ data class MondayJob(
     val appliedBy: UUID? = null,
     val appliedByName: String = "",
     val readAttempts: Int = 0,
+    /** ActivityActor.toStoredJson de quien pulso Aplicar (null: anterior a la columna o aun sin aplicar). */
+    val startedActor: String? = null,
     /** Ultima actualizacion: con [readAttempts] marca la espera creciente entre reintentos de lectura. */
     val updatedAt: java.time.Instant = java.time.Instant.EPOCH,
 )

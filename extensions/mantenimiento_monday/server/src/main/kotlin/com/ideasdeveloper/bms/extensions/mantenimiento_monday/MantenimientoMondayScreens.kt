@@ -125,7 +125,7 @@ object MantenimientoMondayFlow {
      */
     fun enqueue(tenant: Connection, permissions: ModulePermissions, boardId: String, boardName: String, target: String, defaultKind: String, mapping: MondayMapping): UUID =
         MantenimientoMondayJobs.inTransaction(tenant) {
-            val id = MantenimientoMondayJobs.queueRead(tenant, boardId, boardName, target, defaultKind, mapping, actorOf(permissions), permissions.activityActor.agentName)
+            val id = MantenimientoMondayJobs.queueRead(tenant, boardId, boardName, target, defaultKind, mapping, actorOf(permissions), permissions.activityActor.agentName, permissions.activityActor)
             MantenimientoMondayActivity.importQueued(tenant, permissions.activityActor, id, boardName, target)
             id
         }

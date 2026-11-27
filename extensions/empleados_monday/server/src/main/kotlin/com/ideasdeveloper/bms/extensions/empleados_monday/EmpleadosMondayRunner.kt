@@ -200,7 +200,7 @@ object EmpleadosMondayRunner {
 
     private fun applyBatch(tenant: Connection, job: MondayJob, deadline: Long): Int {
         // Quien empezo la importacion: es el actor de cada fila del registro de actividad.
-        val activity = EmpleadosImportApply.importActor(tenant, job.createdBy)
+        val activity = EmpleadosImportApply.importActor(tenant, job.createdBy, job.startedActor)
         // Una consulta por corrida: correo (en minusculas) -> usuario activo, para enlazar fichas por correo.
         val users = EmpleadosImportApply.userEmails(tenant)
         val batch = EmpleadosMondayJobs.pending(tenant, job.id, BatchSize)
@@ -247,7 +247,7 @@ object EmpleadosMondayRunner {
     }
 
     private fun recordTotal(tenant: Connection, job: MondayJob, outcome: String) {
-        val activity = EmpleadosImportApply.importActor(tenant, job.createdBy)
+        val activity = EmpleadosImportApply.importActor(tenant, job.createdBy, job.startedActor)
         EmpleadosImportApply.recordImportTotal(tenant, activity, job.id, "Monday", job.boardName, job.created, job.updated, job.skipped, job.failed, outcome)
     }
 }

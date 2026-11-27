@@ -136,6 +136,10 @@ object TareasLog {
         }.getOrNull()
     }
 
-    /** The actor of an import started by [startedBy] (the real person), or an anonymous import. */
-    fun importer(tenant: Connection, startedBy: UUID?): ActivityActor = ActivityActor.import(starterOf(tenant, startedBy))
+    /**
+     * The actor of an import: the starter [stored] with the job (ActivityActor.toStoredJson: an AI agent, a server owner...),
+     * or for old jobs [startedBy] (the real person), or an anonymous import.
+     */
+    fun importer(tenant: Connection, startedBy: UUID?, stored: String? = null): ActivityActor =
+        ActivityActor.restoreImport(stored) { starterOf(tenant, startedBy) }
 }

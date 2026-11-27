@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.activity
 
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -39,6 +40,22 @@ data class ActivityActor(
 
     /** The same actor with another origin (an api route, a webhook...). */
     fun withOrigin(origin: String): ActivityActor = copy(origin = origin)
+
+    /**
+     * This actor as a compact JSON text a background job can keep (a nullable text/jsonb column) to rebuild it later
+     * with [restore] / [restoreImport]: kind, user id, name, display, agent name and real actor. No secrets are in it.
+     */
+    fun toStoredJson(): String = JsonObject(buildMap {
+        put("kind", JsonPrimitive(kind))
+        userId?.let { put("userId", JsonPrimitive(it.toString())) }
+        put("name", JsonPrimitive(name))
+        put("display", JsonPrimitive(display))
+        agentName?.let { put("agentName", JsonPrimitive(it)) }
+        realKind?.let { put("realKind", JsonPrimitive(it)) }
+        realUserId?.let { put("realUserId", JsonPrimitive(it.toString())) }
+        realName?.let { put("realName", JsonPrimitive(it)) }
+        origin?.let { put("origin", JsonPrimitive(it)) }
+    }).toString()
 
     companion object {
         const val MaxText = 200
@@ -92,6 +109,33 @@ data class ActivityActor(
         /** An import started by [startedBy]: "Importacion (Ana Ruiz)". */
         fun import(startedBy: ActivityActor?): ActivityActor = started(Kinds.Import, "Importacion", "Importacion", startedBy, Origins.Import)
 
+        /**
+         * The actor stored with [toStoredJson]; null when [stored] is null, blank or not one of ours (an old job that
+         * kept nothing), so the caller falls back as it did before.
+         */
+        fun restore(stored: String?): ActivityActor? {
+            if (stored.isNullOrBlank()) return null
+            return try {
+                val json = Json.parseToJsonElement(stored) as? JsonObject ?: return null
+                fun text(key: String): String? = (json[key] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
+                fun id(key: String): UUID? = text(key)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                val kind = text("kind")?.takeIf { it in Kinds.all } ?: return null
+                val name = text("name") ?: return null
+                ActivityActor(
+                    kind, id("userId"), name, text("display") ?: name, text("agentName"),
+                    text("realKind"), id("realUserId"), text("realName"), text("origin"),
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /**
+         * The import started by the actor stored with [toStoredJson], or by what [fallback] gives (an old job that
+         * kept only a user id) when nothing usable was stored. Same rows as when it started: "Importacion (Agente de Ana)".
+         */
+        fun restoreImport(stored: String?, fallback: () -> ActivityActor? = { null }): ActivityActor = import(restore(stored) ?: fallback())
+
         /** An inbound integration ("Cloudbeds", "Sitio web"...), e.g. a webhook. */
         fun integration(name: String): ActivityActor = ActivityActor(Kinds.Integration, null, clean(name), clean(name), origin = Origins.Webhook)
 
@@ -142,6 +186,8 @@ data class ActivityActor(
         const val Import = "import"
         const val Integration = "integration"
         const val System = "system"
+
+        val all: Set<String> = setOf(User, BusinessOwner, ServerOwner, ServerAdmin, Automation, Job, Import, Integration, System)
     }
 
     object Origins {
@@ -332,6 +378,25 @@ object ActivityLog {
             block()
         } finally {
             sink.set(previous)
+        }
+    }
+
+    /**
+     * Runs [block] in the open transaction of [connection], or in a new one when it is in auto-commit, so a change and its
+     * row are saved (or refused) together.
+     */
+    fun <T> atomically(connection: Connection, block: () -> T): T {
+        if (!connection.autoCommit) return block()
+        connection.autoCommit = false
+        try {
+            val result = block()
+            connection.commit()
+            return result
+        } catch (failure: Throwable) {
+            runCatching { connection.rollback() }
+            throw failure
+        } finally {
+            connection.autoCommit = true
         }
     }
 

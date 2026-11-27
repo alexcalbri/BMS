@@ -107,7 +107,7 @@ object InmobiliariaMondayService {
         if (missing.isNotEmpty()) throw InmobiliariaMondayException(tr("Falta mapear: {0}.", missing.joinToString { tr(it) }))
         if (job.kind == MondayMapping.KindDeal && !propertiesImported(tenant)) throw InmobiliariaMondayException(tr(PropertiesFirst))
         CrmAudit.atomically(tenant) {
-            if (!InmobiliariaMondayStore.startApplying(tenant, id, actor.userId, actor.name)) {
+            if (!InmobiliariaMondayStore.startApplying(tenant, id, actor.userId, actor.name, actor.activity)) {
                 throw InmobiliariaMondayException(tr("La importacion cambio de estado; revisa la pantalla."))
             }
             // The person who presses Apply is the one the import writes for: here the row has the whole identity (agent, switcher...).

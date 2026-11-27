@@ -168,4 +168,24 @@ class ExtensionRulesTest {
         assertEquals(OperationStatus.Failed, OperationStatus.of(listOf(target(TargetStatus.Failed), target(TargetStatus.Skipped))))
         assertEquals(OperationStatus.Running, OperationStatus.of(listOf(target(TargetStatus.Pending), target(TargetStatus.Applied))))
     }
+
+    @Test
+    fun theUninstallRowSaysWhatEachChoiceRemovedOrKeptWithTheCountsOfThePreview() {
+        val preview = listOf(
+            UninstallItem("history", "Historial de importaciones", 4, UninstallDefault.Delete),
+            UninstallItem("fields", "Campos creados", 3, UninstallDefault.Keep),
+            UninstallItem(null, "Envios en cola", 2, UninstallDefault.Delete),
+        )
+        // The user chose to keep the history and delete the fields; the choice wins over the default.
+        val (summary, changes) = UninstallSummary.of("monday", preview, mapOf("history" to UninstallDefault.Keep, "fields" to UninstallDefault.Delete, "other" to UninstallDefault.Keep))
+        assertEquals("Desinstalo la extension monday. Elimino: 3 Campos creados; 2 Envios en cola. Conservo: 4 Historial de importaciones.", summary)
+        assertEquals("Conservado", changes.first { it.field == "history" }.new)
+        assertEquals("4", changes.first { it.field == "history" }.old)
+        assertEquals("Eliminado", changes.first { it.field == "fields" }.new)
+        assertEquals("Eliminado", changes.first { it.label == "Envios en cola" }.new)
+        // A choice the preview does not list is still recorded as chosen.
+        assertEquals("keep", changes.first { it.field == "other" }.new)
+        // No preview: the sentence alone and the chosen options.
+        assertEquals("Desinstalo la extension x.", UninstallSummary.of("x", emptyList(), emptyMap()).first)
+    }
 }

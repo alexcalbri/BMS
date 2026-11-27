@@ -173,7 +173,8 @@ object InmobiliariaMondayRunner {
             return 0
         }
         // The activity log names the import and, with it, the person who pressed Apply.
-        val activity = ActivityActor.import(ActivityActor.user(applier, job.appliedByName))
+        // The identity kept when Apply was pressed (agent, switcher...) is rebuilt exactly; older jobs only kept the user.
+        val activity = ActivityActor.restoreImport(job.startedActor) { ActivityActor.user(applier, job.appliedByName) }
         val actor = CrmActor(applier, job.appliedByName, activity)
         var applied = 0
         while (Instant.now().isBefore(deadline)) {

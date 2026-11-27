@@ -16,7 +16,8 @@ import java.sql.Connection
 /**
  * Herramientas MCP del envio a monday, reutilizables por cualquier modulo: el modulo pone el [prefix] del nombre y el
  * [permission] (el mismo de exportar). Ninguna devuelve ni acepta el token; cada una corre con los permisos en vivo del
- * usuario que conecto el agente.
+ * usuario que conecto el agente. Configurar, reintentar y descartar dejan su fila en el registro de actividad de la empresa
+ * con el actor de la llamada ([MondayOutboundActivity]).
  */
 object MondayOutboundMcp {
     fun tools(
@@ -195,7 +196,7 @@ object MondayOutboundMcp {
                 } catch (failure: MondayConfigException) {
                     throw McpToolException(failure.message.orEmpty())
                 }
-                sink.config.save(call.tenant, result.config)
+                MondayOutboundActivity.saveConfig(sink, call.tenant, call.activityActor, result.config)
                 buildJsonObject {
                     put("saved", true)
                     put("configuration", configJson(result.config))
@@ -214,10 +215,10 @@ object MondayOutboundMcp {
                 guard(call)
                 val id = call.string("id", 20)
                 buildJsonObject {
-                    if (id.isEmpty()) put("retried", queueView.retryFailed(call.tenant))
+                    if (id.isEmpty()) put("retried", MondayOutboundActivity.retry(sink, queueView, call.tenant, call.activityActor, null))
                     else {
                         val number = id.toLongOrNull() ?: throw McpToolException("id debe ser numerico.")
-                        if (!queueView.retry(call.tenant, number)) throw McpToolException("No hay un envio fallido con el id $id.")
+                        if (MondayOutboundActivity.retry(sink, queueView, call.tenant, call.activityActor, number) == 0) throw McpToolException("No hay un envio fallido con el id $id.")
                         put("retried", 1)
                     }
                 }
@@ -234,7 +235,7 @@ object MondayOutboundMcp {
             handler = { call ->
                 guard(call)
                 val number = call.requiredString("id", 20).toLongOrNull() ?: throw McpToolException("id debe ser numerico.")
-                if (!queueView.discard(call.tenant, number)) throw McpToolException("No hay un envio con el id $number.")
+                if (!MondayOutboundActivity.discard(sink, queueView, call.tenant, call.activityActor, number)) throw McpToolException("No hay un envio con el id $number.")
                 buildJsonObject { put("discarded", true) }
             },
         )

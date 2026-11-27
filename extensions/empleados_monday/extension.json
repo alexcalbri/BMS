@@ -12,7 +12,7 @@
     "empleados.import.write"
   ],
   "settings": [],
-  "migrations": ["migrations/V001__settings.sql", "migrations/V002__rows_pending_idx.sql"],
+  "migrations": ["migrations/V001__settings.sql", "migrations/V002__rows_pending_idx.sql", "migrations/V003__started_actor.sql"],
   "uninstall": { "options": [
     { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
   ] }

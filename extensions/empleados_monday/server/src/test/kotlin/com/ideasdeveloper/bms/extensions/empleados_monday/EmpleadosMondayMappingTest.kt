@@ -252,7 +252,7 @@ class EmpleadosMondayMappingTest {
         assertEquals(fromDisk, EmpleadosMondayServerExtension.manifest)
         assertEquals(EmpleadosMondayId, EmpleadosMondayServerExtension.sourceId)
         assertEquals(
-            listOf("extensions/empleados_monday/migrations/V001__settings.sql", "extensions/empleados_monday/migrations/V002__rows_pending_idx.sql"),
+            listOf("extensions/empleados_monday/migrations/V001__settings.sql", "extensions/empleados_monday/migrations/V002__rows_pending_idx.sql", "extensions/empleados_monday/migrations/V003__started_actor.sql"),
             EmpleadosMondayServerExtension.migrationPaths,
         )
         assertTrue(repoFile("extensions/empleados_monday/migrations/V002__rows_pending_idx.sql").isFile)

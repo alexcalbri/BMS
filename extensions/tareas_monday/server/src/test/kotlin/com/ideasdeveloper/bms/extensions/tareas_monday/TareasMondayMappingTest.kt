@@ -238,7 +238,7 @@ class TareasMondayMappingTest {
         assertEquals(fromDisk, TareasMondayServerExtension.manifest)
         assertEquals(TareasMondayId, TareasMondayServerExtension.sourceId)
         assertEquals(
-            listOf("extensions/tareas_monday/migrations/V001__settings.sql", "extensions/tareas_monday/migrations/V002__rendimiento.sql"),
+            listOf("extensions/tareas_monday/migrations/V001__settings.sql", "extensions/tareas_monday/migrations/V002__rendimiento.sql", "extensions/tareas_monday/migrations/V003__started_actor.sql"),
             TareasMondayServerExtension.migrationPaths,
         )
         TareasMondayServerExtension.migrationPaths.forEach { assertTrue(repoFile(it).isFile, it) }

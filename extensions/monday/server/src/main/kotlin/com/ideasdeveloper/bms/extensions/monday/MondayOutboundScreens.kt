@@ -12,6 +12,7 @@ import com.ideasdeveloper.bms.server.outbound.monday.MondayBoardInfo
 import com.ideasdeveloper.bms.server.outbound.monday.MondayBoardSchema
 import com.ideasdeveloper.bms.server.outbound.monday.MondayBoards
 import com.ideasdeveloper.bms.server.outbound.monday.MondayConfigException
+import com.ideasdeveloper.bms.server.outbound.monday.MondayOutboundActivity
 import com.ideasdeveloper.bms.server.outbound.monday.MondayOutboundUi
 import com.ideasdeveloper.bms.server.outbound.monday.OutboundQueueView
 import com.ideasdeveloper.bms.ui.UiNode
@@ -115,6 +116,7 @@ object MondayOutboundScreens {
         if (!context.permissions.has(CrmScreens.Settings)) return done(UiTone.Warning, tr("No tienes permiso para configurar el envio a monday."))
         CrmExtensions.inactive(tenant, ExtensionId)?.let { return done(UiTone.Warning, it) }
         val id = params["id"]?.toLongOrNull()
+        val actor = context.permissions.activityActor
         return try {
             when (op) {
                 "save", "suggest" -> {
@@ -134,14 +136,14 @@ object MondayOutboundScreens {
                         done(UiTone.Info, tr("Se sugirieron {0} columna(s). Revisalas y pulsa Guardar.", suggested.size), values + suggested)
                     } else {
                         val result = MondayOutboundUi.applyConfigForm(values, type, schema)
-                        MondayAudit.acting(context.permissions.activityActor) { MondayOutbound.config.save(tenant, result.config) }
+                        MondayOutboundActivity.saveConfig(MondayOutbound, tenant, actor, result.config)
                         if (result.warnings.isEmpty()) done(UiTone.Success, tr("Configuracion guardada."))
                         else done(UiTone.Warning, tr("Configuracion guardada.") + " " + result.warnings.joinToString(" "))
                     }
                 }
-                "retry" -> if (id != null && queue.retry(tenant, id)) done(UiTone.Success, tr("El envio se reintentara en el proximo ciclo.")) else done(UiTone.Warning, tr("Ese envio ya no esta fallido."))
-                "retryAll" -> done(UiTone.Success, tr("Se reintentaran {0} envio(s) fallido(s).", queue.retryFailed(tenant)))
-                "discard" -> if (id != null && queue.discard(tenant, id)) done(UiTone.Success, tr("Envio descartado.")) else done(UiTone.Warning, tr("Ese envio ya no esta fallido."))
+                "retry" -> if (id != null && MondayOutboundActivity.retry(MondayOutbound, queue, tenant, actor, id) > 0) done(UiTone.Success, tr("El envio se reintentara en el proximo ciclo.")) else done(UiTone.Warning, tr("Ese envio ya no esta fallido."))
+                "retryAll" -> done(UiTone.Success, tr("Se reintentaran {0} envio(s) fallido(s).", MondayOutboundActivity.retry(MondayOutbound, queue, tenant, actor, null)))
+                "discard" -> if (id != null && MondayOutboundActivity.discard(MondayOutbound, queue, tenant, actor, id)) done(UiTone.Success, tr("Envio descartado.")) else done(UiTone.Warning, tr("Ese envio ya no esta fallido."))
                 else -> done(UiTone.Warning, tr("Esa accion no existe."))
             }
         } catch (failure: MondayConfigException) {

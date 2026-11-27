@@ -12,15 +12,7 @@ import com.ideasdeveloper.bms.server.activity.ActivityLogTesting
 import com.ideasdeveloper.bms.server.activity.ActivityLogTesting.throughAgent
 import com.ideasdeveloper.bms.server.modules.CompanyFiles
 import com.ideasdeveloper.bms.server.modules.LocalFileBackend
-import com.ideasdeveloper.bms.server.modules.McpTool
-import com.ideasdeveloper.bms.server.modules.McpToolCall
-import com.ideasdeveloper.bms.server.outbound.monday.MondayColumnRef
-import com.ideasdeveloper.bms.server.outbound.monday.MondayOutboundConfig
-import com.ideasdeveloper.bms.server.outbound.monday.MondayOutboundConfigStore
-import java.sql.Connection
 import java.util.UUID
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -80,43 +72,6 @@ class MondayActivityLogTest {
         assertEquals("contrato.pdf (30 B)", row.change("file")!!.new)
         assertEquals("Importacion (Ana Ruiz)", row.display)
         assertFalse(row.entry.toString().contains("secreto"))
-    }
-
-    // An in-memory store of the sending configuration, as the tests of the Core use.
-    private class MemoryStore : MondayOutboundConfigStore {
-        val saved = mutableMapOf<String, MondayOutboundConfig>()
-        override fun get(tenant: Connection, recordType: String) = saved[recordType]
-        override fun all(tenant: Connection) = saved.values.toList()
-        override fun save(tenant: Connection, config: MondayOutboundConfig) { saved[config.recordType] = config }
-        override fun delete(tenant: Connection) = saved.clear()
-    }
-
-    @Test
-    fun theSendingConfigurationLogsOldAndNewWithThePersonOrTheAgentWhoSavedIt() {
-        val store = AuditedMondayConfigStore(MemoryStore())
-        val tenant = FakeTenant()
-        val first = MondayOutboundConfig("lead", enabled = true, boardId = "1111", columns = mapOf("name" to MondayColumnRef("name", "name")))
-        val (_, created) = logged { MondayAudit.acting(person) { store.save(tenant.connection, first) } }
-        assertEquals("Si", created.single().change("enabled")!!.new)
-        assertEquals("1111", created.single().change("boardId")!!.new)
-        assertEquals("name -> name", created.single().change("columns")!!.new)
-        assertEquals("Ana Ruiz", created.single().display)
-        // An agent's tool: the Core tool runs inside guarded(), which names the agent for what it saves.
-        val tool = McpTool("outbound_configure", "Configurar", "x", "crm.settings") { call ->
-            store.save(call.tenant, first.copy(boardId = "2222"))
-            JsonObject(mapOf("ok" to JsonPrimitive(true)))
-        }
-        val call = McpToolCall(JsonObject(emptyMap()), agentPermissions, tenant.connection, ActivityLogTesting.accessWithoutDatabase(), "Claude", "crm")
-        val (_, byAgent) = logged { MondayAudit.guarded(tool).handler(call) }
-        assertEquals("1111", byAgent.single().change("boardId")!!.old)
-        assertEquals("2222", byAgent.single().change("boardId")!!.new)
-        assertEquals("Agente de Ana Ruiz", byAgent.single().display)
-        // Saving the same thing again changes nothing.
-        assertTrue(logged { MondayAudit.acting(person) { store.save(tenant.connection, first.copy(boardId = "2222")) } }.second.isEmpty())
-        // A write tool the extension does not wrap keeps its own call; a read tool is left as it is.
-        val read = McpTool("outbound_status", "Estado", "x", "crm.settings", readOnly = true) { JsonObject(emptyMap()) }
-        assertTrue(MondayAudit.guarded(read) === read)
-        assertEquals("Sistema", MondayAudit.actor().display)
     }
 
     @Test

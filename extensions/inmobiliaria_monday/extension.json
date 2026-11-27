@@ -12,7 +12,7 @@
     "crm.items.write"
   ],
   "settings": [],
-  "migrations": ["migrations/V001__inmobiliaria_monday.sql"],
+  "migrations": ["migrations/V001__inmobiliaria_monday.sql", "migrations/V002__started_actor.sql"],
   "uninstall": { "options": [
     { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
   ] }

@@ -88,7 +88,7 @@ object EventosMondayFlow {
         mappingProblem(mapping, board.columns)?.let { throw EventosMondayException(it) }
         // La fila del registro de actividad va en la misma transaccion que el trabajo en cola.
         return EventosMondayJobs.inTransaction(tenant) {
-            val id = EventosMondayJobs.queueRead(tenant, boardId, board.name, mapping, actorOf(permissions))
+            val id = EventosMondayJobs.queueRead(tenant, boardId, board.name, mapping, actorOf(permissions), permissions.activityActor)
             EventosMondayActivity.importQueued(tenant, permissions.activityActor, id, board.name)
             id
         }

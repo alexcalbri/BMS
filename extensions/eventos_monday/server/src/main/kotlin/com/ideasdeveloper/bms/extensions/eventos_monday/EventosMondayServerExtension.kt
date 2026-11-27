@@ -53,7 +53,7 @@ object EventosMondayServerExtension : ServerExtension, EventosImportSource {
         ),
         // El token se guarda en ext_eventos_monday__settings y se edita en la pantalla Importar: ningun ajuste es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__rendimiento.sql"),
+        migrations = listOf("migrations/V001__settings.sql", "migrations/V002__rendimiento.sql", "migrations/V003__started_actor.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(ExtensionUninstallOption(HistoryOption, "Historial de importaciones de monday", UninstallDefault.Delete)),
         ),
@@ -62,6 +62,7 @@ object EventosMondayServerExtension : ServerExtension, EventosImportSource {
     override val migrationPaths = listOf(
         "extensions/eventos_monday/migrations/V001__settings.sql",
         "extensions/eventos_monday/migrations/V002__rendimiento.sql",
+        "extensions/eventos_monday/migrations/V003__started_actor.sql",
     )
 
     override val runtimeTables = listOf(
