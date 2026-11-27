@@ -108,26 +108,28 @@ object CrmImportTargets {
         val position = tenant.prepareStatement("SELECT COALESCE(max(display_order), -1) + 1 FROM customer_field_definitions").use { query ->
             query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
         }
-        tenant.prepareStatement(
-            """
-            INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order, options)
-            VALUES (?, ?, ?, ?, ?, FALSE, ?, CAST(? AS jsonb))
-            """.trimIndent()
-        ).use { insert ->
-            insert.setObject(1, UUID.randomUUID())
-            insert.setString(2, key)
-            insert.setString(3, label.take(80))
-            insert.setString(4, type)
-            insert.setString(5, type)
-            insert.setInt(6, position)
-            insert.setString(7, JsonArray(options.map { JsonPrimitive(it) }).toString())
-            insert.executeUpdate()
+        CrmAudit.atomically(tenant) {
+            tenant.prepareStatement(
+                """
+                INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order, options)
+                VALUES (?, ?, ?, ?, ?, FALSE, ?, CAST(? AS jsonb))
+                """.trimIndent()
+            ).use { insert ->
+                insert.setObject(1, UUID.randomUUID())
+                insert.setString(2, key)
+                insert.setString(3, label.take(80))
+                insert.setString(4, type)
+                insert.setString(5, type)
+                insert.setInt(6, position)
+                insert.setString(7, JsonArray(options.map { JsonPrimitive(it) }).toString())
+                insert.executeUpdate()
+            }
+            // A field of Clientes created by the import: its own history does not show it.
+            CrmAudit.record(
+                tenant, actor, "customer_field", key, label.take(80), com.ideasdeveloper.bms.server.activity.ActivityActions.Created, "Creo el campo de cliente ${label.take(80)} desde una importacion.",
+                com.ideasdeveloper.bms.server.activity.ActivityChanges.created(mapOf("label" to label.take(80), "type" to type, "options" to options), linkedMapOf("label" to "Nombre", "type" to "Tipo", "options" to "Opciones")),
+            )
         }
-        // A field of Clientes created by the import: its own history does not show it.
-        CrmAudit.record(
-            tenant, actor, "customer_field", key, label.take(80), com.ideasdeveloper.bms.server.activity.ActivityActions.Created, "Creo el campo de cliente ${label.take(80)} desde una importacion.",
-            com.ideasdeveloper.bms.server.activity.ActivityChanges.created(mapOf("label" to label.take(80), "type" to type, "options" to options), linkedMapOf("label" to "Nombre", "type" to "Tipo", "options" to "Opciones")),
-        )
         return CustomerField(key, label.take(80), type, options)
     }
 

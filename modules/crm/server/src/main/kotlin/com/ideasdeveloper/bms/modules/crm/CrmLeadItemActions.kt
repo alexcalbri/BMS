@@ -37,10 +37,12 @@ object CrmLeadItemActions {
         } catch (failure: CrmWordPressException) {
             throw CrmActionNotice(tr("La venta no se cerro: {0}", failure.message))
         }
-        CrmItems.setStatus(tenant, item, "sold", price ?: item.price)
-        CrmRepository.addActivity(tenant, lead.id, "item", "Venta cerrada: ${item.title}${price?.let { " por ${it.toPlainString()}" }.orEmpty()} el $date. Marcada como vendida en el sitio.", actor)
-        // The lead is won: first won stage of the pipeline.
-        context.stages.firstOrNull { it.kind == StageKind.Won }?.takeIf { lead.archivedAt == null }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
+        CrmAudit.atomically(tenant) {
+            CrmItems.setStatus(tenant, item, "sold", price ?: item.price)
+            CrmRepository.addActivity(tenant, lead.id, "item", "Venta cerrada: ${item.title}${price?.let { " por ${it.toPlainString()}" }.orEmpty()} el $date. Marcada como vendida en el sitio.", actor)
+            // The lead is won: first won stage of the pipeline.
+            context.stages.firstOrNull { it.kind == StageKind.Won }?.takeIf { lead.archivedAt == null }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
+        }
         return tr("Venta cerrada y propiedad marcada como vendida.")
     }
 

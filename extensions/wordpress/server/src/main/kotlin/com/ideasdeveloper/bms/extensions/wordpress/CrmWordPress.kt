@@ -266,12 +266,14 @@ object CrmWordPress {
     private val SiteActor = CrmActor(null, "Sitio web", ActivityActor.integration("Sitio web"))
 
     fun linkListing(tenant: Connection, leadId: UUID, listing: WpListing, activity: String?, actor: CrmActor = SiteActor) {
-        val added = CrmHost.linkItem(
-            tenant, leadId, Source, listing.id.toString(), listing.title,
-            subtitle = listOf(listing.priceText, listing.summary).filter { it.isNotEmpty() }.joinToString(" - "),
-            url = listing.url, price = listing.priceValue,
-        )
-        if (added) CrmHost.addActivity(tenant, leadId, "item", activity ?: "Propiedad de interes: ${listing.title}.", actor)
+        CrmAudit.atomically(tenant) {
+            val added = CrmHost.linkItem(
+                tenant, leadId, Source, listing.id.toString(), listing.title,
+                subtitle = listOf(listing.priceText, listing.summary).filter { it.isNotEmpty() }.joinToString(" - "),
+                url = listing.url, price = listing.priceValue,
+            )
+            if (added) CrmHost.addActivity(tenant, leadId, "item", activity ?: "Propiedad de interes: ${listing.title}.", actor)
+        }
     }
 
     fun recordError(tenant: Connection, error: String) = WordPressSettingsStore.recordError(tenant, error)

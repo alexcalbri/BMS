@@ -6,6 +6,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmReservations
 import com.ideasdeveloper.bms.modules.crm.CrmLeadAudit
 import com.ideasdeveloper.bms.modules.crm.CrmAudit
 import com.ideasdeveloper.bms.modules.crm.CbGuest
+import com.ideasdeveloper.bms.modules.crm.CbReservationResult
 import com.ideasdeveloper.bms.modules.crm.CbRoom
 import com.ideasdeveloper.bms.modules.crm.CbRoomRequest
 import com.ideasdeveloper.bms.modules.crm.CloudbedsProvider
@@ -23,6 +24,7 @@ import com.ideasdeveloper.bms.modules.crm.CrmExtensionIds
 import com.ideasdeveloper.bms.modules.crm.CrmExtensionPermissions
 import com.ideasdeveloper.bms.modules.crm.CrmExtensions
 import com.ideasdeveloper.bms.modules.crm.CrmHost
+import com.ideasdeveloper.bms.modules.crm.CrmItem
 import com.ideasdeveloper.bms.modules.crm.CrmLead
 import com.ideasdeveloper.bms.modules.crm.CrmLeadItemActions
 import com.ideasdeveloper.bms.modules.crm.CrmTemplate
@@ -141,8 +143,8 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
     override fun checkInForLead(host: CrmHost, tenant: Connection, leadId: UUID, actor: CrmActor): String {
         val reservation = host.reservationsForLead(tenant, leadId).firstOrNull { it.status in host.CheckInStatuses }
             ?: throw CrmValidationException(tr("El lead no tiene una reserva de Cloudbeds pendiente de check-in."))
-        CrmCloudbeds.checkIn(host, tenant, reservation)
-        CrmAudit.atomically(tenant) {
+        // The new status and its rows are saved together (the call to Cloudbeds goes first and is the only thing outside).
+        CrmCloudbeds.checkIn(host, tenant, reservation) {
             host.addActivity(tenant, leadId, "item", "Check-in hecho en Cloudbeds: reserva ${reservation.reservationId}.", actor, CrmLeadAudit.None)
             CrmAudit.record(
                 tenant, actor.activity, "reservation", reservation.id.toString(), "Reserva ${reservation.reservationId}", ActivityActions.StatusChanged,
@@ -170,19 +172,21 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
             throw CrmActionNotice(tr("Las habitaciones de una reserva comparten fechas: quita las otras o busca con sus fechas."), warning = true)
         }
         val title = "${params["roomName"].orEmpty()} - ${params["typeName"].orEmpty()}".trim(' ', '-').ifEmpty { "Habitacion $room" }
-        host.linkItem(
-            tenant, lead.id, CrmCloudbedsStore.Source, room, title,
-            subtitle = params["max"]?.toIntOrNull()?.takeIf { it > 0 }?.let { "Hasta $it personas" }.orEmpty(),
-            price = params["total"]?.toBigDecimalOrNull(), status = "chosen", startsOn = stay.start, endsOn = stay.end,
-            data = mapOf("roomTypeId" to params["type"].orEmpty(), "max" to params["max"].orEmpty(), "adults" to stay.adults.toString(), "children" to stay.children.toString()),
-        )
-        host.addActivity(
-            tenant, lead.id, "item", "Habitacion asignada: $title, del ${stay.start} al ${stay.end}.", actor,
-            CrmLeadAudit.Row(
-                ActivityActions.Updated, "Asigno la habitacion $title al lead {lead}.",
-                listOf(ActivityChange("room", "Habitacion", null, title), ActivityChange("stay", "Estadia", null, "${stay.start} al ${stay.end}")),
-            ),
-        )
+        CrmAudit.atomically(tenant) {
+            host.linkItem(
+                tenant, lead.id, CrmCloudbedsStore.Source, room, title,
+                subtitle = params["max"]?.toIntOrNull()?.takeIf { it > 0 }?.let { "Hasta $it personas" }.orEmpty(),
+                price = params["total"]?.toBigDecimalOrNull(), status = "chosen", startsOn = stay.start, endsOn = stay.end,
+                data = mapOf("roomTypeId" to params["type"].orEmpty(), "max" to params["max"].orEmpty(), "adults" to stay.adults.toString(), "children" to stay.children.toString()),
+            )
+            host.addActivity(
+                tenant, lead.id, "item", "Habitacion asignada: $title, del ${stay.start} al ${stay.end}.", actor,
+                CrmLeadAudit.Row(
+                    ActivityActions.Updated, "Asigno la habitacion $title al lead {lead}.",
+                    listOf(ActivityChange("room", "Habitacion", null, title), ActivityChange("stay", "Estadia", null, "${stay.start} al ${stay.end}")),
+                ),
+            )
+        }
         return CrmLeadItemActions.Reservation(tr("{0} asignada a {1}.", title, lead.name), warning = false)
     }
 
@@ -218,25 +222,35 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         } catch (failure: CrmValidationException) {
             throw CrmActionNotice(failure.message.orEmpty())
         }
-        val roomNames = rooms.joinToString { it.title }
-        host.saveReservation(tenant, lead.id, result, start, end, roomNames, lead.email)
-        rooms.zip(requests).forEach { (room, request) ->
-            host.setItemStatus(tenant, room, "booked")
-            host.setItemData(tenant, room, room.data + mapOf("adults" to request.adults.toString(), "children" to request.children.toString(), "reservation" to result.reservationId))
-        }
-        host.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor, CrmLeadAudit.None)
-        CrmAudit.record(
-            tenant, actor.activity, "reservation", result.reservationId, "Reserva ${result.reservationId}", ActivityActions.Created,
-            "Creo la reserva ${result.reservationId} en Cloudbeds para el lead ${lead.name}.",
-            listOfNotNull(
-                ActivityChange("lead", "Lead", null, lead.name), ActivityChange("rooms", "Habitaciones", null, roomNames), ActivityChange("stay", "Estadia", null, "$start al $end"),
-                result.total?.let { ActivityChange("total", "Total", null, it.toPlainString()) },
-            ),
-        )
+        saveReserved(host, tenant, lead, result, start, end, rooms, requests, actor)
         return if (result.unassigned > 0) {
             CrmLeadItemActions.Reservation(tr("Reserva {0} creada, pero Cloudbeds dejo {1} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", result.reservationId, result.unassigned), warning = true)
         } else {
             CrmLeadItemActions.Reservation(tr("Reserva {0} creada en Cloudbeds.", result.reservationId), warning = false)
+        }
+    }
+
+    /** The reservation Cloudbeds created, its rooms and its rows, saved together (the call to Cloudbeds already happened). */
+    fun saveReserved(
+        host: CrmHost, tenant: Connection, lead: CrmLead, result: CbReservationResult, start: LocalDate, end: LocalDate,
+        rooms: List<CrmItem>, requests: List<CbRoomRequest>, actor: CrmActor,
+    ) {
+        val roomNames = rooms.joinToString { it.title }
+        CrmAudit.atomically(tenant) {
+            host.saveReservation(tenant, lead.id, result, start, end, roomNames, lead.email)
+            rooms.zip(requests).forEach { (room, request) ->
+                host.setItemStatus(tenant, room, "booked")
+                host.setItemData(tenant, room, room.data + mapOf("adults" to request.adults.toString(), "children" to request.children.toString(), "reservation" to result.reservationId))
+            }
+            host.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor, CrmLeadAudit.None)
+            CrmAudit.record(
+                tenant, actor.activity, "reservation", result.reservationId, "Reserva ${result.reservationId}", ActivityActions.Created,
+                "Creo la reserva ${result.reservationId} en Cloudbeds para el lead ${lead.name}.",
+                listOfNotNull(
+                    ActivityChange("lead", "Lead", null, lead.name), ActivityChange("rooms", "Habitaciones", null, roomNames), ActivityChange("stay", "Estadia", null, "$start al $end"),
+                    result.total?.let { ActivityChange("total", "Total", null, it.toPlainString()) },
+                ),
+            )
         }
     }
 

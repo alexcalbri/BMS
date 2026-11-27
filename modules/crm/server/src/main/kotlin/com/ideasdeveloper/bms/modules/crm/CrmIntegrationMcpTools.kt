@@ -660,8 +660,10 @@ object CrmIntegrationMcpTools {
         val lead = visibleLead(call, context)
         val title = call.string("title", 301)
         if (title.isEmpty() || title.length > 300) throw McpToolException("Escribe el nombre del interes (hasta 300 caracteres).")
-        CrmItems.link(call.tenant, lead.id, "manual", UUID.randomUUID().toString(), title, call.string("subtitle", 500))
-        CrmRepository.addActivity(call.tenant, lead.id, "item", "Interes agregado: $title.", actor(call))
+        CrmAudit.atomically(call.tenant) {
+            CrmItems.link(call.tenant, lead.id, "manual", UUID.randomUUID().toString(), title, call.string("subtitle", 500))
+            CrmRepository.addActivity(call.tenant, lead.id, "item", "Interes agregado: $title.", actor(call))
+        }
         return result("$title agregado.")
     }
 
@@ -671,8 +673,10 @@ object CrmIntegrationMcpTools {
         val item = item(call, lead)
         val status = call.requiredString("status", 20).takeIf { it in setOf("offered", "chosen", "discarded", "interested") }
             ?: throw McpToolException("Estado invalido: interested, offered, chosen o discarded.")
-        CrmItems.setStatus(call.tenant, item, status)
-        CrmRepository.addActivity(call.tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor(call))
+        CrmAudit.atomically(call.tenant) {
+            CrmItems.setStatus(call.tenant, item, status)
+            CrmRepository.addActivity(call.tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor(call))
+        }
         return result("${item.title}: ${CrmItems.statusLabels[status]}.")
     }
 
@@ -680,8 +684,10 @@ object CrmIntegrationMcpTools {
         val context = context(call)
         val lead = visibleLead(call, context)
         val item = item(call, lead)
-        CrmItems.remove(call.tenant, item)
-        CrmRepository.addActivity(call.tenant, lead.id, "item", "Quitado: ${item.title}.", actor(call))
+        CrmAudit.atomically(call.tenant) {
+            CrmItems.remove(call.tenant, item)
+            CrmRepository.addActivity(call.tenant, lead.id, "item", "Quitado: ${item.title}.", actor(call))
+        }
         return result("${item.title} quitado.")
     }
 

@@ -944,15 +944,19 @@ object CrmServerModule : ServerModule {
                     val back = mapOf("id" to lead.id.toString())
                     when (params["op"]) {
                         "itemRemove" -> {
-                            CrmItems.remove(tenant, item)
-                            CrmRepository.addActivity(tenant, lead.id, "item", "Quitado: ${item.title}.", actor)
+                            CrmAudit.atomically(tenant) {
+                                CrmItems.remove(tenant, item)
+                                CrmRepository.addActivity(tenant, lead.id, "item", "Quitado: ${item.title}.", actor)
+                            }
                             show("lead", UiNotice(tr("{0} quitado.", item.title), UiTone.Success), back)
                         }
                         "itemStatus" -> {
                             val status = params["status"].orEmpty().takeIf { it in setOf("offered", "chosen", "discarded", "interested") }
                                 ?: return show("lead", UiNotice(tr("Estado invalido."), UiTone.Danger), back)
-                            CrmItems.setStatus(tenant, item, status)
-                            CrmRepository.addActivity(tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor)
+                            CrmAudit.atomically(tenant) {
+                                CrmItems.setStatus(tenant, item, status)
+                                CrmRepository.addActivity(tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor)
+                            }
                             show("lead", UiNotice(tr("{0}: {1}.", item.title, tr(CrmItems.statusLabels.getValue(status))), UiTone.Success), back)
                         }
                         else -> try {
@@ -1092,8 +1096,10 @@ object CrmServerModule : ServerModule {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice(tr("Ese lead ya no esta disponible."), UiTone.Warning), emptyMap())
                     val title = values["title"].orEmpty().trim()
                     if (title.isEmpty() || title.length > 300) return show("lead", UiNotice(tr("Escribe el nombre del interes (hasta 300 caracteres)."), UiTone.Danger), mapOf("id" to lead.id.toString()))
-                    CrmItems.link(tenant, lead.id, "manual", UUID.randomUUID().toString(), title, values["subtitle"].orEmpty().trim().take(500))
-                    CrmRepository.addActivity(tenant, lead.id, "item", "Interes agregado: $title.", actor)
+                    CrmAudit.atomically(tenant) {
+                        CrmItems.link(tenant, lead.id, "manual", UUID.randomUUID().toString(), title, values["subtitle"].orEmpty().trim().take(500))
+                        CrmRepository.addActivity(tenant, lead.id, "item", "Interes agregado: $title.", actor)
+                    }
                     show("lead", UiNotice(tr("{0} agregado.", title), UiTone.Success), mapOf("id" to lead.id.toString()))
                 }
                 "integrations:metaNumber" -> {
