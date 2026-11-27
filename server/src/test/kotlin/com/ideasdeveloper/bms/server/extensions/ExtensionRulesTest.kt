@@ -71,12 +71,29 @@ class ExtensionRulesTest {
         assertEquals("module_not_installed", (gate.decide("hotspot", "meta", null) as ExtensionGateDecision.Closed).body.code)
         assertEquals(ExtensionGateDecision.Open, gate.decide("crm", "meta", "acme"))
         assertEquals(ExtensionGateDecision.Open, gate.decide("crm", "meta", null, "acme"))
-        assertEquals("extension_disabled", (gate.decide("crm", "meta", "beta") as ExtensionGateDecision.Closed).body.code)
-        assertEquals("extension_not_installed", (gate.decide("crm", "meta", "gamma") as ExtensionGateDecision.Closed).body.code)
+        // With a session (header) the reason is told: the staff of the company may see it.
+        assertEquals("extension_disabled", (gate.decide("crm", "meta", null, "beta") as ExtensionGateDecision.Closed).body.code)
+        assertEquals("extension_not_installed", (gate.decide("crm", "meta", null, "gamma") as ExtensionGateDecision.Closed).body.code)
         // The module must be enabled in the company too.
-        assertEquals("module_disabled", (gate.decide("crm", "meta", "delta") as ExtensionGateDecision.Closed).body.code)
+        assertEquals("module_disabled", (gate.decide("crm", "meta", null, "delta") as ExtensionGateDecision.Closed).body.code)
         // A malformed company code never reaches the database.
-        assertEquals("extension_not_installed", (gate.decide("crm", "meta", "../x") as ExtensionGateDecision.Closed).body.code)
+        assertEquals("extension_not_installed", (gate.decide("crm", "meta", null, "../x") as ExtensionGateDecision.Closed).body.code)
+    }
+
+    @Test
+    fun publicCompanyRoutesAnswerTheSameForUnknownAndNotInstalled() {
+        val states = mapOf(
+            "beta" to ExtensionTenantState(ExtensionStatus.Disabled, true),
+            "delta" to ExtensionTenantState(ExtensionStatus.Enabled, false),
+            "omega" to ExtensionTenantState(null, true),
+        )
+        var padded = 0
+        val gate = ExtensionGate(moduleInstalled = { true }, stateOf = { company, _, _ -> states[company] }, unknownCompanyWork = { padded++ })
+        val answers = listOf("beta", "delta", "omega", "gamma", "../x").map { gate.decide("crm", "meta", it) as ExtensionGateDecision.Closed }
+        assertEquals(1, answers.map { it.status to it.body }.toSet().size, answers.toString())
+        assertEquals(HttpStatusCode.NotFound, answers.first().status)
+        // The unknown company does the reads a known one costs.
+        assertEquals(2, padded)
     }
 
     @Test

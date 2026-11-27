@@ -738,6 +738,16 @@ class ModuleAccessService(
      * Validates the session and company of a request that belongs to the Core, not to a module (the
      * notification center): who the user is, with no module permission involved.
      */
+    /** Whether the call carries a valid session: a company one (X-Company-Code) or a server one (none). */
+    fun hasSession(call: ApplicationCall): Boolean {
+        val token = accessToken(call) ?: return false
+        return try {
+            loginDatabases.sessionAccount(companyCode(call), token) != null
+        } catch (_: SQLException) {
+            false
+        }
+    }
+
     fun userSession(call: ApplicationCall): UserSessionLookup {
         val token = accessToken(call)
             ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", tr("La sesion es requerida.")))

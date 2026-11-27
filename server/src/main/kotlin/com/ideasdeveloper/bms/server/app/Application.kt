@@ -489,16 +489,20 @@ fun Application.module() {
             get("/version") {
                 // En cache unos minutos: la consulta hace peticiones HTTP salientes y no debe poder
                 // amplificarse desde fuera.
-                call.respond(
-                    versionCache.get {
-                        versionResponse(
-                            catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
-                            central = DatabaseFactory.getDataSource(),
-                            remoteModuleCatalog = remoteModuleCatalog,
-                            defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
-                        )
-                    }
-                )
+                val full = versionCache.get {
+                    versionResponse(
+                        catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
+                        central = DatabaseFactory.getDataSource(),
+                        remoteModuleCatalog = remoteModuleCatalog,
+                        defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
+                    )
+                }
+                // B7: before signing in the app only needs the Core version (compatibility) and the latest
+                // app version; the rest only for a server user who may update the Core or see the modules.
+                val token = call.request.headers[io.ktor.http.HttpHeaders.Authorization]?.takeIf { it.startsWith("Bearer ") }?.removePrefix("Bearer ")?.trim()
+                val actor = token?.takeIf { it.isNotEmpty() }?.let { withContextIO { (serverActors.resolve(it) as? com.ideasdeveloper.bms.server.admins.ServerActorLookup.Found)?.actor } }
+                val detailed = actor != null && (actor.has(com.ideasdeveloper.bms.server.admins.ServerPermission.CoreUpdate) || actor.has(com.ideasdeveloper.bms.server.admins.ServerPermission.ModulesView))
+                call.respond(if (detailed) full else full.publicView())
             }
         }
 
@@ -640,6 +644,8 @@ private class ExpiringCache<T : Any>(private val ttlMillis: Long, private val fa
         }
     }
 }
+
+private suspend fun <T> withContextIO(block: () -> T): T = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { block() }
 
 private val versionCache = ExpiringCache<VersionResponse>(ttlMillis = 5 * 60_000L, failureTtlMillis = 45_000L)
 

@@ -313,6 +313,7 @@
   "Modulos de las empresas": "Company modules",
   "Necesitas el permiso para ver el registro de actividad.": "You need the permission to view the activity log.",
   "Necesitas el permiso {0}.": "You need the {0} permission.",
+  "No encontrado.": "Not found.",
   "No existe el usuario PostgreSQL del business owner.": "The business owner's PostgreSQL user does not exist.",
   "No hay envios fallidos.": "There are no failed sends.",
   "No hay un server owner activo para aplicar migraciones.": "There is no active server owner to apply migrations.",

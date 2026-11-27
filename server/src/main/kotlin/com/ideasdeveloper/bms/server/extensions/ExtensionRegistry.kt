@@ -61,6 +61,14 @@ class ExtensionRegistry(extensions: List<ServerExtension>) {
                     ExtensionTenantState(storage.status(tenant, extensionId), moduleEnabled(tenant, moduleId))
                 }
             },
+            // The two reads a known company costs, on the central database (B6: same timing for an unknown one).
+            unknownCompanyWork = {
+                runCatching {
+                    access.centralConnection().use { connection ->
+                        repeat(2) { connection.prepareStatement("SELECT 1 FROM pg_catalog.pg_class WHERE FALSE").use { it.executeQuery().use { rows -> rows.next() } } }
+                    }
+                }
+            },
         )
         for (extension in all) {
             val manifest = extension.manifest
@@ -114,6 +122,7 @@ data class ExtensionTenantState(val status: String?, val moduleEnabled: Boolean)
 class ExtensionGate(
     private val moduleInstalled: (String) -> Boolean,
     private val stateOf: (companyCode: String, extensionId: String, moduleId: String) -> ExtensionTenantState?,
+    private val unknownCompanyWork: () -> Unit = {},
 ) {
     /**
      * [pathCompany] is the {company} path parameter; [headerCompany] comes from X-Company-Code or
@@ -135,6 +144,7 @@ class ExtensionGate(
             )
         }
         val company = path ?: header ?: return ExtensionGateDecision.Open
+        if (path != null) return pathDecision(moduleId, extensionId, path)
         if (!CompanyCodePattern.matches(company)) return ExtensionGateDecision.forStatus(null)
         val state = stateOf(company, extensionId, moduleId) ?: return ExtensionGateDecision.forStatus(null)
         val decision = ExtensionGateDecision.forStatus(state.status)
@@ -146,7 +156,22 @@ class ExtensionGate(
         }
         return decision
     }
+
+    private fun pathDecision(moduleId: String, extensionId: String, company: String): ExtensionGateDecision {
+        val state = if (CompanyCodePattern.matches(company)) stateOf(company, extensionId, moduleId) else null
+        if (state == null) unknownCompanyWork()
+        return pathDecisionOf(state)
+    }
 }
+
+/**
+ * A route that names the company in its path is public (webhooks of integrations): unknown company,
+ * extension not installed, disabled, incompatible or module off all get the same answer, after the
+ * same work, so a caller cannot learn which companies use an integration (SECURITY_FIXES.md B6).
+ */
+private fun ExtensionGate.pathDecisionOf(state: ExtensionTenantState?): ExtensionGateDecision =
+    if (state != null && ExtensionGateDecision.forStatus(state.status) is ExtensionGateDecision.Open && state.moduleEnabled) ExtensionGateDecision.Open
+    else ExtensionGateDecision.Closed(HttpStatusCode.NotFound, ModuleAccessErrorResponse("not_found", tr("No encontrado.")))
 
 private fun moduleEnabled(tenant: Connection, moduleId: String): Boolean =
     tenant.prepareStatement("SELECT 1 FROM tenant_modules WHERE module_id = ? AND status = 'enabled'").use { query ->
