@@ -239,7 +239,7 @@ class ProvisioningRolesPostgresTest {
         provisioning.setModuleEnabled("seca_mod", "crm", true, owner, actor)
         // An extension package carries its migrations as resources of its own class loader (here, a test resource).
         val extension = object : com.ideasdeveloper.bms.server.extensions.ServerExtension {
-            override val manifest = com.ideasdeveloper.bms.extensions.wordpress.CrmWordPressExtension.manifest
+            override val manifest = com.ideasdeveloper.bms.server.extensions.ExtensionManifest(id = "wordpress", module = "crm", displayName = "WordPress", version = "0.1.0")
             override val migrationPaths = listOf("provisioning-roles/V001__ext_items.sql")
             override val runtimeTables = listOf("ext_secatest__items")
         }

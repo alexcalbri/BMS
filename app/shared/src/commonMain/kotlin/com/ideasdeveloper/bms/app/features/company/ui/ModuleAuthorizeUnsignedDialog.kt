@@ -20,6 +20,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
 import com.ideasdeveloper.bms.app.core.theme.appFieldColors
 import com.ideasdeveloper.bms.app.core.ui.CopyableCode
