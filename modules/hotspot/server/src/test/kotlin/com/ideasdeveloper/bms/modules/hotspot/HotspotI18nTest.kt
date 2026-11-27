@@ -55,9 +55,9 @@ class HotspotI18nTest {
             assertEquals("1 day 2 h 5 min", HotspotPortalPages.timeLeft(1565))
             val wait = HotspotPortalPages.wait(settings, 90, byCode = true)
             assertTrue("You already used your access" in wait && "This code connected recently" in wait && "2 hours" in wait, wait)
-            val code = HotspotPortalPages.code(settings, "pending-1", "ana@test.com", "")
-            assertTrue("Check your email" in code && "data-busy=\"Connecting...\"" in code && "expires in 15 minutes" in code, code)
-            assertTrue("name=\"pending\" value=\"pending-1\"" in code)
+            val code = HotspotPortalPages.code(settings, "ana@test.com", "")
+            assertTrue("Check your email" in code && "data-busy=\"Connecting...\"" in code && "expires in 15 minutes if you do not use it" in code, code)
+            assertTrue("name=\"email\" value=\"ana@test.com\"" in code && "pending" !in code)
             val success = HotspotPortalPages.success(settings, "Ana", null)
             assertTrue("You are connected" in success && "Your WiFi session lasts <strong>60 minutes</strong>." in success, success)
         }

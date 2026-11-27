@@ -42,37 +42,124 @@ object HotspotGuestCodes {
     /** New customers the form creates per origin address in an hour. */
     const val MaxNewCustomersPerIpHour = 600
 
-    /** Wrong tries a code takes in total (each device also has its own limit). */
-    const val MaxWrongTries = 30
-
     /** Largest form the public portal reads (fields are short; the continue URL is cut at 500). */
     const val MaxFormBytes = 16 * 1024
 
-    /** A code of this address that is usable now: an active session, or one requested less than [ResendInterval] ago. */
-    fun liveCode(connection: Connection, email: String, now: Instant = Instant.now()): LiveCode? = connection.prepareStatement(
+    /** True when this address has a code that is usable now: a running session, or one requested less than [ResendInterval] ago and unused. */
+    fun hasLiveCode(connection: Connection, email: String, now: Instant = Instant.now()): Boolean = connection.prepareStatement(
         """
-        SELECT codes.id, codes.activated_at IS NOT NULL
+        SELECT 1
         FROM hotspot_codes codes
         JOIN hotspot_registrations registrations ON registrations.id = codes.registration_id
         WHERE lower(registrations.email) = lower(?)
-          AND codes.attempts < ?
           AND (
               (codes.activated_at IS NOT NULL AND codes.ends_at > ?)
               OR (codes.activated_at IS NULL AND codes.used_at IS NULL AND codes.expires_at > ? AND codes.created_at > ?)
           )
-        ORDER BY codes.activated_at IS NOT NULL DESC, codes.created_at DESC
         LIMIT 1
         """.trimIndent()
     ).use { query ->
         query.setString(1, email)
-        query.setInt(2, MaxWrongTries)
+        query.setTimestamp(2, Timestamp.from(now))
         query.setTimestamp(3, Timestamp.from(now))
-        query.setTimestamp(4, Timestamp.from(now))
-        query.setTimestamp(5, Timestamp.from(now.minus(ResendInterval)))
-        query.executeQuery().use { rows -> if (rows.next()) LiveCode(rows.getObject(1, UUID::class.java), rows.getBoolean(2)) else null }
+        query.setTimestamp(4, Timestamp.from(now.minus(ResendInterval)))
+        query.executeQuery().use { it.next() }
     }
 
-    data class LiveCode(val id: UUID, val active: Boolean)
+    /** A code row the submitted code is compared with. */
+    class Candidate(val id: UUID, val hash: String)
+
+    /**
+     * The newest codes of this address: the submitted code is looked up among them (never by an id the page carried), so
+     * whoever types an address cannot aim at a code, and a right code of a finished session still gets its own answer.
+     */
+    fun candidates(connection: Connection, email: String, limit: Int = 8): List<Candidate> = connection.prepareStatement(
+        """
+        SELECT codes.id, codes.code_hash
+        FROM hotspot_codes codes
+        JOIN hotspot_registrations registrations ON registrations.id = codes.registration_id
+        WHERE lower(registrations.email) = lower(?)
+        ORDER BY codes.created_at DESC
+        LIMIT ?
+        """.trimIndent()
+    ).use { query ->
+        query.setString(1, email)
+        query.setInt(2, limit)
+        query.executeQuery().use { rows -> buildList { while (rows.next()) add(Candidate(rows.getObject(1, UUID::class.java), rows.getString(2))) } }
+    }
+
+    // ---- Wrong codes: counted per origin address + email and per origin address, never per device or per code ----
+
+    /** Wrong codes a (email, origin address) pair and an origin address may send per window. */
+    const val MaxWrongPerAddressAndOrigin = 8
+    const val MaxWrongPerOrigin = 60
+    val FailureWindow: Duration = Duration.ofMinutes(15)
+
+    /** Key of the pair in hotspot_ip_throttle (64 characters at most): the origin group and a digest of the address. */
+    fun addressKey(origin: String, email: String): String =
+        origin + "|" + java.security.MessageDigest.getInstance("SHA-256").digest(email.trim().lowercase().toByteArray()).joinToString("") { "%02x".format(it) }.take(24)
+
+    private fun windowStart(now: Instant) = Timestamp(now.toEpochMilli() - now.toEpochMilli() % FailureWindow.toMillis())
+
+    fun failures(connection: Connection, key: String, action: String, now: Instant = Instant.now()): Int = connection.prepareStatement(
+        "SELECT hits FROM hotspot_ip_throttle WHERE ip_group = ? AND action = ? AND window_start = ?"
+    ).use { query ->
+        query.setString(1, key)
+        query.setString(2, action)
+        query.setTimestamp(3, windowStart(now))
+        query.executeQuery().use { if (it.next()) it.getInt(1) else 0 }
+    }
+
+    fun recordFailure(connection: Connection, key: String, action: String, now: Instant = Instant.now()) {
+        connection.prepareStatement(
+            "INSERT INTO hotspot_ip_throttle (ip_group, action, window_start, hits) VALUES (?, ?, ?, 1) ON CONFLICT (ip_group, action, window_start) DO UPDATE SET hits = hotspot_ip_throttle.hits + 1"
+        ).use { insert ->
+            insert.setString(1, key)
+            insert.setString(2, action)
+            insert.setTimestamp(3, windowStart(now))
+            insert.executeUpdate()
+        }
+    }
+
+    /** True when this pair or this origin already used its wrong codes of the window. */
+    fun tooManyWrongCodes(connection: Connection, origin: String, email: String, now: Instant = Instant.now()): Boolean =
+        failures(connection, addressKey(origin, email), "verify_fail_addr", now) >= MaxWrongPerAddressAndOrigin ||
+            failures(connection, origin, "verify_fail", now) >= MaxWrongPerOrigin
+
+    fun recordWrongCode(connection: Connection, origin: String, email: String, now: Instant = Instant.now()) {
+        recordFailure(connection, addressKey(origin, email), "verify_fail_addr", now)
+        recordFailure(connection, origin, "verify_fail", now)
+    }
+
+    /**
+     * Counts one hit of [key] for [action] in the fixed window of [windowMillis] that contains [nowMillis] and returns true when the
+     * window had already used its [max] (nothing is counted then). One atomic statement, shared by every request and server.
+     */
+    fun hitLimit(connection: Connection, key: String, action: String, max: Int, windowMillis: Long, nowMillis: Long = System.currentTimeMillis()): Boolean =
+        connection.prepareStatement(
+            """
+            INSERT INTO hotspot_ip_throttle (ip_group, action, window_start, hits)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT (ip_group, action, window_start) DO UPDATE SET hits = hotspot_ip_throttle.hits + 1
+            WHERE hotspot_ip_throttle.hits < ?
+            RETURNING hits
+            """.trimIndent()
+        ).use { upsert ->
+            upsert.setString(1, key)
+            upsert.setString(2, action)
+            upsert.setTimestamp(3, Timestamp(nowMillis - nowMillis % windowMillis))
+            upsert.setInt(4, max)
+            upsert.executeQuery().use { rows -> !rows.next() }
+        }
+
+    /** Group of an origin address: IPv4 as is, IPv6 by its /64 (one client controls its whole /64). */
+    fun ipGroup(ip: String): String {
+        if (!ip.contains(':')) return ip
+        // The first 8 bytes of the literal address (no DNS lookup) make the /64.
+        val address = runCatching { java.net.InetAddress.getByName(ip.substringBefore('%')).address }.getOrNull() ?: return ip
+        if (address.size != 16) return ip
+        return address.take(8).joinToString("") { "%02x".format(it.toInt() and 0xFF) } + "/64"
+    }
 
     /** True when this device, or this destination address, already got its codes of the last hour. */
     fun overSendLimit(connection: Connection, email: String, mac: String, now: Instant = Instant.now()): Boolean = connection.prepareStatement(

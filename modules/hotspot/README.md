@@ -402,12 +402,18 @@ logged; the access history stays in `hotspot_accesses`. See `ACTIVITY_LOG_MODULE
   customer that was verified or had no state is never downgraded. The verification is logged as made by "Portal WiFi" (never the code).
   Without the Clientes columns the portal works as before, with no state.
 - The emailed code is one session shared by up to 2 devices. It starts at the first device that enters it and lasts the network's access
-  time; a second device that enters the same code (it opens the portal and sends the form with the same address, which shows the code page
-  instead of sending another email) ends at the same moment, for the minutes left (rounded up to a whole minute). A third device is
+  time; a second device that enters the same code (it opens the portal, sends the form with the same address, and types the code it got by
+  email on the first device) ends at the same moment, for the minutes left (rounded up to a whole minute). A third device is
   refused. The two slots are the primary key of `hotspot_code_devices` and the code's row is locked, so devices activating at the same time
   never make three.
 - When the time is over the code cannot connect again, and the address cannot start a new session until the reconnection time of the network
   (a day by default) has passed, counted from the first activation; devices that joined do not move it. 0 means no wait.
-- Abuse brakes: 6 codes per hour per device and 12 per destination address, new customers created by the form per origin address (600 per
-  hour), the per-IP limits, 16 KB bodies, 5 wrong tries per device in 15 minutes and 30 per code.
+- The code page never says whether an address already has a session: an address with a usable code gets the same page as a first submission
+  (and no new email). The page carries no code id; the code typed is looked up among the newest codes of the submitted address.
+- Wrong codes are counted per (address, origin address) 8 per 15 minutes and per origin address 60 per 15 minutes (IPv6 by /64), never per
+  code, per device (a MAC comes from the form) or for the whole company, so nobody can use up a guest's tries or lock the venue out.
+- Other abuse brakes: 6 codes per hour per device and 12 per destination address, 600 new customers per hour per origin address, and a
+  company ceiling of new customers per hour (setting `newCustomersPerHour`, 300 by default): beyond it NEW addresses get "Intentalo mas tarde"
+  (existing customers keep working) and users with *Configurar hotspot* get one notification per hour. 16 KB bodies, per-IP limits.
+- The email is marked verified only while the customer still has the address the code was sent to.
 - `hotspot_my_wifi_code` is not declared read-only (it creates the user's code the first time): read-only agent tokens cannot call it.

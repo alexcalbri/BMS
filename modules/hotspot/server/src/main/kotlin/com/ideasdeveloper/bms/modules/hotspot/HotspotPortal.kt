@@ -9,6 +9,7 @@ import com.ideasdeveloper.bms.server.modules.CustomerSql
 import com.ideasdeveloper.bms.server.modules.MailException
 import com.ideasdeveloper.bms.server.modules.MailSender
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
+import com.ideasdeveloper.bms.server.modules.NotificationText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -102,13 +103,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private val lastTableCleanup = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     // IPv6: se agrupa por /64 (un cliente controla todo su /64); IPv4 queda igual.
-    private fun ipGroup(ip: String): String {
-        if (!ip.contains(':')) return ip
-        // Los primeros 8 bytes de la direccion (literal, sin consulta DNS) forman el /64.
-        val address = runCatching { java.net.InetAddress.getByName(ip.substringBefore('%')).address }.getOrNull() ?: return ip
-        if (address.size != 16) return ip
-        return address.take(8).joinToString("") { "%02x".format(it.toInt() and 0xFF) } + "/64"
-    }
+    private fun ipGroup(ip: String): String = HotspotGuestCodes.ipGroup(ip)
 
     // Misma regla que el resto del servidor: detras de nginx (127.0.0.1) la IP real viene en X-Real-IP.
     private fun ApplicationCall.clientIp(): String {
@@ -150,24 +145,26 @@ class HotspotPortal(private val access: ModuleAccessService) {
                 }
             }.onFailure { log.warn("No se pudo limpiar hotspot_ip_throttle de {}", target.companyCode, it) }
         }
-        // Ventana fija: el inicio es el instante actual redondeado hacia abajo al tamano de la ventana.
-        val windowStart = Timestamp(now - now % windowMillis)
-        // Una sola sentencia atomica: suma uno mientras haya cupo y no devuelve fila cuando ya se agoto.
-        return connection.prepareStatement(
-            """
-            INSERT INTO hotspot_ip_throttle (ip_group, action, window_start, hits)
-            VALUES (?, ?, ?, 1)
-            ON CONFLICT (ip_group, action, window_start) DO UPDATE SET hits = hotspot_ip_throttle.hits + 1
-            WHERE hotspot_ip_throttle.hits < ?
-            RETURNING hits
-            """.trimIndent()
-        ).use { upsert ->
-            upsert.setString(1, ipGroup(ip))
-            upsert.setString(2, action)
-            upsert.setTimestamp(3, windowStart)
-            upsert.setInt(4, max)
-            upsert.executeQuery().use { rows -> !rows.next() }
-        }
+        return HotspotGuestCodes.hitLimit(connection, ipGroup(ip), action, max, windowMillis, now)
+    }
+
+    // Staff with the permission to change the settings get one in-app notice per hour when the ceiling of new customers is reached.
+    private fun notifyCeilingReached(target: PortalTarget, ceiling: Int) {
+        runCatching {
+            if (overIpLimit(target, "*", "ceiling_notice", 1, Duration.ofHours(1).toMillis())) return
+            val connection = target.connection
+            val recipients = connection.prepareStatement("SELECT id FROM application_users WHERE is_active").use { query ->
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+            }.filter { id ->
+                access.userAccess(connection, target.companyCode, id, serverOwner = false)?.permissions(HotspotModule.id)?.has(HotspotScreens.SettingsManage) == true
+            }
+            access.notificationsFor(HotspotModule.id).notifyEach(connection, recipients) {
+                NotificationText(
+                    tr("Limite de registros nuevos del WiFi"),
+                    tr("El formulario del portal llego a {0} clientes nuevos en una hora y rechaza direcciones nuevas hasta la hora siguiente. Si no es normal, revisa los registros; el limite se cambia en la configuracion.", ceiling),
+                )
+            }
+        }.onFailure { log.warn("Hotspot {}: no se pudo avisar que se alcanzo el limite de clientes nuevos ({}).", target.companyCode, it.javaClass.simpleName) }
     }
 
     private fun tooManyRequestsHtml() =
@@ -198,16 +195,16 @@ class HotspotPortal(private val access: ModuleAccessService) {
 
     private suspend fun ApplicationCall.verify() {
         val form = HotspotGuestCodes.readForm(this) ?: return
-        val pendingId = form["pending"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val email = form["email"].orEmpty().trim().lowercase()
         val code = form["code"].orEmpty().filter { it.isDigit() }
         val guest = guestContext(form)
         val ip = clientIp()
         if (overMemoryIpLimit(ip, "verify", maxCodePerIp)) return respondHtml(tooManyRequestsHtml(), HttpStatusCode.TooManyRequests)
         val html = withPortal { target ->
-            if (pendingId == null) {
+            if (email.length > 120 || !emailPattern.matches(email)) {
                 HotspotPortalPages.message(target.settings, tr("Solicitud invalida"), tr("Vuelve a empezar el registro."))
             } else {
-                verify(target, pendingId, code, guest)
+                verify(target, email, code, guest, ip)
             }
         } ?: return
         respondHtml(html)
@@ -252,12 +249,11 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val smtp = HotspotMail.smtp(connection, access.serverMail, access.secrets)
             ?: return HotspotPortalPages.message(settings, tr("Portal no disponible"), tr("El envio de codigos no esta configurado. Avisa al personal del local."))
 
-        // A code of this address that can still be used (a running session, or one just sent) is shown, not replaced:
-        // a second device of the same guest enters it too, and nobody can fill a mailbox by typing its address again.
-        HotspotGuestCodes.liveCode(connection, values.email)?.let { live ->
-            val message = if (live.active) tr("Ya tienes una sesion con tu codigo. Escribelo para conectar este dispositivo (maximo 2 dispositivos por codigo).")
-            else tr("Ya te enviamos un codigo hace un momento. Revisa tu correo.")
-            return HotspotPortalPages.code(settings, live.id.toString(), values.email, guest.continueUrl, message, guest)
+        // An address that already has a usable code (a running session, or one just sent) gets the SAME page as a first
+        // submission and no new email: nothing tells the person whether the address has a session, the page carries no
+        // identifier of the code, and a second device of the guest types the code it received on the first one.
+        if (HotspotGuestCodes.hasLiveCode(connection, values.email)) {
+            return HotspotPortalPages.code(settings, values.email, guest.continueUrl, null, guest)
         }
 
         minutesUntilReconnect(connection, values.email, settings.reconnectMinutes)?.let { remaining ->
@@ -274,6 +270,11 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val customerId = HotspotGuestCodes.existingCustomer(connection, values.email) ?: run {
             if (overIpLimit(target, ip, "customer", HotspotGuestCodes.MaxNewCustomersPerIpHour, Duration.ofHours(1).toMillis())) {
                 return retry(tr("Demasiados registros nuevos desde esta red. Espera un rato y vuelve a intentarlo."))
+            }
+            // The whole company: only NEW addresses are refused (existing customers never reach this), and staff are told once an hour.
+            if (overIpLimit(target, "*", "new_customers", settings.newCustomersPerHour, Duration.ofHours(1).toMillis())) {
+                notifyCeilingReached(target, settings.newCustomersPerHour)
+                return HotspotPortalPages.message(settings, tr("Intentalo mas tarde"), tr("Estamos recibiendo muchos registros en este momento. Intentalo mas tarde."))
             }
             findOrCreateCustomer(connection, values)
         }
@@ -300,16 +301,28 @@ class HotspotPortal(private val access: ModuleAccessService) {
             }
             return retry(tr("No pudimos enviar el codigo a tu correo. Verificalo e intenta de nuevo."))
         }
-        return HotspotPortalPages.code(settings, codeId.toString(), values.email, guest.continueUrl, null, guest)
+        return HotspotPortalPages.code(settings, values.email, guest.continueUrl, null, guest)
     }
 
-    private fun verify(target: PortalTarget, codeId: UUID, code: String, guest: GuestContext): String {
+    private fun verify(target: PortalTarget, email: String, code: String, guest: GuestContext, ip: String): String {
         val connection = target.connection
         val continueUrl = guest.continueUrl
+        val origin = ipGroup(ip)
+        fun codePage(settings: HotspotSettings, message: String) = HotspotPortalPages.code(settings, email, continueUrl, message, guest)
+        // Wrong codes are counted per (address, origin) and per origin: a third party cannot use up the tries of the guest.
+        if (HotspotGuestCodes.tooManyWrongCodes(connection, origin, email)) {
+            return HotspotPortalPages.message(target.settings, tr("Demasiados intentos"), tr("Espera unos minutos y vuelve a intentarlo."))
+        }
+        // The code is looked up from the address and the code typed, never from an id of the page.
+        val codeId = HotspotGuestCodes.candidates(connection, email)
+            .firstOrNull { code.length == 6 && MessageDigest.isEqual(codeHash(it.id, code).toByteArray(), it.hash.toByteArray()) }?.id
+        if (codeId == null) {
+            HotspotGuestCodes.recordWrongCode(connection, origin, email)
+            return codePage(target.settings, tr("Codigo incorrecto. Revisalo e intenta de nuevo."))
+        }
         val pending = connection.prepareStatement(
             """
-            SELECT codes.code_hash, codes.attempts,
-                   registrations.id AS registration_id, registrations.customer_id, registrations.name, registrations.email, registrations.phone,
+            SELECT registrations.id AS registration_id, registrations.customer_id, registrations.name, registrations.email, registrations.phone,
                    registrations.mac, registrations.ssid
             FROM hotspot_codes codes
             JOIN hotspot_registrations registrations ON registrations.id = codes.registration_id
@@ -319,8 +332,6 @@ class HotspotPortal(private val access: ModuleAccessService) {
             query.setObject(1, codeId)
             query.executeQuery().use { rows ->
                 if (!rows.next()) null else PendingCode(
-                    hash = rows.getString("code_hash"),
-                    attempts = rows.getInt("attempts"),
                     registrationId = rows.getObject("registration_id", UUID::class.java),
                     customerId = rows.getObject("customer_id", UUID::class.java),
                     name = rows.getString("name"),
@@ -335,22 +346,9 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val settings = HotspotNetworks.findBySsid(connection, pending.ssid)?.applyTo(target.settings) ?: target.settings
         // The device that enters the code is the one whose page this is (the first one is the one that asked for it).
         val mac = guest.mac.takeIf { macPattern.matches(it) } ?: pending.mac
-        fun again(message: String) = HotspotPortalPages.code(settings, codeId.toString(), pending.email, continueUrl, message, guest.copy(mac = mac, ssid = guest.ssid.ifBlank { pending.ssid }))
-
-        if (pending.attempts >= HotspotGuestCodes.MaxWrongTries || tooManyCodeFailures(connection, mac)) {
-            return HotspotPortalPages.message(settings, tr("Demasiados intentos"), tr("Espera unos minutos y vuelve a intentarlo."))
-        }
-        if (code.length != 6 || !MessageDigest.isEqual(codeHash(codeId, code).toByteArray(), pending.hash.toByteArray())) {
-            recordCodeFailure(connection, mac)
-            connection.prepareStatement("UPDATE hotspot_codes SET attempts = attempts + 1 WHERE id = ?").use { update ->
-                update.setObject(1, codeId)
-                update.executeUpdate()
-            }
-            return again(tr("Codigo incorrecto. Revisalo e intenta de nuevo."))
-        }
-
+        fun again(message: String) = codePage(settings, message)
         // The code is right, so the address is proven: the customer of the form becomes "email verified" (an already verified one is untouched).
-        pending.customerId?.let { HotspotActivity.verifyGuestEmail(connection, it) }
+        pending.customerId?.let { HotspotActivity.verifyGuestEmail(connection, it, pending.email) }
 
         // One session per code: the first device starts it, the next one (2 at most) ends at the same moment. The wait for
         // the address to come back is asked only when the session starts; it is kept in the database with the device slots.
@@ -903,8 +901,6 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     private data class PendingCode(
-        val hash: String,
-        val attempts: Int,
         val registrationId: UUID,
         val customerId: UUID?,
         val name: String,
