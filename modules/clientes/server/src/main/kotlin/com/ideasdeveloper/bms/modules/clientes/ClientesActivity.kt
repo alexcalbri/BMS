@@ -16,12 +16,13 @@ import java.util.UUID
 /** Who created, edited or archived each customer and what changed (customer_activity). */
 object ClientesActivity {
     // Who made a change: the user's name, plus the agent when an AI agent made it.
-    fun author(tenant: Connection, permissions: ModulePermissions, access: ModuleAccessService, agentName: String? = null): Pair<UUID?, String> {
+    fun author(tenant: Connection, permissions: ModulePermissions, access: ModuleAccessService, agentName: String? = null): ClientesAuthor {
         val identity = access.userIdentity(tenant, permissions)
         val name = identity?.name ?: if (permissions.serverOwner) "Dueno del servidor" else "Usuario"
         val shown = (if (permissions.serverOwner) "$name (dueno del servidor)" else name) + (agentName?.let { " (agente $it)" } ?: "")
         // Server owners are central users: their id does not exist in this company's users.
-        return permissions.userId?.takeUnless { permissions.serverOwner } to shown
+        // The activity log gets the Core actor (already "Agente de ..." through an agent); this history keeps its own text.
+        return ClientesAuthor(permissions.userId?.takeUnless { permissions.serverOwner }, shown, permissions.activityActor)
     }
 
     // Kinds that belong to one customer and kinds of the company (customer_id NULL); V008 checks them.
@@ -47,14 +48,14 @@ object ClientesActivity {
     }
 
     /** Records an event of one customer. */
-    fun record(tenant: Connection, customerId: UUID, kind: String, body: String, author: Pair<UUID?, String>) =
+    fun record(tenant: Connection, customerId: UUID, kind: String, body: String, author: ClientesAuthor) =
         insert(tenant, customerId, kind, body, author)
 
     /** Records an event of the company, not of one customer (custom field created or deleted, company linked or unlinked). */
-    fun recordCompany(tenant: Connection, kind: String, body: String, author: Pair<UUID?, String>) =
+    fun recordCompany(tenant: Connection, kind: String, body: String, author: ClientesAuthor) =
         insert(tenant, null, kind, body, author)
 
-    private fun insert(tenant: Connection, customerId: UUID?, kind: String, body: String, author: Pair<UUID?, String>) {
+    private fun insert(tenant: Connection, customerId: UUID?, kind: String, body: String, author: ClientesAuthor) {
         tenant.prepareStatement(
             "INSERT INTO customer_activity (id, customer_id, kind, body, user_id, author) VALUES (?, ?, ?, ?, ?, ?)"
         ).use { insert ->
@@ -62,8 +63,8 @@ object ClientesActivity {
             insert.setObject(2, customerId)
             insert.setString(3, kind)
             insert.setString(4, body.take(5_000))
-            insert.setObject(5, author.first)
-            insert.setString(6, author.second)
+            insert.setObject(5, author.userId)
+            insert.setString(6, author.name)
             insert.executeUpdate()
         }
     }

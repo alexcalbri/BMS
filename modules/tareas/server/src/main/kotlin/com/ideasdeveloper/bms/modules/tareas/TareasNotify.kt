@@ -1,5 +1,7 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleNotifier
@@ -66,7 +68,10 @@ object TareasNotify {
     fun dueReminders(tenant: Connection, notifier: ModuleNotifier?, today: LocalDate): Int {
         if (notifier == null) return 0
         var sent = 0
-        TareasRepository.reminderCandidates(tenant, today, 200).forEach { candidate ->
+        val candidates = TareasRepository.reminderCandidates(tenant, today, 200)
+        val names = if (candidates.isEmpty()) emptyMap() else TareasRepository.users(tenant).associate { it.id to it.label }
+        val job = ActivityActor.job("Recordatorios de tareas")
+        candidates.forEach { candidate ->
             // The notice uses the same connection: if it fails, the claim is rolled back and retried on the next run.
             runCatching {
                 TareasRepository.transaction(tenant) {
@@ -79,6 +84,16 @@ object TareasNotify {
                                 tr("{0} · {1} · vence el {2}", candidate.title, candidate.boardName, candidate.dueDate),
                             )
                         }
+                        // The reminder is a change of the module (a notice and its claim): the job leaves its row in the same transaction.
+                        TareasLog.record(
+                            tenant, job, TareasLog.Reminder, candidate.taskId, candidate.title, TareasLog.ReminderSent,
+                            "Aviso de tarea ${if (overdue) "vencida" else "por vencer"}: ${candidate.title} (${candidate.boardName}).",
+                            listOf(
+                                ActivityChange.of("recipient", "Destinatario", null, names[candidate.userId] ?: "Usuario"),
+                                ActivityChange.of("kind", "Tipo", null, if (overdue) "Vencida" else "Vence manana"),
+                                ActivityChange.of("dueDate", "Fecha limite", null, candidate.dueDate.toString()),
+                            ),
+                        )
                         sent++
                     }
                 }

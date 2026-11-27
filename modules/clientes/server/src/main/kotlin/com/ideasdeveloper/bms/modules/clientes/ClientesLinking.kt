@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.modules.clientes
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CompanyLinkException
@@ -84,8 +87,8 @@ object ClientesLinking {
     // Generic error stored in customer_link_jobs.error (Spanish, as stored); the screen translates it with tr().
     private val ProcessFailed = msg("Un cliente no se pudo procesar; el detalle esta en el registro del servidor.")
 
-    // Author of what the background job does.
-    private val SystemAuthor: Pair<UUID?, String> = null to "Sistema"
+    // Who the activity log names for what the background job does (a person's own change that triggers sharing uses ClientesLog.sharingActor).
+    private val JobActor: ActivityActor get() = ActivityActor.job("Compartir clientes")
 
     /** What happened to one customer when it was copied to one company. */
     enum class ShareOutcome { Copied, Merged, Review, Skipped }
@@ -184,8 +187,20 @@ object ClientesLinking {
             ).use { rows -> rows.next() && rows.getBoolean(1) }
         }
 
-    /** Writes a row of customer_activity; [customerId] null is an event of the company. user_id is only valid in the author's own company. */
-    fun activity(db: Connection, customerId: UUID?, kind: String, body: String, author: Pair<UUID?, String>, withUser: Boolean) {
+    /**
+     * Writes a row of customer_activity; [customerId] null is an event of the company. user_id is only valid in the author's own company.
+     * The same event goes to the company activity log of [db] ([action], customer named [label]), in the same transaction.
+     */
+    fun activity(
+        db: Connection,
+        customerId: UUID?,
+        kind: String,
+        body: String,
+        author: ClientesAuthor,
+        withUser: Boolean,
+        label: String = "",
+        action: String = ActivityActions.Updated,
+    ) {
         db.prepareStatement(
             "INSERT INTO customer_activity (id, customer_id, kind, body, user_id, author) VALUES (?, ?, ?, ?, ?, ?)"
         ).use { insert ->
@@ -193,9 +208,14 @@ object ClientesLinking {
             insert.setObject(2, customerId)
             insert.setString(3, kind)
             insert.setString(4, body.take(5_000))
-            insert.setObject(5, if (withUser) author.first else null)
-            insert.setString(6, author.second)
+            insert.setObject(5, if (withUser) author.userId else null)
+            insert.setString(6, author.name)
             insert.executeUpdate()
+        }
+        if (customerId == null) {
+            ClientesLog.record(db, author.actor, ClientesLog.CompanyLink, null, label, ActivityActions.SettingsChanged, body)
+        } else {
+            ClientesLog.record(db, author.actor, ClientesLog.Customer, customerId, label.ifBlank { ClientesLog.customerName(db, customerId) }, action, body)
         }
     }
 
@@ -248,9 +268,12 @@ object ClientesLinking {
     private fun attempt(access: ModuleAccessService, tenant: Connection, currentCode: String, code: String, block: (Connection) -> Unit): Boolean =
         try {
             openFor(access, tenant, currentCode, code) { db ->
-                if (supportsLinking(db)) block(db)
+                if (supportsLinking(db)) ClientesLog.atomically(db) { block(db) }
                 Unit
             } != null
+        } catch (failure: ActivityWriteException) {
+            // The activity row is part of the change: when it cannot be written the request fails (never swallowed).
+            throw failure
         } catch (failure: Exception) {
             log.warn("Could not update the link data of company {} ({})", code, describe(failure))
             false
@@ -286,9 +309,9 @@ object ClientesLinking {
      * once more at the end of the request and, if it still fails, the job reconciles it within a minute.
      * It takes no group lock: it only writes a few small rows, never customers. (unlink does take it.)
      */
-    fun link(access: ModuleAccessService, tenant: Connection, currentCode: String, targetCode: String, author: Pair<UUID?, String>): String {
+    fun link(access: ModuleAccessService, tenant: Connection, currentCode: String, targetCode: String, author: ClientesAuthor): String {
         val group = try {
-            access.linkCompany(currentCode, targetCode, LinkPurpose, author.first?.toString() ?: author.second)
+            access.linkCompany(currentCode, targetCode, LinkPurpose, author.userId?.toString() ?: author.name)
         } catch (failure: CompanyLinkException) {
             throw ClientesSharingException(failure.message ?: tr("No se pudo vincular la empresa."))
         }
@@ -299,8 +322,8 @@ object ClientesLinking {
             reconcileOrigins(db, desiredOrigins(codes, company.code))
             createJobs(db, group.filter { it.code != company.code })
             when (company.code) {
-                currentCode -> activity(db, null, "linked", "Se vinculo con $targetName: los clientes se comparten entre las empresas vinculadas.", author, withUser = true)
-                targetCode -> activity(db, null, "linked", "Se vinculo con ${names[currentCode] ?: currentCode}: los clientes se comparten entre las empresas vinculadas.", author, withUser = false)
+                currentCode -> activity(db, null, "linked", "Se vinculo con $targetName: los clientes se comparten entre las empresas vinculadas.", author, withUser = true, label = targetName)
+                targetCode -> activity(db, null, "linked", "Se vinculo con ${names[currentCode] ?: currentCode}: los clientes se comparten entre las empresas vinculadas.", author, withUser = false, label = names[currentCode] ?: currentCode)
                 else -> Unit
             }
         }
@@ -316,11 +339,11 @@ object ClientesLinking {
      * the jobs towards it are deleted. Merges already done are kept. A database that cannot be opened is tried once
      * more at the end of the request; if it still fails the job of that company reconciles it within a minute.
      */
-    fun unlink(access: ModuleAccessService, tenant: Connection, currentCode: String, targetCode: String, author: Pair<UUID?, String>): String =
+    fun unlink(access: ModuleAccessService, tenant: Connection, currentCode: String, targetCode: String, author: ClientesAuthor): String =
         // Under the group lock: a batch of the job never copies to a company while it is being unlinked.
         withHttpLock(access, currentCode) { unlinkLocked(access, tenant, currentCode, targetCode, author) }
 
-    private fun unlinkLocked(access: ModuleAccessService, tenant: Connection, currentCode: String, targetCode: String, author: Pair<UUID?, String>): String {
+    private fun unlinkLocked(access: ModuleAccessService, tenant: Connection, currentCode: String, targetCode: String, author: ClientesAuthor): String {
         val before = access.linkedCompanies(currentCode, LinkPurpose)
         val targetName = before.firstOrNull { it.code == targetCode }?.name
             ?: runCatching { access.groupCompanies(currentCode).firstOrNull { it.code == targetCode }?.name }.getOrNull()
@@ -345,9 +368,9 @@ object ClientesLinking {
                 }
             }
             if (isTarget) {
-                activity(db, null, "unlinked", "Se desvinculo de ${if (targetCode == currentCode) remaining.joinToString { it.name } else currentName}: los clientes de las otras empresas dejan de verse.", author, withUser = targetCode == currentCode)
+                activity(db, null, "unlinked", "Se desvinculo de ${if (targetCode == currentCode) remaining.joinToString { it.name } else currentName}: los clientes de las otras empresas dejan de verse.", author, withUser = targetCode == currentCode, label = if (targetCode == currentCode) remaining.joinToString { it.name } else currentName)
             } else if (code == currentCode || targetCode == currentCode) {
-                activity(db, null, "unlinked", "Se desvinculo $targetName.", author, withUser = code == currentCode)
+                activity(db, null, "unlinked", "Se desvinculo $targetName.", author, withUser = code == currentCode, label = targetName)
             }
         }
         // The current company first: its own view changes at once.
@@ -383,13 +406,15 @@ object ClientesLinking {
      * the lock is busy (about 2 seconds), a company does not open or anything fails it does nothing
      * more: the pending pass of the job copies every own customer that is not shared yet.
      */
-    fun shareNew(access: ModuleAccessService, tenant: Connection, currentCode: String, customerId: UUID) {
+    fun shareNew(access: ModuleAccessService, tenant: Connection, currentCode: String, customerId: UUID, by: ActivityActor) {
         try {
             if (!supportsLinking(tenant)) return
             val row = ClientesSharing.row(tenant, customerId) ?: return
-            shareBatch(access, lockFor(access, currentCode), currentCode, tenant, listOf(row), Long.MAX_VALUE, HashMap(), lockWaitMillis = 2_000, only = null)
+            shareBatch(access, lockFor(access, currentCode), currentCode, tenant, listOf(row), Long.MAX_VALUE, HashMap(), lockWaitMillis = 2_000, only = null, actor = ClientesLog.sharingActor(by))
         } catch (failure: InterruptedException) {
             Thread.currentThread().interrupt()
+        } catch (failure: ActivityWriteException) {
+            throw failure
         } catch (failure: Exception) {
             log.warn("Could not share the new customer {} right now; the job will ({})", customerId, describe(failure))
         }
@@ -541,7 +566,7 @@ object ClientesLinking {
                 }
                 return
             }
-            val result = shareBatch(access, lock, code, tenant, rows, deadline, keyCache, lockWaitMillis = 500, only = job.target)
+            val result = shareBatch(access, lock, code, tenant, rows, deadline, keyCache, lockWaitMillis = 500, only = job.target, actor = JobActor)
             if (result.stop) return
             cursor = cursorAfter(cursor, result.lastDone, reached = true)
         }
@@ -567,7 +592,7 @@ object ClientesLinking {
                 pendingCursors.remove(code)
                 return
             }
-            val result = shareBatch(access, lock, code, tenant, rows, deadline, keyCache, lockWaitMillis = 500, only = null)
+            val result = shareBatch(access, lock, code, tenant, rows, deadline, keyCache, lockWaitMillis = 500, only = null, actor = JobActor)
             if (result.stop) return
             val done = result.lastDone ?: return
             after = done
@@ -637,6 +662,7 @@ object ClientesLinking {
         keyCache: MutableMap<String, List<ClientesMerge.ForeignKey>>,
         lockWaitMillis: Long,
         only: String?,
+        actor: ActivityActor,
     ): BatchResult {
         if (!lock.tryLock(lockWaitMillis, TimeUnit.MILLISECONDS)) return BatchResult(null, true)
         try {
@@ -674,7 +700,7 @@ object ClientesLinking {
                         var own: Mark? = null
                         try {
                             own = mark(tenant, hooks)
-                            shareRow(access, group, code, tenant, row, all, skips, keyCache, tally, mark = only == null, hooks = hooks)
+                            shareRow(access, group, code, tenant, row, all, skips, keyCache, tally, mark = only == null, hooks = hooks, actor = actor)
                             release(own, hooks)
                         } catch (failure: ClientesMerge.CompanyUnavailableException) {
                             throw failure
@@ -696,6 +722,11 @@ object ClientesLinking {
                         return BatchResult(null, true)
                     }
                     writeProgress(tenant, tally, unavailable, only, lastDone)
+                    // One row per destination with the totals of the batch (the copies themselves are not logged one by one).
+                    val originName = group.firstOrNull { it.code == code }?.name ?: code
+                    connections.forEach { (target, db) ->
+                        tally.counts[target]?.let { c -> ClientesLog.batchReceived(db, actor, originName, c[0], c[1], c[2]) }
+                    }
                     commitAll(all, tenant)
                     return BatchResult(lastDone, stop)
                 } catch (failure: ClientesMerge.CompanyUnavailableException) {
@@ -759,12 +790,13 @@ object ClientesLinking {
         tally: Tally,
         mark: Boolean,
         hooks: BatchHooks,
+        actor: ActivityActor,
     ) {
         val others = group.filter { it.code != code }
         val outcomes = mutableListOf<ShareOutcome>()
         for (company in others) {
             if (!connections.containsKey(company.code)) continue
-            val outcome = copyGuarded(access, group, code, tenant, company, connections, row, skips[company.code].orEmpty(), keyCache, hooks)
+            val outcome = copyGuarded(access, group, code, tenant, company, connections, row, skips[company.code].orEmpty(), keyCache, hooks, actor)
             outcomes += outcome
             tally.add(company.code, outcome)
         }
@@ -825,12 +857,13 @@ object ClientesLinking {
         skip: Set<UUID>,
         keyCache: MutableMap<String, List<ClientesMerge.ForeignKey>>,
         hooks: BatchHooks,
+        actor: ActivityActor,
     ): ShareOutcome {
         val targetDb = connections.getValue(target.code)
         var savepoint: Mark? = null
         return try {
             savepoint = mark(targetDb, hooks)
-            copyOne(access, group, code, tenant, target, connections, row, skip, keyCache, hooks).also { release(savepoint, hooks) }
+            copyOne(access, group, code, tenant, target, connections, row, skip, keyCache, hooks, actor).also { release(savepoint, hooks) }
         } catch (failure: ClientesMerge.CompanyUnavailableException) {
             throw failure
         } catch (failure: InterruptedException) {
@@ -842,7 +875,7 @@ object ClientesLinking {
             }
             undo(targetDb, savepoint, hooks)
             log.warn("Could not copy customer {} to company {} ({})", row.id, target.code, describe(failure))
-            recordCopyReview(tenant, row, target.code, "", "No se pudo copiar a ${target.name}. El detalle esta en el registro del servidor; puedes reintentar.", "copy")
+            recordCopyReview(tenant, row, target.code, "", "No se pudo copiar a ${target.name}. El detalle esta en el registro del servidor; puedes reintentar.", "copy", actor)
             ShareOutcome.Review
         }
     }
@@ -880,6 +913,7 @@ object ClientesLinking {
         skip: Set<UUID>,
         keyCache: MutableMap<String, List<ClientesMerge.ForeignKey>>,
         hooks: BatchHooks,
+        actor: ActivityActor,
     ): ShareOutcome {
         if (row.id in skip) return ShareOutcome.Skipped
         val targetDb = connections.getValue(target.code)
@@ -893,7 +927,7 @@ object ClientesLinking {
                     val other = existing!!
                     ClientesMerge.recordPairReview(
                         tenant, incoming, other, target.code, row.email, "name_differs",
-                        ClientesMerge.nameDiffersReason(row.displayName, other.row.displayName, target.name, row.email),
+                        ClientesMerge.nameDiffersReason(row.displayName, other.row.displayName, target.name, row.email), actor,
                     )
                     return ShareOutcome.Review
                 }
@@ -904,7 +938,7 @@ object ClientesLinking {
                     val result = try {
                         ClientesMerge.merge(
                             access, group, connections,
-                            decision.loser, decision.winner, row.email, SystemAuthor, userCompany = null, keyCache = keyCache,
+                            decision.loser, decision.winner, row.email, ClientesAuthor.system(actor), userCompany = null, keyCache = keyCache,
                         )
                     } finally {
                         hooks.committed()
@@ -912,7 +946,7 @@ object ClientesLinking {
                     if (result is ClientesMerge.Result.Merged) return ShareOutcome.Merged
                     // The pair's row lives in the loser's company; when that is not this one, mark the own customer too.
                     if (decision.loser.origin != code) {
-                        recordCopyReview(tenant, row, target.code, existing!!.row.displayName, "No se pudo fusionar con ${existing.row.displayName} de ${target.name}. Revisa la decision en Por revisar.", "copy")
+                        recordCopyReview(tenant, row, target.code, existing!!.row.displayName, "No se pudo fusionar con ${existing.row.displayName} de ${target.name}. Revisa la decision en Por revisar.", "copy", actor)
                     }
                     return ShareOutcome.Review
                 }
@@ -925,7 +959,7 @@ object ClientesLinking {
             query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
         }
         if (sameCode != null) {
-            recordCopyReview(tenant, row, target.code, sameCode, "Codigo repetido: el cliente $sameCode de ${target.name} ya usa el codigo ${row.code}. No se copio.", "code")
+            recordCopyReview(tenant, row, target.code, sameCode, "Codigo repetido: el cliente $sameCode de ${target.name} ya usa el codigo ${row.code}. No se copio.", "code", actor)
             return ShareOutcome.Review
         }
         ClientesSharing.upsertCopy(targetDb, row, origin = code, shared = true)
@@ -1004,7 +1038,7 @@ object ClientesLinking {
 
     // A customer that cannot be copied to [targetCode]: kept_id is a stable id per customer and target (copyReviewKey), kept_company_code is the target.
     // reasonCode: copy, code or edit.
-    internal fun recordCopyReview(db: Connection, row: ClientesSharing.Row, targetCode: String, otherName: String, reason: String, reasonCode: String) {
+    internal fun recordCopyReview(db: Connection, row: ClientesSharing.Row, targetCode: String, otherName: String, reason: String, reasonCode: String, actor: ActivityActor) {
         db.prepareStatement(
             """
             INSERT INTO customer_merges (id, kept_id, kept_company_code, kept_name, merged_id, merged_name, email, status, reason, reason_code)
@@ -1024,13 +1058,14 @@ object ClientesLinking {
             insert.setString(9, reasonCode)
             insert.executeUpdate()
         }
+        ClientesLog.reviewCreated(db, actor, row.id, row.displayName, reason)
     }
 
     /**
      * An edit that could not be sent to the other companies right now (the group lock was busy): the origin goes back to
      * shared = FALSE so the pending pass copies it, a copy edited here leaves a review "edit" (Reintentar sends it again).
      */
-    internal fun deferEdit(tenant: Connection, currentCode: String, origin: String, row: ClientesSharing.Row) {
+    internal fun deferEdit(tenant: Connection, currentCode: String, origin: String, row: ClientesSharing.Row, actor: ActivityActor) {
         try {
             if (origin == currentCode) {
                 tenant.prepareStatement("UPDATE customers SET shared = FALSE WHERE id = ? AND origin_company_code = '' AND shared").use { update ->
@@ -1040,9 +1075,11 @@ object ClientesLinking {
             } else {
                 recordCopyReview(
                     tenant, row, currentCode, "",
-                    "El cambio de ${row.displayName} no llego a las demas empresas porque habia una copia en curso. Pulsa Reintentar.", "edit",
+                    "El cambio de ${row.displayName} no llego a las demas empresas porque habia una copia en curso. Pulsa Reintentar.", "edit", actor,
                 )
             }
+        } catch (failure: ActivityWriteException) {
+            throw failure
         } catch (failure: Exception) {
             log.warn("Could not leave the edit of customer {} to the job ({})", row.id, describe(failure))
         }
@@ -1143,7 +1180,7 @@ object ClientesLinking {
      * and the pair is never merged automatically again. It is also the way to keep a pair apart that waits in review
      * (name_differs, edit...). Waits at most a few seconds for the group lock.
      */
-    fun separate(access: ModuleAccessService, currentCode: String, companyCode: String, mergeId: UUID, author: Pair<UUID?, String>, tenant: Connection? = null): String =
+    fun separate(access: ModuleAccessService, currentCode: String, companyCode: String, mergeId: UUID, author: ClientesAuthor, tenant: Connection? = null): String =
         withHttpLock(access, currentCode) {
             val group = requireLinked(access, currentCode, companyCode)
             val names = group.associate { it.code to it.name }
@@ -1152,10 +1189,18 @@ object ClientesLinking {
                 when (row.status) {
                     "separated" -> throw ClientesSharingException(tr("Ya estaban separados."))
                     "review" -> {
-                        db.prepareStatement("UPDATE customer_merges SET status = 'separated', resolved_by = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'review'").use { update ->
-                            update.setString(1, author.second)
-                            update.setObject(2, mergeId)
-                            update.executeUpdate()
+                        ClientesLog.atomically(db) {
+                            db.prepareStatement("UPDATE customer_merges SET status = 'separated', resolved_by = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'review'").use { update ->
+                                update.setString(1, author.name)
+                                update.setObject(2, mergeId)
+                                update.executeUpdate()
+                            }
+                            val name = ClientesLog.customerName(db, row.mergedId)
+                            ClientesLog.record(
+                                db, author.actor, ClientesLog.Review, row.mergedId, name, ActivityActions.Updated,
+                                if (row.copyProblem) "Dejo sin copiar al cliente $name: se cerro la revision." else "Dejo separados al cliente $name y su posible duplicado: se cerro la revision.",
+                                listOf(ActivityChange.of("status", "Estado", "Por revisar", "Separado")),
+                            )
                         }
                         when {
                             row.copyProblem && row.reasonCode == "edit" -> tr("Listo: se descarta ese cambio pendiente; las demas empresas lo recibiran en la proxima edicion.")
@@ -1163,7 +1208,7 @@ object ClientesLinking {
                             else -> {
                                 // An edit that was held back by this pair now goes through (they are different customers).
                                 if (row.reasonCode == "edit") {
-                                    runCatching { ClientesSharing.propagate(access, db, companyCode, row.mergedId) }
+                                    runCatching { ClientesSharing.propagate(access, db, companyCode, row.mergedId, author.actor) }
                                         .onFailure { log.warn("Could not send the held edit of customer {} ({})", row.mergedId, describe(it)) }
                                 }
                                 tr("Listo: los dos clientes quedan separados y no se fusionaran automaticamente.")
@@ -1183,7 +1228,7 @@ object ClientesLinking {
         companyCode: String,
         db: Connection,
         row: MergeRow,
-        author: Pair<UUID?, String>,
+        author: ClientesAuthor,
         tenant: Connection?,
     ): String {
         // Every linked company is involved (the winner's copies may have completed fields), and every company named in the log must still be linked.
@@ -1238,7 +1283,7 @@ object ClientesLinking {
     }
 
     /** Tries again a decision left in review (a customer not copied, a held edit, or a merge that failed). Waits at most a few seconds for the group lock. */
-    fun retry(access: ModuleAccessService, currentCode: String, companyCode: String, mergeId: UUID, author: Pair<UUID?, String>, tenant: Connection? = null): String =
+    fun retry(access: ModuleAccessService, currentCode: String, companyCode: String, mergeId: UUID, author: ClientesAuthor, tenant: Connection? = null): String =
         withHttpLock(access, currentCode) {
             val group = requireLinked(access, currentCode, companyCode)
             useDb(access, tenant, currentCode, companyCode, tr("No se pudo abrir la empresa.")) { db ->
@@ -1251,7 +1296,7 @@ object ClientesLinking {
                         delete.setObject(1, mergeId)
                         delete.executeUpdate()
                     }
-                    val failed = ClientesSharing.propagate(access, db, companyCode, row.mergedId)
+                    val failed = ClientesSharing.propagate(access, db, companyCode, row.mergedId, author.actor)
                     val stillHeld = db.prepareStatement("SELECT 1 FROM customer_merges WHERE merged_id = ? AND status = 'review' AND reason_code = 'edit'").use { q ->
                         q.setObject(1, row.mergedId)
                         q.executeQuery().use { it.next() }
@@ -1268,7 +1313,8 @@ object ClientesLinking {
                 useDb(access, tenant, currentCode, other.code, tr("No se pudo abrir {0}.", other.name)) { destination ->
                     if (!supportsLinking(destination)) throw ClientesSharingException(tr("Actualiza el modulo Clientes de {0}.", other.name))
                     if (row.copyProblem) {
-                        when (copyGuarded(access, group, companyCode, db, other, mapOf(companyCode to db, other.code to destination), loserRow, emptySet(), HashMap(), hooks = BatchHooks {})) {
+                        val outcome = copyGuarded(access, group, companyCode, db, other, mapOf(companyCode to db, other.code to destination), loserRow, emptySet(), HashMap(), hooks = BatchHooks {}, actor = author.actor)
+                        when (outcome) {
                             ShareOutcome.Review -> {
                                 val reason = db.prepareStatement("SELECT reason FROM customer_merges WHERE id = ?").use { q ->
                                     q.setObject(1, mergeId)
@@ -1279,9 +1325,17 @@ object ClientesLinking {
                             ShareOutcome.Skipped ->
                                 throw ClientesSharingException(tr("Ese cliente se omitio porque ya esta separado o fusionado; la decision no cambia."))
                             ShareOutcome.Copied, ShareOutcome.Merged -> {
-                                db.prepareStatement("DELETE FROM customer_merges WHERE id = ? AND status = 'review'").use { delete ->
-                                    delete.setObject(1, mergeId)
-                                    delete.executeUpdate()
+                                ClientesLog.batchReceived(destination, author.actor, group.firstOrNull { it.code == companyCode }?.name ?: companyCode, if (outcome == ShareOutcome.Copied) 1 else 0, if (outcome == ShareOutcome.Merged) 1 else 0, 0)
+                                ClientesLog.atomically(db) {
+                                    db.prepareStatement("DELETE FROM customer_merges WHERE id = ? AND status = 'review'").use { delete ->
+                                        delete.setObject(1, mergeId)
+                                        delete.executeUpdate()
+                                    }
+                                    ClientesLog.record(
+                                        db, author.actor, ClientesLog.Review, loserRow.id, loserRow.displayName, ActivityActions.Updated,
+                                        "Reintento copiar al cliente ${loserRow.displayName} a ${other.name}: se copio y se cerro la revision.",
+                                        listOf(ActivityChange.of("status", "Estado", "Por revisar", "Resuelto")),
+                                    )
                                 }
                                 tr("Listo: {0} se copio a {1}.", loserRow.displayName, other.name)
                             }
@@ -1327,7 +1381,7 @@ object ClientesLinking {
      * is kept, the other is archived and its rows follow it (ClientesMerge). Nothing is completed when the names differ.
      * Not for the "could not copy" marks (use Reintentar or Dejar separados). Waits at most a few seconds for the group lock.
      */
-    fun mergeManually(access: ModuleAccessService, currentCode: String, companyCode: String, mergeId: UUID, author: Pair<UUID?, String>, tenant: Connection? = null): String =
+    fun mergeManually(access: ModuleAccessService, currentCode: String, companyCode: String, mergeId: UUID, author: ClientesAuthor, tenant: Connection? = null): String =
         withHttpLock(access, currentCode) {
             val group = requireLinked(access, currentCode, companyCode)
             val names = group.associate { it.code to it.name }

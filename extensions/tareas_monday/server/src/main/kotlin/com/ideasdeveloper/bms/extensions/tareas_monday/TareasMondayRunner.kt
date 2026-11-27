@@ -2,6 +2,8 @@ package com.ideasdeveloper.bms.extensions.tareas_monday
 
 import com.ideasdeveloper.bms.modules.tareas.ImportOutcome
 import com.ideasdeveloper.bms.modules.tareas.TareasImportApply
+import com.ideasdeveloper.bms.modules.tareas.TareasLog
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.modules.tareas.TareasImportJobContext
 import com.ideasdeveloper.bms.modules.tareas.TareasRepository
 import com.ideasdeveloper.bms.modules.tareas.TareasValidationException
@@ -92,7 +94,15 @@ object TareasMondayRunner {
     private fun fail(tenant: Connection, id: UUID, message: String) {
         runCatching {
             if (!tenant.autoCommit) tenant.rollback()
-            TareasMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying))
+            TareasRepository.transaction(tenant) {
+                val job = TareasMondayJobs.find(tenant, id)
+                if (TareasMondayJobs.changeStatus(tenant, id, MondayJobStatus.Failed, message, from = listOf(MondayJobStatus.Reading, MondayJobStatus.Applying)) && job != null) {
+                    TareasImportApply.recordImport(
+                        tenant, TareasLog.importer(tenant, job.createdBy), "monday", job.boardName, job.id, job.created, job.updated, job.skipped, job.failed,
+                        job.filesDone, job.filesFailed, ok = false,
+                    )
+                }
+            }
         }.onFailure { log.error("No se pudo marcar como fallida la importacion de monday {}", id, it) }
     }
 
@@ -209,8 +219,10 @@ object TareasMondayRunner {
         val tenant = context.tenant
         val users = TareasRepository.users(tenant)
         // Idempotente: el tablero se busca por su clave (o es el elegido), asi cada corrida llega al mismo.
+        // What this import writes is attributed to it and to the person who started it ("Importacion (Ana Ruiz)").
+        val importer = TareasLog.importer(tenant, job.createdBy)
         val boardId = TareasImportApply.ensureBoard(
-            tenant, BoardKeyPrefix + job.boardId, job.boardName.ifBlank { "Monday ${job.boardId}" }, job.targetBoardId, job.createdBy,
+            tenant, BoardKeyPrefix + job.boardId, job.boardName.ifBlank { "Monday ${job.boardId}" }, job.targetBoardId, job.createdBy, importer,
         )
         var processed = 0
         var token: String? = null
@@ -233,7 +245,7 @@ object TareasMondayRunner {
                     taskId = null
                     try {
                         val task = MondayRowDto.decode(row.payload)
-                        when (val result = TareasImportApply.apply(tenant, "monday", boardId, task, users, job.createdBy, context.today)) {
+                        when (val result = TareasImportApply.apply(tenant, "monday", boardId, task, users, job.createdBy, context.today, importer)) {
                             is ImportOutcome.Created -> { outcome = "created"; taskId = result.taskId }
                             is ImportOutcome.Updated -> { outcome = "updated"; taskId = result.taskId }
                             is ImportOutcome.Skipped -> { outcome = "skipped"; message = result.reason }
@@ -251,7 +263,7 @@ object TareasMondayRunner {
                 }
                 if (taskId != null && files.isNotEmpty()) {
                     if (token == null) token = TareasMondaySettings.loadToken(context.access.secrets, tenant).orEmpty()
-                    val result = importFiles(context, job, token, taskId, files, deadline, fullBudget = processed == 0)
+                    val result = importFiles(context, job, token, taskId, files, deadline, fullBudget = processed == 0, importer = importer)
                     // Los archivos ya guardados se cuentan siempre (la proxima vez se saltan); los fallidos solo al cerrar la fila.
                     TareasMondayJobs.addFiles(tenant, job.id, result.done, if (result.complete) result.failed else 0)
                     if (!result.complete) {
@@ -293,6 +305,7 @@ object TareasMondayRunner {
         files: List<MondayFile>,
         deadline: Long,
         fullBudget: Boolean,
+        importer: ActivityActor,
     ): FilesResult {
         val problems = mutableListOf<String>()
         var done = 0
@@ -327,7 +340,7 @@ object TareasMondayRunner {
             try {
                 TareasMondayClient.download(link.url, deadline) { contentType, body ->
                     val stored = TareasImportApply.attachFile(
-                        context.tenant, context.files, taskId, TareasMondayMapping.AssetPrefix + file.asset, name, contentType, body, job.createdBy,
+                        context.tenant, context.files, taskId, TareasMondayMapping.AssetPrefix + file.asset, name, contentType, body, job.createdBy, importer,
                     )
                     if (stored) done++
                 }
@@ -350,6 +363,14 @@ object TareasMondayRunner {
         val job = TareasMondayJobs.find(tenant, jobId) ?: return
         val message = "Importacion terminada: ${job.created} creadas, ${job.updated} actualizadas, ${job.skipped} omitidas y ${job.failed} con error. " +
             "Archivos: ${job.filesDone} importados y ${job.filesFailed} con error."
-        TareasMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
+        // The status and the row of the whole import (totals and who started it) in one transaction.
+        TareasRepository.transaction(tenant) {
+            if (TareasMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))) {
+                TareasImportApply.recordImport(
+                    tenant, TareasLog.importer(tenant, job.createdBy), "monday", job.boardName, job.id, job.created, job.updated, job.skipped, job.failed,
+                    job.filesDone, job.filesFailed,
+                )
+            }
+        }
     }
 }

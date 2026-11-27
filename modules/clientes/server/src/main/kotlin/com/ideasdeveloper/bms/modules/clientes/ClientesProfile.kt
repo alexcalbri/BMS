@@ -1,6 +1,8 @@
 package com.ideasdeveloper.bms.modules.clientes
 
 import com.ideasdeveloper.bms.server.i18n.localizedPayload
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerHistoryEntry
 import com.ideasdeveloper.bms.server.modules.CustomerNote
@@ -197,13 +199,12 @@ internal object ClientesProfile {
             when (params["op"]) {
                 "restore" -> {
                     if (!canRestore(permissions, customer, currentCode)) throw ClientesSharingException(tr("No tienes permiso para restaurar este cliente o no se creo en esta empresa."))
-                    when (ClientesServerModule.restoreCustomer(connection, id)) {
+                    when (ClientesServerModule.restoreLogged(connection, id, author)) {
                         ClientesServerModule.RestoreResult.NotFound -> throw ClientesSharingException(tr("El cliente no esta archivado."))
                         ClientesServerModule.RestoreResult.EmailTaken -> throw ClientesSharingException(tr("Otro cliente activo ya usa el correo {0}.", customer.email))
                         ClientesServerModule.RestoreResult.Restored -> Unit
                     }
-                    ClientesActivity.record(connection, id, "restored", "", author)
-                    ClientesServerModule.propagateLogged(access, connection, currentCode, id)
+                    ClientesServerModule.propagateLogged(access, connection, currentCode, id, author.actor)
                     UiNotice(tr("Cliente restaurado."), UiTone.Success)
                 }
                 "note" -> {
@@ -211,35 +212,48 @@ internal object ClientesProfile {
                     val body = values["body"].orEmpty().trim()
                     if (body.isEmpty()) throw ClientesSharingException(tr("Escribe la nota."))
                     if (body.length > 5_000) throw ClientesSharingException(tr("La nota no puede pasar de 5000 caracteres."))
-                    ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
-                        origin.prepareStatement(
-                            "INSERT INTO customer_notes (id, customer_id, body, user_id, author, company_code) VALUES (?, ?, ?, ?, ?, ?)"
-                        ).use { insert ->
-                            insert.setObject(1, UUID.randomUUID())
-                            insert.setObject(2, id)
-                            insert.setString(3, body)
-                            // User ids belong to one company's database: only kept for notes written there.
-                            insert.setObject(4, author.first.takeIf { customer.origin == currentCode })
-                            insert.setString(5, author.second)
-                            insert.setString(6, currentCode)
-                            insert.executeUpdate()
-                        }
-                    } ?: throw ClientesSharingException(tr("No se pudo abrir la empresa del cliente para guardar la nota."))
+                    // The note lives in the origin company; the activity row goes to the company where the person acted.
+                    ClientesLog.atomically(connection) {
+                        ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
+                            origin.prepareStatement(
+                                "INSERT INTO customer_notes (id, customer_id, body, user_id, author, company_code) VALUES (?, ?, ?, ?, ?, ?)"
+                            ).use { insert ->
+                                insert.setObject(1, UUID.randomUUID())
+                                insert.setObject(2, id)
+                                insert.setString(3, body)
+                                // User ids belong to one company's database: only kept for notes written there.
+                                insert.setObject(4, author.userId.takeIf { customer.origin == currentCode })
+                                insert.setString(5, author.name)
+                                insert.setString(6, currentCode)
+                                insert.executeUpdate()
+                            }
+                        } ?: throw ClientesSharingException(tr("No se pudo abrir la empresa del cliente para guardar la nota."))
+                        ClientesLog.record(
+                            connection, author.actor, ClientesLog.Customer, id, customer.name, ActivityActions.Commented, "Agrego una nota al cliente ${customer.name}.",
+                            listOf(ActivityChange.of("note", "Nota", null, body)),
+                        )
+                    }
                     UiNotice(tr("Nota agregada."), UiTone.Success)
                 }
                 "deletenote" -> {
                     val noteId = params["note"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException(tr("Nota invalida."))
-                    val deletedText = ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
-                        val note = notes(origin, id).firstOrNull { it.id == noteId } ?: return@onCompany null
-                        if (!canDeleteNote(permissions, note, currentCode)) throw ClientesSharingException(tr("Solo quien escribio la nota o el business owner pueden borrarla."))
-                        origin.prepareStatement("DELETE FROM customer_notes WHERE id = ? AND customer_id = ?").use { delete ->
-                            delete.setObject(1, noteId)
-                            delete.setObject(2, id)
-                            if (delete.executeUpdate() == 1) note.body else null
-                        }
+                    val deletedText = ClientesLog.atomically(connection) {
+                        ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
+                            val note = notes(origin, id).firstOrNull { it.id == noteId } ?: return@onCompany null
+                            if (!canDeleteNote(permissions, note, currentCode)) throw ClientesSharingException(tr("Solo quien escribio la nota o el business owner pueden borrarla."))
+                            // The activity row first, with the note's text (it disappears right after).
+                            ClientesLog.record(
+                                connection, author.actor, ClientesLog.Note, noteId, customer.name, ActivityActions.Deleted, "Borro una nota del cliente ${customer.name}.",
+                                listOf(ActivityChange.of("note", "Nota", note.body, null), ActivityChange.of("noteAuthor", "Autor de la nota", note.author, null)),
+                            )
+                            origin.prepareStatement("DELETE FROM customer_notes WHERE id = ? AND customer_id = ?").use { delete ->
+                                delete.setObject(1, noteId)
+                                delete.setObject(2, id)
+                                if (delete.executeUpdate() == 1) note.body else null
+                            }
+                        }?.also { ClientesActivity.record(connection, id, "note_deleted", noteDeletedBody(it), author) }
                     }
                     if (deletedText == null) throw ClientesSharingException(tr("Nota no encontrada."))
-                    ClientesActivity.record(connection, id, "note_deleted", noteDeletedBody(deletedText), author)
                     UiNotice(tr("Nota borrada."), UiTone.Success)
                 }
                 "history" -> {
@@ -247,17 +261,25 @@ internal object ClientesProfile {
                     val title = values["title"].orEmpty().trim()
                     if (title.isEmpty()) throw ClientesSharingException(tr("Escribe que contrato o compro el cliente."))
                     if (title.length > 300) throw ClientesSharingException(tr("El titulo no puede pasar de 300 caracteres."))
-                    writer.write(
-                        connection,
-                        com.ideasdeveloper.bms.server.modules.CustomerHistoryEvent(
-                            customerId = id,
-                            moduleId = ClientesModule.id,
-                            kind = "manual",
-                            title = title,
-                            detail = values["detail"].orEmpty().trim().take(5_000),
-                            author = author.second,
-                        ),
-                    )
+                    val detail = values["detail"].orEmpty().trim().take(5_000)
+                    ClientesLog.atomically(connection) {
+                        writer.write(
+                            connection,
+                            com.ideasdeveloper.bms.server.modules.CustomerHistoryEvent(
+                                customerId = id,
+                                moduleId = ClientesModule.id,
+                                kind = "manual",
+                                title = title,
+                                detail = detail,
+                                author = author.name,
+                            ),
+                        )
+                        ClientesLog.record(
+                            connection, author.actor, ClientesLog.HistoryEntry, id, customer.name, ActivityActions.Created,
+                            "Agrego una entrada al historial del cliente ${customer.name}.",
+                            listOf(ActivityChange.of("title", "Titulo", null, title), ActivityChange.of("detail", "Detalle", null, detail.ifBlank { null })),
+                        )
+                    }
                     UiNotice(tr("Agregado al historial de {0}.", ClientesSharing.companyName(access, currentCode, currentCode)), UiTone.Success)
                 }
                 "linkuser" -> {
@@ -268,8 +290,16 @@ internal object ClientesProfile {
                 "deletehistory" -> {
                     if (!permissions.has("clientes.edit")) throw ClientesSharingException(tr("No tienes permiso para editar clientes."))
                     val entryId = params["entry"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException(tr("Entrada invalida."))
-                    val title = deleteManualEntry(connection, id, entryId) ?: throw ClientesSharingException(tr("Solo se pueden borrar las entradas agregadas a mano en esta empresa."))
-                    ClientesActivity.record(connection, id, "history_deleted", historyDeletedBody(title), author)
+                    val title = ClientesLog.atomically(connection) {
+                        val entry = manualEntryOf(connection, id, entryId) ?: return@atomically null
+                        // The activity row first: the entry is gone right after.
+                        ClientesLog.record(
+                            connection, author.actor, ClientesLog.HistoryEntry, entryId, customer.name, ActivityActions.Deleted,
+                            "Borro una entrada del historial del cliente ${customer.name}.",
+                            listOf(ActivityChange.of("title", "Titulo", entry.first, null), ActivityChange.of("detail", "Detalle", entry.second.ifBlank { null }, null)),
+                        )
+                        deleteManualEntry(connection, id, entryId)?.also { ClientesActivity.record(connection, id, "history_deleted", historyDeletedBody(it), author) }
+                    } ?: throw ClientesSharingException(tr("Solo se pueden borrar las entradas agregadas a mano en esta empresa."))
                     UiNotice(tr("Entrada borrada del historial."), UiTone.Success)
                 }
                 else -> throw ClientesSharingException(tr("Accion desconocida."))
@@ -295,6 +325,16 @@ internal object ClientesProfile {
         delete.setObject(2, customerId)
         delete.setString(3, ClientesModule.id)
         delete.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+    }
+
+    // Title and detail of a manual entry of the customer (what is about to be deleted), or null.
+    private fun manualEntryOf(tenant: Connection, customerId: UUID, entryId: UUID): Pair<String, String>? = tenant.prepareStatement(
+        "SELECT title, detail FROM customer_history WHERE id = ? AND customer_id = ? AND module_id = ? AND kind = 'manual'"
+    ).use { query ->
+        query.setObject(1, entryId)
+        query.setObject(2, customerId)
+        query.setString(3, ClientesModule.id)
+        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2).orEmpty() else null }
     }
 
     class ManualEntry(val id: UUID, val title: String, val at: OffsetDateTime)

@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.tareas
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
@@ -263,7 +267,7 @@ object TareasImportApply {
      * The board to import into: [targetBoardId] when given (it must exist and not be archived), otherwise the one already
      * created for [importKey], otherwise a new company-wide board named [name].
      */
-    fun ensureBoard(tenant: Connection, importKey: String, name: String, targetBoardId: UUID?, actorId: UUID?): UUID {
+    fun ensureBoard(tenant: Connection, importKey: String, name: String, targetBoardId: UUID?, actorId: UUID?, actor: ActivityActor = ActivityActor.import(null)): UUID {
         if (targetBoardId != null) {
             val board = TareasRepository.getBoard(tenant, targetBoardId) ?: throw TareasValidationException(tr("El tablero de destino ya no existe."))
             if (board.archived) throw TareasValidationException(tr("El tablero de destino está archivado."))
@@ -274,15 +278,21 @@ object TareasImportApply {
         fun existing() = tenant.rows("SELECT id FROM tareas_boards WHERE import_key = ?", listOf(key)) { it.getObject("id", UUID::class.java) }.firstOrNull()
         return TareasRepository.transaction(tenant) {
             existing() ?: run {
+                val boardName = clip(name.trim().ifEmpty { "Importado" }, MaxBoardName)
                 tenant.exec(
                     """
                     INSERT INTO tareas_boards (id, name, description, visibility, position, created_by, import_key)
                     VALUES (?, ?, '', 'company', (SELECT COALESCE(MAX(position), 0) + 1 FROM tareas_boards), ?, ?)
                     ON CONFLICT DO NOTHING
                     """.trimIndent(),
-                    listOf(UUID.randomUUID(), clip(name.trim().ifEmpty { "Importado" }, MaxBoardName), actorId, key),
+                    listOf(UUID.randomUUID(), boardName, actorId, key),
                 )
-                existing() ?: throw TareasValidationException(tr("No se pudo crear el tablero."))
+                val id = existing() ?: throw TareasValidationException(tr("No se pudo crear el tablero."))
+                TareasLog.record(
+                    tenant, actor, TareasLog.Board, id, boardName, ActivityActions.Created, "Creo el tablero $boardName al importar.",
+                    listOf(ActivityChange.of("name", "Nombre", null, boardName), ActivityChange.of("visibility", "Visibilidad", null, BoardVisibility.Company.label)),
+                )
+                id
             }
         }
     }
@@ -291,7 +301,7 @@ object TareasImportApply {
      * Creates or updates the task of [row] in [boardId] (one transaction, same result when repeated) and adds its checklist and
      * comments that are not there yet. Sends no notices. A row without title or identifier is skipped.
      */
-    fun apply(tenant: Connection, source: String, boardId: UUID, row: ImportedTask, users: List<TareasUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
+    fun apply(tenant: Connection, source: String, boardId: UUID, row: ImportedTask, users: List<TareasUser>, actorId: UUID?, today: LocalDate, actor: ActivityActor = ActivityActor.import(null)): ImportOutcome {
         if (!ExternalTaskRequest.SourcePattern.matches(source) || source in ExternalTaskRequest.ReservedSources) {
             throw TareasValidationException(tr("El origen de la importación no es válido."))
         }
@@ -299,10 +309,10 @@ object TareasImportApply {
         if (key.isEmpty()) return ImportOutcome.Skipped("El ítem no tiene identificador.")
         if (key.length > ExternalTaskRequest.MaxExternalRef) return ImportOutcome.Skipped("El identificador del ítem $key es demasiado largo.")
         if (row.title.isBlank()) return ImportOutcome.Skipped("El ítem $key no tiene título.")
-        return TareasRepository.transaction(tenant) { applyRow(tenant, source, boardId, key, row, users, actorId, today) }
+        return TareasRepository.transaction(tenant) { applyRow(tenant, source, boardId, key, row, users, actorId, today, actor) }
     }
 
-    private fun applyRow(tenant: Connection, source: String, boardId: UUID, key: String, row: ImportedTask, users: List<TareasUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
+    private fun applyRow(tenant: Connection, source: String, boardId: UUID, key: String, row: ImportedTask, users: List<TareasUser>, actorId: UUID?, today: LocalDate, actor: ActivityActor): ImportOutcome {
         val assigneeIds = linkedSetOf<UUID>()
         val unmatchedAssignees = linkedMapOf<String, String>()
         row.assigneeEmails.map { it.trim() }.filter { it.isNotEmpty() }.forEach { email ->
@@ -319,7 +329,7 @@ object TareasImportApply {
         }
         val title = clip(row.title.trim(), TaskInput.MaxTitle)
         val detail = detailWithNotes(row.detail, unmatchedAssignees.values.toList(), unmatchedReviewers)
-        val groupId = row.groupName?.trim()?.takeIf { it.isNotEmpty() }?.let { TareasRepository.findOrCreateGroup(tenant, boardId, clip(it, MaxGroupName)) }
+        val groupId = row.groupName?.trim()?.takeIf { it.isNotEmpty() }?.let { TareasLog.findOrCreateGroup(tenant, actor, boardId, clip(it, MaxGroupName)) }
         val done = row.status == TaskStatus.Done
 
         val existing = TareasRepository.findByExternalRef(tenant, boardId, source, key)
@@ -366,9 +376,51 @@ object TareasImportApply {
             }
         }
         if (created) TareasRepository.addActivity(tenant, taskId, "imported", "Importada desde $source", ImportAuthor)
-        val omitted = addChecklist(tenant, taskId, row.checklist) + addComments(tenant, taskId, row.comments)
+        val checklist = addChecklist(tenant, taskId, row.checklist)
+        val comments = addComments(tenant, taskId, row.comments)
+        val omitted = checklist.second + comments.second
+        recordTask(tenant, actor, source, taskId, existing, created, checklist.first, comments.first)
         if (omitted > 0) log.warn("El ítem {} de {} superó los topes de lista o comentarios: se omitieron {} elementos.", key, source, omitted)
         return if (created) ImportOutcome.Created(taskId) else ImportOutcome.Updated(taskId)
+    }
+
+    // The task of an imported row in the activity log: the whole task when it is new, old -> new when an import updated it.
+    private fun recordTask(tenant: Connection, actor: ActivityActor, source: String, taskId: UUID, before: Task?, created: Boolean, checklist: Int, comments: Int) {
+        val after = TareasRepository.get(tenant, taskId) ?: return
+        val users = TareasRepository.users(tenant)
+        val labels = TareasLog.TaskLabels + ("status" to "Estado")
+        fun values(task: Task?): Map<String, Any?> = if (task == null) emptyMap() else TareasLog.taskValues(tenant, task, users) + ("status" to task.status.label)
+        val extra = listOfNotNull(
+            checklist.takeIf { it > 0 }?.let { ActivityChange.of("checklistImported", "Elementos de lista importados", null, it) },
+            comments.takeIf { it > 0 }?.let { ActivityChange.of("commentsImported", "Comentarios importados", null, it) },
+        )
+        if (created) {
+            TareasLog.record(
+                tenant, actor, TareasLog.Task, taskId, after.title, ActivityActions.Created, "Importo la tarea ${after.title} desde $source.",
+                ActivityChanges.created(values(after), labels) + extra,
+            )
+        } else {
+            val changes = ActivityChanges.diff(values(before), values(after), labels) + extra
+            if (changes.isNotEmpty()) {
+                TareasLog.record(tenant, actor, TareasLog.Task, taskId, after.title, ActivityActions.Updated, "Actualizo la tarea ${after.title} desde $source.", changes)
+            }
+        }
+    }
+
+    /**
+     * One row for a whole import (what the source read and applied) in the activity log, next to the per-task rows [apply] writes.
+     * [actor] is [ActivityActor.import] of the person who started it.
+     */
+    fun recordImport(tenant: Connection, actor: ActivityActor, source: String, boardName: String, jobId: Any?, created: Int, updated: Int, skipped: Int, failed: Int, files: Int, filesFailed: Int, ok: Boolean = true) {
+        TareasLog.record(
+            tenant, actor, TareasLog.Import, jobId, boardName, ActivityActions.Imported,
+            (if (ok) "Importo" else "Importacion fallida de") + " el tablero $boardName desde $source: $created tareas creadas, $updated actualizadas, $skipped omitidas y $failed con error.",
+            listOf(
+                ActivityChange.of("created", "Tareas creadas", null, created), ActivityChange.of("updated", "Tareas actualizadas", null, updated),
+                ActivityChange.of("skipped", "Omitidas", null, skipped), ActivityChange.of("failed", "Con error", null, failed),
+                ActivityChange.of("files", "Archivos importados", null, files), ActivityChange.of("filesFailed", "Archivos con error", null, filesFailed),
+            ),
+        )
     }
 
     // Serializes the writers that count before inserting (limits per task).
@@ -376,12 +428,13 @@ object TareasImportApply {
         tenant.rows("SELECT 1 AS found FROM tareas_tasks WHERE id = ? FOR UPDATE", listOf(taskId)) { it.getInt("found") }
     }
 
-    /** Adds the items not there yet (by key) up to the limit; returns how many were left out for the limit. */
-    private fun addChecklist(tenant: Connection, taskId: UUID, items: List<ImportedCheck>): Int {
-        if (items.isEmpty()) return 0
+    /** Adds the items not there yet (by key) up to the limit; returns how many were added and how many were left out for the limit. */
+    private fun addChecklist(tenant: Connection, taskId: UUID, items: List<ImportedCheck>): Pair<Int, Int> {
+        if (items.isEmpty()) return 0 to 0
         lockTask(tenant, taskId)
         var count = tenant.rows("SELECT count(*) AS total FROM tareas_checklist WHERE task_id = ?", listOf(taskId)) { it.getInt("total") }.firstOrNull() ?: 0
         var omitted = 0
+        var added = 0
         items.forEach { item ->
             val key = item.key.trim().take(200)
             val text = clip(item.text.trim(), MaxChecklistText)
@@ -399,15 +452,17 @@ object TareasImportApply {
                 listOf(UUID.randomUUID(), taskId, text, item.done, taskId, item.done, key),
             )
             count += inserted
+            added += inserted
         }
-        return omitted
+        return added to omitted
     }
 
-    private fun addComments(tenant: Connection, taskId: UUID, comments: List<ImportedComment>): Int {
-        if (comments.isEmpty()) return 0
+    private fun addComments(tenant: Connection, taskId: UUID, comments: List<ImportedComment>): Pair<Int, Int> {
+        if (comments.isEmpty()) return 0 to 0
         lockTask(tenant, taskId)
         var count = tenant.rows("SELECT count(*) AS total FROM tareas_comments WHERE task_id = ?", listOf(taskId)) { it.getInt("total") }.firstOrNull() ?: 0
         var omitted = 0
+        var added = 0
         comments.forEach { comment ->
             val key = comment.key.trim().take(200)
             if (key.isEmpty() || comment.body.isBlank()) return@forEach
@@ -425,15 +480,16 @@ object TareasImportApply {
                 listOf(UUID.randomUUID(), taskId, author, commentText(author, comment.at, comment.body), comment.at?.atOffset(ZoneOffset.UTC), key),
             )
             count += inserted
+            added += inserted
         }
-        return omitted
+        return added to omitted
     }
 
     /**
      * Stores a file of the source as an attachment of the task, once per [importKey] (false when it was already there; the
      * content is then not read). The task admits [TareasRepository.MaxFilesPerTask] files and each one [TareasRepository.MaxFileBytes].
      */
-    fun attachFile(tenant: Connection, files: ModuleFiles, taskId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
+    fun attachFile(tenant: Connection, files: ModuleFiles, taskId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?, actor: ActivityActor = ActivityActor.import(null)): Boolean {
         val key = importKey.trim().take(200)
         if (key.isEmpty()) throw TareasValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM tareas_attachments WHERE task_id = ? AND import_key = ?", listOf(taskId, key)) { it.getInt("found") }.isNotEmpty()
@@ -448,14 +504,26 @@ object TareasImportApply {
             throw TareasValidationException(tr("{0} supera el máximo de {1} MB.", fileName, TareasRepository.MaxFileBytes / (1024 * 1024)))
         }
         try {
-            val inserted = tenant.exec(
-                """
-                INSERT INTO tareas_attachments (id, task_id, name, path, content_type, size, backend, ref, uploaded_by, import_key)
-                VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (task_id, import_key) WHERE import_key IS NOT NULL DO NOTHING
-                """.trimIndent(),
-                listOf(UUID.randomUUID(), taskId, fileName, type, stored.size, stored.backend, stored.ref, actorId, key),
-            )
+            val inserted = TareasRepository.transaction(tenant) {
+                val fileId = UUID.randomUUID()
+                val count = tenant.exec(
+                    """
+                    INSERT INTO tareas_attachments (id, task_id, name, path, content_type, size, backend, ref, uploaded_by, import_key)
+                    VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (task_id, import_key) WHERE import_key IS NOT NULL DO NOTHING
+                    """.trimIndent(),
+                    listOf(fileId, taskId, fileName, type, stored.size, stored.backend, stored.ref, actorId, key),
+                )
+                // Name and size, never the content.
+                if (count > 0) {
+                    val title = TareasRepository.get(tenant, taskId)?.title.orEmpty()
+                    TareasLog.record(
+                        tenant, actor, TareasLog.Attachment, fileId, fileName, ActivityActions.AttachmentAdded, "Importo el archivo $fileName a la tarea $title.",
+                        listOf(ActivityChange.of("file", "Archivo", null, "$fileName (${TareasLog.size(stored.size)})"), ActivityChange.of("task", "Tarea", null, title)),
+                    )
+                }
+                count
+            }
             if (inserted == 0) {
                 runCatching { files.delete(stored) }
                 return false
