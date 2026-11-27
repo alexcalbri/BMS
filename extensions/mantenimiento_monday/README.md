@@ -8,6 +8,10 @@ importacion del modulo (`MantenimientoImportSource`) y no tiene rutas propias. A
 
 La sugerencia sale del nombre del tablero: "Solicitud" o "Proyecto" -> ordenes de proyecto; "Mantenimiento" o "Tareas" -> planes.
 
+## Registro de actividad (1.2.0, needs Mantenimiento 0.3.0)
+
+La importacion deja una fila con sus totales y cada orden, plan, adjunto importado queda en el registro de actividad a nombre de "Importacion (quien la inicio)". Guardar o quitar el token de monday queda registrado sin su valor.
+
 ## Que importa
 
 | monday | Plan | Orden |

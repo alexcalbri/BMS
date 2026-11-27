@@ -443,6 +443,7 @@ object MantenimientoMondayScreens {
                 MondayOp.Token -> saveToken(context, values)
                 MondayOp.Forget -> {
                     MantenimientoMondaySettings.saveToken(context.access.secrets, tenant, null)
+                    MantenimientoMondaySettings.recordTokenChange(tenant, context.permissions.activityActor, "Quito el token de monday.")
                     MantenimientoImportReply(tr("Token de monday borrado."))
                 }
                 MondayOp.Boards -> MantenimientoImportReply(tr("Elige un tablero."), params = mapOf("step" to "boards"))
@@ -487,7 +488,10 @@ object MantenimientoMondayScreens {
         val tenant = context.tenant
         val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != SecretBox.Mask }
         if (typed == null && !MantenimientoMondaySettings.configured(tenant)) return failure(tr("Escribe el token de la API de monday."))
-        typed?.let { MantenimientoMondaySettings.saveToken(context.access.secrets, tenant, it) }
+        typed?.let {
+            MantenimientoMondaySettings.saveToken(context.access.secrets, tenant, it)
+            MantenimientoMondaySettings.recordTokenChange(tenant, context.permissions.activityActor, "Guardo el token de monday.")
+        }
         return MantenimientoImportReply(tr("Token de monday guardado."), params = mapOf("step" to "boards"))
     }
 
