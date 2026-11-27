@@ -496,6 +496,7 @@ apply_control_migrations() {
         database/control/migrations/V015__create_server_admins.sql \
         database/control/migrations/V017__create_two_factor.sql \
         database/control/migrations/V018__create_two_factor_email_recovery.sql \
+        database/control/migrations/V019__session_second_factor_mark.sql \
         database/tenant/migrations/V004__create_application_permissions.sql \
         database/tenant/migrations/V005__create_application_user_credentials.sql \
         database/tenant/migrations/V006__create_extensions.sql \
@@ -506,6 +507,7 @@ apply_control_migrations() {
         database/tenant/migrations/V011__create_activity_log.sql \
         database/tenant/migrations/V012__create_two_factor.sql \
         database/tenant/migrations/V013__create_two_factor_email_recovery.sql \
+        database/tenant/migrations/V014__session_second_factor_mark.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do
@@ -568,7 +570,7 @@ SQL
 # A2: company migrations run as the database owner's role through the provisioning login (migrations.sh), never as
 # the superuser, and only on databases bms_tenant_databases accepts (name bms_<code>, owned by a server owner role).
 apply_tenant_migrations() {
-    local tenants tenant_db owner
+    local tenants tenant_db owner migration
     cd "$TRUSTED_DIR"
     # shellcheck source=migrations.sh
     source scripts/ubuntu/migrations.sh
@@ -584,14 +586,13 @@ apply_tenant_migrations() {
         apply_migration "$tenant_db" core database/core/migrations/V003__add_application_user_profile.sql
         apply_migration "$tenant_db" core database/core/migrations/V005__create_notifications.sql
         apply_migration "$tenant_db" core database/core/migrations/V006__add_application_user_language.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V006__create_extensions.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V007__create_company_mail_settings.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V008__account_reset_throttle.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V009__outbound.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V010__create_text_translations.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V011__create_activity_log.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V012__create_two_factor.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V013__create_two_factor_email_recovery.sql
+        # Tenant V006 and later, every one of the tree in order (they are idempotent; the server's startup catch-up records
+        # them under the same module and version, so neither side applies one twice). V001-V005 are not idempotent and
+        # stay as above: an old company may lack their history rows.
+        while IFS= read -r migration; do
+            apply_migration "$tenant_db" tenant "$migration"
+        done < <(find database/tenant/migrations -maxdepth 1 -type f -name 'V[0-9][0-9][0-9]__*.sql' | LC_ALL=C sort |
+            awk -F/ '{ n = substr($NF, 2, 3) + 0; if (n >= 6) print }')
         migration_psql "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$DB_USER" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
