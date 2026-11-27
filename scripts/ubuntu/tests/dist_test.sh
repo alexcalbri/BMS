@@ -31,5 +31,12 @@ check 'y no se escribe fuera' test ! -e "$W/fuera.txt"
 mkdir -p "$W/migrations"
 check 'migraciones de la version desde git' bms_release_migrations "$REPO" HEAD "$W/migrations"
 check 'incluye las del Core y las de los modulos' bash -c "test -f '$W/migrations/database/tenant/migrations/V011__create_activity_log.sql' && ls '$W'/migrations/modules/*/migrations/*.sql >/dev/null"
+# Every migration the server reads from MIGRATIONS_ROOT is in the copy: the Core's own (database/..., read by
+# CompanyProvisioningService) and the migrationPaths of the modules compiled into the distribution (their jar does not
+# carry them; packaged modules and extensions read theirs from their own jar).
+missing=$(grep -rhoE '"(database/(core|control|tenant)/migrations|modules/[a-z0-9_]+/migrations)/V[0-9]{3}__[A-Za-z0-9_]+\.sql"' \
+        "$REPO/server/src/main/kotlin" "$REPO"/modules/*/server/src/main/kotlin | tr -d '"' | sort -u |
+    while IFS= read -r path; do [[ -f $W/migrations/$path ]] || printf '%s ' "$path"; done)
+equals 'cada migracion que lee el servidor esta en la copia' '' "$missing"
 equals 'y nada mas que SQL y README' 0 "$(find "$W/migrations" -type f ! -name '*.sql' ! -name 'README.md' | wc -l)"
 finish

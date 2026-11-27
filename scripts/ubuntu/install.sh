@@ -704,7 +704,8 @@ source "$TRUSTED_DIR/scripts/ubuntu/nginx-site.sh"
 source "$TRUSTED_DIR/scripts/ubuntu/units.sh"
 # shellcheck source=dist.sh
 source "$TRUSTED_DIR/scripts/ubuntu/dist.sh"
-# The server reads company migrations from /opt/bms/source (MIGRATIONS_ROOT): a clone of bms at the same commit.
+# /opt/bms/source: a clone of bms at the same commit for the operator (the server reads its migrations from the
+# root-owned copy in $APP_DIR/app/migrations, MIGRATIONS_ROOT, below).
 install -d -m 755 -o bms -g bms "$APP_DIR/source"
 runuser -u bms -- git clone --depth 1 --branch "$GIT_REF" -- "$REPO_URL" "$APP_DIR/source"
 if [[ $(runuser -u bms -- git -C "$APP_DIR/source" rev-parse HEAD) != "$BUILD_SHA" ]]; then
