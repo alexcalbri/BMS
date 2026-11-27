@@ -19,6 +19,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
@@ -58,7 +59,23 @@ private data class LegacyUpdateAccountProfileRequest(
 private data class PasswordResetRequest(val username: String, val companyCode: String? = null)
 
 @Serializable
-private data class PasswordResetConfirmation(val username: String, val companyCode: String? = null, val code: String, val newPassword: String)
+private data class PasswordResetConfirmation(
+    val username: String,
+    val companyCode: String? = null,
+    val code: String,
+    val newPassword: String,
+    // Solo si el servidor lo pidio (TWO_FACTOR_REQUIRED): codigo de la aplicacion o de recuperacion.
+    val twoFactorCode: String? = null,
+)
+
+@Serializable
+private data class TwoFactorPasswordBody(val currentPassword: String)
+
+@Serializable
+private data class TwoFactorCodeBody(val code: String)
+
+@Serializable
+private data class TwoFactorPasswordCodeBody(val currentPassword: String, val code: String)
 
 @Serializable
 private data class AccountMessage(val message: String)
@@ -126,20 +143,30 @@ class AccountApi(serverUrl: String) {
         }
     }.message
 
-    suspend fun confirmPasswordReset(username: String, companyCode: String?, code: String, newPassword: String): String = call<AccountMessage> {
+    // [twoFactorCode] se envia solo cuando el servidor respondio TWO_FACTOR_REQUIRED a un primer intento.
+    suspend fun confirmPasswordReset(
+        username: String,
+        companyCode: String?,
+        code: String,
+        newPassword: String,
+        twoFactorCode: String? = null,
+    ): String = call<AccountMessage> {
         client.post("$baseUrl/auth/password-reset/confirm") {
             contentType(ContentType.Application.Json)
-            setBody(PasswordResetConfirmation(username.trim(), companyCode, code.trim(), newPassword))
+            setBody(PasswordResetConfirmation(username.trim(), companyCode, code.trim(), newPassword, twoFactorCode?.trim()?.takeIf { it.isNotEmpty() }))
         }
     }.message
 
-    private suspend inline fun <reified T> call(request: () -> HttpResponse): T {
+    // Estado de la verificacion en dos pasos de la cuenta; null si el servidor es anterior y no tiene la ruta (404).
+    suspend fun twoFactorStatus(accessToken: String, companyCode: String?): TwoFactorStatus? {
         try {
-            val response = request()
-            if (response.status == HttpStatusCode.OK) return response.body()
-            if (response.status == HttpStatusCode.TooManyRequests) throw LoginException(tr("Demasiados intentos. Espera un minuto."))
-            val error = runCatching { response.body<LoginErrorResponse>() }.getOrNull()
-            throw LoginException(error?.message ?: tr("El servidor no pudo completar la operacion."), error?.code)
+            val response = client.get("$baseUrl/auth/two-factor") {
+                bearerAuth(accessToken)
+                companyCode?.let { header("X-Company-Code", it) }
+            }
+            if (response.status == HttpStatusCode.NotFound) return null
+            if (response.status == HttpStatusCode.OK) return response.body<TwoFactorStatus>()
+            throw failure(response)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: LoginException) {
@@ -147,6 +174,106 @@ class AccountApi(serverUrl: String) {
         } catch (_: Exception) {
             throw LoginException(tr("No se pudo comunicar con el servidor."))
         }
+    }
+
+    // Empieza (o reinicia) la activacion: pide la contrasena actual y devuelve el secreto y la URI otpauth.
+    suspend fun twoFactorSetup(accessToken: String, companyCode: String?, currentPassword: String): TwoFactorSetup = call<TwoFactorSetup> {
+        client.post("$baseUrl/auth/two-factor/setup") {
+            bearerAuth(accessToken)
+            companyCode?.let { header("X-Company-Code", it) }
+            contentType(ContentType.Application.Json)
+            setBody(TwoFactorPasswordBody(currentPassword))
+        }
+    }
+
+    // Confirma la activacion con un codigo; devuelve los codigos de recuperacion (solo se ven esta vez).
+    suspend fun twoFactorEnable(accessToken: String, companyCode: String?, code: String): List<String> = call<TwoFactorRecoveryCodes> {
+        client.post("$baseUrl/auth/two-factor/enable") {
+            bearerAuth(accessToken)
+            companyCode?.let { header("X-Company-Code", it) }
+            contentType(ContentType.Application.Json)
+            setBody(TwoFactorCodeBody(code.trim()))
+        }
+    }.recoveryCodes
+
+    // Genera 10 codigos nuevos (los anteriores dejan de valer); [code] es el de la aplicacion, no uno de recuperacion.
+    suspend fun twoFactorRegenerateRecoveryCodes(accessToken: String, companyCode: String?, currentPassword: String, code: String): List<String> =
+        call<TwoFactorRecoveryCodes> {
+            client.post("$baseUrl/auth/two-factor/recovery-codes") {
+                bearerAuth(accessToken)
+                companyCode?.let { header("X-Company-Code", it) }
+                contentType(ContentType.Application.Json)
+                setBody(TwoFactorPasswordCodeBody(currentPassword, code.trim()))
+            }
+        }.recoveryCodes
+
+    // Desactiva la verificacion: contrasena actual y un codigo (de la aplicacion o de recuperacion). Responde 204.
+    suspend fun twoFactorDisable(accessToken: String, companyCode: String?, currentPassword: String, code: String) {
+        try {
+            val response = client.post("$baseUrl/auth/two-factor/disable") {
+                bearerAuth(accessToken)
+                companyCode?.let { header("X-Company-Code", it) }
+                contentType(ContentType.Application.Json)
+                setBody(TwoFactorPasswordCodeBody(currentPassword, code.trim()))
+            }
+            if (response.status.isSuccess()) return
+            throw failure(response)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: LoginException) {
+            throw exception
+        } catch (_: Exception) {
+            throw LoginException(tr("No se pudo comunicar con el servidor."))
+        }
+    }
+
+    // Politica del dueno del servidor: exigir la verificacion a los administradores (GET /server/two-factor-policy).
+    // Null si el servidor es anterior y no tiene la ruta.
+    suspend fun twoFactorPolicy(accessToken: String): TwoFactorPolicy? {
+        try {
+            val response = client.get("$baseUrl/server/two-factor-policy") { bearerAuth(accessToken) }
+            if (response.status == HttpStatusCode.NotFound) return null
+            if (response.status == HttpStatusCode.OK) return response.body<TwoFactorPolicy>()
+            throw failure(response)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: LoginException) {
+            throw exception
+        } catch (_: Exception) {
+            throw LoginException(tr("No se pudo comunicar con el servidor."))
+        }
+    }
+
+    suspend fun setTwoFactorPolicy(accessToken: String, requireForAdmins: Boolean): TwoFactorPolicy = call<TwoFactorPolicy> {
+        client.put("$baseUrl/server/two-factor-policy") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(TwoFactorPolicy(requireForAdmins))
+        }
+    }
+
+    private suspend inline fun <reified T> call(request: () -> HttpResponse): T {
+        try {
+            val response = request()
+            if (response.status == HttpStatusCode.OK) return response.body()
+            throw failure(response)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: LoginException) {
+            throw exception
+        } catch (_: Exception) {
+            throw LoginException(tr("No se pudo comunicar con el servidor."))
+        }
+    }
+
+    // Error del servidor como LoginException con su mensaje y codigo; el 429 usa el mensaje del servidor si lo trae
+    // (p. ej. TWO_FACTOR_TOO_MANY_ATTEMPTS) y, si no, el generico.
+    private suspend fun failure(response: HttpResponse): LoginException {
+        val error = runCatching { response.body<LoginErrorResponse>() }.getOrNull()
+        if (response.status == HttpStatusCode.TooManyRequests) {
+            return LoginException(error?.message ?: tr("Demasiados intentos. Espera un minuto."), error?.code)
+        }
+        return LoginException(error?.message ?: tr("El servidor no pudo completar la operacion."), error?.code)
     }
 
     fun close() {

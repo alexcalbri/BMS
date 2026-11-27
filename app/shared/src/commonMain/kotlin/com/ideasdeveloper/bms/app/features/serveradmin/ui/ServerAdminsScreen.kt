@@ -244,6 +244,8 @@ fun ServerAdminsScreen(
                             tr("Un administrador solo puede hacer lo que sus permisos indican y, si se limita por empresas, solo en ellas. Solo el dueno del servidor gestiona administradores."),
                             color = colors.muted,
                         )
+                        // Politica de verificacion en dos pasos para los administradores (solo el dueno).
+                        TwoFactorPolicySection(serverUrl = serverUrl, accessToken = token)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,

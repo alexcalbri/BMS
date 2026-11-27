@@ -47,6 +47,7 @@ import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.bms.app.features.auth.data.use
 import com.ideasdeveloper.bms.app.features.auth.ui.LanguageSelector
 import com.ideasdeveloper.bms.app.features.auth.ui.ProfileDialog
+import com.ideasdeveloper.bms.app.features.auth.ui.TwoFactorSection
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.bms.app.features.shell.ui.ClosableView
@@ -206,6 +207,19 @@ fun SettingsScreen(
                         OutlinedButton(onClick = { editingProfile = true }) {
                             Text(tr("Editar nombre y correo"))
                         }
+                    }
+                }
+
+                if (session != null) {
+                    SettingsCard(primaryColor = primaryColor) {
+                        Text(tr("Verificacion en dos pasos"), fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            tr("Ademas de la contrasena, pide un codigo de tu aplicacion de autenticacion al iniciar sesion."),
+                            color = AppTheme.colors.muted,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        TwoFactorSection(serverUrl = configuration?.serverUrl, session = session)
                     }
                 }
 

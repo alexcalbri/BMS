@@ -57,6 +57,7 @@ import com.ideasdeveloper.bms.app.features.company.data.CompanyApi
 import com.ideasdeveloper.bms.app.features.company.data.BusinessOwnerResponse
 import com.ideasdeveloper.bms.app.features.company.data.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import com.ideasdeveloper.bms.app.features.company.data.CompanyStorageResponse
 import com.ideasdeveloper.bms.app.features.company.data.CompanySummaryResponse
 import com.ideasdeveloper.bms.app.features.company.data.CreateCompanyRequest
 import com.ideasdeveloper.bms.app.features.company.data.UpdateCompanyRequest
@@ -481,6 +482,9 @@ fun CompanyProvisioningScreen(
                         }
                     }
 
+                    // Cuota de almacenamiento por defecto y uso de las empresas: solo el dueno del servidor.
+                    if (isOwner) ServerStorageSection(serverUrl = serverUrl, accessToken = session?.accessToken, primaryColor = primaryColor)
+
                     Text(tr("Empresas"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
 
                     if (isRefreshing) {
@@ -642,6 +646,16 @@ fun CompanyProvisioningScreen(
                                 val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
                                 CompanyApi(activeServerUrl).use { api -> api.businessOwner(activeSession.accessToken, company.code) }
                             },
+                            loadStorage = {
+                                val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
+                                val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
+                                CompanyApi(activeServerUrl).use { api -> api.serverStorage(activeSession.accessToken).companies.firstOrNull { it.code == company.code } }
+                            },
+                            saveStorage = { quotaBytes ->
+                                val activeServerUrl = serverUrl ?: throw CompanyException(tr("Configura el servidor."))
+                                val activeSession = session ?: throw CompanyException(tr("Inicia sesion de nuevo."))
+                                CompanyApi(activeServerUrl).use { api -> api.updateCompanyStorageQuota(activeSession.accessToken, company.code, quotaBytes) }
+                            },
                             onSaveOwner = { request, onSaved ->
                                 val activeServerUrl = serverUrl
                                 val activeSession = session
@@ -739,6 +753,8 @@ private fun CompanyModulesRow(
     onSaveEdit: () -> Unit,
     loadOwner: suspend () -> BusinessOwnerResponse,
     onSaveOwner: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
+    loadStorage: suspend () -> CompanyStorageResponse?,
+    saveStorage: suspend (Long?) -> CompanyStorageResponse,
     onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
 ) {
     Column(
@@ -875,6 +891,16 @@ private fun CompanyModulesRow(
                     primaryColor = primaryColor,
                     loadOwner = loadOwner,
                     onSave = onSaveOwner,
+                )
+            }
+
+            // Cuota de archivos de la empresa: solo el dueno del servidor.
+            if (isOwner) CollapsibleSection(tr("Almacenamiento"), primaryColor, subtitle = tr("Cuota de archivos y uso")) {
+                CompanyStorageQuotaFields(
+                    companyCode = company.code,
+                    enabled = enabled,
+                    loadStorage = loadStorage,
+                    saveStorage = saveStorage,
                 )
             }
 

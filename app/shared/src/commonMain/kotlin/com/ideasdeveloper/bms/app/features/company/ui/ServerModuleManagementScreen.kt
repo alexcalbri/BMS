@@ -7,6 +7,7 @@ import com.ideasdeveloper.bms.app.core.layout.ContentWidth
 import com.ideasdeveloper.bms.app.core.layout.AdaptiveGrid
 import com.ideasdeveloper.bms.app.core.layout.contentWidth
 import com.ideasdeveloper.bms.app.core.theme.AppTheme
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -78,11 +79,14 @@ fun ServerModuleManagementScreen(
     val canRemoveModules = session.can(ServerPermission.ModulesRemove)
     val canUseInServer = session.can(ServerPermission.Workspace)
     val canSeePackages = session.can(ServerPermission.ExtensionsInstall)
+    val canAuthorizeUnsigned = session.can(ServerPermission.ModulesAuthorizeUnsigned)
     // El repositorio (catalogo) de modulos solo lo cambia el dueno del servidor.
     val isOwner = session.isServerOwner
     var modules by remember { mutableStateOf<List<ServerModuleResponse>>(emptyList()) }
     var catalogUrl by remember { mutableStateOf(DefaultModuleCatalogUrl) }
     var pendingDeletion by remember { mutableStateOf<String?>(null) }
+    // Modulo cuyo paquete sin firma se esta revisando para autorizarlo (dialogo abierto).
+    var authorizingModule by remember { mutableStateOf<ServerModuleResponse?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -147,6 +151,21 @@ fun ServerModuleManagementScreen(
         }
     }
 
+    authorizingModule?.let { target ->
+        ModuleAuthorizeUnsignedDialog(
+            serverUrl = serverUrl,
+            accessToken = session?.accessToken,
+            moduleId = target.moduleId,
+            displayName = target.displayName,
+            onAuthorized = {
+                authorizingModule = null
+                error = null
+                message = tr("Paquete {0} autorizado sin firma. Ya puedes instalarlo.", target.displayName)
+            },
+            onDismiss = { authorizingModule = null },
+        )
+    }
+
     AuthenticatedScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
@@ -186,11 +205,19 @@ fun ServerModuleManagementScreen(
                     ) {
                     if (canViewModules) Text(tr("Modulos instalados"), style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
                     if (isOwner) Text(tr("Repositorio de modulos"), style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
+                    // El servidor solo acepta catalogos por https (sin usuario ni contrasena en la URL).
+                    val catalogNotHttps = catalogUrl.isNotBlank() && !catalogUrl.trim().startsWith("https://", ignoreCase = true)
                     if (isOwner) OutlinedTextField(
                         value = catalogUrl,
                         onValueChange = { catalogUrl = it },
-                        label = { Text(tr("URL del repositorio de modulos")) },
+                        label = { Text(tr("URL del repositorio de modulos (solo https)")) },
                         singleLine = true,
+                        isError = catalogNotHttps,
+                        supportingText = {
+                            Text(
+                                if (catalogNotHttps) tr("La URL debe empezar por https://") else tr("Solo https://: el servidor rechaza las demas direcciones."),
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     if (canViewModules) Row(
@@ -198,7 +225,7 @@ fun ServerModuleManagementScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     ) {
                         if (isOwner) Button(
-                            enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
+                            enabled = !isLoading && !catalogNotHttps && serverUrl != null && session?.accessToken?.isNotBlank() == true,
                             onClick = {
                                 val activeServerUrl = serverUrl
                                 val activeSession = session
@@ -251,8 +278,10 @@ fun ServerModuleManagementScreen(
                             canInstallModule = canInstallModules,
                             canRemoveModule = canRemoveModules,
                             canUseInServer = canUseInServer,
+                            canAuthorizeUnsigned = canAuthorizeUnsigned,
                             enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
                             pendingDeletion = pendingDeletion == module.moduleId,
+                            onAuthorizeUnsigned = { authorizingModule = module },
                             onInstall = {
                                 val activeServerUrl = serverUrl
                                 val activeSession = session
@@ -374,8 +403,10 @@ private fun ServerModuleRow(
     canInstallModule: Boolean,
     canRemoveModule: Boolean,
     canUseInServer: Boolean,
+    canAuthorizeUnsigned: Boolean,
     enabled: Boolean,
     pendingDeletion: Boolean,
+    onAuthorizeUnsigned: () -> Unit,
     onInstall: () -> Unit,
     onRequestDelete: () -> Unit,
     onCancelDelete: () -> Unit,
@@ -479,6 +510,17 @@ private fun ServerModuleRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Revisa el commit y el hash de lo que se descargaria y autoriza ese paquete si no esta firmado.
+            if (canAuthorizeUnsigned && (!module.installed || updateAvailable)) {
+                Button(
+                    enabled = enabled && !inProgress,
+                    onClick = onAuthorizeUnsigned,
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surface, contentColor = AppTheme.colors.warning),
+                    border = BorderStroke(1.dp, AppTheme.colors.warning),
+                ) {
+                    Text(tr("Autorizar paquete sin firma"))
+                }
+            }
             if (canInstallModule && (!module.installed || updateAvailable)) {
                 Button(
                     enabled = canInstall,
