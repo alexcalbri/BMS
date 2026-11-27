@@ -556,7 +556,17 @@ object PropietariosImportApply {
      * Guarda un archivo de la fuente como adjunto del lote, una vez por [importKey] (false si ya estaba; el contenido no se lee entonces).
      * El lote admite [PropietariosRepository.MaxFilesPerLot] archivos y cada uno [PropietariosRepository.MaxFileBytes].
      */
-    fun attachFile(tenant: Connection, files: ModuleFiles, lotId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
+    fun attachFile(
+        tenant: Connection,
+        files: ModuleFiles,
+        lotId: UUID,
+        importKey: String,
+        name: String,
+        contentType: String,
+        content: InputStream,
+        actorId: UUID?,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): Boolean {
         val key = importKey.trim().take(MaxKey)
         if (key.isEmpty()) throw PropietariosValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM propietarios_attachments WHERE lot_id = ? AND import_key = ?", listOf(lotId, key)) { it.getInt("found") }.isNotEmpty()
@@ -583,6 +593,9 @@ object PropietariosImportApply {
                 runCatching { files.delete(stored) }
                 return false
             }
+            PropietariosActivity.write(tenant, activity, "lote", lotId.toString(), PropietariosRepository.getLot(tenant, lotId)?.lotNumber.orEmpty(),
+                ActivityActions.AttachmentAdded, "Importo el adjunto $fileName.",
+                listOf(ActivityChange("file", "Archivo", null, "$fileName (${PropietariosActivity.sizeLabel(stored.size)})")))
             return true
         } catch (failure: Exception) {
             runCatching { files.delete(stored) }
