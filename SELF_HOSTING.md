@@ -89,7 +89,7 @@ and does not guarantee.
 
 Since Core 0.13.0 (security hardening): optional **two-step verification**
 (TOTP, recovery codes and a delayed recovery by email; control migrations
-`V017`/`V018` applied by `update.sh`, tenant `V012`/`V013` applied to every
+`V017`-`V019` applied by `update.sh`, tenant `V012`-`V014` applied to every
 company by `update.sh` and by the server at startup), a **storage quota** per
 company with a free-disk floor (STORAGE_QUOTA.md), pinned and optionally signed
 Core updates and packages (SIGNING.md), and the PostgreSQL role layout of §5
@@ -498,6 +498,9 @@ Document verified variables in a table here as they are implemented:
 | `BMS_PUBLIC_BASE_URL` | No (installer and `update.sh` write it) | Public origin (`https://bms.example.com`, no path) used for links in emails (cancel link of the delayed two-step recovery, TWO_FACTOR.md §7) and for the OAuth metadata of Agentes. Written from the domain of the BMS Nginx site when absent; without it the request's validated `Host` is used. Change it if the public name changes. |
 | `BMS_BUILD_USER` | No | Read by `update.sh` only: the user that compiles the release (default `bms-build`, separate from the service user). `bms` goes back to compiling as the service user, only as a way out (section 15). |
 | `BMS_SYSCALL_FILTER` | No | Read by `update.sh` only: `true` adds `SystemCallFilter=@system-service` to `bms.service` (opt-in; section 16). |
+| `CORE_UPDATE_REQUIRE_APPROVED_COMMIT` | No | `true` unless set to `false`: `POST /server/core-update` must carry the commit the owner reviewed (`targetCommit`, app 0.11.0 and later); an older app gets 400 `CORE_COMMIT_INVALID`. `false` lets the server pin the commit it reads itself (SIGNING.md §1). |
+| `BMS_MEMORY_MAX` | No | Read by `update.sh` only: `MemoryMax` of `bms.service` (for example `3G` or `80%`; `none` for no cap). Default: 80% on hosts with at least 8 GiB of RAM, no cap on smaller ones (`units.sh`). |
+| `BMS_NGINX_REPLACE_SITE` | No | Environment of `update.sh` (not `server.env`): `yes` replaces a BMS Nginx site that has lines no installer wrote (move them to `/etc/nginx/bms.d/` first). |
 
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURITY` | No | Server-wide SMTP for password reset codes ("¿Olvidaste tu contraseña?" in the login; without it users cannot recover their password by email) and for modules that send email (hotspot codes). `SMTP_SECURITY` is `starttls` (default), `ssl` or `none`. Empty `SMTP_HOST` disables it; companies can still use their own SMTP. |
 | `PUBLIC_SCHEME`, `ACME_EMAIL` | No | Read only by the root helper `bms-domains-sync`, which publishes module domains (hotspot portals) in Nginx with Let's Encrypt (`https`) or plain HTTP (`http`). |
@@ -783,8 +786,9 @@ apply the new site.
   Larger only on the authenticated upload routes found in the code: `POST /modules/<module>/ui/files` (module
   attachments of CRM, Compras, Tareas, Propietarios, Mantenimiento and any module with that route) without an Nginx
   limit and with `proxy_request_buffering off` (streamed to the module, no temporary copy); `POST /modules/crm/ui/import`
-  25 MB (CRM import of pasted text, 20 MB); `POST /companies/me/backups/import` 64 MB; `POST /server/extensions/upload`
-  60 MB (50 MB ZIP). Module domains of `bms-domains-sync` (hotspot portals) take 2 MB.
+  25 MB (CRM import of pasted CSV text; the Core allows the same on that path); `POST /companies/me/backups/import`
+  520 MB, streamed (512 MB ZIP in the Core); `POST /server/extensions/upload` 60 MB, streamed (50 MB ZIP). Each is at
+  least the Core's limit for that route (a test compares `nginx-site.sh` with `RequestBodyLimits.kt`). Module domains of `bms-domains-sync` (hotspot portals) take 2 MB.
 - **Limits per client address** (`/etc/nginx/conf.d/bms-limits.conf`): 50 requests/s (burst 400), `/auth/` also 10/s
   (burst 40), 100 connections; over them Nginx answers 429. Generous for an office behind one address; the backend
   keeps its own sign-in limits.

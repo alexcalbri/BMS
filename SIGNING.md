@@ -20,8 +20,13 @@ a key is installed.** The commit pin (below) is always on.
   `server/build.gradle.kts` declares that version, the branch `ref`, and `signatureRequired`.
 - `POST /server/core-update` with `{"targetCommit": "<latestCommit>"}` stores that commit in
   `core_update_requests.target_commit` (control migration V016). If the branch moved since the app read
-  it, the answer is 409 `CORE_UPDATE_COMMIT_CHANGED` and nothing is stored. An app that sends no body
-  (older apps) gets the commit the server reads at that moment, still pinned.
+  it, the answer is 409 `CORE_UPDATE_COMMIT_CHANGED` and nothing is stored. A request without
+  `targetCommit` (apps older than 0.11.0) is refused with 400 `CORE_COMMIT_INVALID` unless
+  `CORE_UPDATE_REQUIRE_APPROVED_COMMIT=false` is set in `/etc/bms/server.env`; then the server pins the commit it
+  reads at that moment.
+- The root helper only goes forward: the requested commit must descend from the deployed one
+  (`/var/lib/bms/deployed-commit`, written by install.sh and update.sh) and declare a higher version. Without that
+  file (a server installed before this) the first update is run once by SSH with `update.sh`.
 - The root helper treats the row as untrusted input: the id must be digits, the version `X.Y.Z`, the commit
   a full lowercase 40-hex sha (rows without a commit are refused). Values only reach SQL as psql variables
   and git as separate arguments, never through a shell string.
