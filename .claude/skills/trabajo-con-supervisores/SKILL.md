@@ -20,8 +20,14 @@ coordina y habla con el usuario; no implementa ni mantiene conversaciones largas
 
 Opus directo (sin delegar) solo para: diseño nuevo, codigo de seguridad o que corre como root, y revisiones.
 Una tarea pequeña va a un agente NUEVO y barato con instrucciones precisas, nunca a reanudar un agente caro
-"porque ya conoce el codigo". Si un agente no puede lanzar subagentes, lo dice y el coordinador reparte con el
-mismo criterio.
+"porque ya conoce el codigo".
+
+**Limite comprobado:** un subagente lanzado con la herramienta Agent NO puede lanzar otros agentes. Por tanto:
+- Un supervisor que delegue de verdad tiene que ser una **sesion propia** (`create_session`, modelo Opus, con el
+  repositorio); esa sesion si puede lanzar ejecutores en Sonnet/Haiku y recibir mensajes de otras sesiones.
+- Si el supervisor es un subagente (frentes cortos), su papel se limita a diseñar el contrato y revisar; el
+  **reparto a Sonnet/Haiku lo hace el coordinador** siguiendo ese contrato. Nunca dejar que un subagente de Opus
+  implemente todo "porque no puede delegar".
 
 ## Flujo de un frente
 
