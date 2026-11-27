@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Sourced by the fresh-install script. Run as the provisioning administrator.
-# Migration files must contain one outer BEGIN/COMMIT and transactional SQL.
+# Sourced by install.sh and update.sh. Migration files must contain one outer BEGIN/COMMIT and
+# transactional SQL. Every psql goes through pg-safe.sh: MIGRATION_RUNNER names the function that runs
+# psql in the target database (default pg_control: the superuser in the control database, which
+# belongs to the superuser alone); update.sh migrates company databases with a runner that uses
+# pg_owner (the server owner's role, never the superuser).
+# shellcheck source=pg-safe.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pg-safe.sh"
+
 apply_migration() {
-    local target=$1 module=$2 file=$3 version checksum trimmed_checksum
+    local target=$1 module=$2 file=$3 version checksum trimmed_checksum runner=${MIGRATION_RUNNER:-pg_control}
     version=$(basename "$file" .sql)
     checksum=$(sha256sum "$file")
     checksum=${checksum%% *}
@@ -43,6 +49,6 @@ INSERT INTO schema_migrations (module, version, checksum) VALUES (:'module', :'v
 \endif
 COMMIT;
 SQL
-    } | runuser -u postgres -- psql -X -d "$target" -v ON_ERROR_STOP=1 \
+    } | "$runner" "$target" \
         -v module="$module" -v version="$version" -v checksum="$checksum" -v trimmed_checksum="$trimmed_checksum"
 }

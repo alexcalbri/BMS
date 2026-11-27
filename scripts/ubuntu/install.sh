@@ -83,6 +83,7 @@ readonly REPO_RAW_BASE=https://raw.githubusercontent.com/alexcalbri/BMS
 # server is modified and again after cloning.
 readonly REQUIRED_FILES=(
     scripts/ubuntu/migrations.sh
+    scripts/ubuntu/pg-safe.sh
     scripts/ubuntu/domains-sync.sh
     scripts/ubuntu/core-update.sh
     scripts/ubuntu/mirror.sh
@@ -113,6 +114,7 @@ readonly REQUIRED_FILES=(
     # Owner bms_audit for every company's activity log (ACTIVITY_LOG.md §9), run hourly as root.
     scripts/ubuntu/activity-harden.sh
     scripts/ubuntu/activity-harden.sql
+    server/src/main/resources/activity/activity-deviations.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -288,7 +290,9 @@ clean_files_and_services() {
     systemctl disable --now bms-core-update.timer >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/bms-core-update.{service,timer} /usr/local/sbin/bms-core-update
     systemctl disable --now bms-activity-harden.timer >/dev/null 2>&1 || true
-    rm -f /etc/systemd/system/bms-activity-harden.{service,timer} /usr/local/sbin/bms-activity-harden /usr/local/share/bms/activity-harden.sql
+    rm -f /etc/systemd/system/bms-activity-harden.{service,timer} /usr/local/sbin/bms-activity-harden /usr/local/share/bms/activity-harden.sql \
+        /usr/local/share/bms/activity-deviations.sql /usr/local/lib/bms/pg-safe.sh
+    rm -rf /usr/local/share/bms/activity-canonical
     rm -f /etc/nginx/sites-enabled/bms "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/bms-domain-* /etc/nginx/sites-available/bms-domain-*
     recover_stale_swaps
@@ -316,7 +320,19 @@ clean_postgres_objects() {
         while IFS= read -r tenant_db; do
             [[ -n $tenant_db ]] || continue
             printf 'Leyendo usuarios PostgreSQL de tenant %s...\n' "$tenant_db"
-            pg_admin -d "$tenant_db" -Atc "SELECT postgres_role FROM application_users ORDER BY postgres_role" >>"$tenant_roles_file" ||
+            # A company database belongs to the server owner's role: read only a plain table, with role and path pinned.
+            pg_admin -d "$tenant_db" -At <<'SQL' >>"$tenant_roles_file" ||
+BEGIN READ ONLY;
+SELECT pg_catalog.to_regclass('public.application_users') IS NOT NULL AS users_present \gset
+\if :users_present
+LOCK TABLE public.application_users IN ACCESS SHARE MODE;
+SELECT c.relkind = 'r' AS users_plain FROM pg_catalog.pg_class c WHERE c.oid = 'public.application_users'::pg_catalog.regclass \gset
+\if :users_plain
+SELECT postgres_role FROM public.application_users ORDER BY 1;
+\endif
+\endif
+COMMIT;
+SQL
                 printf 'AVISO: no se pudieron leer los usuarios PostgreSQL de %s; sus roles no se detectaran para borrar.\n' "$tenant_db" >&2
             printf 'Borrando base tenant %s...\n' "$tenant_db"
             pg_admin -v tenant_db="$tenant_db" <<'SQL'
@@ -581,7 +597,12 @@ with socket.socket() as connection:
         sys.exit("El puerto HTTP 8080 no está disponible. Revisa qué servicio lo utiliza antes de instalar BMS.")
 PY
 
-pg_admin() { runuser -u postgres -- psql -X --dbname=postgres --set=ON_ERROR_STOP=1 "$@"; }
+# Before the clone there is no pg-safe.sh yet: the same pinned role and search path, inline (they win over any
+# ALTER DATABASE ... SET of a database the server owner's role owns).
+pg_admin() {
+    runuser -u postgres -- env PGOPTIONS='-c role=none -c search_path=pg_catalog,pg_temp -c default_transaction_read_only=off' \
+        psql -X -q --dbname=postgres --set=ON_ERROR_STOP=1 "$@"
+}
 if [[ $CLEAN_INSTALL == si ]]; then
     clean_postgres_objects "$DB_NAME" "$DB_USER" "$SERVER_OWNER"
 fi
@@ -676,7 +697,7 @@ GRANT CONNECT ON DATABASE :"db_name" TO :"login_role";
 GRANT :"login_role" TO :"db_user";
 SQL
 unset verifier
-runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+pg_control "$DB_NAME" \
     -v db_user="$DB_USER" -v server_owner="$SERVER_OWNER" -v owner_name="$SERVER_OWNER_NAME" -v owner_email="$SERVER_OWNER_EMAIL" <<'SQL'
 BEGIN;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -816,7 +837,7 @@ with urllib.request.urlopen(request, timeout=20) as response:
         sys.exit("El login no devuelve el propietario del servidor esperado")
 ' "$SERVER_OWNER"
 unset SERVER_PASSWORD
-runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+pg_control "$DB_NAME" \
     -c 'UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL;'
 printf 'Login del propietario del servidor verificado.\n'
 

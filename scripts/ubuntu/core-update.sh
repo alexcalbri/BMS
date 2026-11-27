@@ -35,6 +35,7 @@ if [[ ${1:-} == --install ]]; then
     # Libreria del espejo: la carga este ayudante desde una ruta de root, no desde el codigo descargado.
     install -d -m 755 -o root -g root "$MIRROR_LIB_DIR"
     install -o root -g root -m 644 "$(dirname -- "${BASH_SOURCE[0]}")/mirror.sh" "$MIRROR_LIB"
+    install -o root -g root -m 644 "$(dirname -- "${BASH_SOURCE[0]}")/pg-safe.sh" "$MIRROR_LIB_DIR/pg-safe.sh"
     cat > /etc/systemd/system/bms-core-update.service <<'UNIT'
 [Unit]
 Description=Update the BMS core when the server owner requests it
@@ -83,8 +84,15 @@ CORE_UPDATE_REF=${CORE_UPDATE_REF:-master}
 [[ $CORE_UPDATE_REF =~ $REF_PATTERN && $CORE_UPDATE_REF != *..* && $CORE_UPDATE_REF != *.lock ]] ||
     die 'CORE_UPDATE_REF invalido en server.env.'
 
+# The superuser in the control database only through pg-safe.sh (pinned role and search path, settings
+# checked, the database checked to belong to the superuser alone).
+PG_SAFE_LIB=/usr/local/lib/bms/pg-safe.sh
+[[ -f $PG_SAFE_LIB ]] || PG_SAFE_LIB=$(dirname -- "${BASH_SOURCE[0]}")/pg-safe.sh
+[[ -f $PG_SAFE_LIB ]] || die "No se encontro pg-safe.sh; ejecuta update.sh de nuevo."
+# shellcheck source=pg-safe.sh
+source "$PG_SAFE_LIB"
 central_psql() {
-    runuser -u postgres -- psql -X -q -d "$DB_NAME" -v ON_ERROR_STOP=1 "$@"
+    pg_control "$DB_NAME" "$@"
 }
 
 # Verdadero si ninguna instalacion ni actualizacion tiene el lock de mantenimiento.
