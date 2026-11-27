@@ -23,6 +23,8 @@ data class TwoFactorStatusResponse(
     val recoveryCodesLeft: Int,
     val requiredByServer: Boolean,
     val available: Boolean,
+    // Delayed recovery by email (TWO_FACTOR.md §7.3).
+    val emailRecovery: EmailRecoveryStatus = EmailRecoveryStatus(false, null),
 )
 
 @Serializable
@@ -82,6 +84,7 @@ class TwoFactorAccountService(
                 recoveryCodesLeft = state.recoveryCodesLeft,
                 requiredByServer = requiredByServer(account),
                 available = store.available(connection) && loginDatabases.secretsAvailable,
+                emailRecovery = loginDatabases.emailRecovery?.status(connection, account.userId) ?: EmailRecoveryStatus(false, null),
             )
         }
     }
@@ -139,7 +142,17 @@ class TwoFactorAccountService(
             store.disable(connection, account.userId) { inTransaction ->
                 record(inTransaction, account, token, "two_factor.disabled", ActivityActions.Disabled, "Desactivo la verificacion en dos pasos.")
             }
+            loginDatabases.emailRecovery?.cancelOpen(connection, account.companyCode, account.userId, "disabled")
         }
+    }
+
+    /** Cancels the pending recovery by email of the signed-in account (TWO_FACTOR.md §7.3). */
+    fun cancelEmailRecovery(token: String, companyCode: String?) {
+        val account = account(token, companyCode)
+        val cancelled = account.source.connection.use { connection ->
+            loginDatabases.emailRecovery?.cancelOpen(connection, account.companyCode, account.userId, "user") == true
+        }
+        if (!cancelled) throw TwoFactorException("EMAIL_RECOVERY_NOT_PENDING", tr("No hay ninguna recuperacion por correo en curso."))
     }
 
     private fun requireCode(check: CodeCheck) {

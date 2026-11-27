@@ -279,6 +279,11 @@ class AccountService(
             } finally {
                 connection.autoCommit = true
             }
+            // A new email address ends a pending recovery of two-step verification by email (TWO_FACTOR.md §7.5).
+            if (emailChanges) {
+                runCatching { loginDatabases.emailRecovery?.cancelOpen(connection, companyCode, account.id, "email_change") }
+                    .onFailure { log.error("A pending email recovery could not be cancelled after an email change", it) }
+            }
             val stored = if (newLanguage == KeepLanguage) userLanguage(connection, account.id) else newLanguage
             if (newLanguage != KeepLanguage) {
                 SessionLanguages.rememberUser(SessionLanguages.userKey(companyCode, account.id), stored)

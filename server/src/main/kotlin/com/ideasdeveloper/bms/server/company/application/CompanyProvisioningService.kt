@@ -1978,6 +1978,10 @@ class CompanyProvisioningService(
         listOf("application_user_two_factor", "application_user_recovery_codes").forEach { table ->
             grantIfMissing(connection, config.runtimeUser, table, listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
         }
+        // Delayed recovery by email (tenant V013, TWO_FACTOR.md §7): the runtime starts, cancels and completes processes.
+        val emailRecovery = "database/tenant/migrations/V013__create_two_factor_email_recovery.sql"
+        applyMigration(connection, "tenant", emailRecovery, Files.readString(Path.of(config.migrationsRoot).resolve(emailRecovery)))
+        grantIfMissing(connection, config.runtimeUser, "application_user_2fa_email_recovery", listOf("SELECT", "INSERT", "UPDATE"))
     }
 
     /**

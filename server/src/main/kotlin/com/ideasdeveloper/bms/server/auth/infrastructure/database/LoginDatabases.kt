@@ -21,6 +21,8 @@ import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.application.UserProfileRules
 import com.ideasdeveloper.bms.server.auth.application.ClientAddresses
 import com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck
+import com.ideasdeveloper.bms.server.auth.twofactor.EmailRecoveryCheck
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorEmailRecovery
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorChallenges
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy
@@ -148,6 +150,53 @@ class LoginDatabases(
      * [TwoFactorException] (too many wrong codes for the account, secrets unavailable).
      */
     fun completeTwoFactor(challengeToken: String, code: String, clientAddress: String): LoginSuccessResponse {
+        val (challenge, scope) = challengeScope(challengeToken, clientAddress)
+        return scope.secondStep(challengeToken, challenge, code)
+    }
+
+    /** Delayed recovery by email (TWO_FACTOR.md §7); set at startup, null in tests that do not use it. */
+    @Volatile var emailRecovery: TwoFactorEmailRecovery? = null
+
+    /**
+     * Starts the delayed recovery by email for the account of a valid step-1 challenge (TWO_FACTOR.md §7.1).
+     * Says nothing about the outcome; throws [TwoFactorSignInException] for a bad challenge and
+     * [TwoFactorException] MAIL_NOT_CONFIGURED when the server cannot send email.
+     */
+    fun startEmailRecovery(challengeToken: String, clientAddress: String, publicBase: String) {
+        val recovery = emailRecovery?.takeIf { it.offered() }
+            ?: throw TwoFactorException("MAIL_NOT_CONFIGURED", tr("El servidor no tiene correo configurado."))
+        val (challenge, _) = challengeScope(challengeToken, clientAddress)
+        recovery.start(challenge.companyCode, challenge.userId, challenge.clientAddress, publicBase)
+    }
+
+    /** Step 2 with the code of the recovery email (TWO_FACTOR.md §7.4): signs in once and turns two-step verification off. */
+    fun completeEmailRecovery(challengeToken: String, code: String, clientAddress: String): LoginSuccessResponse {
+        val recovery = emailRecovery ?: throw TwoFactorSignInException.expired()
+        val (challenge, scope) = challengeScope(challengeToken, clientAddress)
+        return scope.emailRecoveryStep(challengeToken, challenge, code, recovery)
+    }
+
+    /** The database of an account (null: the central one) when its company is active; for the recovery job. */
+    fun accountSource(companyCode: String?): DataSource? {
+        if (companyCode == null) return central
+        if (!tenantDatabaseNamePattern.matches(companyCode)) return null
+        val database = central.connection.use { connection ->
+            connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active = TRUE").use { query ->
+                query.setString(1, companyCode)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        } ?: return null
+        return tenantScope(database)?.dataSource
+    }
+
+    /** Codes of the active companies (the server workspace included). */
+    fun activeCompanyCodes(): List<String> = central.connection.use { connection ->
+        connection.prepareStatement("SELECT code FROM companies WHERE is_active ORDER BY code").use { query ->
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+        }
+    }
+
+    private fun challengeScope(challengeToken: String, clientAddress: String): Pair<TwoFactorChallenges.Challenge, Scope> {
         val challenge = challenges.attempt(challengeToken, clientAddress) ?: throw TwoFactorSignInException.expired()
         val scope = if (challenge.companyCode == null) serverScope else {
             central.connection.use { connection ->
@@ -161,7 +210,7 @@ class LoginDatabases(
             challenges.finish(challengeToken)
             throw TwoFactorSignInException.expired()
         }
-        return scope.secondStep(challengeToken, challenge, code)
+        return challenge to scope
     }
 
     /** Drops a challenge that will not be used (a caller that cannot ask for the code now). */
@@ -659,7 +708,8 @@ class LoginDatabases(
             failedSignIns.succeeded(credentials.username, credentials.clientAddress.ifBlank { "desconocida" })
             // Two-step verification on: no session yet, the caller must send a code (TWO_FACTOR.md §2).
             if (twoFactorEnabled(user)) {
-                throw challenges.issue(java.util.UUID.fromString(user.id.toString()), user.postgresRole, credentials.companyCode, credentials.clientAddress)
+                throw challenges.issue(java.util.UUID.fromString(user.id.toString()), user.postgresRole, credentials.companyCode, credentials.clientAddress,
+                    emailRecovery = emailRecovery?.offered() == true)
             }
             return open(user, credentials.companyCode, credentials.clientAddress, null)
         }
@@ -708,8 +758,43 @@ class LoginDatabases(
                 }
                 is CodeCheck.Recovery, CodeCheck.Authenticator -> {
                     challenges.finish(challengeToken)
-                    open(user, challenge.companyCode, challenge.clientAddress, result as? CodeCheck.Recovery)
+                    val opened = open(user, challenge.companyCode, challenge.clientAddress, result as? CodeCheck.Recovery)
                         ?: throw TwoFactorSignInException.expired()
+                    // The owner of the account clearly still has access: a pending recovery by email ends (§7.5).
+                    val cancelled = emailRecovery?.let { recovery ->
+                        runCatching { source.connection.use { recovery.cancelOpen(it, challenge.companyCode, challenge.userId, "sign_in", notifyByMail = true) } }
+                            .onFailure { logger.error("A pending email recovery could not be cancelled after a sign-in", it) }
+                            .getOrDefault(false)
+                    } == true
+                    if (cancelled) opened.copy(emailRecoveryCancelled = true) else opened
+                }
+            }
+        }
+
+        /** Step 2 with the emailed recovery code (see [completeEmailRecovery]). */
+        fun emailRecoveryStep(challengeToken: String, challenge: TwoFactorChallenges.Challenge, code: String, recovery: TwoFactorEmailRecovery): LoginSuccessResponse {
+            val user = users.findById(kotlin.uuid.Uuid.parse(challenge.userId.toString()))?.takeIf { it.isActive }
+                ?.takeIf { !server || isOwner(it) || activeAdmin(it) != null }
+            if (user == null || user.postgresRole != challenge.username) {
+                challenges.finish(challengeToken)
+                throw TwoFactorSignInException.expired()
+            }
+            val result = source.connection.use { connection -> recovery.complete(challenge.companyCode, connection, challenge.userId, code) }
+            return when (result) {
+                EmailRecoveryCheck.Throttled -> {
+                    challenges.finish(challengeToken)
+                    throw TwoFactorException.tooManyAttempts()
+                }
+                EmailRecoveryCheck.Invalid -> {
+                    failedSignIns.failed(challenge.username, challenge.clientAddress.ifBlank { "desconocida" })
+                    val left = challenges.attemptsLeft(challenge)
+                    if (left == 0) challenges.finish(challengeToken)
+                    throw TwoFactorSignInException(TwoFactorException.InvalidCode, tr("El codigo no es valido."), left)
+                }
+                EmailRecoveryCheck.Completed -> {
+                    challenges.finish(challengeToken)
+                    (open(user, challenge.companyCode, challenge.clientAddress, null) ?: throw TwoFactorSignInException.expired())
+                        .copy(twoFactorDisabled = true)
                 }
             }
         }

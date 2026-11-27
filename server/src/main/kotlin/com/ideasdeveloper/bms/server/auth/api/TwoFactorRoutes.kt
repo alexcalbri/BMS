@@ -6,6 +6,12 @@ import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorAccountService
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorEmailRecovery
+import com.ideasdeveloper.bms.server.i18n.I18n
+import io.ktor.http.ContentType
+import io.ktor.http.withCharset
+import io.ktor.server.request.receiveParameters
+import io.ktor.server.response.respondText
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
 import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.http.HttpHeaders
@@ -14,6 +20,7 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
@@ -58,6 +65,10 @@ fun Route.twoFactorRoutes(service: TwoFactorAccountService) {
         val token = call.twoFactorSession() ?: return@post
         val request = call.twoFactorBody<TwoFactorPasswordCodeRequest>() ?: return@post
         call.twoFactorAnswer { service.regenerate(token, call.companyHeader(), request.currentPassword, request.code.take(64)) }
+    }
+    delete("/auth/two-factor/email-recovery") {
+        val token = call.twoFactorSession() ?: return@delete
+        call.twoFactorAnswer(HttpStatusCode.NoContent) { service.cancelEmailRecovery(token, call.companyHeader()) }
     }
     post("/auth/two-factor/disable") {
         val token = call.twoFactorSession() ?: return@post
@@ -121,7 +132,7 @@ private suspend inline fun <reified T : Any> ApplicationCall.twoFactorAnswer(sta
         val code = when (failure.code) {
             TwoFactorException.Unavailable -> HttpStatusCode.ServiceUnavailable
             TwoFactorException.TooManyAttempts -> HttpStatusCode.TooManyRequests
-            TwoFactorException.AlreadyEnabled, TwoFactorException.NotPending, TwoFactorException.NotEnabled -> HttpStatusCode.Conflict
+            TwoFactorException.AlreadyEnabled, TwoFactorException.NotPending, TwoFactorException.NotEnabled, "EMAIL_RECOVERY_NOT_PENDING" -> HttpStatusCode.Conflict
             TwoFactorException.RequiredByServer -> HttpStatusCode.Forbidden
             else -> HttpStatusCode.BadRequest
         }
@@ -131,3 +142,75 @@ private suspend inline fun <reified T : Any> ApplicationCall.twoFactorAnswer(sta
     }
     if (status == HttpStatusCode.NoContent) respond(HttpStatusCode.NoContent) else respond(status, result)
 }
+
+/**
+ * The cancel link of the recovery email (TWO_FACTOR.md §7.2): works in any browser without signing in.
+ * GET only shows a confirmation page (mail scanners that open links cancel nothing); the POST of its
+ * button cancels. Minimal server-rendered HTML with strict headers; JSON with Accept: application/json.
+ */
+fun Route.twoFactorRecoveryLinkRoutes(recovery: () -> TwoFactorEmailRecovery?) {
+    get("/auth/two-factor/recovery-cancel") {
+        call.strictPageHeaders()
+        val token = call.request.queryParameters["t"].orEmpty().trim()
+        val company = call.request.queryParameters["c"]?.trim()?.takeIf { it.isNotEmpty() }
+        val language = withContext(Dispatchers.IO) { runCatching { recovery()?.linkTarget(company, token) }.getOrNull() }
+        if (call.wantsJson()) return@get call.respondLinkJson(RecoveryLinkResponse(valid = language != null))
+        val page = if (language == null) I18n.withLanguage(I18n.language()) { invalidLinkPage() } else I18n.withLanguage(language) {
+            recoveryPage(
+                tr("Cancelar la recuperacion del acceso"),
+                tr("Alguien inicio la recuperacion del acceso a tu cuenta por correo. Si no fuiste tu, cancelala y cambia tu contrasena."),
+                """<form method="post" action="/auth/two-factor/recovery-cancel"><input type="hidden" name="t" value="${html(token)}">""" +
+                    (company?.let { """<input type="hidden" name="c" value="${html(it)}">""" } ?: "") +
+                    """<button type="submit">${html(tr("Cancelar la recuperacion"))}</button></form>""",
+            )
+        }
+        call.respondText(page, ContentType.Text.Html.withCharset(Charsets.UTF_8))
+    }
+    post("/auth/two-factor/recovery-cancel") {
+        call.strictPageHeaders()
+        val form = runCatching { call.receiveParameters() }.getOrNull()
+        val token = form?.get("t").orEmpty().trim()
+        val company = form?.get("c")?.trim()?.takeIf { it.isNotEmpty() }
+        val service = recovery()
+        val language = withContext(Dispatchers.IO) { runCatching { service?.linkTarget(company, token) }.getOrNull() }
+        val cancelled = language != null && withContext(Dispatchers.IO) { service?.cancelByLink(company, token) == true }
+        if (call.wantsJson()) return@post call.respondLinkJson(RecoveryLinkResponse(cancelled = cancelled))
+        val page = if (!cancelled) I18n.withLanguage(I18n.language()) { invalidLinkPage() } else I18n.withLanguage(language!!) {
+            recoveryPage(tr("Recuperacion cancelada"), tr("Se cancelo la recuperacion del acceso. Si no la pediste tu, cambia tu contrasena."), "")
+        }
+        call.respondText(page, ContentType.Text.Html.withCharset(Charsets.UTF_8))
+    }
+}
+
+@Serializable
+data class RecoveryLinkResponse(val valid: Boolean? = null, val cancelled: Boolean? = null)
+
+private suspend fun ApplicationCall.respondLinkJson(body: RecoveryLinkResponse) =
+    respondText(kotlinx.serialization.json.Json.encodeToString(RecoveryLinkResponse.serializer(), body), ContentType.Application.Json)
+
+private fun ApplicationCall.wantsJson(): Boolean = request.headers[HttpHeaders.Accept].orEmpty().contains("application/json")
+
+private fun ApplicationCall.strictPageHeaders() {
+    response.headers.append(HttpHeaders.CacheControl, "no-store")
+    response.headers.append("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+    response.headers.append("X-Frame-Options", "DENY")
+    response.headers.append("X-Content-Type-Options", "nosniff")
+    response.headers.append("Referrer-Policy", "no-referrer")
+}
+
+private fun html(value: String): String = buildString {
+    value.forEach { char ->
+        when (char) {
+            '<' -> append("&lt;"); '>' -> append("&gt;"); '&' -> append("&amp;"); '"' -> append("&quot;"); '\'' -> append("&#39;")
+            else -> append(char)
+        }
+    }
+}
+
+private fun invalidLinkPage(): String = recoveryPage(tr("Enlace no valido"), tr("Este enlace ya no es valido: la recuperacion termino, se cancelo o el enlace ya se uso."), "")
+
+private fun recoveryPage(title: String, text: String, body: String): String =
+    "<!doctype html><html lang=\"${I18n.language()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+        "<title>${html(title)}</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem;line-height:1.5}" +
+        "button{font-size:1rem;padding:.6rem 1.2rem;border-radius:.4rem;border:0;background:#b3261e;color:#fff;cursor:pointer}</style></head>" +
+        "<body><h1>${html(title)}</h1><p>${html(text)}</p>$body</body></html>"
