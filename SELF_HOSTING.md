@@ -983,6 +983,49 @@ Do not post secrets publicly when requesting support.
 
 ------------------------------------------------------------------------
 
+### Supply chain: Gradle wrapper, daemon JVM, CI and dependency verification
+
+**Gradle wrapper.** `gradle/wrapper/gradle-wrapper.properties` pins `distributionSha256Sum` for the exact
+distribution in `distributionUrl`. When bumping Gradle, change both together; the checksum is the "Binary-only
+(-bin) ZIP" value published at <https://gradle.org/release-checksums/>.
+
+**Daemon JVM (no automatic JDK download).** `gradle/gradle-daemon-jvm.properties` only asks for JDK 21: no
+`toolchainVendor` and no `toolchainUrl.*` lines, so any JDK 21 works (the Ubuntu OpenJDK 21 from apt on the
+server, Liberica in CI) and Gradle has no URL to download one from. If no JDK 21 is installed, Gradle fails with a
+message instead of fetching a binary from a third-party service. Do not regenerate the file with
+`./gradlew updateDaemonJvm` (it would add the vendor and the download URLs again).
+
+**Dependency verification (not enabled).** There is no `gradle/verification-metadata.xml` yet. To adopt it:
+
+1. GitHub, Actions, "Verification metadata", Run workflow (on the branch to adopt). It resolves the full,
+   `serverOnly` and `webOnly` profiles and uploads `verification-metadata.xml` as an artifact.
+2. Download it, review the diff (new artifacts, `origin` comments, anything unexpected) and commit it to
+   `gradle/verification-metadata.xml` on a branch.
+3. Check that the three builds still pass in CI (a missing or changed checksum fails the build on purpose).
+4. Regenerate with the same workflow whenever dependencies change; Dependabot PRs will fail until you do.
+
+Only sha256 checksums are generated (no PGP keyring is trusted automatically).
+
+**CI workflows.** Every action is pinned by commit SHA (tag in a comment; Dependabot updates both), jobs declare
+the minimum `permissions:` and checkouts do not persist the token. Only a push to `master` publishes the
+`web-dist` release (the compile job has read-only access and no secrets; a separate job signs and uploads).
+
+**Signed web distribution.** The release assets are `web-<sha>.tar.gz`, `web-<sha>.tar.gz.sha256` and
+`web-<sha>.tar.gz.sha256.sig`: an Ed25519 signature (OpenSSL, raw) over the `.sha256` file, which names the
+package with the commit sha and its hash. One-time setup by the repository owner:
+
+1. On your own computer: `openssl genpkey -algorithm ed25519 -out web-dist-signing.pem` and
+   `openssl pkey -in web-dist-signing.pem -pubout -out web_dist_public.pem`.
+2. GitHub, Settings, Secrets and variables, Actions: create the secret `WEB_DIST_SIGNING_KEY` with the full
+   contents of `web-dist-signing.pem`, then delete the local private key (or keep it offline). Optionally put the
+   secret in an Environment restricted to the `master` branch.
+3. On the server, as root: `install -d -m 755 -o root -g root /usr/local/lib/bms` and
+   `install -m 644 -o root -g root web_dist_public.pem /usr/local/lib/bms/web_dist_public.pem`.
+
+While that file does not exist, the updater behaves as before (checksum only). Once it exists, `update.sh`
+refuses any CI package without a valid signature and compiles locally instead. The public key is not secret; the
+private key lives only in GitHub.
+
 ## 18. Documentation Maintenance
 
 This guide must change with the code.
