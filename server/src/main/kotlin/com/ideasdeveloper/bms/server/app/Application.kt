@@ -96,6 +96,11 @@ fun Application.module() {
     install(ContentNegotiation) {
         json(kotlinx.serialization.json.Json { encodeDefaults = true; ignoreUnknownKeys = true })
     }
+    // Every body is limited unless the route is an upload that limits itself (B10, UploadRoutes).
+    install(RequestBodyLimit) {
+        defaultBytes = environment.config.propertyOrNull("http.maxRequestBodyBytes")?.getString()?.trim()?.toLongOrNull()
+            ?.takeIf { it > 0 } ?: DefaultRequestBodyBytes
+    }
     install(RateLimit) {
         register(RateLimitName("login")) {
             rateLimiter(

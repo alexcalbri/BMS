@@ -277,12 +277,28 @@ class CompanySelfService(
     }
 
     // Guarda un ZIP subido por el usuario sin ejecutar restauracion destructiva.
-    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, bytes: ByteArray): CompanyBackupResponse {
+    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, bytes: ByteArray): CompanyBackupResponse =
+        storeImportedBackup(companyCode, accessToken, fileName, bytes.inputStream())
+
+    /**
+     * Stores an uploaded backup ZIP streaming it to disk (SECURITY_FIXES.md B4): at most
+     * [BackupImportLimits.MaxBytes] are read, then the ZIP is checked entry by entry (at most
+     * [BackupImportLimits.MaxEntries] entries and [BackupImportLimits.MaxUncompressedBytes]
+     * uncompressed, so a ZIP bomb is refused without expanding it) before it takes its name.
+     */
+    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, content: java.io.InputStream): CompanyBackupResponse {
         val context = authorizeBusinessOwner(companyCode, accessToken)
         validateBackupName(fileName)
-        validateZip(bytes)
-        val output = backupDirectory(context.companyCode).also { it.createDirectories() }.resolve(fileName)
-        output.outputStream().use { it.write(bytes) }
+        val directory = backupDirectory(context.companyCode).also { it.createDirectories() }
+        val output = directory.resolve(fileName)
+        val partial = Files.createTempFile(directory, ".import-", ".part")
+        try {
+            Files.newOutputStream(partial).use { out -> BackupImportLimits.copyLimited(content, out) }
+            BackupImportLimits.validateZip(partial)
+            Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        } finally {
+            Files.deleteIfExists(partial)
+        }
         backupRow(context, output, ActivityActions.Imported, "Importo la copia de seguridad ${output.name}.")
         return CompanyBackupResponse(
             fileName = output.name,
@@ -1003,15 +1019,6 @@ class CompanySelfService(
         }
     }
 
-    // Verifica que el archivo subido sea un ZIP legible y no este vacio.
-    private fun validateZip(bytes: ByteArray) {
-        ZipInputStream(bytes.inputStream()).use { zip ->
-            if (zip.nextEntry == null) {
-                throw CompanySelfException(tr("El archivo ZIP esta vacio."))
-            }
-        }
-    }
-
     // Fila central de empresa necesaria para operaciones de autoservicio.
     private data class CompanyRow(
         val code: String,
@@ -1226,3 +1233,50 @@ private val CompanyProfileLabels = mapOf(
 )
 
 private val UserLabels = mapOf("username" to "Usuario", "displayName" to "Nombre", "email" to "Correo", "active" to "Activo")
+
+/** Limits of an imported backup ZIP (SECURITY_FIXES.md B4). */
+object BackupImportLimits {
+    const val MaxBytes = 512L * 1024 * 1024
+    const val MaxEntries = 10_000
+    const val MaxUncompressedBytes = 4L * 1024 * 1024 * 1024
+
+    fun tooLarge() = CompanySelfException(tr("El backup supera el maximo de {0} MB.", MaxBytes / (1024 * 1024)))
+
+    /** Copies at most [maxBytes]; one byte more and the import is refused. */
+    fun copyLimited(input: java.io.InputStream, output: java.io.OutputStream, maxBytes: Long = MaxBytes): Long {
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return total
+            total += read
+            if (total > maxBytes) throw tooLarge()
+            output.write(buffer, 0, read)
+        }
+    }
+
+    /** A readable, non-empty ZIP within the entry and uncompressed-size limits (read as a stream, nothing is kept). */
+    fun validateZip(file: Path, maxEntries: Int = MaxEntries, maxUncompressed: Long = MaxUncompressedBytes) {
+        var entries = 0
+        var expanded = 0L
+        val buffer = ByteArray(64 * 1024)
+        try {
+            ZipInputStream(Files.newInputStream(file)).use { zip ->
+                while (true) {
+                    zip.nextEntry ?: break
+                    entries++
+                    if (entries > maxEntries) throw CompanySelfException(tr("El backup tiene demasiados archivos (maximo {0}).", maxEntries))
+                    while (true) {
+                        val read = zip.read(buffer)
+                        if (read < 0) break
+                        expanded += read
+                        if (expanded > maxUncompressed) throw CompanySelfException(tr("El backup descomprimido supera el maximo permitido."))
+                    }
+                }
+            }
+        } catch (failure: java.util.zip.ZipException) {
+            throw CompanySelfException(tr("El archivo no es un ZIP valido."))
+        }
+        if (entries == 0) throw CompanySelfException(tr("El archivo ZIP esta vacio."))
+    }
+}
