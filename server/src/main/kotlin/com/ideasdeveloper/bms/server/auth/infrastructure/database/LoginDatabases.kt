@@ -19,6 +19,15 @@ import com.ideasdeveloper.bms.server.auth.application.PasswordAttemptLimiter
 import com.ideasdeveloper.bms.server.auth.application.SessionService
 import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.application.UserProfileRules
+import com.ideasdeveloper.bms.server.auth.application.ClientAddresses
+import com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorChallenges
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorSignInException
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorStore
+import com.ideasdeveloper.bms.server.security.MasterKeySecretBox
+import com.ideasdeveloper.bms.server.security.SecretBox
 import com.ideasdeveloper.bms.server.auth.domain.ApplicationUser
 import com.ideasdeveloper.bms.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.bms.server.auth.domain.LoginScope
@@ -56,7 +65,18 @@ class LoginDatabases(
     private val serverLoginAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(maxFailures = ServerLoginMaxFailures, window = ServerLoginWindow),
     // Failures per login across all addresses: never refuses, only slows (see authenticateOnServer).
     private val serverLoginGlobalAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(maxFailures = ServerLoginGlobalMaxFailures, window = ServerLoginWindow),
+    // Company sign-ins (SECURITY_FIXES.md B1): the same two counters, per company and login.
+    private val companyLoginAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(maxFailures = ServerLoginMaxFailures, window = ServerLoginWindow),
+    private val companyLoginGlobalAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(maxFailures = ServerLoginGlobalMaxFailures, window = ServerLoginWindow),
+    // Seals the TOTP secrets of two-step verification (BMS_MASTER_KEY, TWO_FACTOR.md).
+    private val secrets: SecretBox = MasterKeySecretBox(null),
 ) : AutoCloseable {
+    /** The central database (server users, companies, settings). */
+    val centralSource: DataSource get() = central
+
+    /** Whether secrets can be sealed (BMS_MASTER_KEY set): needed to enrol in two-step verification. */
+    val secretsAvailable: Boolean get() = secrets.available
+
     private val configurations = Json.decodeFromString<List<TenantDatabaseConfig>>(tenantConfiguration)
         .also { entries -> require(entries.map { it.databaseName }.distinct().size == entries.size) }
         .associateBy { it.databaseName }
@@ -66,16 +86,27 @@ class LoginDatabases(
     private val tenantDatabaseNamePattern = Regex("[a-z][a-z0-9_]{0,62}")
 
     private val tokens = SessionTokenGenerator()
-    private fun serverLoginKey(login: String, client: String) = "server-login/" + login.trim().lowercase() + "/" + client
+    // Throttle keys use the client's address group (an IPv6 /64 counts as one client, ClientAddresses).
+    private fun serverLoginKey(login: String, client: String) = "server-login/" + login.trim().lowercase() + "/" + ClientAddresses.group(client)
     private fun serverLoginGlobalKey(login: String) = "server-login-global/" + login.trim().lowercase()
+    private fun companyLoginKey(company: String, login: String, client: String) = "company-login/$company/" + login.trim().lowercase() + "/" + ClientAddresses.group(client)
+    private fun companyLoginGlobalKey(company: String, login: String) = "company-login-global/$company/" + login.trim().lowercase()
+
+    /** Two-step verification rows of every database (control V017 / tenant V012). */
+    val twoFactor = TwoFactorStore(secrets)
+    private val challenges = TwoFactorChallenges()
     private val logger = org.slf4j.LoggerFactory.getLogger(LoginDatabases::class.java)
 
     /**
      * Fixed delay to apply (non-blocking, by the route) before verifying a server sign-in whose login
      * is under a distributed guessing attack; 0 otherwise. The attempt is still verified afterwards.
      */
-    fun serverLoginDelayMillis(credentials: LoginCredentials): Long =
-        if (credentials.companyCode == null && serverLoginGlobalAttempts.isBlocked(serverLoginGlobalKey(credentials.username))) ServerLoginDelayMillis else 0L
+    fun serverLoginDelayMillis(credentials: LoginCredentials): Long {
+        val code = credentials.companyCode
+        val blocked = if (code == null) serverLoginGlobalAttempts.isBlocked(serverLoginGlobalKey(credentials.username))
+            else companyLoginGlobalAttempts.isBlocked(companyLoginGlobalKey(code, credentials.username))
+        return if (blocked) ServerLoginDelayMillis else 0L
+    }
 
     // Server administrators (control V015): read live on every sign-in, switch and company-session check.
     val admins = ServerAdminStore(central)
@@ -93,7 +124,80 @@ class LoginDatabases(
         },
         companyScope = { name -> tenantScope(name) },
         delayMillis = ::serverLoginDelayMillis,
+        // An unknown or inactive company costs what a sign-in in a real one costs (B2).
+        unknownCompany = { credentials -> spendSignInWork(credentials.password) },
     )
+
+    // One PostgreSQL authentication of a login that does not exist (PostgreSQL answers it with the same
+    // SCRAM work) and one PBKDF2 at the current cost: what an unknown login costs everywhere.
+    private val mockPostgres = PostgresCredentialVerifier(centralUrl)
+
+    private fun spendPostgresCheck(password: String) {
+        runCatching { mockPostgres.verify(LoginCredentials(MockLogin, password.ifEmpty { "x" })) }
+    }
+
+    private fun spendSignInWork(password: String) {
+        spendPostgresCheck(password)
+        ApplicationUserRepository.spendDummyCheck(password)
+    }
+
+    /**
+     * Step 2 of a sign-in (POST /auth/login/two-factor): the challenge of step 1 and a code of the
+     * account (authenticator or recovery code). Opens the session like the login. Throws
+     * [TwoFactorSignInException] (expired challenge, wrong code with attempts left) or
+     * [TwoFactorException] (too many wrong codes for the account, secrets unavailable).
+     */
+    fun completeTwoFactor(challengeToken: String, code: String, clientAddress: String): LoginSuccessResponse {
+        val challenge = challenges.attempt(challengeToken, clientAddress) ?: throw TwoFactorSignInException.expired()
+        val scope = if (challenge.companyCode == null) serverScope else {
+            central.connection.use { connection ->
+                connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active = TRUE").use { query ->
+                    query.setString(1, challenge.companyCode)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            }?.let { tenantScope(it) }
+        }
+        if (scope == null) {
+            challenges.finish(challengeToken)
+            throw TwoFactorSignInException.expired()
+        }
+        return scope.secondStep(challengeToken, challenge, code)
+    }
+
+    /** Drops a challenge that will not be used (a caller that cannot ask for the code now). */
+    fun finishTwoFactor(challengeToken: String) = challenges.finish(challengeToken)
+
+    /** Who a session is, for the account's own settings (two-step verification): null when not valid. */
+    class SessionAccount(val userId: java.util.UUID, val username: String, val companyCode: String?, val serverKind: String?, val mustChangePassword: Boolean, val source: DataSource)
+
+    /**
+     * The account behind [token] of [companyCode] (null: a server session of an owner or active
+     * administrator), with the database it lives in. A company session the switcher opened must
+     * still be allowed (companySessionAllowed).
+     */
+    fun sessionAccount(companyCode: String?, token: String): SessionAccount? {
+        if (companyCode == null) {
+            val user = serverScope.sessionUser(token) ?: return null
+            val userId = java.util.UUID.fromString(user.id.toString())
+            if (serverScope.isOwner(user)) return SessionAccount(userId, user.postgresRole, null, ServerRoles.Owner, false, central)
+            val admin = activeAdmin(user) ?: return null
+            return SessionAccount(userId, user.postgresRole, null, ServerRoles.Admin, admin.mustChangePassword, central)
+        }
+        if (!tenantDatabaseNamePattern.matches(companyCode)) return null
+        val database = central.connection.use { connection ->
+            connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active = TRUE").use { query ->
+                query.setString(1, companyCode)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        } ?: return null
+        val scope = tenantScope(database) ?: return null
+        val user = scope.sessionUser(token) ?: return null
+        if (!companySessionAllowed(companyCode, token)) return null
+        return SessionAccount(java.util.UUID.fromString(user.id.toString()), user.postgresRole, companyCode, null, false, scope.dataSource)
+    }
+
+    /** An administrator the owner requires to use two-step verification and who has not turned it on (TWO_FACTOR.md §5). */
+    fun adminTwoFactorPending(userId: java.util.UUID): Boolean = TwoFactorPolicy.adminSetupPending(central, userId)
 
     /**
      * Whether [password] is right for [username] in [companyCode] (null: the server), with the same
@@ -180,6 +284,10 @@ class LoginDatabases(
         val target = tenantScope(databases.first) ?: return null
         val targetOwner = target.businessOwner()?.takeIf { it.isActive } ?: return null
         if (opener == null) {
+            // Never a way around the second step: an account with two-step verification on is entered only
+            // from a session of an account that has it on too (TWO_FACTOR.md §2).
+            val originUser = origin.sessionUser(token) ?: return null
+            if (target.twoFactorEnabled(targetOwner) && !origin.twoFactorEnabled(originUser)) return null
             return target.respond(targetOwner, toCode)?.also { opened ->
                 target.recordEntry(opened, null, null, "Entro a la empresa desde la empresa $fromCode del mismo dueno.")
             }
@@ -247,8 +355,14 @@ class LoginDatabases(
         // A server owner: on the server ([fromCode] null) or inside a company they entered.
         class ServerOwner(val user: ApplicationUser) : Switcher
         // A server administrator: may enter only the companies of their scope, with server.companies.enter.
-        class ServerAdmin(val user: ApplicationUser, val admin: ServerAdminRow, private val ownerGroup: (String) -> Set<String>) : Switcher {
-            val mayEnter: Boolean get() = !admin.mustChangePassword && ServerPermission.CompaniesEnter in admin.permissions
+        class ServerAdmin(
+            val user: ApplicationUser,
+            val admin: ServerAdminRow,
+            private val ownerGroup: (String) -> Set<String>,
+            // The owner requires two-step verification and this administrator has not turned it on.
+            private val twoFactorPending: Boolean = false,
+        ) : Switcher {
+            val mayEnter: Boolean get() = !admin.mustChangePassword && !twoFactorPending && ServerPermission.CompaniesEnter in admin.permissions
 
             // The company and every company of its owner group must be in scope: inside, the business
             // owner reaches the whole group (owner switcher, agents with group scope).
@@ -266,7 +380,7 @@ class LoginDatabases(
             val user = serverScope.sessionUser(token) ?: return null
             if (serverScope.isOwner(user)) return Switcher.ServerOwner(user)
             val admin = activeAdmin(user) ?: return null
-            return if (admin.mustChangePassword) null else Switcher.ServerAdmin(user, admin, ::ownerGroupOf)
+            return if (admin.mustChangePassword) null else Switcher.ServerAdmin(user, admin, ::ownerGroupOf, adminTwoFactorPending(admin.userId))
         }
         val scope = activeDatabase(fromCode)?.let { tenantScope(it) } ?: return null
         scope.sessionOwner(token) ?: return null
@@ -282,7 +396,7 @@ class LoginDatabases(
     private fun serverSwitcher(userId: java.util.UUID): Switcher? {
         val user = serverScope.users.findById(kotlin.uuid.Uuid.parse(userId.toString()))?.takeIf { it.isActive } ?: return null
         if (serverScope.isOwner(user)) return Switcher.ServerOwner(user)
-        return activeAdmin(user)?.let { Switcher.ServerAdmin(user, it, ::ownerGroupOf) }
+        return activeAdmin(user)?.let { Switcher.ServerAdmin(user, it, ::ownerGroupOf, adminTwoFactorPending(it.userId)) }
     }
 
     /** Codes of the companies in the owner group of [companyCode] (itself included), active or not. */
@@ -528,6 +642,7 @@ class LoginDatabases(
 
     /** Sign-in of one database: the server (server owners) or a company. */
     private inner class Scope(private val source: DataSource, database: Database, url: String, private val server: Boolean) : LoginScope {
+        val dataSource: DataSource get() = source
         private val UnknownLogin = "(usuario desconocido)"
         val users = ApplicationUserRepository(database)
         private val postgresCredentials = PostgresCredentialVerifier(url)
@@ -542,30 +657,86 @@ class LoginDatabases(
                 return null
             }
             failedSignIns.succeeded(credentials.username, credentials.clientAddress.ifBlank { "desconocida" })
-            val response = respond(user, credentials.companyCode) ?: return null
+            // Two-step verification on: no session yet, the caller must send a code (TWO_FACTOR.md §2).
+            if (twoFactorEnabled(user)) {
+                throw challenges.issue(java.util.UUID.fromString(user.id.toString()), user.postgresRole, credentials.companyCode, credentials.clientAddress)
+            }
+            return open(user, credentials.companyCode, credentials.clientAddress, null)
+        }
+
+        fun twoFactorEnabled(user: ApplicationUser): Boolean =
+            source.connection.use { connection -> twoFactor.isEnabled(connection, java.util.UUID.fromString(user.id.toString())) }
+
+        // Opens the session of a finished sign-in and records it; without its row the sign-in does not happen.
+        private fun open(user: ApplicationUser, companyCode: String?, clientAddress: String, recovery: CodeCheck.Recovery?): LoginSuccessResponse? {
+            val response = respond(user, companyCode) ?: return null
             try {
-                signedIn(user, credentials)
+                signedIn(user, clientAddress, recovery)
             } catch (failure: Throwable) {
                 // Without its row the sign-in does not happen (ACTIVITY_LOG.md §1.2).
                 runCatching { revoke(response.accessToken) }
                 throw failure
             }
-            return response
+            return if (recovery == null) response else response.copy(recoveryCodeUsed = true, recoveryCodesLeft = recovery.left)
+        }
+
+        /** Step 2 of a sign-in of this database (see [completeTwoFactor]). */
+        fun secondStep(challengeToken: String, challenge: TwoFactorChallenges.Challenge, code: String): LoginSuccessResponse {
+            val user = users.findById(kotlin.uuid.Uuid.parse(challenge.userId.toString()))?.takeIf { it.isActive }
+                // Still an owner or an active administrator on the server.
+                ?.takeIf { !server || isOwner(it) || activeAdmin(it) != null }
+            if (user == null || user.postgresRole != challenge.username) {
+                challenges.finish(challengeToken)
+                throw TwoFactorSignInException.expired()
+            }
+            val result = try {
+                source.connection.use { connection -> twoFactor.check(connection, challenge.userId, code, allowRecovery = true) }
+            } catch (failure: Throwable) {
+                challenges.finish(challengeToken)
+                throw failure
+            }
+            return when (result) {
+                CodeCheck.Throttled -> {
+                    challenges.finish(challengeToken)
+                    throw TwoFactorException.tooManyAttempts()
+                }
+                CodeCheck.Invalid -> {
+                    failedSignIns.failed(challenge.username, challenge.clientAddress.ifBlank { "desconocida" })
+                    val left = challenges.attemptsLeft(challenge)
+                    if (left == 0) challenges.finish(challengeToken)
+                    throw TwoFactorSignInException(TwoFactorException.InvalidCode, tr("El codigo no es valido."), left)
+                }
+                is CodeCheck.Recovery, CodeCheck.Authenticator -> {
+                    challenges.finish(challengeToken)
+                    open(user, challenge.companyCode, challenge.clientAddress, result as? CodeCheck.Recovery)
+                        ?: throw TwoFactorSignInException.expired()
+                }
+            }
         }
 
         // Sign-ins: the company's activity log, or for the server provisioning_audit_log (ACTIVITY_LOG.md §3).
-        private fun signedIn(user: ApplicationUser, credentials: LoginCredentials) {
+        private fun signedIn(user: ApplicationUser, clientAddress: String, recovery: CodeCheck.Recovery?) {
             val userId = java.util.UUID.fromString(user.id.toString())
-            val address = credentials.clientAddress.ifBlank { "desconocida" }
+            val address = clientAddress.ifBlank { "desconocida" }
             if (server) {
                 val kind = if (isOwner(user)) AuditActor.ServerOwnerKind else AuditActor.ServerAdminKind
                 central.connection.use { connection ->
-                    ProvisioningAudit.insert(connection, AuditActor(user.postgresRole, userId, kind), "server.signed_in", null, null, auditDetails("address" to address))
+                    val actor = AuditActor(user.postgresRole, userId, kind)
+                    if (recovery != null) {
+                        ProvisioningAudit.insert(connection, actor, "two_factor.recovery_code_used", null, null, auditDetails("address" to address, "recoveryCodesLeft" to recovery.left))
+                    }
+                    ProvisioningAudit.insert(connection, actor, "server.signed_in", null, null, auditDetails("address" to address))
                 }
                 return
             }
             source.connection.use { connection ->
                 val actor = CoreActivity.tenantPerson(connection, userId) ?: ActivityActor.user(userId, user.postgresRole)
+                if (recovery != null) {
+                    CoreActivity.recordEvent(
+                        connection, actor, "user", userId.toString(), user.postgresRole, ActivityActions.SettingsChanged,
+                        "Inicio sesion con un codigo de recuperacion (le quedan ${recovery.left}).",
+                    )
+                }
                 CoreActivity.recordEvent(
                     connection, actor, "user", userId.toString(), user.postgresRole, ActivityActions.SignedIn,
                     "Inicio sesion desde $address.",
@@ -612,7 +783,34 @@ class LoginDatabases(
         fun verifyCredentials(credentials: LoginCredentials): Boolean = authenticate(credentials) != null
 
         private fun authenticate(credentials: LoginCredentials): ApplicationUser? =
-            if (server) authenticateOnServer(credentials) else authentication.authenticate(credentials)
+            if (server) authenticateOnServer(credentials) else authenticateInCompany(credentials)
+
+        /**
+         * Company sign-in with the per-login throttle of the server sign-in (B1): after
+         * [ServerLoginMaxFailures] failures of an existing login from one client (an IPv6 /64 is one
+         * client) in [ServerLoginWindow] the login is refused without checking the password (same work,
+         * same answer); a success resets it. A second counter per login across addresses only delays
+         * (serverLoginDelayMillis). Only existing logins are counted (bounded memory).
+         */
+        private fun authenticateInCompany(credentials: LoginCredentials): ApplicationUser? {
+            val company = credentials.companyCode.orEmpty()
+            val existing = credentials.username.takeIf { it.isNotBlank() }?.let { users.findByPostgresRole(it) }
+            val throttleKey = existing?.let { companyLoginKey(company, it.postgresRole, credentials.clientAddress) }
+            if (throttleKey != null && companyLoginAttempts.isBlocked(throttleKey)) {
+                spendSignInWork(credentials.password)
+                return null
+            }
+            val result = authentication.authenticate(credentials)
+            if (throttleKey != null) {
+                if (result != null) {
+                    companyLoginAttempts.reset(throttleKey)
+                } else {
+                    companyLoginAttempts.recordFailure(throttleKey)
+                    companyLoginGlobalAttempts.recordFailure(companyLoginGlobalKey(company, existing.postgresRole))
+                }
+            }
+            return result
+        }
 
         /**
          * Server sign-in: a server owner with their PostgreSQL role (as before), an active server
@@ -631,13 +829,17 @@ class LoginDatabases(
             // owner out from another address; a success resets the key.
             val throttleKey = user?.let { serverLoginKey(it.postgresRole, credentials.clientAddress) }
             if (throttleKey != null && serverLoginAttempts.isBlocked(throttleKey)) {
+                spendPostgresCheck(credentials.password)
                 ServerAdminPasswords.spendDummyCheck(credentials.password)
                 return null
             }
+            // Every path also does one PostgreSQL authentication (B2): otherwise the owner's login, the only
+            // one checked against PostgreSQL, would take longer than an unknown one.
             val result = if (user != null && isOwner(user)) {
                 ServerAdminPasswords.spendDummyCheck(credentials.password)
                 user.takeIf { postgresCredentials.verify(credentials) }
             } else {
+                spendPostgresCheck(credentials.password)
                 val admin = user?.let { activeAdmin(it) }
                 if (admin == null) {
                     ServerAdminPasswords.spendDummyCheck(credentials.password)
@@ -785,7 +987,8 @@ class LoginDatabases(
                     else -> admin.permissions.map { it.id }.sorted()
                 },
                 serverCompanies = if (admin == null || admin.allCompanies) null else admin.companies.sorted(),
-                mustChangePassword = admin?.mustChangePassword == true)
+                mustChangePassword = admin?.mustChangePassword == true,
+                twoFactorSetupRequired = admin != null && adminTwoFactorPending(userId))
         }
     }
 
@@ -864,6 +1067,9 @@ class LoginDatabases(
 }
 
 const val ServerNameSetting = "server.name"
+
+/** A login that is never a PostgreSQL role: authenticating it costs what a real attempt costs. */
+const val MockLogin = "bms_timing_only_no_such_login"
 
 /** A server owner or administrator (central user) as the activity log names them; [kind] is server_owner or server_admin. */
 data class ServerPerson(val userId: java.util.UUID, val login: String, val name: String, val kind: String)

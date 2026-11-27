@@ -5,6 +5,9 @@ import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.bms.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.bms.server.auth.domain.SwitchTargetsResponse
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorRequiredException
+import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorSignInException
 import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.server.routing.get
 import kotlinx.serialization.Serializable
@@ -20,6 +23,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.sql.SQLException
 
+// Step 2 of a sign-in with two-step verification (TWO_FACTOR.md §2).
+@Serializable
+data class TwoFactorLoginRequest(val challengeToken: String = "", val code: String = "")
+
+@Serializable
+data class TwoFactorRequiredResponse(
+    val code: String,
+    val message: String,
+    val challengeToken: String,
+    val expiresInSeconds: Long,
+    val methods: List<String> = listOf("totp", "recovery_code"),
+)
+
+@Serializable
+data class TwoFactorErrorResponse(val code: String, val message: String, val attemptsLeft: Int? = null)
+
 // companyCode null: back to the server (server owners only).
 @Serializable
 data class SwitchCompanyRequest(val companyCode: String? = null)
@@ -34,6 +53,8 @@ fun Route.authRoutes(
     // Permiten montar cada grupo bajo un limitador distinto sin cambiar las URLs.
     includeLogin: Boolean = true,
     includeSession: Boolean = true,
+    // Step 2 of a sign-in (LoginDatabases.completeTwoFactor): challenge token, code, client address.
+    completeTwoFactor: ((String, String, String) -> LoginSuccessResponse)? = null,
 ) {
     val codePattern = Regex("[a-z][a-z0-9_]{0,62}")
     fun io.ktor.server.application.ApplicationCall.switchContext(): Pair<String?, String>? {
@@ -125,6 +146,16 @@ fun Route.authRoutes(
                 withContext(Dispatchers.IO) {
                     loginService.login(credentials)
                 }
+            } catch (required: TwoFactorRequiredException) {
+                // Right password, second step pending: no session yet (older apps show the message).
+                call.respond(
+                    HttpStatusCode.Unauthorized,
+                    TwoFactorRequiredResponse("TWO_FACTOR_REQUIRED", required.message.orEmpty(), required.token, required.expiresInSeconds),
+                )
+                return@post
+            } catch (_: TwoFactorException) {
+                call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", tr("No se pudo procesar el inicio de sesión. Inténtalo más tarde.")))
+                return@post
             } catch (_: SQLException) {
                 call.respond(
                     HttpStatusCode.ServiceUnavailable,
@@ -147,6 +178,24 @@ fun Route.authRoutes(
                 return@post
             }
 
+            call.respond(HttpStatusCode.OK, response)
+        }
+
+        post("/auth/login/two-factor") {
+            call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+            val complete = completeTwoFactor ?: return@post call.respond(HttpStatusCode.NotFound)
+            val request = runCatching { call.receive<TwoFactorLoginRequest>() }.getOrNull()
+                ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
+            val response = try {
+                withContext(Dispatchers.IO) { complete(request.challengeToken.trim(), request.code.take(64), clientAddress(call)) }
+            } catch (refused: TwoFactorSignInException) {
+                return@post call.respond(HttpStatusCode.Unauthorized, TwoFactorErrorResponse(refused.code, refused.message.orEmpty(), refused.attemptsLeft))
+            } catch (refused: TwoFactorException) {
+                val status = if (refused.code == TwoFactorException.TooManyAttempts) HttpStatusCode.TooManyRequests else HttpStatusCode.ServiceUnavailable
+                return@post call.respond(status, TwoFactorErrorResponse(refused.code, refused.message.orEmpty()))
+            } catch (_: SQLException) {
+                return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", tr("No se pudo procesar el inicio de sesión. Inténtalo más tarde.")))
+            }
             call.respond(HttpStatusCode.OK, response)
         }
     }

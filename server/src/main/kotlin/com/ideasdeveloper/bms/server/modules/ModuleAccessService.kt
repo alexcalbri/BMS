@@ -267,10 +267,55 @@ class ModuleAccessService(
      * Checks a user's password like the app's login and leaves no session behind, for module pages
      * that sign users in themselves (OAuth authorization of AI agents). Without [companyCode] it
      * signs in a server owner, who then acts in the server workspace. Null when rejected or when a
-     * server owner has no server workspace. Callers must rate limit attempts.
+     * server owner has no server workspace, and for an account with two-step verification on (use
+     * [signInForAgent], which asks for the code). Callers must rate limit attempts. [clientAddress]
+     * is recorded with the sign-in and keys the per-login throttle (clientAddress(call) of the page).
      */
-    fun verifyCredentials(companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false): VerifiedUser? {
-        val session = login(LoginCredentials(username, password, companyCode)) ?: return null
+    fun verifyCredentials(companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false, clientAddress: String = ""): VerifiedUser? =
+        when (val result = signInForAgent(companyCode, username, password, null, clientAddress, allowAuditAdmin)) {
+            is AgentSignIn.Verified -> result.user
+            else -> null
+        }
+
+    /** [verifyCredentials] for the request [call] (its client address is recorded). */
+    fun verifyCredentials(call: ApplicationCall, companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false): VerifiedUser? =
+        verifyCredentials(companyCode, username, password, allowAuditAdmin, com.ideasdeveloper.bms.server.app.clientAddress(call))
+
+    /**
+     * The sign-in of an AI agent's OAuth page with the second step (TWO_FACTOR.md §2): password and,
+     * for an account with two-step verification on, [twoFactorCode] (authenticator or recovery code).
+     * Without the code such an account gets [AgentSignIn.SecondFactorRequired] (ask for it and call
+     * again with both); a wrong code [AgentSignIn.InvalidCode]; too many [AgentSignIn.TooManyAttempts].
+     */
+    fun signInForAgent(
+        companyCode: String?,
+        username: String,
+        password: String,
+        twoFactorCode: String?,
+        clientAddress: String,
+        allowAuditAdmin: Boolean = false,
+    ): AgentSignIn {
+        val session = try {
+            login(LoginCredentials(username, password, companyCode, clientAddress))
+        } catch (required: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorRequiredException) {
+            val code = twoFactorCode?.trim()?.takeIf { it.isNotEmpty() }
+            if (code == null) {
+                loginDatabases.finishTwoFactor(required.token)
+                return AgentSignIn.SecondFactorRequired
+            }
+            try {
+                loginDatabases.completeTwoFactor(required.token, code, clientAddress)
+            } catch (_: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorSignInException) {
+                loginDatabases.finishTwoFactor(required.token)
+                return AgentSignIn.InvalidCode
+            } catch (refused: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException) {
+                return if (refused.code == com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException.TooManyAttempts) AgentSignIn.TooManyAttempts else AgentSignIn.Rejected
+            }
+        } ?: return AgentSignIn.Rejected
+        return verifiedFrom(session, companyCode, allowAuditAdmin)?.let { AgentSignIn.Verified(it) } ?: AgentSignIn.Rejected
+    }
+
+    private fun verifiedFrom(session: LoginSuccessResponse, companyCode: String?, allowAuditAdmin: Boolean): VerifiedUser? {
         val serverOwner = session.scope == "server"
         // Server administrators never act here with server rights: no agent or module does. The one
         // exception (ACTIVITY_LOG.md §7): with [allowAuditAdmin], an administrator holding
@@ -283,7 +328,7 @@ class ModuleAccessService(
                     it.executeUpdate()
                 }
             }
-            if (!allowAuditAdmin || session.mustChangePassword) return null
+            if (!allowAuditAdmin || session.mustChangePassword || session.twoFactorSetupRequired) return null
             val adminId = UUID.fromString(session.userId)
             serverAuditAgent(adminId) ?: return null
             val workspace = activeServerWorkspace() ?: return null
@@ -312,6 +357,8 @@ class ModuleAccessService(
             ?.takeIf { it.usable && !it.mustChangePassword && com.ideasdeveloper.bms.server.admins.ServerPermission.AuditView in it.permissions }
             ?: return null
         if (isActiveServerOwner(userId)) return null
+        // The owner requires two-step verification and this administrator has not turned it on yet.
+        if (loginDatabases.adminTwoFactorPending(userId)) return null
         val tools = moduleMcp().filter { it.moduleId == ServerMcpModuleId }.flatMap { it.tools }
             .filter { it.qualifiedName in com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools.AdminAgentToolNames }
         val name = admin.displayName?.takeIf { it.isNotBlank() } ?: admin.login
@@ -691,6 +738,16 @@ class ModuleAccessService(
      * Validates the session and company of a request that belongs to the Core, not to a module (the
      * notification center): who the user is, with no module permission involved.
      */
+    /** Whether the call carries a valid session: a company one (X-Company-Code) or a server one (none). */
+    fun hasSession(call: ApplicationCall): Boolean {
+        val token = accessToken(call) ?: return false
+        return try {
+            loginDatabases.sessionAccount(companyCode(call), token) != null
+        } catch (_: SQLException) {
+            false
+        }
+    }
+
     fun userSession(call: ApplicationCall): UserSessionLookup {
         val token = accessToken(call)
             ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", tr("La sesion es requerida.")))
@@ -1053,6 +1110,17 @@ data class UserIdentity(val userId: UUID, val name: String, val email: String?, 
 
 // A user whose password was checked: a tenant user, or a server owner acting in the server workspace.
 // [serverAdmin]: a server administrator connecting an audit-only agent (see serverAuditAgent); never serverOwner.
+/** Outcome of [ModuleAccessService.signInForAgent]. */
+sealed interface AgentSignIn {
+    data class Verified(val user: VerifiedUser) : AgentSignIn
+    /** Right password; the account uses two-step verification: ask for the code and send both again. */
+    data object SecondFactorRequired : AgentSignIn
+    data object InvalidCode : AgentSignIn
+    data object TooManyAttempts : AgentSignIn
+    /** Wrong user, password or company, or the account may not connect agents. */
+    data object Rejected : AgentSignIn
+}
+
 data class VerifiedUser(val userId: UUID, val username: String, val companyCode: String, val serverOwner: Boolean, val serverAdmin: Boolean = false)
 
 /**

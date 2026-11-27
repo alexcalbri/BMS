@@ -125,6 +125,13 @@ object ServerRoutePolicies {
         put("PUT /server/admins/{id}/permissions", owner)
         put("PUT /server/admins/{id}/password", owner)
         put("PUT /server/admins/{id}/status", owner)
+        // Storage quotas of the companies (STORAGE_QUOTA.md): the owner only.
+        put("GET /server/storage", owner)
+        put("PUT /server/storage", owner)
+        put("PUT /companies/{code}/storage-quota", owner)
+        // Two-step verification rule for administrators (TWO_FACTOR.md §5): the owner only.
+        put("GET /server/two-factor-policy", owner)
+        put("PUT /server/two-factor-policy", owner)
         // The caller itself
         put("GET /server/me", RoutePolicy.AnyServerUser(duringPasswordChange = true))
         put("PUT /auth/password", RoutePolicy.AnyServerUser(duringPasswordChange = true))
@@ -171,6 +178,7 @@ fun ApplicationCall.checkServerGate(lookup: ServerActorLookup, policy: RoutePoli
         ServerActorLookup.NoExecutor -> return ServerGate.Denied(HttpStatusCode.ServiceUnavailable, "SERVER_OWNER_UNAVAILABLE", tr("El servidor no tiene un dueno activo."))
         is ServerActorLookup.PasswordChangeRequired -> {
             if (policy is RoutePolicy.AnyServerUser && policy.duringPasswordChange) lookup.actor
+            else if (lookup.twoFactorSetup) return ServerGate.Denied(HttpStatusCode.Forbidden, "TWO_FACTOR_SETUP_REQUIRED", tr("Activa la verificacion en dos pasos para continuar."))
             else return ServerGate.Denied(HttpStatusCode.Forbidden, "PASSWORD_CHANGE_REQUIRED", tr("Cambia tu contrasena antes de continuar."))
         }
         is ServerActorLookup.Found -> lookup.actor

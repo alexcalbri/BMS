@@ -3,7 +3,7 @@ package com.ideasdeveloper.bms.server.auth.domain
 import kotlinx.serialization.Serializable
 
 @Serializable
-class LoginSuccessResponse(
+data class LoginSuccessResponse(
     val userId: String,
     val username: String,
     val accessToken: String,
@@ -36,6 +36,11 @@ class LoginSuccessResponse(
     val serverCompanies: List<String>? = null,
     // A server administrator must change the initial password (PUT /auth/password) before anything else works.
     val mustChangePassword: Boolean = false,
+    // Two-step verification (TWO_FACTOR.md): a server administrator the owner requires to use it, not enrolled yet.
+    val twoFactorSetupRequired: Boolean = false,
+    // The second step used a recovery code; how many are left.
+    val recoveryCodeUsed: Boolean = false,
+    val recoveryCodesLeft: Int? = null,
 )
 
 // A company the session can move to.

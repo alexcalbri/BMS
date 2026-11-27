@@ -50,6 +50,12 @@ class ApplicationUserRepository(
         }
     }
 
+    /**
+     * Whether [password] is the application password of the active user [postgresRole]. Every case
+     * does the same PBKDF2 work, ApplicationPasswordHasher.Iterations (B2): an unknown or inactive user
+     * computes a dummy hash at that cost, and a hash stored with fewer iterations is topped up with a
+     * dummy for the difference (before it is re-hashed at the current cost on success).
+     */
     fun verifyApplicationPassword(postgresRole: String, password: String): Boolean {
         return transaction(db = database) {
             val row = ApplicationUsersTable
@@ -61,19 +67,22 @@ class ApplicationUserRepository(
                 }
                 .singleOrNull()
                 ?: run {
-                    // Usuario inexistente: se calcula un hash ficticio con el mismo coste para igualar el tiempo.
-                    ApplicationPasswordHasher.verify(password, DummySalt, DummyHash, DummyIterations)
+                    spendDummyCheck(password)
                     return@transaction false
                 }
 
+            val stored = row[ApplicationUserCredentialsTable.iterations]
             val valid = ApplicationPasswordHasher.verify(
                 password = password,
                 salt = row[ApplicationUserCredentialsTable.passwordSalt],
                 expectedHash = row[ApplicationUserCredentialsTable.passwordHash],
-                iterations = row[ApplicationUserCredentialsTable.iterations],
+                iterations = stored,
             )
+            if (stored < ApplicationPasswordHasher.Iterations) {
+                ApplicationPasswordHasher.verify(password, DummySalt, DummyHash, ApplicationPasswordHasher.Iterations - stored)
+            }
             // Hash guardado con menos iteraciones: se re-hashea con el coste actual al iniciar sesion.
-            if (valid && row[ApplicationUserCredentialsTable.iterations] < ApplicationPasswordHasher.Iterations) {
+            if (valid && stored < ApplicationPasswordHasher.Iterations) {
                 val upgraded = ApplicationPasswordHasher.hash(password)
                 ApplicationUserCredentialsTable.update({
                     ApplicationUserCredentialsTable.userId eq row[ApplicationUsersTable.id]
@@ -120,14 +129,15 @@ class ApplicationUserRepository(
         val userId = uuid("user_id")
     }
 
-    private companion object {
+    companion object {
         // Hash ficticio (clave y sal fijas) solo para igualar el tiempo cuando el usuario no existe.
-        // Mismo coste que los hashes antiguos (120000), que son los que tienen hoy los usuarios existentes:
-        // asi "usuario no existe" tarda igual que "existe con hash antiguo". Cuando todos esten migrados
-        // a ApplicationPasswordHasher.Iterations, subir este valor al mismo.
-        const val DummyIterations = 120_000
-        const val DummySalt = "AAAAAAAAAAAAAAAAAAAAAA=="
-        const val DummyHash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        private const val DummySalt = "AAAAAAAAAAAAAAAAAAAAAA=="
+        private const val DummyHash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+        /** One PBKDF2 at the current cost, for paths where no real hash is checked (unknown user, company or login). */
+        fun spendDummyCheck(password: String) {
+            ApplicationPasswordHasher.verify(password, DummySalt, DummyHash, ApplicationPasswordHasher.Iterations)
+        }
     }
 
     fun setApplicationPassword(userId: Uuid, passwordHash: PasswordHash) {

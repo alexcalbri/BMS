@@ -12,10 +12,14 @@ import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.bms.server.auth.api.accountProfileRoutes
 import com.ideasdeveloper.bms.server.auth.api.passwordResetRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
+import com.ideasdeveloper.bms.server.auth.api.twoFactorRoutes
 import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountPasswords
 import com.ideasdeveloper.bms.server.auth.application.AccountService
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
+import com.ideasdeveloper.bms.server.company.api.StorageAdmin
+import com.ideasdeveloper.bms.server.company.api.storageRoutes
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
@@ -92,6 +96,11 @@ fun Application.module() {
     install(ContentNegotiation) {
         json(kotlinx.serialization.json.Json { encodeDefaults = true; ignoreUnknownKeys = true })
     }
+    // Every body is limited unless the route is an upload that limits itself (B10, UploadRoutes).
+    install(RequestBodyLimit) {
+        defaultBytes = environment.config.propertyOrNull("http.maxRequestBodyBytes")?.getString()?.trim()?.toLongOrNull()
+            ?.takeIf { it > 0 } ?: DefaultRequestBodyBytes
+    }
     install(RateLimit) {
         register(RateLimitName("login")) {
             rateLimiter(
@@ -99,7 +108,7 @@ fun Application.module() {
                 refillPeriod = 60.seconds,
             )
 
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         register(RateLimitName("admin")) {
             rateLimiter(
@@ -109,7 +118,7 @@ fun Application.module() {
 
             // Siempre por IP: una clave derivada de la cabecera Authorization se evade rotando el
             // token (basta con enviar uno distinto en cada peticion) y haria crecer el mapa sin tope.
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Lecturas del Core (/version, /modules, /notifications): por IP, holgado para el uso normal
         // de la app pero evita inundaciones que abririan una conexion a la base de datos cada una.
@@ -118,7 +127,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Reads of the activity logs (/companies/me/activity*, /server/activity*): each one reads one or
         // every company database, so per client IP and tighter than the other admin routes.
@@ -127,7 +136,7 @@ fun Application.module() {
                 limit = 30,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
         // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
         // enough for webhook bursts, but it stops floods that would open a database connection each.
@@ -136,7 +145,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> clientAddress(call) }
+            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
         }
     }
     DatabaseFactory.init(environment.config)
@@ -145,12 +154,21 @@ fun Application.module() {
             ?: "build/server-modules"
     )
     // Files modules store for each company (attachments...); back this folder up with the databases.
-    val companyFiles = CompanyFiles.local(
-        Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    // Every write is limited by the company's quota, a free-disk floor and a cap on uploads in progress (STORAGE_QUOTA.md).
+    val companyFilesRoot = Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    val storageQuotas = com.ideasdeveloper.bms.server.modules.StorageQuotas(DatabaseFactory.getDataSource())
+    val storageGuard = com.ideasdeveloper.bms.server.modules.StorageGuard(
+        root = companyFilesRoot,
+        quotaFor = storageQuotas::effectiveQuotaBytes,
+        minFreeBytes = environment.config.propertyOrNull("company.minFreeDiskBytes")?.getString()?.trim()?.toLongOrNull()
+            ?.coerceAtLeast(0) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMinFreeBytes,
+        maxConcurrentUploads = environment.config.propertyOrNull("company.maxConcurrentUploads")?.getString()?.trim()?.toIntOrNull()
+            ?.coerceAtLeast(1) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMaxConcurrentUploads,
     )
+    val companyFiles = CompanyFiles.local(companyFilesRoot, storageGuard)
     val classpathModules = loadServerModules()
     val packageRequirements = mutableMapOf<String, ModuleRequirements>()
-    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements)
+    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements, modulePackagesRoot)
     val serverModules = (classpathModules + packagedModules).sortedBy { it.definition.id }
     val installedServerModules = loadInstalledServerModuleDefinitions(DatabaseFactory.getDataSource(), serverModules)
     val moduleRegistry = ModuleRegistry(
@@ -165,6 +183,10 @@ fun Application.module() {
     }
     val githubToken = environment.config.propertyOrNull("modules.githubToken")?.getString()?.trim()?.takeIf { it.isNotEmpty() }
     val remoteModuleCatalog = RemoteModuleCatalog(githubToken)
+    // Secrets are sealed with BMS_MASTER_KEY (server.env); without it the server runs but cannot store new ones.
+    val secretBox: SecretBox = MasterKeySecretBox.fromEnvironment().also { box ->
+        if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
+    }
     val loginDatabases = LoginDatabases(
         central = DatabaseFactory.getDataSource(),
         centralDatabase = DatabaseFactory.getDatabase(),
@@ -175,6 +197,8 @@ fun Application.module() {
         tenantJdbcUrlPrefix = environment.config.propertyOrNull("provisioning.tenantJdbcUrlPrefix")?.getString()
             ?: environment.config.property("database.url").getString().substringBeforeLast('/') + "/",
         lifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
+        // TOTP secrets of two-step verification are sealed with the master key (TWO_FACTOR.md).
+        secrets = secretBox,
     )
     val centralSessions = SessionService(
         sessionRepository = ApplicationSessionRepository(DatabaseFactory.getDatabase()),
@@ -182,10 +206,6 @@ fun Application.module() {
         tokenGenerator = SessionTokenGenerator(),
         sessionLifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
     )
-    // Secrets are sealed with BMS_MASTER_KEY (server.env); without it the server runs but cannot store new ones.
-    val secretBox: SecretBox = MasterKeySecretBox.fromEnvironment().also { box ->
-        if (!box.available) log.warn("BMS_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
-    }
     val provisioningConfig = companyProvisioningConfig()
     // Set below; the integrity service notifies the server owners through it (their notifications in the workspace).
     lateinit var moduleAccessRef: ModuleAccessService
@@ -322,7 +342,7 @@ fun Application.module() {
             ),
             verifier = ExtensionSignatureVerifier(),
             authorizations = unsignedAuthorizations,
-            moduleJar = { id -> installedModuleJar(DatabaseFactory.getDataSource(), id) },
+            moduleJar = { id -> installedModuleJar(DatabaseFactory.getDataSource(), id, modulePackagesRoot) },
             githubToken = githubToken,
         ),
         authorizations = unsignedAuthorizations,
@@ -469,16 +489,20 @@ fun Application.module() {
             get("/version") {
                 // En cache unos minutos: la consulta hace peticiones HTTP salientes y no debe poder
                 // amplificarse desde fuera.
-                call.respond(
-                    versionCache.get {
-                        versionResponse(
-                            catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
-                            central = DatabaseFactory.getDataSource(),
-                            remoteModuleCatalog = remoteModuleCatalog,
-                            defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
-                        )
-                    }
-                )
+                val full = versionCache.get {
+                    versionResponse(
+                        catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
+                        central = DatabaseFactory.getDataSource(),
+                        remoteModuleCatalog = remoteModuleCatalog,
+                        defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
+                    )
+                }
+                // B7: before signing in the app only needs the Core version (compatibility) and the latest
+                // app version; the rest only for a server user who may update the Core or see the modules.
+                val token = call.request.headers[io.ktor.http.HttpHeaders.Authorization]?.takeIf { it.startsWith("Bearer ") }?.removePrefix("Bearer ")?.trim()
+                val actor = token?.takeIf { it.isNotEmpty() }?.let { withContextIO { (serverActors.resolve(it) as? com.ideasdeveloper.bms.server.admins.ServerActorLookup.Found)?.actor } }
+                val detailed = actor != null && (actor.has(com.ideasdeveloper.bms.server.admins.ServerPermission.CoreUpdate) || actor.has(com.ideasdeveloper.bms.server.admins.ServerPermission.ModulesView))
+                call.respond(if (detailed) full else full.publicView())
             }
         }
 
@@ -489,6 +513,7 @@ fun Application.module() {
                 switchTo = loginDatabases::switchTo,
                 logout = loginDatabases::logout,
                 includeSession = false,
+                completeTwoFactor = loginDatabases::completeTwoFactor,
             )
             passwordResetRoutes(accountService)
         }
@@ -502,6 +527,8 @@ fun Application.module() {
                 includeLogin = false,
             )
             accountProfileRoutes(accountService)
+            // The user's own two-step verification (TWO_FACTOR.md §3).
+            twoFactorRoutes(com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorAccountService(loginDatabases, passwordAttempts = passwordAttempts))
         }
         rateLimit(RateLimitName("admin")) {
             // Registra rutas de provisioning server_owner y autoservicio business_owner.
@@ -521,6 +548,9 @@ fun Application.module() {
                 addToScope = { userId, code -> loginDatabases.admins.addCompany(userId, code) },
             )
             serverAdminRoutes(serverActors, serverAdmins, serverAudit, serverActivity, activityIntegrity)
+            // Storage quotas of the companies (STORAGE_QUOTA.md), owner only.
+            twoFactorPolicyRoutes(serverActors, DatabaseFactory.getDataSource())
+            storageRoutes(serverActors, StorageAdmin(DatabaseFactory.getDataSource(), storageQuotas, storageGuard, companyFilesRoot))
             // The company's own activity log (ACTIVITY_LOG.md §3).
             companyActivityRoutes(moduleAccessService, activityModuleName)
         }
@@ -614,6 +644,8 @@ private class ExpiringCache<T : Any>(private val ttlMillis: Long, private val fa
         }
     }
 }
+
+private suspend fun <T> withContextIO(block: () -> T): T = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { block() }
 
 private val versionCache = ExpiringCache<VersionResponse>(ttlMillis = 5 * 60_000L, failureTtlMillis = 45_000L)
 
@@ -713,28 +745,42 @@ private fun loadPackagedModules(
     central: DataSource,
     classpathModuleIds: Set<String>,
     requirements: MutableMap<String, ModuleRequirements>,
+    packagesRoot: Path,
 ): List<ServerModule> {
     val log = LoggerFactory.getLogger("ModulePackages")
     val packages = try {
         central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT module_id, installed_package_path FROM server_modules WHERE installed_package_path LIKE '%.jar'"
+                "SELECT module_id, installed_package_path, package_sha256 FROM server_modules WHERE installed_package_path LIKE '%.jar'"
             ).use { query ->
                 query.executeQuery().use { rows ->
-                    buildList { while (rows.next()) add(rows.getString("module_id") to rows.getString("installed_package_path")) }
+                    buildList { while (rows.next()) add(Triple(rows.getString("module_id"), rows.getString("installed_package_path"), rows.getString("package_sha256"))) }
                 }
             }
         }
     } catch (_: SQLException) {
         emptyList()
     }
-    return packages.flatMap { (moduleId, path) ->
-        val jar = Path.of(path)
+    return packages.flatMap { (moduleId, path, sha256) ->
+        // B8: only a jar inside the modules folder whose hash is the one recorded at install (ModuleJarIntegrity).
+        val checked = if (moduleId in classpathModuleIds || !Files.isRegularFile(Path.of(path))) null
+            else com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.check(moduleId, path, sha256, packagesRoot) { actual ->
+                com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.recordFirst(central, moduleId, actual)
+            }
+        val jar = when (checked) {
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Verified -> checked.jar
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Recorded -> checked.jar
+            else -> Path.of(path)
+        }
         when {
             // A module compiled into this server (base module or :server:run) wins over a package.
             moduleId in classpathModuleIds -> emptyList()
             !Files.isRegularFile(jar) -> {
                 log.error("Package of module {} not found at {}; reinstall the module.", moduleId, jar)
+                emptyList()
+            }
+            checked is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Refused -> {
+                log.error("Package of module {} was NOT loaded: {}. Reinstall the module.", moduleId, checked.reason)
                 emptyList()
             }
             else -> try {
@@ -750,11 +796,17 @@ private fun loadPackagedModules(
 
 // systemd (Restart=on-failure) starts the server again within seconds and the new package loads.
 // Jar of an optional module built on this server, which extension packages compile against; null for base modules.
-private fun installedModuleJar(central: DataSource, moduleId: String): Path? = try {
+private fun installedModuleJar(central: DataSource, moduleId: String, packagesRoot: Path): Path? = try {
     central.connection.use { connection ->
-        connection.prepareStatement("SELECT installed_package_path FROM server_modules WHERE module_id = ? AND installed_package_path LIKE '%.jar'").use { query ->
+        connection.prepareStatement("SELECT installed_package_path, package_sha256 FROM server_modules WHERE module_id = ? AND installed_package_path LIKE '%.jar'").use { query ->
             query.setString(1, moduleId)
-            query.executeQuery().use { rows -> if (rows.next()) Path.of(rows.getString(1)).takeIf { Files.isRegularFile(it) } else null }
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+        }
+    }?.let { (path, sha256) ->
+        // The same check as loading it (B8): extensions compile against a verified jar only.
+        when (val checked = com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.check(moduleId, path, sha256, packagesRoot) { false }) {
+            is com.ideasdeveloper.bms.server.modules.ModuleJarIntegrity.Result.Verified -> checked.jar
+            else -> null
         }
     }
 } catch (_: SQLException) {

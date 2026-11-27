@@ -17,6 +17,9 @@ data class VersionResponse(
         get() = CoreUpdateService.isUpdateAvailable(coreVersion, latestCoreVersion)
     val modulesUpdateAvailable: Boolean
         get() = moduleUpdates.isNotEmpty()
+
+    /** What anyone may read before signing in (B7): the Core version for the app's compatibility check and the latest app. */
+    fun publicView(): VersionResponse = VersionResponse(coreVersion = coreVersion, latestAppVersion = latestAppVersion)
 }
 
 @Serializable

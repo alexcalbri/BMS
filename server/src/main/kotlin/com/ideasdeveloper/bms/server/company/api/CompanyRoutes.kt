@@ -9,6 +9,8 @@ import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningServ
 import com.ideasdeveloper.bms.server.company.application.CompanyMailRejectedException
 import com.ideasdeveloper.bms.server.company.application.CompanyMailStorageException
 import com.ideasdeveloper.bms.server.company.application.CompanySelfException
+import com.ideasdeveloper.bms.server.company.application.BackupImportLimits
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
 import com.ideasdeveloper.bms.server.admins.ServerActor
 import com.ideasdeveloper.bms.server.admins.ServerActorResolver
@@ -35,8 +37,6 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
-import io.ktor.utils.io.readRemaining
-import io.ktor.utils.io.core.readBytes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.sql.SQLException
@@ -280,26 +280,33 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", tr("Debes iniciar sesion como business_owner.")))
             return@post
         }
-        var fileName: String? = null
-        var bytes: ByteArray? = null
-        // Extrae el archivo enviado en multipart bajo el campo file.
-        call.receiveMultipart().forEachPart { part ->
-            if (part is PartData.FileItem && part.name == "file") {
-                fileName = part.originalFileName
-                bytes = part.provider().readRemaining().readBytes()
-            }
-            part.dispose()
-        }
-        val uploadedName = fileName
-        val uploadedBytes = bytes
-        if (uploadedName == null || uploadedBytes == null) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_BACKUP", tr("Debes subir un archivo ZIP.")))
-            return@post
-        }
+        // Streamed to disk with size, entry and expanded-size limits (B4); nothing is held in memory.
+        var stored: CompanyBackupResponse? = null
+        var refusal: String? = null
+        var sawFile = false
         try {
-            call.respond(HttpStatusCode.Created, withContext(Dispatchers.IO) { service.storeImportedBackup(context.companyCode, context.token, uploadedName, uploadedBytes) })
-        } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BACKUP_NOT_IMPORTED", exception.message ?: tr("No se pudo importar el backup.")))
+            call.receiveMultipart(formFieldLimit = BackupImportLimits.MaxBytes + 64 * 1024).forEachPart { part ->
+                if (part is PartData.FileItem && part.name == "file" && !sawFile) {
+                    sawFile = true
+                    val name = part.originalFileName.orEmpty()
+                    try {
+                        stored = withContext(Dispatchers.IO) {
+                            part.provider().toInputStream().use { input -> service.storeImportedBackup(context.companyCode, context.token, name, input) }
+                        }
+                    } catch (exception: CompanySelfException) {
+                        refusal = exception.message ?: tr("No se pudo importar el backup.")
+                    }
+                }
+                part.dispose()
+            }
+        } catch (_: java.io.IOException) {
+            refusal = refusal ?: tr("No se pudo importar el backup.")
+        }
+        val result = stored
+        when {
+            result != null -> call.respond(HttpStatusCode.Created, result)
+            refusal != null -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BACKUP_NOT_IMPORTED", refusal!!))
+            else -> call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_BACKUP", tr("Debes subir un archivo ZIP.")))
         }
     }
 
