@@ -53,10 +53,13 @@ The challenge is bound to the account, the company and the client address of ste
 ### Every way in asks for the second step
 
 - Company sign-in and server sign-in: as above.
-- Business-owner company switcher (`POST /auth/switch-company` between companies of one owner group): switching
-  into a business owner account that has two-step verification on is refused (`403 SWITCH_REJECTED`) unless the
-  account the session belongs to has it on too. The server owner/administrator switcher is unchanged (the
-  server person is the one who signed in; their own second step applies to their server sign-in).
+- Company switcher (`POST /auth/switch-company`): the session row records whether THIS session passed a second step
+  (authenticator or recovery code at sign-in; a session opened by a switch inherits it; enabling two-step
+  verification in a session or finishing an email recovery does not set it). A switch is refused with
+  `403 TWO_FACTOR_REAUTH_REQUIRED` "Para entrar ahi tienes que haber iniciado sesion con tu codigo…" when the
+  acting session did not pass one and: the target company's owner uses two-step verification (business-owner
+  switcher), or the target owner or the server person uses it (server owner/administrator switcher, into a company
+  or back to the server). The app shows the message and offers to sign out and in again with the code.
 - AI agents (OAuth sign-in page of the Agentes module): Core's old `ModuleAccessService.verifyCredentials` now
   refuses accounts with two-step verification on (they cannot connect agents until the page is updated);
   `ModuleAccessService.signInForAgent(company, user, password, twoFactorCode, clientAddress, allowAuditAdmin)`
@@ -86,8 +89,12 @@ cannot store secrets (no `BMS_MASTER_KEY`, or the database lacks migration contr
 The issuer is `BMS (<company code>)`, or `BMS (<server name>)` for server accounts. The app shows the secret
 (grouped in fours, copyable) and a QR of `otpauthUri`, then asks for a code.
 
-`POST /auth/two-factor/enable {code}` → `{"recoveryCodes": ["ABCDE-FGHIJ", ... 10]}`. Turns it on, closes the
-account's other sessions (the current one stays). The app must show the codes once, with "copy" / "save" and
+`POST /auth/two-factor/enable {code}` → `{"recoveryCodes": ["ABCDE-FGHIJ", ... 10], "agentsDisconnected": 1,
+"notice": "Se cerraron tus otras sesiones y se desconectaron tus agentes de IA: vuelve a conectarlos."}`. Turns it on,
+closes the account's other sessions (the current one stays), for a server account also the company sessions it
+opened with the switcher, and every AI agent connection of the account (the app shows `notice`). A password reset
+by email does the same for sessions and agents; its message ends with "Se desconectaron tus agentes de IA: vuelve a
+conectarlos.". The app must show the codes once, with "copy" / "save" and
 "I saved them" before leaving; they cannot be read again.
 
 `POST /auth/two-factor/recovery-codes {currentPassword, code}` (`code` = authenticator code, not a recovery code)
@@ -186,7 +193,10 @@ throttled — at most 3 starts per account in 7 days):
 When a process really starts: at most one open process per account; the account's email (as it is now) gets
 "Se inicio la recuperacion del acceso" with the start time (UTC), the client address of step 1, the date the code
 will be sent, and a cancel link `<public base>/auth/two-factor/recovery-cancel?t=<token>` (`&c=<company code>` for
-a company account). The public base is `BMS_PUBLIC_BASE_URL` when set, else the request's validated Host. An
+a company account). The public base is `BMS_PUBLIC_BASE_URL` when set, else the request's Host only when it is a
+domain of this server (`public_domains`); otherwise the warning has no link and says to cancel from the account
+section (Verificacion en dos pasos). The start's work and the email run in the background (every outcome answers
+alike); a warning that could not be sent is sent again by the job every 15 minutes, each time with a new link. An
 in-app notification is added (company accounts: their company; server accounts: the server workspace, when it
 exists). The token is 32 random bytes (base64url), single use, stored only as its SHA-256.
 

@@ -356,12 +356,8 @@ class ExtensionPackageBuilder(
             ),
         )
         val output = work.resolve("kotlinc.log").toFile()
-        val process = ProcessBuilder(
-            javaExecutable, "-Xmx1g", "-Duser.home=$work", "-Djava.io.tmpdir=$work",
-            "-cp", compilerJars.joinToString(File.pathSeparator),
-            "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
-            "@$arguments",
-        ).redirectErrorStream(true).redirectOutput(output).start()
+        // A minimal environment: the code being compiled comes from the catalog (no service secrets in the child).
+        val process = com.ideasdeveloper.bms.server.security.ChildProcesses.startKotlinCompiler(javaExecutable, compilerJars, arguments, work, output)
         if (!process.waitFor(10, TimeUnit.MINUTES)) {
             process.destroyForcibly()
             throw ExtensionPackageException("La compilacion tardo demasiado.")

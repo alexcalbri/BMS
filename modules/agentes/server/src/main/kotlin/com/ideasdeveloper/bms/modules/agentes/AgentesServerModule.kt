@@ -88,7 +88,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.7.0",
+        version = "0.7.1",
         minCoreVersion = "0.13.0",
         permissions = listOf(
             ModulePermissionDefinition(
@@ -114,6 +114,11 @@ object AgentesServerModule : ServerModule {
 
     override fun routes(route: Route, access: ModuleAccessService) {
         AgentOAuth.routes(route, access)
+        // Core tells when an account's credentials change (two-step verification on, password reset): its agents
+        // (access and refresh tokens) stop working and must be connected again (SECURITY_FIXES review, item 2).
+        com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.subscribe(AgentesModule.id) { event ->
+            AgentTokens.revokeForCredentialsChange(access, event)
+        }
 
         route.route(AgentesScreens.McpRoute) {
             post { call.handleMcp(access) }

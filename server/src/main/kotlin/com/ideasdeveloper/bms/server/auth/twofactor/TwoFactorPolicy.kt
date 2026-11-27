@@ -23,8 +23,9 @@ object TwoFactorPolicy {
                 query.executeQuery().use { rows -> rows.next() && rows.getString(1).trim().equals("true", ignoreCase = true) }
             }
         }
-    } catch (_: SQLException) {
-        false
+    } catch (failure: SQLException) {
+        // Only "no such table" (before the migration) means no rule; any other failure denies (fails closed).
+        failure.sqlState != "42P01"
     }
 
     /** Whether the central user [userId] has it on (false before control V017). */

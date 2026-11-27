@@ -291,7 +291,7 @@ fun Route.companyRoutes(
                     val name = part.originalFileName.orEmpty()
                     try {
                         stored = withContext(Dispatchers.IO) {
-                            part.provider().toInputStream().use { input -> service.storeImportedBackup(context.companyCode, context.token, name, input) }
+                            part.provider().toInputStream().use { input -> service.storeImportedBackup(context.companyCode, context.token, name, input, call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()) }
                         }
                     } catch (exception: CompanySelfException) {
                         refusal = exception.message ?: tr("No se pudo importar el backup.")

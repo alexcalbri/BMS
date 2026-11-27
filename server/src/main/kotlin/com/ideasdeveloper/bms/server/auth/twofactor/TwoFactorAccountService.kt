@@ -39,7 +39,12 @@ data class TwoFactorSetupResponse(
 )
 
 @Serializable
-data class RecoveryCodesResponse(val recoveryCodes: List<String>)
+data class RecoveryCodesResponse(
+    val recoveryCodes: List<String>,
+    // Enabling ended the earlier access (TWO_FACTOR.md §3): other sessions, AI agents (they must be reconnected).
+    val agentsDisconnected: Int? = null,
+    val notice: String? = null,
+)
 
 /**
  * The signed-in user's own two-step verification (TWO_FACTOR.md §3): status, enrolment, recovery
@@ -112,7 +117,16 @@ class TwoFactorAccountService(
                 record(inTransaction, account, token, "two_factor.enabled", ActivityActions.Enabled, "Activo la verificacion en dos pasos.")
             }
         }
-        return RecoveryCodesResponse(codes)
+        // Access granted before, without the second step, ends: company sessions a server account opened with the
+        // switcher, and the account's AI agents (their tokens belong to the Agentes module, told through the hook).
+        if (account.companyCode == null) {
+            runCatching { loginDatabases.revokeCompanySessionsOpenedBy(account.userId) }
+                .onFailure { org.slf4j.LoggerFactory.getLogger(TwoFactorAccountService::class.java).error("Company sessions of {} could not be revoked", account.username, it) }
+        }
+        val agents = com.ideasdeveloper.bms.server.auth.application.AccountSecurityEvents.credentialsChanged(
+            com.ideasdeveloper.bms.server.auth.application.CredentialsChanged(account.companyCode, account.userId, com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorEnabled),
+        )
+        return RecoveryCodesResponse(codes, agents, tr("Se cerraron tus otras sesiones y se desconectaron tus agentes de IA: vuelve a conectarlos."))
     }
 
     fun regenerate(token: String, companyCode: String?, currentPassword: String?, code: String): RecoveryCodesResponse {

@@ -410,12 +410,8 @@ class ModulePackageBuilder(
         )
         val output = work.resolve("kotlinc.log").toFile()
         // The service runs with ProtectSystem=strict: keep the compiler's home and temp files in the build folder.
-        val process = ProcessBuilder(
-            javaExecutable, "-Xmx1g", "-Duser.home=$work", "-Djava.io.tmpdir=$work",
-            "-cp", compilerJars.joinToString(File.pathSeparator),
-            "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
-            "@$arguments",
-        ).redirectErrorStream(true).redirectOutput(output).start()
+        // A minimal environment: the code being compiled comes from the catalog (no service secrets in the child).
+        val process = com.ideasdeveloper.bms.server.security.ChildProcesses.startKotlinCompiler(javaExecutable, compilerJars, arguments, work, output)
         if (!process.waitFor(10, TimeUnit.MINUTES)) {
             process.destroyForcibly()
             throw ModuleBuildException("La compilacion tardo demasiado.")

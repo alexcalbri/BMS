@@ -60,6 +60,7 @@
   "Ese agente no existe o no es tuyo.": "That agent does not exist or is not yours.",
   "Esta y las demas de su grupo": "This one and the others in its group",
   "Falta redirect_uri.": "redirect_uri is missing.",
+  "Hay demasiados inicios de sesion en curso. Intentalo de nuevo en unos minutos.": "There are too many sign-ins in progress. Try again in a few minutes.",
   "Herramienta desconocida o sin permiso.": "Unknown tool or no permission.",
   "Inicia sesion. El agente solo podra usar las funciones que tu usuario tiene permitidas.": "Sign in. The agent will only be able to use the functions your user is allowed.",
   "La autorizacion vencio. Vuelve a intentarlo desde tu aplicacion.": "The authorization expired. Try again from your application.",

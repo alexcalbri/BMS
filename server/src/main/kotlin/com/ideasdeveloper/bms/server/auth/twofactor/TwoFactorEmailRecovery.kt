@@ -14,6 +14,7 @@ import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.i18n.userLanguage
 import com.ideasdeveloper.bms.server.modules.MailSender
 import com.ideasdeveloper.bms.server.modules.SmtpSettings
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
 import java.net.URLEncoder
@@ -52,6 +53,9 @@ sealed interface EmailRecoveryCheck {
  * [sources] gives the database of an account (null: the central one) and [companies] the active
  * companies for the job. [notify] adds the in-app notification (company null: the server workspace).
  */
+/** The background of [TwoFactorEmailRecovery.start]: off the request thread, so every outcome answers alike. */
+private val BackgroundStarts = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+
 class TwoFactorEmailRecovery(
     private val central: DataSource,
     private val sources: (companyCode: String?) -> DataSource?,
@@ -63,6 +67,8 @@ class TwoFactorEmailRecovery(
     private val clock: () -> Instant = Instant::now,
     // How long the code waits after the start. The constant is the rule; tests shorten it.
     val wait: Duration = DefaultWait,
+    // Where the start's work runs (off the request); tests run it inline.
+    private val background: (() -> Unit) -> Unit = { task -> BackgroundStarts.launch { task() } },
 ) {
     companion object {
         val DefaultWait: Duration = Duration.ofDays(7)
@@ -146,14 +152,28 @@ class TwoFactorEmailRecovery(
     }
 
     /**
-     * Starts a process for the account behind a valid step-1 challenge. Does nothing (and says nothing)
-     * when it cannot start: no two-step verification, no valid email, one already open, too many starts.
+     * Starts a process for the account behind a valid step-1 challenge. All the work (checks, the row, the
+     * warning mail) runs in [background], so every outcome answers alike and at once. Nothing is started
+     * (and nothing said) without two-step verification, without a valid email, with one already open or with
+     * too many starts. [publicBase] null: the warning has no link and says to cancel from the account section.
      */
-    fun start(companyCode: String?, userId: UUID, clientAddress: String, publicBase: String) {
+    fun start(companyCode: String?, userId: UUID, clientAddress: String, publicBase: String?) {
+        background {
+            try {
+                startNow(companyCode, userId, clientAddress, publicBase)
+            } catch (failure: Exception) {
+                log.error("A two-step email recovery could not be started for user {}", userId, failure)
+            }
+        }
+    }
+
+    private fun startNow(companyCode: String?, userId: UUID, clientAddress: String, publicBase: String?) {
         val settings = mail()?.takeIf { it.isUsable } ?: return
         val source = sources(companyCode) ?: return
         val now = clock()
         val token = tokens.generate()
+        val address = clientAddress.ifBlank { "desconocida" }.take(64)
+        val due = now.plus(wait)
         val started = source.connection.use { connection ->
             if (!available(connection) || !twoFactor.isEnabled(connection, userId)) return
             val account = account(connection, userId, companyCode) ?: return
@@ -163,18 +183,18 @@ class TwoFactorEmailRecovery(
                 q.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
             }
             if (recent >= MaxStartsPerWindow) return
-            val address = clientAddress.ifBlank { "desconocida" }.take(64)
-            val due = now.plus(wait)
+            val id = UUID.randomUUID()
             try {
                 transaction(connection) {
                     connection.prepareStatement(
                         """
-                        INSERT INTO $Table (id, user_id, status, email, started_at, started_from, code_due_at, cancel_token_hash)
-                        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
+                        INSERT INTO $Table (id, user_id, status, email, started_at, started_from, code_due_at, cancel_token_hash, notice_base)
+                        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
                         """.trimIndent()
                     ).use { insert ->
-                        insert.setObject(1, UUID.randomUUID()); insert.setObject(2, userId); insert.setString(3, email)
+                        insert.setObject(1, id); insert.setObject(2, userId); insert.setString(3, email)
                         insert.setObject(4, utc(now)); insert.setString(5, address); insert.setObject(6, utc(due)); insert.setString(7, token.hash)
+                        insert.setString(8, publicBase)
                         insert.executeUpdate()
                     }
                     record(connection, companyCode, account, bySystem = false, "email_recovery_started",
@@ -186,28 +206,45 @@ class TwoFactorEmailRecovery(
                 if (failure.sqlState == "23505") return
                 throw failure
             }
-            Triple(account, email, language(connection, companyCode, userId)) to due
+            Triple(account, email, language(connection, companyCode, userId)) to id
         }
-        val (who, due) = started
+        val (who, id) = started
         val (account, email, language) = who
-        val link = publicBase.trimEnd('/') + "/auth/two-factor/recovery-cancel?t=" + token.value + (companyCode?.let { "&c=" + URLEncoder.encode(it, Charsets.UTF_8) } ?: "")
-        try {
-            mailTo(settings, email, language) {
-                tr("Se inicio la recuperacion del acceso a tu cuenta de BMS") to (
-                    tr("Hola {0}:", account.username) + "\n\n" +
-                        tr("El {0}, desde la direccion {1}, alguien que conoce tu contrasena inicio la recuperacion del acceso a tu cuenta {2} porque no puede usar la verificacion en dos pasos.", stamp.format(now), clientAddress.ifBlank { "desconocida" }, account.username) + "\n\n" +
-                        tr("El {0} enviaremos a este correo un codigo que permite entrar una vez y desactiva la verificacion en dos pasos.", stamp.format(due)) + "\n\n" +
-                        tr("Si no fuiste tu, cancela la recuperacion con este enlace y cambia tu contrasena:") + "\n\n    " + link + "\n"
-                    )
-            }
-        } catch (failure: Exception) {
-            log.warn("Recovery start notice for {} could not be mailed", account.username, failure)
+        if (sendWarning(settings, email, language, account.username, companyCode, now, due, address, publicBase, token.value)) {
+            source.connection.use { connection -> warningMailed(connection, id, token.hash) }
         }
         runCatching {
             I18n.withLanguage(language) {
                 notify(companyCode, userId, tr("Recuperacion del acceso iniciada"), tr("Alguien inicio la recuperacion del acceso por correo. Si no fuiste tu, cancelala en Verificacion en dos pasos."))
             }
         }.onFailure { log.warn("Recovery start notification for {} failed", account.username, it) }
+    }
+
+    // The first email: when, from where, when the code comes, and the cancel link (or where to cancel without one).
+    // False when it could not be sent (logged; the job sends it again with a new link).
+    private fun sendWarning(settings: SmtpSettings, email: String, language: String, username: String, companyCode: String?, startedAt: Instant, due: Instant, address: String, publicBase: String?, token: String): Boolean {
+        val link = publicBase?.let { base -> base.trimEnd('/') + "/auth/two-factor/recovery-cancel?t=" + token + (companyCode?.let { "&c=" + URLEncoder.encode(it, Charsets.UTF_8) } ?: "") }
+        return try {
+            mailTo(settings, email, language) {
+                tr("Se inicio la recuperacion del acceso a tu cuenta de BMS") to (
+                    tr("Hola {0}:", username) + "\n\n" +
+                        tr("El {0}, desde la direccion {1}, alguien que conoce tu contrasena inicio la recuperacion del acceso a tu cuenta {2} porque no puede usar la verificacion en dos pasos.", stamp.format(startedAt), address, username) + "\n\n" +
+                        tr("El {0} enviaremos a este correo un codigo que permite entrar una vez y desactiva la verificacion en dos pasos.", stamp.format(due)) + "\n\n" +
+                        (if (link != null) tr("Si no fuiste tu, cancela la recuperacion con este enlace y cambia tu contrasena:") + "\n\n    " + link + "\n"
+                        else tr("Si no fuiste tu, inicia sesion en la app y cancela la recuperacion en tu cuenta, seccion Verificacion en dos pasos, y cambia tu contrasena.") + "\n")
+                    )
+            }
+            true
+        } catch (failure: Exception) {
+            log.error("Recovery start notice for {} could not be mailed; it is sent again later", username, failure)
+            false
+        }
+    }
+
+    private fun warningMailed(connection: Connection, id: UUID, tokenHash: String) {
+        connection.prepareStatement("UPDATE $Table SET warning_mailed_at = ? WHERE id = ? AND cancel_token_hash = ? AND warning_mailed_at IS NULL").use { u ->
+            u.setObject(1, utc(clock())); u.setObject(2, id); u.setString(3, tokenHash); u.executeUpdate()
+        }
     }
 
     /** The open process of the account, for GET /auth/two-factor. */
@@ -391,6 +428,45 @@ class TwoFactorEmailRecovery(
      * database, issues the code of each due process with one claiming UPDATE (two runs never leave two
      * valid codes: a re-issue replaces the code), mails it, and expires unused ones. Returns codes mailed.
      */
+    // Warnings that could not be mailed at the start: sent again, each time with a new cancel link (only the hash of
+    // a token is kept, so the old link cannot be repeated; the new one replaces it).
+    private fun resendWarnings(connection: Connection, companyCode: String?, settings: SmtpSettings, now: Instant) {
+        val rows = try {
+            connection.prepareStatement(
+                "SELECT id, user_id, email, started_at, started_from, code_due_at, notice_base, cancel_token_hash FROM $Table WHERE status IN $Open AND warning_mailed_at IS NULL AND started_at <= ?"
+            ).use { q ->
+                q.setObject(1, utc(now.minus(ResendAfter)))
+                q.executeQuery().use { r ->
+                    buildList<UnsentWarning> {
+                        while (r.next()) add(
+                            UnsentWarning(
+                                r.getObject(1, UUID::class.java), r.getObject(2, UUID::class.java), r.getString(3),
+                                r.getObject(4, OffsetDateTime::class.java).toInstant(), r.getString(5),
+                                r.getObject(6, OffsetDateTime::class.java).toInstant(), r.getString(7), r.getString(8),
+                            ),
+                        )
+                    }
+                }
+            }
+        } catch (failure: SQLException) {
+            if (failure.sqlState == "42703") return else throw failure
+        }
+        for (row in rows) {
+            val token = tokens.generate()
+            val claimed = connection.prepareStatement("UPDATE $Table SET cancel_token_hash = ? WHERE id = ? AND cancel_token_hash = ? AND warning_mailed_at IS NULL").use { u ->
+                u.setString(1, token.hash); u.setObject(2, row.id); u.setString(3, row.tokenHash); u.executeUpdate() == 1
+            }
+            if (!claimed) continue
+            val account = account(connection, row.userId, companyCode) ?: continue
+            val language = language(connection, companyCode, row.userId)
+            if (sendWarning(settings, row.email, language, account.username, companyCode, row.startedAt, row.due, row.address, row.base, token.value)) {
+                warningMailed(connection, row.id, token.hash)
+            }
+        }
+    }
+
+    private class UnsentWarning(val id: UUID, val userId: UUID, val email: String, val startedAt: Instant, val address: String, val due: Instant, val base: String?, val tokenHash: String)
+
     fun runDue(): Int {
         val settings = mail()?.takeIf { it.isUsable } ?: return 0
         var mailed = 0
@@ -409,6 +485,7 @@ class TwoFactorEmailRecovery(
 
     private fun runDueIn(connection: Connection, companyCode: String?, settings: SmtpSettings): Int {
         val now = clock()
+        resendWarnings(connection, companyCode, settings, now)
         // Unused codes and their processes end.
         connection.prepareStatement("SELECT id, user_id FROM $Table WHERE status = 'code_sent' AND code_expires_at <= ?").use { q ->
             q.setObject(1, utc(now)); q.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java) to rows.getObject(2, UUID::class.java)) } }

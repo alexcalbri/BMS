@@ -234,3 +234,15 @@ tasks.named("compileKotlin") { dependsOn(validateModules) }
 tasks.named("compileModulesKotlin") { dependsOn(validateModules) }
 // Optional modules must compile even though the distribution does not include them.
 tasks.named("installDist") { dependsOn("modulesClasses") }
+
+// Tests that really run the module compiler (ChildProcessesTest) get its classpath; they skip without it.
+val moduleCompilerFiles: FileCollection = moduleCompiler
+tasks.withType<Test>().configureEach {
+    val compilerFiles = moduleCompilerFiles
+    inputs.files(compilerFiles).withPropertyName("moduleCompiler").optional()
+    jvmArgumentProviders.add(ModuleCompilerArgument(compilerFiles))
+}
+
+class ModuleCompilerArgument(@get:org.gradle.api.tasks.Classpath val files: FileCollection) : CommandLineArgumentProvider {
+    override fun asArguments(): Iterable<String> = listOf("-Dbms.test.moduleCompiler=" + files.asPath)
+}

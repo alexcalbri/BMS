@@ -267,6 +267,27 @@ object AgentTokens {
             update.executeUpdate() == 1
         }
 
+    /** Revokes every live connection of [userId] in this company (access and refresh tokens); returns how many. */
+    fun revokeAllOfUser(tenant: Connection, userId: UUID, by: String): Int =
+        tenant.prepareStatement("UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = ?, refresh_hash = NULL WHERE user_id = ? AND revoked_at IS NULL").use { update ->
+            update.setString(1, by)
+            update.setObject(2, userId)
+            update.executeUpdate()
+        }
+
+    /**
+     * The agents of an account whose credentials changed: a company account's live in its company; a server
+     * account's (owner or administrator) in the server workspace. Nothing when the module is not used there.
+     */
+    fun revokeForCredentialsChange(access: com.ideasdeveloper.bms.server.modules.ModuleAccessService, event: com.ideasdeveloper.bms.server.auth.application.CredentialsChanged): Int {
+        val company = event.companyCode ?: com.ideasdeveloper.bms.server.company.application.ServerWorkspace.Code
+        val tenant = access.tenantConnectionForCompany(company) ?: return 0
+        return tenant.use { connection ->
+            val present = connection.prepareStatement("SELECT to_regclass('public.agent_tokens') IS NOT NULL").use { q -> q.executeQuery().use { it.next() && it.getBoolean(1) } }
+            if (!present) 0 else revokeAllOfUser(connection, event.userId, if (event.reason == com.ideasdeveloper.bms.server.auth.application.CredentialsChanged.TwoFactorEnabled) "verificacion en dos pasos activada" else "contrasena restablecida")
+        }
+    }
+
     fun revoke(tenant: Connection, id: UUID, by: String): Boolean =
         tenant.prepareStatement("UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = ? WHERE id = ? AND revoked_at IS NULL").use { update ->
             update.setString(1, by)

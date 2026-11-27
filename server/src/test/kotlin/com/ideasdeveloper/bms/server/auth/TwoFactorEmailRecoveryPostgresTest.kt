@@ -109,7 +109,7 @@ class TwoFactorEmailRecoveryPostgresTest {
             listOf("V001__create_application_users", "V002__create_application_sessions", "V003__add_application_user_profile", "V004__add_application_user_code", "V006__add_application_user_language")
                 .forEach { db.run(migration("database/core/migrations/$it.sql")) }
             listOf("V001__create_business_owner", "V003__create_tenant_modules", "V004__create_application_permissions", "V005__create_application_user_credentials",
-                "V006__create_extensions", "V008__account_reset_throttle", "V011__create_activity_log", "V012__create_two_factor", "V013__create_two_factor_email_recovery")
+                "V006__create_extensions", "V008__account_reset_throttle", "V011__create_activity_log", "V012__create_two_factor", "V013__create_two_factor_email_recovery", "V014__session_second_factor_mark")
                 .forEach { db.run(migration("database/tenant/migrations/$it.sql")) }
             val id = UUID.randomUUID()
             db.run("INSERT INTO application_users (id, postgres_role, is_active, display_name, email, language) VALUES ('$id', 'luis', TRUE, 'Luis', 'luis@example.com', 'en')")
@@ -122,7 +122,9 @@ class TwoFactorEmailRecoveryPostgresTest {
 
     private class Setup(val db: LoginDatabases, val recovery: TwoFactorEmailRecovery)
 
-    private fun setup(mailWorks: () -> Boolean = { true }): Setup {
+    private val deferred = mutableListOf<() -> Unit>()
+
+    private fun setup(mailWorks: () -> Boolean = { true }, defer: Boolean = false): Setup {
         val data = source(central)
         val db = LoginDatabases(data, Database.connect(data), urlOf(central), "[]", pgUser, "", prefix, 3600, secrets = MasterKeySecretBox(masterKey)).also { opened += it }
         val recovery = TwoFactorEmailRecovery(
@@ -130,6 +132,7 @@ class TwoFactorEmailRecoveryPostgresTest {
             notify = { _, _, title, _ -> notices += title },
             sendMail = { _, to, subject, body -> if (!mailWorks()) error("smtp down"); mails += Triple(to, subject, body) },
             clock = { now }, wait = Duration.ofDays(7),
+            background = { task -> if (defer) deferred += task else task() },
         )
         db.emailRecovery = recovery
         return Setup(db, recovery)
@@ -274,7 +277,7 @@ class TwoFactorEmailRecoveryPostgresTest {
         if (url == null) return
         reset()
         var smtpUp = false
-        val s = setup { smtpUp }
+        val s = setup(mailWorks = { smtpUp })
         // Everything logged meanwhile, to prove no code reaches the logs.
         val logged = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
         val rootLogger = org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as ch.qos.logback.classic.Logger
@@ -349,5 +352,44 @@ class TwoFactorEmailRecoveryPostgresTest {
         val audit = connect(central).use { c -> c.createStatement().use { st -> st.executeQuery("SELECT action || details::text FROM provisioning_audit_log WHERE action LIKE 'two_factor.email_recovery%'").use { r -> buildList { while (r.next()) add(r.getString(1)) } } } }
         assertEquals(setOf("two_factor.email_recovery_started", "two_factor.email_recovery_code_sent", "two_factor.email_recovery_completed"), audit.map { it.substringBefore('{') }.toSet())
         assertTrue(audit.none { it.contains(mailedCode()) })
+    }
+
+    // Review item 5: the start answers before any work, every outcome alike; a lost warning is sent again by the job.
+    @Test
+    fun theStartRunsInTheBackgroundAndALostWarningIsSentAgain() {
+        if (url == null) return
+        reset()
+        var smtpUp = false
+        val s = setup(mailWorks = { smtpUp }, defer = true)
+        enrol(s.db, "luis", password, "acme")
+        s.db.startEmailRecovery(challenge(s.db), "10.0.0.1", "https://bms.example")
+        // Nothing happened yet while the request answered.
+        assertEquals("0", scalar(company, "SELECT count(*) FROM application_user_2fa_email_recovery"))
+        deferred.removeAt(0).invoke()
+        assertEquals("pending:", state())
+        assertNull(scalar(company, "SELECT warning_mailed_at FROM application_user_2fa_email_recovery"))
+        val firstHash = scalar(company, "SELECT cancel_token_hash FROM application_user_2fa_email_recovery")
+        smtpUp = true
+        now = now.plus(TwoFactorEmailRecovery.ResendAfter).plusSeconds(1)
+        s.recovery.runDue()
+        assertNotNull(scalar(company, "SELECT warning_mailed_at FROM application_user_2fa_email_recovery"))
+        // A new link replaced the one that never arrived.
+        assertFalse(firstHash == scalar(company, "SELECT cancel_token_hash FROM application_user_2fa_email_recovery"))
+        assertTrue(mails.single().third.contains("https://bms.example/auth/two-factor/recovery-cancel?t="))
+        s.recovery.runDue()
+        assertEquals(1, mails.size)
+    }
+
+    // Review item 4: without a known public base the warning has no link and says where to cancel.
+    @Test
+    fun withoutAKnownHostTheWarningHasNoLink() {
+        if (url == null) return
+        reset()
+        val s = setup()
+        enrol(s.db, "luis", password, "acme")
+        s.db.startEmailRecovery(challenge(s.db), "10.0.0.1", null)
+        val body = mails.single().third
+        assertFalse(body.contains("/auth/two-factor/recovery-cancel"))
+        assertTrue(body.contains("Two-step verification") || body.contains("Verificacion en dos pasos"), body)
     }
 }

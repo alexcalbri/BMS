@@ -1988,6 +1988,10 @@ class CompanyProvisioningService(
         } catch (failure: Exception) {
             log.error("No se pudieron quitar al runtime {} los privilegios de mas sobre application_user_2fa_email_recovery", config.runtimeUser, failure)
         }
+        // Sessions that passed a second step, and the resend of a lost recovery warning (tenant V014); the runtime
+        // already holds its rights on both tables.
+        val secondFactorMark = "database/tenant/migrations/V014__session_second_factor_mark.sql"
+        applyMigration(connection, "tenant", secondFactorMark, Files.readString(Path.of(config.migrationsRoot).resolve(secondFactorMark)))
     }
 
     /**

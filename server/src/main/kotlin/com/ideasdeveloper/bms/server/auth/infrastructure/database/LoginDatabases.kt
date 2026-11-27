@@ -162,7 +162,7 @@ class LoginDatabases(
      * Says nothing about the outcome; throws [TwoFactorSignInException] for a bad challenge and
      * [TwoFactorException] MAIL_NOT_CONFIGURED when the server cannot send email.
      */
-    fun startEmailRecovery(challengeToken: String, clientAddress: String, publicBase: String) {
+    fun startEmailRecovery(challengeToken: String, clientAddress: String, publicBase: String?) {
         val recovery = emailRecovery?.takeIf { it.offered() }
             ?: throw TwoFactorException("MAIL_NOT_CONFIGURED", tr("El servidor no tiene correo configurado."))
         val (challenge, _) = challengeScope(challengeToken, clientAddress)
@@ -187,6 +187,18 @@ class LoginDatabases(
             }
         } ?: return null
         return tenantScope(database)?.dataSource
+    }
+
+    /** Whether [host] (without port) is a domain this server publishes (public_domains, active). */
+    fun knownPublicHost(host: String): Boolean = try {
+        central.connection.use { connection ->
+            connection.prepareStatement("SELECT 1 FROM public_domains WHERE domain = ? AND status = 'active'").use { query ->
+                query.setString(1, host.substringBefore(':').trim().lowercase())
+                query.executeQuery().use { it.next() }
+            }
+        }
+    } catch (_: java.sql.SQLException) {
+        false
     }
 
     /** Codes of the active companies (the server workspace included). */
@@ -332,12 +344,13 @@ class LoginDatabases(
         }
         val target = tenantScope(databases.first) ?: return null
         val targetOwner = target.businessOwner()?.takeIf { it.isActive } ?: return null
+        // Never a way around the second step (TWO_FACTOR.md §2): when the target owner (or, for a switcher
+        // session, the server person) uses two-step verification, THIS session must have passed one.
+        val passed = origin.passedSecondFactor(token)
         if (opener == null) {
-            // Never a way around the second step: an account with two-step verification on is entered only
-            // from a session of an account that has it on too (TWO_FACTOR.md §2).
-            val originUser = origin.sessionUser(token) ?: return null
-            if (target.twoFactorEnabled(targetOwner) && !origin.twoFactorEnabled(originUser)) return null
+            if (target.twoFactorEnabled(targetOwner) && !passed) throw SwitchNeedsSecondFactorException()
             return target.respond(targetOwner, toCode)?.also { opened ->
+                if (passed) target.markSecondFactor(opened.accessToken)
                 target.recordEntry(opened, null, null, "Entro a la empresa desde la empresa $fromCode del mismo dueno.")
             }
         }
@@ -346,7 +359,9 @@ class LoginDatabases(
             is Switcher.ServerAdmin -> opener.user
             else -> return null
         }
+        if ((target.twoFactorEnabled(targetOwner) || serverScope.twoFactorEnabled(user)) && !passed) throw SwitchNeedsSecondFactorException()
         return target.respond(targetOwner, toCode, serverOwnerAccess = true)?.also { opened ->
+            if (passed) target.markSecondFactor(opened.accessToken)
             trackCompanySession(target, opened, user, admin = opener is Switcher.ServerAdmin, toCode, targetOwner.postgresRole, fromCode)
             target.recordEntry(opened, user, opener is Switcher.ServerAdmin, "Entro a la empresa desde la empresa $fromCode con el selector del servidor.")
         }
@@ -581,14 +596,21 @@ class LoginDatabases(
                     is Switcher.ServerAdmin -> who.user to who
                     else -> return null
                 }
+                // The session that acts: the server session, or the company session the switcher opened.
+                val acting = if (fromCode == null) serverScope else activeDatabase(fromCode)?.let { tenantScope(it) } ?: return null
+                val passed = acting.passedSecondFactor(token)
+                val serverTwoFactor = serverScope.twoFactorEnabled(user)
                 val response = if (toCode == null) {
-                    serverScope.respond(user, null)
+                    if (serverTwoFactor && !passed) throw SwitchNeedsSecondFactorException()
+                    serverScope.respond(user, null)?.also { opened -> if (passed) serverScope.markSecondFactor(opened.accessToken) }
                 } else {
                     // An administrator enters only companies of their scope, with server.companies.enter.
                     if (admin != null && !admin.mayEnter(toCode)) return null
                     val target = activeDatabase(toCode)?.let { tenantScope(it) } ?: return null
                     val owner = target.businessOwner()?.takeIf { it.isActive } ?: return null
+                    if ((serverTwoFactor || target.twoFactorEnabled(owner)) && !passed) throw SwitchNeedsSecondFactorException()
                     target.respond(owner, toCode, serverOwnerAccess = true)?.also { opened ->
+                        if (passed) target.markSecondFactor(opened.accessToken)
                         trackCompanySession(target, opened, user, admin = admin != null, toCode, owner.postgresRole, fromCode)
                         target.recordEntry(
                             opened, user, admin != null,
@@ -714,6 +736,33 @@ class LoginDatabases(
             return open(user, credentials.companyCode, credentials.clientAddress, null)
         }
 
+        /** Whether the session [token] passed a second step (sign-in with a code, or inherited by a switch). False before the migration. */
+        fun passedSecondFactor(token: String): Boolean = try {
+            source.connection.use { connection ->
+                connection.prepareStatement("SELECT second_factor_at IS NOT NULL FROM application_sessions WHERE token_hash = ? AND revoked_at IS NULL").use { query ->
+                    query.setString(1, tokens.hash(token))
+                    query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+                }
+            }
+        } catch (failure: java.sql.SQLException) {
+            if (failure.sqlState == "42703") false else throw failure
+        }
+
+        /** Marks [token] as having passed a second step; without the column (before the migration) it is not marked. */
+        fun markSecondFactor(token: String) {
+            try {
+                source.connection.use { connection ->
+                    connection.prepareStatement("UPDATE application_sessions SET second_factor_at = CURRENT_TIMESTAMP WHERE token_hash = ?").use { update ->
+                        update.setString(1, tokens.hash(token))
+                        update.executeUpdate()
+                    }
+                }
+            } catch (failure: java.sql.SQLException) {
+                if (failure.sqlState != "42703") throw failure
+                logger.warn("Sessions have no second_factor_at yet (migration pending): the session is not marked")
+            }
+        }
+
         fun twoFactorEnabled(user: ApplicationUser): Boolean =
             source.connection.use { connection -> twoFactor.isEnabled(connection, java.util.UUID.fromString(user.id.toString())) }
 
@@ -760,6 +809,8 @@ class LoginDatabases(
                     challenges.finish(challengeToken)
                     val opened = open(user, challenge.companyCode, challenge.clientAddress, result as? CodeCheck.Recovery)
                         ?: throw TwoFactorSignInException.expired()
+                    // This session passed a second step: it may switch into accounts that use one.
+                    markSecondFactor(opened.accessToken)
                     // The owner of the account clearly still has access: a pending recovery by email ends (§7.5).
                     val cancelled = emailRecovery?.let { recovery ->
                         runCatching { source.connection.use { recovery.cancelOpen(it, challenge.companyCode, challenge.userId, "sign_in", notifyByMail = true) } }
@@ -1152,6 +1203,11 @@ class LoginDatabases(
 }
 
 const val ServerNameSetting = "server.name"
+
+/** A switch into an account that uses two-step verification from a session that did not pass a second step. */
+class SwitchNeedsSecondFactorException : Exception(
+    tr("Para entrar ahi tienes que haber iniciado sesion con tu codigo de verificacion en dos pasos. Cierra sesion y vuelve a entrar con tu codigo."),
+)
 
 /** A login that is never a PostgreSQL role: authenticating it costs what a real attempt costs. */
 const val MockLogin = "bms_timing_only_no_such_login"
