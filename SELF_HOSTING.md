@@ -81,19 +81,36 @@ the permissions and companies the owner gives them. See `SERVER_ADMINS.md`.
 Since Core 0.12.0 every company has an append-only **activity log** (tenant
 migration `V011__create_activity_log.sql`, applied by `update.sh` to every
 company and by the server at startup): who changed what, when and where. The
-service user gets only `SELECT, INSERT` on `activity_log` and a trigger refuses
-`UPDATE`, `DELETE` and `TRUNCATE`; there is no retention purge, so include it in
-the company database backups as usual. Server sign-ins and failures go to
-`provisioning_audit_log`. Every row is sealed into a hash chain that the server
-verifies hourly against anchors in `provisioning_audit_log` (owner route
-`GET /server/activity/verify`). `install.sh`/`update.sh` install
-`bms-activity-harden.timer` (`/usr/local/sbin/bms-activity-harden`, run as root
-through the `postgres` superuser, PostgreSQL 16+), which gives each company's log
-to the NOLOGIN role `bms_audit`, outside the service user's role membership, and
+service user gets only `SELECT, INSERT` on `activity_log` and triggers refuse
+`UPDATE`, `DELETE` and `TRUNCATE`; there is no retention purge. Server sign-ins
+and failures go to `provisioning_audit_log`. Every row is sealed into a hash
+chain that the server verifies hourly against anchors in
+`provisioning_audit_log` (owner route `GET /server/activity/verify`).
+`install.sh`/`update.sh` install `bms-activity-harden.timer`
+(`/usr/local/sbin/bms-activity-harden`, run as root through the `postgres`
+superuser, PostgreSQL 16+), which normalizes each company's log to exactly what
+V011 creates (removing anything the server owner's role added), gives it to the
+NOLOGIN role `bms_audit`, outside the service user's role membership, and
 hardens companies created from the app within the hour; its log is
-`/var/log/bms-activity-harden.log`. When restoring a `pg_dump` of a company, do it
-as the superuser with the role `bms_audit` present. See `ACTIVITY_LOG.md` §9 for
-what this does and does not guarantee.
+`/var/log/bms-activity-harden.log`. The guarantee of a company starts at its
+first hardening (the verify route says from when). See `ACTIVITY_LOG.md` §9 for
+exactly what this does and does not guarantee.
+
+**Root scripts and PostgreSQL.** The server owner's PostgreSQL role owns every
+company database and its schema `public`, so it can leave per-database settings
+(`ALTER DATABASE ... SET role/search_path`) and functions, operators or triggers
+there that would run as the superuser if a root script obeyed them. Every
+superuser `psql` of the scripts therefore goes through
+`scripts/ubuntu/pg-safe.sh` (`role=none`, pinned `search_path`, settings checked
+and reset first, logged and reported), company databases are migrated as the
+server owner's role through the service login (never as the superuser), and the
+control database is used as the superuser only after checking it belongs to the
+superuser alone. Do not run `psql` as `postgres` inside a company database by
+hand without the same precautions: start it as
+`sudo -u postgres env PGOPTIONS='-c role=none -c search_path=pg_catalog,pg_temp' psql -X -d <db>`
+and qualify every name (`public.activity_log`, `pg_catalog.now()`).
+`scripts/ubuntu/tests/activity-harden-test.sh` is the regression test (run it as
+root against a disposable PostgreSQL).
 
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
@@ -760,6 +777,46 @@ or managed PostgreSQL backups for the central database and every tenant
 database. The app deliberately does not expose a destructive database restore
 button in the first core release.
 
+### Company databases with a hardened activity log
+
+The activity log of a hardened company belongs to `bms_audit`: a `pg_dump` as
+the server owner's role or the service user fails on it. Back up and restore as
+the superuser, with the role `bms_audit` present on the target server:
+
+``` bash
+sudo -u postgres pg_dump -Fc -d bms_acme -f /var/backups/bms_acme.dump
+# restore into a new database owned by the server owner's role, then re-check it
+sudo -u postgres createdb -O <server owner role> bms_acme_restored
+sudo -u postgres pg_restore -d bms_acme_restored /var/backups/bms_acme.dump
+sudo bms-activity-harden --database bms_acme_restored
+```
+
+The dump carries the chain, its head (with the date the guarantee started) and
+the event triggers. Point the company at the restored database the usual way.
+Verification matches anchors by the chain's content, not by database oid: a
+restore of the latest state verifies (`notes` says it was restored); a restore of
+a copy older than an anchor is reported as missing rows (it is: they are lost),
+which is expected and is the record of that restore. A logical dump restored
+with `--no-owner` loses the hardening: the timer redoes it within the hour, and
+the verify route then reports a new `hardened_at` (rows before it are not
+covered).
+
+### Maintenance of the activity log objects
+
+The superuser can change the log's objects directly (the event triggers let it
+through). To let another role drop them, or before restructuring a company
+database by hand, as the superuser in that database:
+
+``` sql
+DROP EVENT TRIGGER bms_activity_log_no_drop;
+DROP EVENT TRIGGER bms_activity_log_no_move;
+```
+
+and afterwards `sudo bms-activity-harden --database <db>`, which recreates them
+and normalizes the log again (anything left that is not V011's is removed and
+reported). A tenant migration that changes the log's objects is applied the same
+way, by the hardening, as described in `ACTIVITY_LOG.md` §9 ("Migrations").
+
 ------------------------------------------------------------------------
 
 ## 15. Upgrade Procedure
@@ -829,6 +886,23 @@ sudo curl -fsSL -o /root/bms-update/update.sh https://raw.githubusercontent.com/
 sudo curl -fsSL -o /root/bms-update/mirror.sh https://raw.githubusercontent.com/alexcalbri/BMS/master/scripts/ubuntu/mirror.sh
 sudo bash /root/bms-update/update.sh
 ```
+
+**Updating to the hardened activity log (Core 0.12).** Before: back up every
+database as the superuser (§14); check that PostgreSQL is 16 or later; that the
+service user logs in over TCP with `DB_PASSWORD` (update.sh now migrates company
+databases through that login, as the server owner's role); and look for
+per-database settings nobody set on purpose
+(`sudo -u postgres psql -X -c "SELECT d.datname, s.setrole::regrole, s.setconfig FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase"`)
+— update.sh removes `role`, `search_path` and the like from company databases
+and reports them. After: every company is `OK ... (protegida ...)` in
+`/var/log/bms-activity-harden.log`, with no `ALERTA` or `ERROR` line; any
+`activity.integrity_failed` row with `"source": "activity-harden"` in
+`provisioning_audit_log` lists what the server owner's role had changed before
+the first hardening (rows before that company's `hardened_at` are not covered:
+investigate them); `GET /server/activity/verify` reports every company `ok` and
+`hardened`; `systemctl list-timers bms-activity-harden.timer` shows the timer;
+`SELECT rolname FROM pg_roles WHERE rolsuper` lists only `postgres`. A company
+reported busy (`ocupada`) is retried by the timer an hour later.
 
 If `update.sh` (or `mirror.sh`) is in a path that is not entirely root-owned
 (every directory up to `/`, no group/other write, no symlinks), for example

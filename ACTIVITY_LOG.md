@@ -20,12 +20,14 @@ Rules:
 2. **Written in the same transaction as the change.** If the log row cannot be written, the change
    fails. Never swallow the error.
 3. **Append-only and tamper-evident.** The runtime database user is granted only `SELECT, INSERT` on
-   it and a trigger refuses `UPDATE`/`DELETE`/`TRUNCATE`. No screen, route, tool or job edits or
-   deletes rows. No retention purge. Grants alone do not stop the runtime user: it is a member of the
-   server owner's role, which owns every company database. So every committed row is also sealed into
-   a hash chain checked hourly against anchors kept in the server audit, and on hardened servers
-   (`scripts/ubuntu/activity-harden.sh`) the table belongs to a role outside that membership. §9 says
-   exactly what is and is not guaranteed.
+   it and triggers refuse `UPDATE`/`DELETE`/`TRUNCATE` for everyone. No screen, route, tool or job edits
+   or deletes rows. No retention purge. Grants alone do not stop the runtime user: it is a member of the
+   server owner's role, which owns every company database. So every committed row is sealed into a hash
+   chain checked hourly against anchors kept in the server audit, and `scripts/ubuntu/activity-harden.sh`
+   (root, hourly) gives the log to a role outside that membership after normalizing it to exactly what
+   the migration creates. The guarantee starts at that first hardening (up to an hour after a company is
+   created); before it, and for anything the PostgreSQL superuser does, there is only detection, or not
+   even that. §9 "Guaranteed / Not guaranteed" says exactly what holds.
 4. **The real person.** The actor is the human behind the action even when they act through
    something else:
    - through an **AI agent**: the row keeps the user as actor plus the agent's name, and every
@@ -60,10 +62,10 @@ activity_log(
   action TEXT NOT NULL,              -- created | updated | deleted | archived | restored | status_changed | assigned | commented | attachment_added | attachment_removed | settings_changed | imported | signed_in | sign_in_failed | signed_out | permission_changed | …
   summary TEXT NOT NULL,             -- one Spanish sentence
   changes JSONB NOT NULL DEFAULT '[]', -- [{"field":"email","label":"Correo","old":"a@x","new":"b@x"}]
-  origin TEXT NULL,                  -- app | agent | api | automation | import | webhook
-  chain_seq BIGINT NULL, prev_hash TEXT NULL, row_hash TEXT NULL  -- hash chain, set at commit (§9)
+  origin TEXT NULL                   -- app | agent | api | automation | import | webhook
 )
-activity_log_chain_head(id = 1, last_seq, last_hash)   -- head of the chain, written only by the sealing trigger
+activity_log_chain(chain_seq BIGINT PK, id BIGINT UNIQUE, prev_hash, row_hash)   -- hash chain, one row per sealed row, written at commit (§9)
+activity_log_chain_head(id = 1, last_seq, last_hash, hardened_at, hardened_seq)  -- head of the chain; when the guarantee started
 ```
 Indexes: `(occurred_at DESC)`, `(actor_user_id, occurred_at DESC)`, `(module_id, occurred_at DESC)`,
 `(entity_type, entity_id)`. Applied to existing companies by `update.sh` and the startup catch-up,
@@ -174,11 +176,15 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
   `real_actor_*` (`ActivityDisplay`), never from the stored `actor_display`; the CSV adds "Tipo de actor" and the app
   shows a badge per row (Agente IA, Desde el servidor, Importación, Automatización, Tarea programada, Integración,
   Sistema) from those fields. A name containing a marker the log adds itself ("Agente de", "desde el servidor",
-  "Importacion (", "Automatizacion", "Tarea programada"; accents, width and invisible characters ignored) is refused
-  for users, business owners, administrators and agent tokens/OAuth clients, and shown in « » wherever it still
-  appears (rows written before, automation, integration and board names). A stored actor (`toStoredJson`) is only
-  used through `restoreImport` (always an import; kinds and origins validated, texts cut to 200, display rebuilt);
-  `restore` is deprecated for the modules that still call it.
+  "Importacion (", "Automatizacion", "Tarea programada"; accents, width, invisible characters and Latin look-alikes
+  from Cyrillic and Greek ignored — "Аgente de Ana" with a Cyrillic А is caught), or that is exactly the name of one of
+  the log's own actors ("Sistema", "Importacion"/"Importación", "Automatizacion"/"Automatización", "Tarea programada",
+  "Cloudbeds", "Sitio web", "Portal WiFi", "monday"), is refused for users, business owners, administrators and agent
+  tokens/OAuth clients (`ActivityNames.hasMarker`), and shown in « » wherever it still appears (rows written before;
+  automation, integration and board names only for markers). A stored actor (`toStoredJson`) is only used as an
+  import: `restoreImport` / `restoreImportOrNull` (kinds and origins validated, texts cut to 200, display rebuilt);
+  the deprecated `restore` now returns the same import (never the stored person), kept only for `modules/crm`
+  (`CrmImport.startedBy`), the one caller left.
 - Reads are bounded: the company route and the agent tools run in a read-only transaction with
   `SET LOCAL statement_timeout = 15s`; the merged server read takes every company in parallel on the pooled tenant
   connections in batches of ceil(rows / companies) — more batches only from the companies whose rows are still the
@@ -204,55 +210,126 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
 
 ### Integrity (tamper evidence and hardening)
 
-- **Chain.** A BEFORE INSERT trigger gives each row its id from the sequence (explicit ids are refused), the time of
-  its transaction (no backdating) and an empty chain. When the inserting transaction commits, the deferred constraint
-  trigger `activity_log_seal` (SECURITY DEFINER, `search_path = pg_catalog, pg_temp`) takes the advisory lock 735192402
-  for the rest of that commit, reads the head and sets `chain_seq = head + 1`, `prev_hash = head hash`,
-  `row_hash = sha256(prev_hash || '|' || canonical JSON of every stored field)`; that is the only UPDATE the append-only
-  trigger lets through. Writers therefore chain in commit order and hold the lock only while committing, never during
-  their work: 8 writers × 8 transactions with 60 ms of work each took under 1 s (≥ 3.8 s if serialized); one
-  transaction with 5,000 rows seals in about 0.7 s at commit, during which other commits of that company wait.
-- **Verification** (`ActivityIntegrity.check`, read-only, one snapshot): recomputes every hash with PostgreSQL
-  built-ins only (never the company's own functions), checks the chain is contiguous and linked, the head matches its
-  end, every unsealed row, the bodies of the three V011 functions (sha256 of their source, SECURITY DEFINER, search
-  path), the four triggers (definition and `tgenabled`), and every anchor of that database. It reports the first bad
-  row id. `GET /server/activity/verify?company=` (owner only; without `company`, every company) returns it
-  (`ActivityIntegrityReport`). An hourly job (first run 10 minutes after start, after the startup catch-up) checks
-  every company and writes an anchor `activity.anchor` (company, database oid, last position, last id, last hash, row
-  count, hardened) to `provisioning_audit_log` when the chain moved; an anchor is also written when a company is
-  deactivated, and a final one with a summary (rows, first and last date) before it is deleted — the rows themselves
-  are not archived and `company.deleted` carries the count and last hash. A mismatch, a missing table after V011, a
-  disabled trigger, a changed function, a missing or replaced database, a log that cannot be read, or a hardened log
-  that lost its hardening is written once per distinct finding (while the server runs) as `activity.integrity_failed`
-  and sent as a notification to every active server owner (in the server workspace).
-- **Hardening** (`scripts/ubuntu/activity-harden.sh` + `.sql`, run by install.sh and update.sh as root through
-  `runuser -u postgres psql`, then hourly by `bms-activity-harden.timer`; PostgreSQL 16 or later): creates the role
-  `bms_audit` (NOLOGIN, NOINHERIT, refused if the runtime role is a member), gives it `activity_log`, its head, its
-  sequence and its three functions, leaves the runtime role `SELECT, INSERT` (+ sequence `USAGE, SELECT`, head
-  `SELECT`) and nothing to anyone else, and installs two event triggers (`bms_activity_log_no_drop`,
-  `bms_activity_log_no_move`, function in schema `bms_audit`) that refuse dropping those objects or renaming the schema
-  `public` — needed because the server owner's role owns the database and its schema `public`. Companies created from
-  the app afterwards stay owned by the server owner's role until the next timer run (at most an hour); the job reports
-  them as not hardened (`activity.not_hardened` when the list changes, and in the verify route).
+- **Chain.** A BEFORE INSERT trigger gives each row its id from the sequence (explicit ids are refused) and the time of
+  its transaction (no backdating), refuses a transaction that is not READ COMMITTED (a REPEATABLE READ or SERIALIZABLE
+  writer would fail at commit as soon as another one committed first: SQLSTATE 0A000 with a clear message at the
+  insert instead), and gives a writer without one a `lock_timeout` of 10 s for the rest of its transaction. The first
+  row of a transaction queues the deferred constraint trigger `activity_log_seal` (its `WHEN`); at commit it takes
+  the advisory lock 735192402 for the rest of that commit, reads the head, and seals **every** unsealed row of the
+  transaction in id order in one pass: one row each in `activity_log_chain` (`chain_seq = head + 1…`,
+  `prev_hash`, `row_hash = sha256(prev_hash || '|' || canonical JSON of every stored field)`), one INSERT, the head
+  written once. `activity_log` itself is never updated (every UPDATE is refused), and the chain is insert-only.
+  Writers chain in commit order and hold the lock only while committing, never during their work. Measured on
+  PostgreSQL 16 (this container, commit time of one transaction): 5,000 rows **0.05 s**, 10,000 **0.10 s**,
+  20,000 **0.20 s**, 200,000 **2.4 s** (before: 0.8 s / 2.5 s / 9.9 s / did not finish); 16 writers × 50 commits
+  give a contiguous verified chain of 800; 8 writers × 8 transactions with 60 ms of work each take under 1 s. Other
+  commits of the company wait while one seals; a commit that waits more than 10 s fails cleanly (SQLSTATE 55P03)
+  instead of hanging. No row cap is needed in the importers.
+- **Verification** (`ActivityIntegrity.check`, as the runtime role, read-only, in short transactions: catalogs and
+  head first, then the chain in chunks of 5,000 positions up to the head read, then unsealed rows; no lock that blocks
+  writers, 60 s per statement): recomputes every hash with PostgreSQL built-ins only (never the company's own
+  functions), checks the chain is contiguous and linked, every chain row has its log row, nothing lies beyond the head
+  and the head matches its end, and every unsealed row. The objects are compared with V011 by the **deviation query**
+  (`server/src/main/resources/activity/activity-deviations.sql`, the same file activity-harden.sh runs): extra,
+  missing, changed or disabled triggers (`tgenabled` must be `O`), any rule, row security (`relrowsecurity`,
+  `relforcerowsecurity`) or policy, inheritance or partitions either way, foreign keys pointing at the log, extra or
+  changed columns (type, NOT NULL, default, generated, identity), constraints (definition, NOT VALID), indexes
+  (definition, invalid), UNLOGGED tables or sequence, the access method, the sequence parameters, the three functions
+  (sha256 of their source per migration version, overloads, SECURITY DEFINER, `proconfig`, language, volatility...),
+  and per-database settings (`ALTER DATABASE ... SET`) outside a small allow-list; and, for hardening, owners
+  (tables, sequence, functions: `bms_audit`), every grant (only the runtime role: `SELECT, INSERT` on the log,
+  `SELECT` on chain and head, `USAGE, SELECT` on the sequence; no column grants, no PUBLIC `EXECUTE`), the role
+  `bms_audit` (no attributes, the runtime not a member, `USAGE` on `public`), the schema `bms_audit`, the guard
+  function and both event triggers, and `hardened_at` in the head. It reports the first bad row id and
+  **"Protegido desde <hardened_at>: las filas hasta la posicion <hardened_seq> ... no estan cubiertas"** (report fields
+  `hardenedAt`, `hardenedSeq`, `coverage`). `GET /server/activity/verify?company=` (owner only; without `company`,
+  every company) returns it (`ActivityIntegrityReport`). An hourly job (first run 10 minutes after start) checks every
+  company and writes an anchor `activity.anchor` (company, database oid, last position, last id, last hash, row count,
+  hardened, `hardenedAt`) to `provisioning_audit_log` when anything of that changed; an anchor is also written when a
+  company is deactivated, and a final one with a summary (rows, first and last date) before it is deleted — the rows
+  themselves are not archived and `company.deleted` carries the count and last hash. Anchors are matched **by chain
+  content**, not by database oid: a database restored from a dump (new oid, same chain) verifies, with a note; one
+  restored from a copy older than an anchor, or replaced, is reported. A change of `hardened_at` against an anchor
+  (unhardened and hardened again) is reported. Every finding is written once per distinct finding (while the server
+  runs) as `activity.integrity_failed` and sent as a notification to every active server owner.
+- **Hardening** (`scripts/ubuntu/activity-harden.sh` + `activity-harden.sql`, run by install.sh and update.sh as root,
+  then hourly by `bms-activity-harden.timer`; PostgreSQL 16 or later). Every superuser `psql` of the root scripts goes
+  through `scripts/ubuntu/pg-safe.sh`: `PGOPTIONS` with `role=none`, a pinned `search_path` and read-write (they win
+  over `ALTER DATABASE ... SET`), `-X`, `ON_ERROR_STOP`, and `SET ROLE NONE; SET search_path = pg_catalog, pg_temp`
+  first; before a company database is touched, its per-database settings are read from the maintenance database and
+  anything outside the allow-list (`role`, `search_path`, `default_transaction_read_only`, `statement_timeout`...) is
+  logged, reset with `ALTER DATABASE ... RESET` and reported; nothing runs while one is still there. The harden SQL and
+  V011 are fully schema-qualified (operators resolve only in `pg_catalog`: the path is pinned and `pg_temp` is never
+  searched for them); every function it creates has `SET search_path = pg_catalog, pg_temp`. Per company:
+  1. the deviation query (read-only). Nothing found and `hardened_at` set: the company is left alone (no lock at all);
+  2. otherwise, under `lock_timeout = 3s` (a busy company is retried an hour later) and an ACCESS EXCLUSIVE lock on
+     the three tables, checked to be plain tables before any row is read: it removes everything that is not exactly
+     V011's — every trigger, rule and policy, row security, inheritance and partitions, foreign keys pointing in,
+     extra columns, other constraints and indexes, function overloads, other objects in schema `bms_audit` — resets
+     defaults, NOT NULL, identity, persistence and the sequence parameters, re-creates the functions, triggers and
+     indexes **from V011 itself** (the canonical migrations installed with the script, spliced in as the superuser),
+     gives everything to `bms_audit`, revokes every grant (column grants and PUBLIC `EXECUTE` included) and grants the
+     runtime role `SELECT, INSERT` (+ sequence `USAGE, SELECT`, chain and head `SELECT`), and installs the event
+     triggers `bms_activity_log_no_drop` (sql_drop) and `bms_activity_log_no_move` (ALTER SCHEMA) whose guard matches
+     exact object identities (the log's tables, sequence, functions, indexes, the schemas `public`/`bms_audit`, and
+     triggers/constraints/columns "on" those tables — other `public.activity_log*` objects of the owner are not
+     blocked); needed because the server owner's role owns the database and its schema `public`;
+  3. the first time (the server owner's role owned something until now), rows left unsealed are sealed and the head
+     records `hardened_at` and `hardened_seq`: **the guarantee starts there**; later runs keep it;
+  4. the deviation query again: anything left is an error.
+  What it found, removed or reset is logged (`/var/log/bms-activity-harden.log`) and written to the server audit as
+  `activity.integrity_failed` (`details.source = activity-harden`); a company database that does not exist is logged.
+  Regression test against the server owner's role (catalog functions and operators shadowed in public, per-database
+  `search_path`/`role`/read-only settings, triggers, rules, policies, defaults, columns, inheritance, constraints and
+  indexes whose functions make that role superuser, unsealed rows, a trigger on `schema_migrations`, busy and idle
+  companies, all control and tenant migrations through the helpers): `scripts/ubuntu/tests/activity-harden-test.sh`.
+- **Migrations.** Company databases are migrated by update.sh as the server owner's role (the runtime login with
+  `role=<database owner>`, `pg_owner`), never as the superuser: whatever that role planted there (a trigger on
+  `schema_migrations`, a function in public) runs with its own rights only. The control database belongs to the
+  superuser alone (checked before each use: owner, schema `public`, nobody else may create there, no object of another
+  role in `public`) and is migrated as the superuser with `search_path = public, pg_catalog, pg_temp`. A later tenant
+  migration that changes the log's own objects (a V012) cannot be applied by the server's migrator on a hardened
+  company (it runs as the owner's role): the server skips the log's migrations when `activity_log` belongs to
+  `bms_audit`. The supported path: write it fully schema-qualified and idempotent, add it to
+  `CANONICAL_MIGRATIONS` in activity-harden.sh (after V011) and its function hashes as a new
+  `ActivityIntegrity.versions` entry (V011's stay, so a release can verify companies on either), update the deviation
+  query's lists; update.sh then runs the hardening, which applies it as the superuser on every hardened company as part
+  of normalizing (step 2), and re-checks. For maintenance by hand, as the superuser in that company database:
+  `DROP EVENT TRIGGER bms_activity_log_no_drop; DROP EVENT TRIGGER bms_activity_log_no_move;` (the guard already lets
+  the superuser through; dropping them is only needed to let another role drop the objects), then run
+  `bms-activity-harden --database <db>` to put everything back (SELF_HOSTING.md).
 - **Server audit.** `provisioning_audit_log` belongs to the superuser (control migrations run as `postgres`); the
   runtime role is granted only `SELECT, INSERT` and the server owner's role nothing, so the app can append to it but
   not change or delete it (checked by the tests with the install grants).
-- **Guaranteed** on a hardened company: the runtime role, directly or through `SET ROLE` to the server owner's role,
-  cannot update, delete or truncate rows, disable, drop or replace the triggers and functions, drop, rename or move the
-  table, its schema, the head or the sequence, or change ownership (all checked by tests). On every company: a change
-  to, or deletion of, any row up to the last anchor, a gap anywhere in the chain, rows missing at its end (unless the
-  head was rewound too and they were not anchored yet), a disabled trigger, a replaced function, a missing table or a
-  replaced database is detected by the next check and reported with the first bad id.
-- **Not guaranteed.** Before a company is hardened (new companies for up to an hour; every company on a server that
-  has not run update.sh since this version) nothing prevents the owner's rights from rewriting the log; only detection
-  applies. The hash is not keyed: someone with those rights (or the superuser) can rewrite rows written after the last
-  anchor (up to an hour) together with every later row and the head without detection. The PostgreSQL superuser can
-  do anything, anchors included. The runtime role writes the log, so whoever controls it can add false rows (they are
-  sealed with their real time and position) or stop writing new ones; it can also append false rows to the server
-  audit — never change or remove existing ones, so a false anchor only causes a false alarm, but a false "deletion"
-  anchor followed by recreating the company database would make the replacement look like a deletion (both rows stay
-  visible in the audit). Dropping a whole company database cannot be prevented (it is how companies are deleted) and
-  is only detected. Backups made with `pg_dump` by the operator include the event triggers: restore them as the
-  superuser with the role `bms_audit` present.
-- At update time an existing server needs nothing by hand: update.sh applies V011, installs the timer and hardens
-  every company; check `/var/log/bms-activity-harden.log` and `GET /server/activity/verify`.
+- **Guaranteed**, on a company from its `hardened_at` on (the report says so), as long as the PostgreSQL superuser is
+  not involved: the runtime role, directly or as the server owner's role, cannot update, delete or truncate log or
+  chain rows, change the head, disable, drop or replace the triggers and functions, add triggers, rules, policies,
+  columns, constraints or indexes, drop, rename or move the tables, their schema, the indexes or the sequence, change
+  ownership or grants, or give itself `bms_audit` (all checked by tests); rows it writes are stored exactly as sent,
+  with their real time, and sealed at commit; nothing it planted in the database or its settings runs as the
+  superuser in the root scripts (regression test). Tampering installed before the first hardening does not survive it
+  and is reported. On every company, hardened or not: a change to, or deletion of, any sealed row, a gap anywhere in
+  the chain, rows missing at its end up to the last anchor, unsealed rows, any object of the log not exactly V011's, a
+  per-database setting outside the allow-list, a missing table or a replaced database (or a restore from a copy older
+  than an anchor) is detected by the next check and reported with the first bad id.
+- **Not guaranteed.**
+  - Rows up to `hardened_seq` (written while the server owner's role owned the log): a new company for up to an hour
+    after it is created from the app (until the next timer run), every company of a server that has not run update.sh
+    since this version, and a company whose hardening was undone. That role could have rewritten or deleted those rows
+    and the chain with them consistently; only the anchors written before limit that (rows after the last anchor, up
+    to an hour, can be rewritten with every later row and the head without detection — the hash is not keyed).
+  - The PostgreSQL superuser (and root) can do anything, anchors and the server audit included.
+  - A compromised runtime role (or the owner's role through it) still writes the log: it can add false rows (sealed
+    with their real time and position), stop writing, leave its own transaction's rows unsealed by forging the
+    transaction-local settings (reported), make other companies' writers wait up to 10 s and fail (holding the sealing
+    lock), revoke `USAGE` on `public` from `bms_audit` so every write fails until the next hardening (reported as not
+    hardened), append false rows to the server audit (never change or remove existing ones: a false anchor causes a
+    false alarm, but a false "deletion" anchor followed by recreating the company database makes the replacement look
+    like a deletion; both rows stay visible), and drop the whole company database (that is how companies are deleted:
+    only detected, by the anchors).
+  - Backups: `pg_dump` as the server owner's role no longer reads the log (it is `bms_audit`'s); dump and restore as the
+    superuser (SELF_HOSTING.md §14). A restore of an older copy is reported (rows after it are missing), by design.
+- At update time an existing server needs nothing by hand: update.sh migrates every company as the owner's role,
+  installs the timer and hardens every company; check `/var/log/bms-activity-harden.log` (and the
+  `activity.integrity_failed` rows with `source = activity-harden`: tampering found before the first hardening) and
+  `GET /server/activity/verify` (`hardened`, `coverage`).
