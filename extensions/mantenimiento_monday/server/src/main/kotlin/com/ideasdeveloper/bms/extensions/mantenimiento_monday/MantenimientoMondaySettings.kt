@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.mantenimiento_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityEntry
+import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -37,6 +42,15 @@ class MantenimientoMondayException(message: String, val transient: Boolean = fal
  * lo unico que se muestra es si esta configurado.
  */
 object MantenimientoMondaySettings {
+    /** Guardar o quitar el token de monday: el valor nunca se registra, solo que cambio (campo secreto). */
+    fun recordTokenChange(tenant: Connection, activity: ActivityActor, summary: String) {
+        ActivityLog.record(tenant, activity, ActivityEntry(
+            moduleId = "mantenimiento", entityType = "settings", entityId = null, entityLabel = "Monday",
+            action = ActivityActions.SettingsChanged, summary = summary,
+            changes = listOf(ActivityChange.secret("mondayToken", "Token de monday")),
+        ))
+    }
+
     const val Table = "ext_mantenimiento_monday__settings"
     val UnavailableMessage = msg("No se pueden guardar secretos: falta la llave maestra del servidor (BMS_MASTER_KEY). Avisa al dueno del servidor.")
 

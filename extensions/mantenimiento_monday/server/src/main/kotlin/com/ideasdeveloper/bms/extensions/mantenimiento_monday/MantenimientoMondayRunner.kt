@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.mantenimiento_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityEntry
+import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.modules.mantenimiento.ImportOutcome
 import com.ideasdeveloper.bms.modules.mantenimiento.MantenimientoImportApply
 import com.ideasdeveloper.bms.modules.mantenimiento.MantenimientoImportJobContext
@@ -207,6 +212,8 @@ object MantenimientoMondayRunner {
     // ---- Aplicacion ----
 
     private fun applyBatch(context: MantenimientoImportJobContext, job: MondayJob, deadline: Long): Int {
+        // Quien inicio la importacion (para el registro de actividad); se lee una vez por tanda.
+        val importer by lazy { importerActivity(context, job) }
         val tenant = context.tenant
         val users = MantenimientoImportApply.assignableUsers(tenant)
         val batch = MantenimientoMondayJobs.pending(tenant, job.id, BatchSize)
@@ -227,9 +234,9 @@ object MantenimientoMondayRunner {
                     val dto = MondayRowDto.decode(row.payload)
                     isOrder = dto.target == MondayDestination.Orders
                     val result = if (isOrder) {
-                        MantenimientoImportApply.applyOrder(tenant, dto.toOrder(), users, job.createdBy, context.today)
+                        MantenimientoImportApply.applyOrder(tenant, dto.toOrder(), users, job.createdBy, context.today, importer)
                     } else {
-                        MantenimientoImportApply.applyPlan(tenant, dto.toPlan(), users, job.createdBy, context.today)
+                        MantenimientoImportApply.applyPlan(tenant, dto.toPlan(), users, job.createdBy, context.today, importer)
                     }
                     when (result) {
                         is ImportOutcome.Created -> { outcome = "created"; entityId = result.id }
@@ -274,7 +281,7 @@ object MantenimientoMondayRunner {
         }
         if (processed > 0) MantenimientoMondayJobs.resetRetries(tenant, job.id)
         MantenimientoMondayJobs.recount(tenant, job.id)
-        if (MantenimientoMondayJobs.statusOf(tenant, job.id) == MondayJobStatus.Applying && MantenimientoMondayJobs.pending(tenant, job.id, 1).isEmpty()) finish(tenant, job.id)
+        if (MantenimientoMondayJobs.statusOf(tenant, job.id) == MondayJobStatus.Applying && MantenimientoMondayJobs.pending(tenant, job.id, 1).isEmpty()) finish(tenant, job.id, importer)
         return processed
     }
 
@@ -294,6 +301,8 @@ object MantenimientoMondayRunner {
         deadline: Long,
         fullBudget: Boolean,
     ): FilesResult {
+        // Quien inicio la importacion (para el registro de actividad); se lee una vez por tanda.
+        val importer by lazy { importerActivity(context, job) }
         val problems = mutableListOf<String>()
         var done = 0
         var failed = 0
@@ -328,6 +337,7 @@ object MantenimientoMondayRunner {
                 MantenimientoMondayClient.download(link.url, deadline) { contentType, body ->
                     val stored = MantenimientoImportApply.attachFile(
                         context.tenant, context.files, orderId, MantenimientoMondayMapping.AssetPrefix + file.asset, name, contentType, body, job.createdBy,
+                        importer,
                     )
                     if (stored) done++
                 }
@@ -346,10 +356,34 @@ object MantenimientoMondayRunner {
         return FilesResult(done, failed, problems, true)
     }
 
-    private fun finish(tenant: Connection, jobId: UUID) {
+    private fun finish(tenant: Connection, jobId: UUID, importer: ActivityActor) {
         val job = MantenimientoMondayJobs.find(tenant, jobId) ?: return
         val message = "Importacion terminada: ${job.created} creadas, ${job.updated} actualizadas, ${job.skipped} omitidas y ${job.failed} con error. " +
             "Archivos: ${job.filesDone} importados y ${job.filesFailed} con error."
         MantenimientoMondayJobs.changeStatus(tenant, jobId, MondayJobStatus.Done, message, from = listOf(MondayJobStatus.Applying))
+        recordImportSummary(tenant, jobId, job.boardName, importer, job.created, job.updated, job.skipped, job.failed, job.filesDone, job.filesFailed)
+    }
+
+    /** Una fila con los totales de la importacion de monday, a nombre de [importer]. */
+    internal fun recordImportSummary(
+        tenant: Connection, jobId: UUID, boardName: String, importer: ActivityActor,
+        created: Int, updated: Int, skipped: Int, failed: Int, filesDone: Int, filesFailed: Int,
+    ) {
+        ActivityLog.record(tenant, importer, ActivityEntry(
+            moduleId = "mantenimiento", entityType = "importacion", entityId = jobId.toString(), entityLabel = boardName,
+            action = ActivityActions.Imported,
+            summary = "Importo $created ordenes de monday desde $boardName.",
+            changes = listOf(
+                ActivityChange("lots", "Ordenes", null, "creadas $created, actualizadas $updated, omitidas $skipped, con error $failed"),
+                ActivityChange("files", "Archivos", null, "importados $filesDone, con error $filesFailed"),
+            ),
+        ))
+    }
+
+    /** Quien inicio la importacion, para el registro de actividad ("Importacion (Ana Ruiz)"). */
+    private fun importerActivity(context: MantenimientoImportJobContext, job: MondayJob): ActivityActor {
+        val creator = job.createdBy ?: return ActivityActor.import(null)
+        val startedBy = context.access.userAccess(context.tenant, context.companyCode, creator, serverOwner = false)?.permissions("mantenimiento")?.activityActor
+        return ActivityActor.import(startedBy ?: ActivityActor.user(creator, "Usuario"))
     }
 }

@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.propietarios
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CustomerSql
@@ -281,7 +285,14 @@ object PropietariosImportApply {
      * El desarrollo donde importar: [targetDevelopmentId] si viene (debe existir y no estar archivado); si no, el que ya tiene [importKey];
      * si no, el sin archivar con el mismo nombre (se le pone la clave); si no, uno nuevo llamado [name].
      */
-    fun ensureDevelopment(tenant: Connection, importKey: String, name: String, targetDevelopmentId: UUID?, actorId: UUID?): UUID {
+    fun ensureDevelopment(
+        tenant: Connection,
+        importKey: String,
+        name: String,
+        targetDevelopmentId: UUID?,
+        actorId: UUID?,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): UUID {
         if (targetDevelopmentId != null) {
             val development = PropietariosRepository.getDevelopment(tenant, targetDevelopmentId)
                 ?: throw PropietariosValidationException(tr("El desarrollo de destino ya no existe."))
@@ -303,11 +314,15 @@ object PropietariosImportApply {
                     tenant.exec("UPDATE propietarios_developments SET import_key = ? WHERE id = ? AND import_key IS NULL", listOf(key, named.id))
                     named.id
                 } else {
+                    val createdId = UUID.randomUUID()
                     tenant.exec(
                         "INSERT INTO propietarios_developments (id, name, created_by, import_key) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                        listOf(UUID.randomUUID(), clean, actorId, key),
+                        listOf(createdId, clean, actorId, key),
                     )
-                    byKey() ?: throw PropietariosValidationException(tr("No se pudo crear el desarrollo."))
+                    val inserted = byKey() ?: throw PropietariosValidationException(tr("No se pudo crear el desarrollo."))
+                    PropietariosActivity.write(tenant, activity, "desarrollo", inserted.toString(), clean, ActivityActions.Created,
+                        "Importo el desarrollo $clean.", ActivityChanges.created(mapOf("name" to clean), PropietariosActivity.DevelopmentLabels))
+                    inserted
                 }
             }
         }
@@ -324,12 +339,22 @@ object PropietariosImportApply {
      * propietarios que aun no tiene. Si la fila trae [ImportedLot.developmentName] se usa (o se crea) el desarrollo con ese nombre.
      * Una fila sin identificador o sin numero de lote se omite. Tras confirmar, el aviso a Clientes va en su propio try/catch: su fallo se registra y no convierte la fila en fallida.
      */
-    fun apply(tenant: Connection, access: ModuleAccessService, developmentId: UUID, row: ImportedLot, author: String, actorId: UUID?, today: LocalDate): LotImportOutcome {
+    fun apply(
+        tenant: Connection,
+        access: ModuleAccessService,
+        developmentId: UUID,
+        row: ImportedLot,
+        author: String,
+        actorId: UUID?,
+        today: LocalDate,
+        // Quien importa, para el registro de actividad (la importacion en nombre de quien la inicio).
+        activity: ActivityActor = ActivityActor.import(null),
+    ): LotImportOutcome {
         skipReason(row)?.let { return LotImportOutcome.Skipped(it) }
         val key = row.key.trim()
         val lotNumber = PropietariosRules.clip(row.lotNumber.trim(), PropietariosRules.MaxLotNumber)
         val applied = try {
-            PropietariosRepository.transaction(tenant) { write(tenant, developmentId, row, key, lotNumber, author, actorId, today) }
+            PropietariosRepository.transaction(tenant) { write(tenant, activity, developmentId, row, key, lotNumber, author, actorId, today) }
         } catch (failure: PropietariosValidationException) {
             return LotImportOutcome.Skipped(failure.message.orEmpty())
         }
@@ -355,13 +380,13 @@ object PropietariosImportApply {
 
     private class Candidate(val identity: String, val name: String, val email: String, val phone: String, val share: BigDecimal?, val startsOn: LocalDate?, val ownerKey: String)
 
-    private fun write(tenant: Connection, developmentIdArg: UUID, row: ImportedLot, key: String, lotNumber: String, author: String, actorId: UUID?, today: LocalDate): Applied {
+    private fun write(tenant: Connection, activity: ActivityActor, developmentIdArg: UUID, row: ImportedLot, key: String, lotNumber: String, author: String, actorId: UUID?, today: LocalDate): Applied {
         lock(tenant, "propietarios-import:$key")
         val developmentName = row.developmentName?.trim()?.takeIf { it.isNotEmpty() }
         val developmentId = if (developmentName != null) {
-            ensureDevelopment(tenant, developmentKey(developmentName), developmentName, null, actorId)
+            ensureDevelopment(tenant, developmentKey(developmentName), developmentName, null, actorId, activity)
         } else {
-            ensureDevelopment(tenant, "", "", developmentIdArg, actorId)
+            ensureDevelopment(tenant, "", "", developmentIdArg, actorId, activity)
         }
         val development = PropietariosRepository.getDevelopment(tenant, developmentId) ?: throw PropietariosValidationException(tr("El desarrollo ya no existe."))
 
@@ -409,12 +434,10 @@ object PropietariosImportApply {
         val lotId: UUID
         if (existingId == null) {
             val status = row.status ?: if (candidates.isNotEmpty()) LotStatus.Vendido else LotStatus.Disponible
-            lotId = PropietariosRepository.createLot(
-                tenant,
-                LotInput(developmentId, lotNumber, register, propertyName, propertyType, status, area, coordinates?.first, coordinates?.second, mapUrl, notes),
-                actorId,
-                importKey = key,
-            )
+            val input = LotInput(developmentId, lotNumber, register, propertyName, propertyType, status, area, coordinates?.first, coordinates?.second, mapUrl, notes)
+            lotId = PropietariosRepository.createLot(tenant, input, actorId, importKey = key)
+            PropietariosActivity.write(tenant, activity, "lote", lotId.toString(), lotNumber, ActivityActions.Created, "Importo el lote $lotNumber.",
+                ActivityChanges.created(PropietariosActivity.lotValues(input, development.name), PropietariosActivity.LotLabels))
         } else {
             lotId = existingId
             val old = PropietariosRepository.getLot(tenant, lotId) ?: throw PropietariosValidationException(tr("El lote ya no existe."))
@@ -433,7 +456,12 @@ object PropietariosImportApply {
                 mapUrl = mapUrl.ifEmpty { old.mapUrl },
                 notes = notes.ifEmpty { old.notes },
             )
-            if (lotChanged(old, merged)) PropietariosRepository.updateLot(tenant, lotId, merged)
+            if (lotChanged(old, merged)) {
+                PropietariosRepository.updateLot(tenant, lotId, merged)
+                val changes = ActivityChanges.diff(PropietariosActivity.lotValues(old), PropietariosActivity.lotValues(merged, old.developmentName), PropietariosActivity.LotLabels)
+                if (changes.isNotEmpty()) PropietariosActivity.write(tenant, activity, "lote", lotId.toString(), lotNumber, ActivityActions.Updated,
+                    "Modifico el lote $lotNumber desde la importacion.", changes)
+            }
         }
 
         // Propietarios: los que ya tienen su titularidad (por clave) no se tocan; se consultan todas las claves en una sola sentencia.
@@ -469,6 +497,11 @@ object PropietariosImportApply {
             insert.executeBatch().count { it > 0 || it == java.sql.Statement.SUCCESS_NO_INFO }
         }
 
+        if (started > 0) {
+            PropietariosActivity.write(tenant, activity, "lote", lotId.toString(), lotNumber, PropietariosActivity.OwnerAdded,
+                "Agrego $started titular(es) al lote $lotNumber desde la importacion.",
+                resolved.map { (candidate, _) -> ActivityChange("owner", "Titular", null, PropietariosRules.ownerLabel(candidate.name, candidate.share.takeIf { !dropShares })) })
+        }
         val note = if (dropShares && given.isNotEmpty()) " Los porcentajes no eran válidos o sumaban más de 100 %: se importó sin porcentajes." else ""
         if (created) {
             PropietariosRepository.addHistory(tenant, lotId, "importacion", today, "Lote importado con $started titulares.$note", author)
@@ -523,7 +556,17 @@ object PropietariosImportApply {
      * Guarda un archivo de la fuente como adjunto del lote, una vez por [importKey] (false si ya estaba; el contenido no se lee entonces).
      * El lote admite [PropietariosRepository.MaxFilesPerLot] archivos y cada uno [PropietariosRepository.MaxFileBytes].
      */
-    fun attachFile(tenant: Connection, files: ModuleFiles, lotId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
+    fun attachFile(
+        tenant: Connection,
+        files: ModuleFiles,
+        lotId: UUID,
+        importKey: String,
+        name: String,
+        contentType: String,
+        content: InputStream,
+        actorId: UUID?,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): Boolean {
         val key = importKey.trim().take(MaxKey)
         if (key.isEmpty()) throw PropietariosValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM propietarios_attachments WHERE lot_id = ? AND import_key = ?", listOf(lotId, key)) { it.getInt("found") }.isNotEmpty()
@@ -550,6 +593,9 @@ object PropietariosImportApply {
                 runCatching { files.delete(stored) }
                 return false
             }
+            PropietariosActivity.write(tenant, activity, "lote", lotId.toString(), PropietariosRepository.getLot(tenant, lotId)?.lotNumber.orEmpty(),
+                ActivityActions.AttachmentAdded, "Importo el adjunto $fileName.",
+                listOf(ActivityChange("file", "Archivo", null, "$fileName (${PropietariosActivity.sizeLabel(stored.size)})")))
             return true
         } catch (failure: Exception) {
             runCatching { files.delete(stored) }

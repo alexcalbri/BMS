@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
@@ -274,7 +278,9 @@ object ComprasImportEngine {
      * importadas pasan a pendientes, el solicitante es quien importa y no se crean departamentos. No avisa por solicitud.
      * Bloqueante (JDBC y disco): usar en withContext(Dispatchers.IO).
      */
-    fun apply(ctx: ComprasImportContext, importer: Actor, item: ImportedRequest): ImportResult {
+    fun apply(ctx: ComprasImportContext, startedBy: Actor, item: ImportedRequest): ImportResult {
+        // Cada fila del registro de actividad es de la importacion, en nombre de quien la inicio ("Importacion (Ana Ruiz)").
+        val importer = startedBy.copy(activity = ActivityActor.import(startedBy.activity))
         val canManage = importer.can(ComprasModule.Manage)
         val plan = try {
             plan(item, Instant.now(), canManage)
@@ -436,6 +442,16 @@ object ComprasImportEngine {
             }
             if (inserted == 0) return null
             createdNow = true
+            ComprasActivity.write(tenant, importer.activity, "solicitud", requestId.toString(), plan.title, ActivityActions.Created,
+                "Importo la solicitud ${plan.title} desde ${plan.sourceLabel}.",
+                ActivityChanges.created(
+                    mapOf(
+                        "title" to plan.title, "description" to plan.description, "department" to plan.department,
+                        "estimatedAmount" to plan.estimatedAmount, "currency" to plan.currency, "requiredDate" to plan.requiredDate,
+                        "priority" to plan.priority.label,
+                    ),
+                    ComprasActivity.RequestLabels,
+                ))
         } else if (plan.status != RequestStatus.Draft) {
             // Volver a importar no pisa lo que alguien ya avanzo aqui: solo saca del borrador una solicitud que
             // sigue en el (por ejemplo, importada cuando su estado de origen aun no se reconocia).
@@ -456,7 +472,12 @@ object ComprasImportEngine {
                 )
                 update.executeUpdate()
             }
-            if (moved == 1) run.problems += tr("Estado actualizado a \"{0}\": la solicitud seguia en borrador.", tr(plan.status.label))
+            if (moved == 1) {
+                run.problems += tr("Estado actualizado a \"{0}\": la solicitud seguia en borrador.", tr(plan.status.label))
+                ComprasActivity.write(tenant, importer.activity, "solicitud", requestId.toString(), plan.title, ActivityActions.StatusChanged,
+                    "Cambio la solicitud ${plan.title} de ${RequestStatus.Draft.label} a ${plan.status.label}.",
+                    listOf(ActivityChange("status", "Estado", RequestStatus.Draft.label, plan.status.label)))
+            }
         }
         val quoteIds = mutableMapOf<String, UUID>()
         var addedQuotes = 0
@@ -484,8 +505,15 @@ object ComprasImportEngine {
             }
             quoteIds[quote.key] = id
             addedQuotes++
+            ComprasActivity.write(tenant, importer.activity, "cotizacion", id.toString(), quote.supplier, ActivityActions.Created,
+                "Importo la cotizacion de ${quote.supplier} a la solicitud ${plan.title}.",
+                ActivityChanges.created(
+                    mapOf("supplier" to quote.supplier, "amount" to quote.amount, "currency" to quote.currency, "notes" to quote.notes),
+                    ComprasActivity.QuoteLabels,
+                ))
         }
         var addedFiles = 0
+        val addedNames = mutableListOf<ActivityChange>()
         files.forEach { pending ->
             val kind = pending.file.kind.takeIf { it in ComprasAttachments.Kinds } ?: "support"
             val inserted = tenant.prepareStatement(
@@ -512,7 +540,12 @@ object ComprasImportEngine {
                 run.missing(tr("{0}: ya existe en otra solicitud.", pending.name))
             } else {
                 addedFiles++
+                addedNames += ActivityChange("file", "Archivo", null, "${pending.name} (${ComprasAttachments.sizeLabel(pending.ref.size)})")
             }
+        }
+        if (addedNames.isNotEmpty()) {
+            ComprasActivity.write(tenant, importer.activity, "solicitud", requestId.toString(), plan.title, ActivityActions.AttachmentAdded,
+                "Importo ${addedNames.size} adjunto(s) a la solicitud ${plan.title}.", addedNames)
         }
         val itemId = plan.key.substringAfter(':')
         when {

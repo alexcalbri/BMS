@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.i18n.msg
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
@@ -54,7 +55,11 @@ enum class Priority(val id: String, val label: String, val tone: String, val ran
  * Quien actua: el usuario con sus permisos vivos en el modulo. El dueno del negocio y el del servidor
  * tienen todos los permisos ([isOwner]).
  */
-data class Actor(val userId: UUID?, val name: String, val permissions: ModulePermissions) {
+/**
+ * Quien hace la operacion: [name] para el historial propio del modulo; [activity] para el registro de actividad de
+ * la empresa (persona, agente, importacion...), que es el que se escribe en cada cambio.
+ */
+data class Actor(val userId: UUID?, val name: String, val permissions: ModulePermissions, val activity: ActivityActor) {
     val isOwner: Boolean get() = permissions.businessOwner || permissions.serverOwner
 
     fun can(permission: String): Boolean = isOwner || permissions.has(permission)

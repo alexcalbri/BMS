@@ -313,6 +313,7 @@ object PropietariosRoutes {
     ): Outcome {
         val op = params["op"].orEmpty()
         val actorId = permissions.userId
+        val activity = permissions.activityActor
         val author by lazy { access.userIdentity(tenant, permissions)?.name ?: "Usuario" }
         fun requireId(key: String): UUID = uuid(params, key) ?: throw missing(tr("Falta el elemento sobre el que actuar."))
         fun lotOutcome(id: UUID, text: String) = success("lote", mapOf("id" to id.toString()), text)
@@ -321,7 +322,7 @@ object PropietariosRoutes {
             "desarrollos" -> when (op) {
                 "dev-save" -> {
                     PropietariosService.require(permissions, PropietariosModule.Admin)
-                    val id = PropietariosService.createDevelopment(tenant, PropietariosActions.developmentInput(values), actorId)
+                    val id = PropietariosService.createDevelopment(tenant, activity, PropietariosActions.developmentInput(values), actorId)
                     success("desarrollo", mapOf("id" to id.toString()), tr("Desarrollo creado."))
                 }
                 else -> throw missing(tr("Acción no disponible."))
@@ -332,12 +333,12 @@ object PropietariosRoutes {
                 when (op) {
                     "dev-save" -> {
                         PropietariosService.require(permissions, PropietariosModule.Admin)
-                        PropietariosService.updateDevelopment(tenant, id, PropietariosActions.developmentInput(values))
+                        PropietariosService.updateDevelopment(tenant, activity, id, PropietariosActions.developmentInput(values))
                         success("desarrollo", mapOf("id" to id.toString()), tr("Desarrollo guardado."))
                     }
                     "dev-archive" -> {
                         PropietariosService.require(permissions, PropietariosModule.Admin)
-                        PropietariosService.archiveDevelopment(tenant, id)
+                        PropietariosService.archiveDevelopment(tenant, activity, id)
                         success("desarrollos", emptyMap(), tr("Desarrollo archivado."))
                     }
                     else -> throw missing(tr("Acción no disponible."))
@@ -350,11 +351,11 @@ object PropietariosRoutes {
                     val lotId = uuid(params, "id")
                     if (lotId == null) {
                         val development = requireId("development")
-                        val created = PropietariosService.createLot(tenant, PropietariosActions.lotInput(development, values), author, actorId)
+                        val created = PropietariosService.createLot(tenant, activity, PropietariosActions.lotInput(development, values), author, actorId)
                         lotOutcome(created, tr("Lote creado."))
                     } else {
                         val lot = PropietariosRepository.getLot(tenant, lotId) ?: throw missing(tr("Lote no encontrado."))
-                        PropietariosService.updateLot(tenant, lotId, PropietariosActions.lotInput(lot.developmentId, values), author)
+                        PropietariosService.updateLot(tenant, activity, lotId, PropietariosActions.lotInput(lot.developmentId, values), author)
                         lotOutcome(lotId, tr("Cambios guardados."))
                     }
                 }
@@ -364,22 +365,22 @@ object PropietariosRoutes {
                     PropietariosRepository.getLot(tenant, lotId)?.takeIf { !it.archived } ?: throw missing(tr("Lote no encontrado."))
                     val changes = PropietariosActions.fileChanges(values, PropietariosRepository.listAttachments(tenant, lotId))
                     PropietariosRepository.transaction(tenant) {
-                        if (changes.added.isNotEmpty()) PropietariosService.attachFiles(tenant, lotId, changes.added, actorId, author)
-                        if (changes.removed.isNotEmpty()) PropietariosService.removeFiles(tenant, lotId, changes.removed, author)
+                        if (changes.added.isNotEmpty()) PropietariosService.attachFiles(tenant, activity, lotId, changes.added, actorId, author)
+                        if (changes.removed.isNotEmpty()) PropietariosService.removeFiles(tenant, activity, lotId, changes.removed, author)
                     }
                     lotOutcome(lotId, tr("Adjuntos actualizados."))
                 }
                 "add-owner" -> {
                     PropietariosService.require(permissions, PropietariosModule.Manage)
                     val lotId = requireId("id")
-                    PropietariosService.addOwner(tenant, lotId, PropietariosActions.coOwner(values), null, "", author, actorId)
+                    PropietariosService.addOwner(tenant, activity, lotId, PropietariosActions.coOwner(values), null, "", author, actorId)
                     lotOutcome(lotId, tr("Cotitular añadido."))
                 }
                 "archive" -> {
                     PropietariosService.require(permissions, PropietariosModule.Admin)
                     val lotId = requireId("id")
                     val developmentId = PropietariosRepository.getLot(tenant, lotId)?.developmentId ?: throw missing(tr("Lote no encontrado."))
-                    PropietariosService.archiveLot(tenant, lotId, author)
+                    PropietariosService.archiveLot(tenant, activity, lotId, author)
                     success("desarrollo", mapOf("id" to developmentId.toString()), tr("Lote archivado."))
                 }
                 else -> throw missing(tr("Acción no disponible."))
@@ -391,7 +392,7 @@ object PropietariosRoutes {
                     val lotId = requireId("lot")
                     val date = PropietariosActions.date(values["date"]) ?: throw missing(tr("Escribe la fecha del cambio."))
                     val newOwners = PropietariosActions.newOwners(values)
-                    val result = PropietariosService.transfer(tenant, lotId, date, newOwners, values["notes"].orEmpty(), author, actorId)
+                    val result = PropietariosService.transfer(tenant, activity, lotId, date, newOwners, values["notes"].orEmpty(), author, actorId)
                     lotOutcome(lotId, if (newOwners.isEmpty()) tr("Baja registrada.") else tr("Cambio de titularidad registrado."))
                 }
                 else -> throw missing(tr("Acción no disponible."))
@@ -403,7 +404,7 @@ object PropietariosRoutes {
                     val id = requireId("id")
                     val share = PropietariosActions.decimal(values["share"], tr("El porcentaje"))
                     val result = PropietariosService.editOwnership(
-                        tenant, id, share, PropietariosActions.date(values["starts_on"]), PropietariosActions.date(values["ends_on"]), values["notes"].orEmpty(), author,
+                        tenant, activity, id, share, PropietariosActions.date(values["starts_on"]), PropietariosActions.date(values["ends_on"]), values["notes"].orEmpty(), author,
                     )
                     lotOutcome(result.lotId, tr("Titularidad guardada."))
                 }

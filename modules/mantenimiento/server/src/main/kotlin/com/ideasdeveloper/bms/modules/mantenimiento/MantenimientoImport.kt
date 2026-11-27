@@ -1,5 +1,9 @@
 package com.ideasdeveloper.bms.modules.mantenimiento
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
 import com.ideasdeveloper.bms.server.extensions.ServerExtension
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.FileTooLargeException
@@ -382,7 +386,15 @@ object MantenimientoImportApply {
      * Crea o actualiza el plan de [row] (una transacción, mismo resultado al repetir) con su lista de comprobación. No manda avisos.
      * Una fila sin título o identificador se omite. Al repetir no se toca la próxima fecha ni si el plan está activo.
      */
-    fun applyPlan(tenant: Connection, row: ImportedPlan, users: List<MantenimientoUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
+    fun applyPlan(
+        tenant: Connection,
+        row: ImportedPlan,
+        users: List<MantenimientoUser>,
+        actorId: UUID?,
+        today: LocalDate,
+        // Quien importa, para el registro de actividad (la importacion en nombre de quien la inicio).
+        activity: ActivityActor = ActivityActor.import(null),
+    ): ImportOutcome {
         val key = row.key.trim()
         if (key.isEmpty()) return ImportOutcome.Skipped(tr("El ítem no tiene identificador."))
         if (key.length > MaxKey) return ImportOutcome.Skipped(tr("El identificador del ítem {0} es demasiado largo.", key))
@@ -410,6 +422,8 @@ object MantenimientoImportApply {
                 if (inserted > 0) {
                     planId = id
                     created = true
+                    MantenimientoActivity.write(tenant, activity, "plan", id.toString(), title, ActivityActions.Created, "Importo el plan $title.",
+                        ActivityChanges.created(mapOf("title" to title), MantenimientoActivity.PlanLabels))
                 } else {
                     // Otra ejecución lo insertó en el mismo momento: se actualiza ese.
                     planId = tenant.rows("SELECT id FROM mantenimiento_plans WHERE import_key = ?", listOf(key)) { it.getObject("id", UUID::class.java) }.firstOrNull()
@@ -460,7 +474,14 @@ object MantenimientoImportApply {
      * Crea o actualiza la orden de [row] (una transacción, mismo resultado al repetir) con su lista y sus notas que aún no estén.
      * No manda avisos. Una fila sin título o identificador se omite.
      */
-    fun applyOrder(tenant: Connection, row: ImportedOrder, users: List<MantenimientoUser>, actorId: UUID?, today: LocalDate): ImportOutcome {
+    fun applyOrder(
+        tenant: Connection,
+        row: ImportedOrder,
+        users: List<MantenimientoUser>,
+        actorId: UUID?,
+        today: LocalDate,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): ImportOutcome {
         val key = row.key.trim()
         if (key.isEmpty()) return ImportOutcome.Skipped(tr("El ítem no tiene identificador."))
         if (key.length > MaxKey) return ImportOutcome.Skipped(tr("El identificador del ítem {0} es demasiado largo.", key))
@@ -503,6 +524,8 @@ object MantenimientoImportApply {
                 if (inserted > 0) {
                     orderId = id
                     created = true
+                    MantenimientoActivity.write(tenant, activity, "orden", id.toString(), title, ActivityActions.Created, "Importo la orden $title.",
+                        ActivityChanges.created(mapOf("title" to title, "priority" to row.priority.label), MantenimientoActivity.OrderLabels))
                 } else {
                     orderId = tenant.rows("SELECT id FROM mantenimiento_orders WHERE import_key = ?", listOf(key)) { it.getObject("id", UUID::class.java) }.firstOrNull()
                 }
@@ -601,7 +624,17 @@ object MantenimientoImportApply {
      * Guarda un archivo de la fuente como adjunto de la orden, una vez por [importKey] (false si ya estaba: entonces no se lee el
      * contenido). La orden admite [MantenimientoRepository.MaxFilesPerOrder] archivos y cada uno [MantenimientoRepository.MaxFileBytes].
      */
-    fun attachFile(tenant: Connection, files: ModuleFiles, orderId: UUID, importKey: String, name: String, contentType: String, content: InputStream, actorId: UUID?): Boolean {
+    fun attachFile(
+        tenant: Connection,
+        files: ModuleFiles,
+        orderId: UUID,
+        importKey: String,
+        name: String,
+        contentType: String,
+        content: InputStream,
+        actorId: UUID?,
+        activity: ActivityActor = ActivityActor.import(null),
+    ): Boolean {
         val key = importKey.trim().take(MaxKey)
         if (key.isEmpty()) throw MantenimientoValidationException(tr("La clave del archivo no es válida."))
         val already = tenant.rows("SELECT 1 AS found FROM mantenimiento_attachments WHERE order_id = ? AND import_key = ?", listOf(orderId, key)) { it.getInt("found") }.isNotEmpty()
@@ -630,6 +663,8 @@ object MantenimientoImportApply {
                 runCatching { files.delete(stored) }
                 return false
             }
+            MantenimientoActivity.write(tenant, activity, "orden", orderId.toString(), fileName, ActivityActions.AttachmentAdded, "Importo el adjunto $fileName.",
+                listOf(ActivityChange("file", "Archivo", null, "$fileName (${MantenimientoActivity.sizeLabel(stored.size)})")))
             return true
         } catch (failure: Exception) {
             runCatching { files.delete(stored) }

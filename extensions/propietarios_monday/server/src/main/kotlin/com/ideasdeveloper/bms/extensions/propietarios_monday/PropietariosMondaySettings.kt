@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.extensions.propietarios_monday
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityEntry
+import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.modules.propietarios.ImportedLot
 import com.ideasdeveloper.bms.server.extensions.ExtensionStatus
 import com.ideasdeveloper.bms.server.i18n.msg
@@ -69,6 +74,15 @@ object PropietariosMondaySettings {
     }
 
     /** Guarda el token sellado (upsert); null o vacio lo borra. Sin llave maestra no guarda nada en claro. */
+    /** Guardar o quitar el token de monday: el valor nunca se registra, solo que cambio (campo secreto). */
+    fun recordTokenChange(tenant: Connection, activity: ActivityActor, summary: String) {
+        ActivityLog.record(tenant, activity, ActivityEntry(
+            moduleId = "propietarios", entityType = "settings", entityId = null, entityLabel = "Monday",
+            action = ActivityActions.SettingsChanged, summary = summary,
+            changes = listOf(ActivityChange.secret("mondayToken", "Token de monday")),
+        ))
+    }
+
     fun saveToken(secrets: SecretBox, tenant: Connection, token: String?) {
         val clean = token?.trim()?.takeIf { it.isNotEmpty() }
         val sealed = clean?.let {

@@ -258,7 +258,7 @@ object MantenimientoMcpTools {
     private fun scopeOf(call: McpToolCall) = MantenimientoScope.from(call.permissions)
 
     private fun actorOf(call: McpToolCall, scope: MantenimientoScope) =
-        MantenimientoActor(scope.userId, call.access.userIdentity(call.tenant, call.permissions)?.name ?: "Usuario")
+        MantenimientoActor(scope.userId, call.access.userIdentity(call.tenant, call.permissions)?.name ?: "Usuario", call.activityActor)
 
     /** La orden por id o folio, solo si el usuario la ve (y no está archivada); si no, "no encontrada" sin distinguir. */
     private fun visibleOrder(call: McpToolCall, scope: MantenimientoScope): Order {
@@ -586,6 +586,7 @@ object MantenimientoMcpTools {
                     if (call.has("cost_amount")) call.decimal("cost_amount") else before.costAmount,
                     if (call.has("cost_currency")) call.string("cost_currency", 3) else before.costCurrency,
                     if (call.has("resolution")) call.string("resolution", OrderInput.MaxResolution + 1) else before.resolution,
+                    actor.activity,
                 )
             }
             if (status != null) {

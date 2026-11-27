@@ -1,5 +1,10 @@
 package com.ideasdeveloper.bms.modules.compras
 
+import com.ideasdeveloper.bms.server.activity.ActivityActions
+import com.ideasdeveloper.bms.server.activity.ActivityChange
+import com.ideasdeveloper.bms.server.activity.ActivityChanges
+import com.ideasdeveloper.bms.server.activity.ActivityEntry
+import com.ideasdeveloper.bms.server.activity.ActivityLog
 import com.ideasdeveloper.bms.server.i18n.tr
 import java.math.BigDecimal
 import java.sql.Connection
@@ -77,13 +82,18 @@ object ComprasRepository {
         query.executeQuery().use { rows -> ComprasSettings(if (rows.next()) rows.getString(1) else "USD") }
     }
 
-    fun setDefaultCurrency(tenant: Connection, currency: String) {
+    fun setDefaultCurrency(tenant: Connection, actor: Actor, currency: String) {
         val code = ComprasMoney.currency(currency)
+        val before = settings(tenant).defaultCurrency
         tenant.prepareStatement(
             "INSERT INTO compras_settings (id, default_currency) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET default_currency = EXCLUDED.default_currency, updated_at = CURRENT_TIMESTAMP"
         ).use { upsert ->
             upsert.setString(1, code)
             upsert.executeUpdate()
+        }
+        val changes = ActivityChanges.diff(mapOf("defaultCurrency" to before), mapOf("defaultCurrency" to code), ComprasActivity.SettingsLabels)
+        if (changes.isNotEmpty()) {
+            ComprasActivity.settings(tenant, actor, "settings", null, "Ajustes de compras", "Cambio la moneda por defecto de compras a $code.", changes)
         }
     }
 
@@ -113,14 +123,19 @@ object ComprasRepository {
                     insert.setString(2, clean)
                     insert.executeUpdate()
                 }
+                departmentRow(ActivityActions.Created, actor, tenant, newId, clean, "Creo el departamento $clean.",
+                    ActivityChanges.created(mapOf("name" to clean), ComprasActivity.DepartmentLabels))
                 return newId
             }
+            val before = departmentName(tenant, id)
             val updated = tenant.prepareStatement("UPDATE compras_departments SET name = ? WHERE id = ?").use { update ->
                 update.setString(1, clean)
                 update.setObject(2, id)
                 update.executeUpdate()
             }
             if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
+            val changes = ActivityChanges.diff(mapOf("name" to before), mapOf("name" to clean), ComprasActivity.DepartmentLabels)
+            if (changes.isNotEmpty()) departmentRow(ActivityActions.Updated, actor, tenant, id, clean, "Renombro el departamento $before a $clean.", changes)
             return id
         } catch (failure: SQLException) {
             if (failure.sqlState == "23505") throw ComprasValidationException(tr("Ya existe un departamento con ese nombre."))
@@ -131,12 +146,32 @@ object ComprasRepository {
     /** Activa o desactiva un departamento (los desactivados no se ofrecen en solicitudes nuevas). Requiere manage. */
     fun setDepartmentActive(tenant: Connection, actor: Actor, id: UUID, active: Boolean) {
         requireManage(actor)
+        val before = tenant.prepareStatement("SELECT name, active FROM compras_departments WHERE id = ?").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
+        } ?: throw ComprasValidationException(tr("El departamento no existe."))
         val updated = tenant.prepareStatement("UPDATE compras_departments SET active = ? WHERE id = ?").use { update ->
             update.setBoolean(1, active)
             update.setObject(2, id)
             update.executeUpdate()
         }
         if (updated == 0) throw ComprasValidationException(tr("El departamento no existe."))
+        if (before.second != active) {
+            val (action, summary) = if (active) ActivityActions.Restored to "Reactivo el departamento ${before.first}."
+            else ActivityActions.Archived to "Desactivo el departamento ${before.first}."
+            departmentRow(action, actor, tenant, id, before.first, summary, ActivityChanges.diff(
+                mapOf("active" to before.second), mapOf("active" to active), ComprasActivity.DepartmentLabels,
+            ))
+        }
+    }
+
+    private fun departmentName(tenant: Connection, id: UUID): String? = tenant.prepareStatement("SELECT name FROM compras_departments WHERE id = ?").use { query ->
+        query.setObject(1, id)
+        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+    }
+
+    private fun departmentRow(action: String, actor: Actor, tenant: Connection, id: UUID, label: String, summary: String, changes: List<ActivityChange>) {
+        ActivityLog.record(tenant, actor.activity, ActivityEntry(ComprasActivity.ModuleId, "departamento", id.toString(), label, action, summary, changes))
     }
 
     private fun requireManage(actor: Actor) {
@@ -205,11 +240,11 @@ object ComprasRepository {
         requireManage(actor)
         val max = maxAmount?.let { ComprasMoney.check(it) }
         val currency = ComprasMoney.currency(limitCurrency)
-        val exists = tenant.prepareStatement("SELECT 1 FROM application_users WHERE id = ?").use { query ->
+        val userName = tenant.prepareStatement("SELECT COALESCE(NULLIF(trim(display_name), ''), postgres_role) FROM application_users WHERE id = ?").use { query ->
             query.setObject(1, userId)
-            query.executeQuery().use { it.next() }
-        }
-        if (!exists) throw ComprasValidationException(tr("El usuario no existe."))
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: throw ComprasValidationException(tr("El usuario no existe."))
+        val before = approver(tenant, userId)
         tenant.prepareStatement(
             """
             INSERT INTO compras_approvers (user_id, max_amount, limit_currency, active, updated_by) VALUES (?, ?, ?, ?, ?)
@@ -224,14 +259,34 @@ object ComprasRepository {
             upsert.setString(5, actor.name.take(200))
             upsert.executeUpdate()
         }
+        val values = mapOf("name" to userName, "maxAmount" to max, "limitCurrency" to currency, "active" to active)
+        if (before == null) {
+            approverRow(tenant, actor, userId, userName, ActivityActions.Created, "Designo a $userName como aprobador.",
+                ActivityChanges.created(values, ComprasActivity.ApproverLabels))
+        } else {
+            val old = mapOf("name" to before.name, "maxAmount" to before.maxAmount, "limitCurrency" to before.limitCurrency, "active" to before.active)
+            val changes = ActivityChanges.diff(old, values, ComprasActivity.ApproverLabels)
+            if (changes.isNotEmpty()) approverRow(tenant, actor, userId, userName, ActivityActions.Updated, "Modifico el aprobador $userName.", changes)
+        }
     }
 
     fun removeApprover(tenant: Connection, actor: Actor, userId: UUID) {
         requireManage(actor)
+        val before = approver(tenant, userId)
         tenant.prepareStatement("DELETE FROM compras_approvers WHERE user_id = ?").use { delete ->
             delete.setObject(1, userId)
             delete.executeUpdate()
         }
+        if (before != null) {
+            approverRow(tenant, actor, userId, before.name, ActivityActions.Deleted, "Quito a ${before.name} como aprobador.", ActivityChanges.deleted(
+                mapOf("name" to before.name, "maxAmount" to before.maxAmount, "limitCurrency" to before.limitCurrency, "active" to before.active),
+                ComprasActivity.ApproverLabels,
+            ))
+        }
+    }
+
+    private fun approverRow(tenant: Connection, actor: Actor, userId: UUID, label: String, action: String, summary: String, changes: List<ActivityChange>) {
+        ActivityLog.record(tenant, actor.activity, ActivityEntry(ComprasActivity.ModuleId, "aprobador", userId.toString(), label, action, summary, changes))
     }
 
     // ---- Solicitudes ----
@@ -317,7 +372,10 @@ object ComprasRepository {
                 return@transaction load(tenant, existing) ?: throw notFound()
             }
             addEvent(tenant, id, actor, "created", detail = clean.title)
-            load(tenant, id) ?: throw notFound()
+            val created = load(tenant, id) ?: throw notFound()
+            ComprasActivity.request(tenant, actor, created, ActivityActions.Created, "Creo la solicitud ${ComprasActivity.folio(created)}.",
+                ActivityChanges.created(ComprasActivity.requestValues(created), ComprasActivity.RequestLabels))
+            created
         }
     }
 
@@ -381,7 +439,10 @@ object ComprasRepository {
             if (updated == 0) throw changed()
             val changes = clean.changesFrom(current)
             if (changes.isNotEmpty()) addEvent(tenant, id, actor, "edited", detail = changes)
-            load(tenant, id) ?: throw notFound()
+            val saved = load(tenant, id) ?: throw notFound()
+            val diff = ComprasActivity.changes(ComprasActivity.requestValues(current), ComprasActivity.requestValues(saved), ComprasActivity.RequestLabels)
+            if (diff.isNotEmpty()) ComprasActivity.request(tenant, actor, saved, ActivityActions.Updated, "Modifico la solicitud ${ComprasActivity.folio(saved)}.", diff)
+            saved
         }
     }
 
@@ -479,7 +540,15 @@ object ComprasRepository {
             }
             if (updated == 0) throw changed()
             addEvent(tenant, id, actor, "status", cleanReason.orEmpty(), current.status, to)
-            TransitionResult(load(tenant, id) ?: throw notFound(), current.status)
+            val moved = load(tenant, id) ?: throw notFound()
+            val changes = buildList {
+                add(ActivityChange("status", "Estado", current.status.label, to.label))
+                cleanReason?.let { add(ActivityChange("reason", "Motivo", null, it)) }
+                moved.approvedAmount?.let { add(ActivityChange("approvedAmount", "Monto aprobado", null, ComprasMoney.format(it, moved.approvedCurrency ?: moved.currency))) }
+            }
+            ComprasActivity.request(tenant, actor, moved, ActivityActions.StatusChanged,
+                "Cambio la solicitud ${ComprasActivity.folio(moved)} de ${current.status.label} a ${to.label}.", changes)
+            TransitionResult(moved, current.status)
         }
     }
 
@@ -537,7 +606,7 @@ object ComprasRepository {
     fun addQuote(tenant: Connection, actor: Actor, requestId: UUID, supplier: String, amount: BigDecimal, currency: String, notes: String = ""): Quote {
         val (name, money, code) = cleanQuote(supplier, amount, currency, notes)
         return ComprasSql.transaction(tenant) {
-            lockedEditable(tenant, actor, requestId)
+            val request = lockedEditable(tenant, actor, requestId)
             val count = tenant.prepareStatement("SELECT count(*) FROM compras_quotes WHERE request_id = ?").use { query ->
                 query.setObject(1, requestId)
                 query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
@@ -552,7 +621,11 @@ object ComprasRepository {
             }
             touch(tenant, requestId)
             addEvent(tenant, requestId, actor, "quote", "Cotizacion agregada: $name ${ComprasMoney.format(money, code)}")
-            quote(tenant, id) ?: throw notFound()
+            val added = quote(tenant, id) ?: throw notFound()
+            ComprasActivity.quote(tenant, actor, request, id, added.supplier, ActivityActions.Created,
+                "Agrego la cotizacion de ${added.supplier} a la solicitud ${ComprasActivity.folio(request)}.",
+                ActivityChanges.created(ComprasActivity.quoteValues(added), ComprasActivity.QuoteLabels))
+            added
         }
     }
 
@@ -560,22 +633,26 @@ object ComprasRepository {
     fun updateQuote(tenant: Connection, actor: Actor, requestId: UUID, quoteId: UUID, supplier: String, amount: BigDecimal, currency: String, notes: String = ""): Quote {
         val (name, money, code) = cleanQuote(supplier, amount, currency, notes)
         return ComprasSql.transaction(tenant) {
-            lockedEditable(tenant, actor, requestId)
-            quoteOf(tenant, requestId, quoteId)
+            val request = lockedEditable(tenant, actor, requestId)
+            val before = quoteOf(tenant, requestId, quoteId)
             tenant.prepareStatement("UPDATE compras_quotes SET supplier = ?, amount = ?, currency = ?, notes = ? WHERE id = ? AND request_id = ?").use { update ->
                 ComprasSql.bind(update, listOf(name, money, code, notes.trim(), quoteId, requestId))
                 update.executeUpdate()
             }
             touch(tenant, requestId)
             addEvent(tenant, requestId, actor, "quote", "Cotizacion editada: $name ${ComprasMoney.format(money, code)}")
-            quote(tenant, quoteId) ?: throw notFound()
+            val after = quote(tenant, quoteId) ?: throw notFound()
+            val changes = ActivityChanges.diff(ComprasActivity.quoteValues(before), ComprasActivity.quoteValues(after), ComprasActivity.QuoteLabels)
+            if (changes.isNotEmpty()) ComprasActivity.quote(tenant, actor, request, quoteId, after.supplier, ActivityActions.Updated,
+                "Modifico la cotizacion de ${after.supplier} en la solicitud ${ComprasActivity.folio(request)}.", changes)
+            after
         }
     }
 
     /** Quita una cotizacion de [requestId]. */
     fun deleteQuote(tenant: Connection, actor: Actor, requestId: UUID, quoteId: UUID) {
         ComprasSql.transaction(tenant) {
-            lockedEditable(tenant, actor, requestId)
+            val request = lockedEditable(tenant, actor, requestId)
             val existing = quoteOf(tenant, requestId, quoteId)
             tenant.prepareStatement("DELETE FROM compras_quotes WHERE id = ? AND request_id = ?").use { delete ->
                 delete.setObject(1, quoteId)
@@ -584,6 +661,9 @@ object ComprasRepository {
             }
             touch(tenant, requestId)
             addEvent(tenant, requestId, actor, "quote", "Cotizacion quitada: ${existing.supplier}")
+            ComprasActivity.quote(tenant, actor, request, quoteId, existing.supplier, ActivityActions.Deleted,
+                "Quito la cotizacion de ${existing.supplier} de la solicitud ${ComprasActivity.folio(request)}.",
+                ActivityChanges.deleted(ComprasActivity.quoteValues(existing), ComprasActivity.QuoteLabels))
         }
     }
 
@@ -591,7 +671,7 @@ object ComprasRepository {
     fun selectQuote(tenant: Connection, actor: Actor, requestId: UUID, quoteId: UUID?) {
         try {
             ComprasSql.transaction(tenant) {
-                lockedEditable(tenant, actor, requestId)
+                val request = lockedEditable(tenant, actor, requestId)
                 val chosen = quoteId?.let { quoteOf(tenant, requestId, it) }
                 tenant.prepareStatement("UPDATE compras_quotes SET selected = FALSE WHERE request_id = ? AND selected").use { clear ->
                     clear.setObject(1, requestId)
@@ -606,6 +686,10 @@ object ComprasRepository {
                 }
                 touch(tenant, requestId)
                 addEvent(tenant, requestId, actor, "quote", chosen?.let { "Cotizacion elegida: ${it.supplier} ${ComprasMoney.format(it.amount, it.currency)}" } ?: "Cotizacion elegida: ninguna")
+                val chosenLabel = chosen?.let { "${it.supplier} ${ComprasMoney.format(it.amount, it.currency)}" } ?: "ninguna"
+                ComprasActivity.request(tenant, actor, request, ActivityActions.Updated,
+                    "Elijo la cotizacion de la solicitud ${ComprasActivity.folio(request)}: $chosenLabel.",
+                    listOf(ActivityChange("chosenQuote", "Cotizacion elegida", null, chosenLabel)))
             }
         } catch (failure: SQLException) {
             if (failure.sqlState == "23505") throw changed()

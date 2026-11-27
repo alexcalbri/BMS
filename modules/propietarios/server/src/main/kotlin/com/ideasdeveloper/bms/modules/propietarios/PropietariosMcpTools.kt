@@ -340,7 +340,7 @@ object PropietariosMcpTools {
         // Los titulares son clientes: hace falta poder ver Clientes, igual que en la pantalla.
         if (owners.isNotEmpty() && !canSeeCustomers(call)) throw McpToolException("El usuario no puede ver Clientes, así que no puede elegir titulares.")
         val who = author(call)
-        val result = PropietariosService.transfer(call.tenant, lotId, date, owners, call.string("notes", PropietariosRules.MaxNotes + 1), who, call.permissions.userId)
+        val result = PropietariosService.transfer(call.tenant, call.activityActor, lotId, date, owners, call.string("notes", PropietariosRules.MaxNotes + 1), who, call.permissions.userId)
         val lot = PropietariosRepository.getLot(call.tenant, lotId) ?: throw McpToolException("Lote no encontrado.")
         return buildJsonObject {
             put("kind", result.kind)
@@ -369,7 +369,7 @@ object PropietariosMcpTools {
         )
         val problems = input.validate()
         if (problems.isNotEmpty()) throw McpToolException(problems.joinToString(" "))
-        val id = PropietariosService.createLot(call.tenant, input, author(call), call.permissions.userId)
+        val id = PropietariosService.createLot(call.tenant, call.activityActor, input, author(call), call.permissions.userId)
         val lot = PropietariosRepository.getLot(call.tenant, id) ?: throw McpToolException("Lote no encontrado.")
         return buildJsonObject {
             put("created", true)
