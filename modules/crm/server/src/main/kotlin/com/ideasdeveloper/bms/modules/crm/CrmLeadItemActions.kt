@@ -33,7 +33,7 @@ object CrmLeadItemActions {
             throw CrmActionNotice(failure.message.orEmpty())
         }
         try {
-            CrmHost.wordpressMarkSold(tenant, item.externalId.toLong(), price, date)
+            CrmHost.wordpressMarkSold(tenant, item.externalId.toLong(), price, date, actor.activity)
         } catch (failure: CrmWordPressException) {
             throw CrmActionNotice(tr("La venta no se cerro: {0}", failure.message))
         }

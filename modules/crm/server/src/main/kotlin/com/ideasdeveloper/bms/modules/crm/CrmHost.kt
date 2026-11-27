@@ -19,12 +19,15 @@ object CrmHost {
 
     fun lead(tenant: Connection, leadId: UUID): CrmLead? = CrmRepository.lead(tenant, leadId)
 
-    fun addActivity(tenant: Connection, leadId: UUID, kind: String, text: String, actor: CrmActor) =
-        CrmRepository.addActivity(tenant, leadId, kind, text, actor)
+    fun addActivity(tenant: Connection, leadId: UUID, kind: String, text: String, actor: CrmActor, audit: CrmLeadAudit = CrmLeadAudit.Auto) =
+        CrmRepository.addActivity(tenant, leadId, kind, text, actor, audit = audit)
 
     /** Archiva el lead si sigue abierto; devuelve las filas cambiadas (0 si ya estaba archivado). */
-    fun archiveLeadIfOpen(tenant: Connection, leadId: UUID): Int =
-        tenant.prepareStatement("UPDATE crm_leads SET archived_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL").use { it.setObject(1, leadId); it.executeUpdate() }
+    fun archiveLeadIfOpen(tenant: Connection, leadId: UUID, actor: CrmActor): Int = CrmAudit.atomically(tenant) {
+        val changed = tenant.prepareStatement("UPDATE crm_leads SET archived_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL").use { it.setObject(1, leadId); it.executeUpdate() }
+        if (changed > 0) CrmAudit.lead(tenant, actor.activity, leadId, null, com.ideasdeveloper.bms.server.activity.ActivityActions.Archived, { "Archivo el lead $it." })
+        changed
+    }
 
     // ---- Items del lead (habitaciones de Cloudbeds) ----
 
@@ -81,14 +84,19 @@ object CrmHost {
         error: String,
         userId: UUID?,
         author: String,
+        actor: com.ideasdeveloper.bms.server.activity.ActivityActor,
         at: Instant? = null,
-    ) = CrmInbox.addMessage(tenant, leadId, direction, channel, subject, body, externalId, status, error, userId, author, at)
+        // Plantilla y destinatario de un correo enviado desde una plantilla: solo para el registro de actividad.
+        template: String? = null,
+        to: String? = null,
+    ) = CrmInbox.addMessage(tenant, leadId, direction, channel, subject, body, externalId, status, error, userId, author, actor, at, template, to)
 
     /** True si el contacto del canal aun no tiene nombre (solo el de relleno): vale la pena pedirlo al canal. */
     fun inboxNeedsName(tenant: Connection, channel: String, identity: String): Boolean = CrmInbox.needsName(tenant, channel, identity)
 
     /** Pone el nombre al contacto del canal si aun no tiene uno; true si lo cambio. */
-    fun inboxFillName(tenant: Connection, channel: String, identity: String, name: String): Boolean = CrmInbox.fillName(tenant, channel, identity, name)
+    fun inboxFillName(tenant: Connection, channel: String, identity: String, name: String, actor: com.ideasdeveloper.bms.server.activity.ActivityActor? = null): Boolean =
+        CrmInbox.fillName(tenant, channel, identity, name, actor ?: CrmInbox.inboundActor(channel))
 
     /** Identidades del canal cuyo contacto sigue sin nombre (hasta [limit]). */
     fun inboxUnnamedIdentities(tenant: Connection, channel: String, limit: Int): List<String> = CrmInbox.unnamedIdentities(tenant, channel, limit)
@@ -97,7 +105,12 @@ object CrmHost {
     fun inboxLabel(channel: String): String = CrmInbox.label(channel)
 
     /** Entrada única de un contacto de un canal externo (crea o actualiza el lead); [onNewLead] corre si el lead es nuevo. */
-    fun receive(tenant: Connection, inbound: CrmInbound, onNewLead: (UUID) -> Unit = {}): CrmIntakeResult = CrmInbox.receive(tenant, inbound, onNewLead)
+    fun receive(
+        tenant: Connection, inbound: CrmInbound,
+        // Quien el registro de actividad muestra; sin dato, la integracion del canal ("WhatsApp", "Sitio web"...).
+        actor: com.ideasdeveloper.bms.server.activity.ActivityActor? = null,
+        onNewLead: (UUID) -> Unit = {},
+    ): CrmIntakeResult = CrmInbox.receive(tenant, inbound, actor, onNewLead)
 
     /** El lead abierto más reciente del cliente con ese correo, o null. */
     fun openLeadIdByEmail(tenant: Connection, email: String): UUID? {
@@ -186,17 +199,17 @@ object CrmHost {
 
     fun cloudbedsSettings(tenant: Connection): CrmCloudbedsSettings = CrmModuleExtensions.cloudbeds()?.settings(this, tenant) ?: CloudbedsDisabled
 
-    fun saveCloudbedsForm(tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>) {
+    fun saveCloudbedsForm(tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) {
         val provider = CrmModuleExtensions.cloudbeds() ?: throw CrmValidationException(CrmExtensions.inactiveMessage(CrmExtensionIds.Cloudbeds))
-        provider.saveSettings(this, tenant, values, templates)
+        provider.saveSettings(this, tenant, values, templates, actor)
     }
 
     fun recordCloudbedsError(tenant: Connection, error: String) {
         CrmModuleExtensions.cloudbeds()?.recordError(this, tenant, error)
     }
 
-    fun setWelcomeEnabled(tenant: Connection, enabled: Boolean) {
-        CrmModuleExtensions.cloudbeds()?.setWelcomeEnabled(this, tenant, enabled)
+    fun setWelcomeEnabled(tenant: Connection, enabled: Boolean, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) {
+        CrmModuleExtensions.cloudbeds()?.setWelcomeEnabled(this, tenant, enabled, actor)
     }
 
     // ---- Ajustes y acciones de WordPress (el secreto llega ya abierto) ----
@@ -217,14 +230,14 @@ object CrmHost {
 
     fun wordpressSettings(tenant: Connection): CrmWordPressSettings = CrmModuleExtensions.wordpress()?.settings(this, tenant) ?: WordPressDisabled
 
-    fun saveWordPressForm(tenant: Connection, values: Map<String, String>) {
+    fun saveWordPressForm(tenant: Connection, values: Map<String, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) {
         val provider = CrmModuleExtensions.wordpress() ?: throw CrmValidationException(CrmExtensions.inactiveMessage(CrmExtensionIds.WordPress))
-        provider.saveForm(this, tenant, values)
+        provider.saveForm(this, tenant, values, actor)
     }
 
-    fun wordpressNewSecret(tenant: Connection): String {
+    fun wordpressNewSecret(tenant: Connection, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): String {
         val provider = CrmModuleExtensions.wordpress() ?: throw CrmValidationException(CrmExtensions.inactiveMessage(CrmExtensionIds.WordPress))
-        return provider.newSecret(this, tenant)
+        return provider.newSecret(this, tenant, actor)
     }
 
     fun wordpressPing(tenant: Connection): String = wordpress().ping(this, tenant)
@@ -236,18 +249,18 @@ object CrmHost {
 
     fun wordpressTaxonomies(tenant: Connection): Map<String, List<String>> = wordpress().taxonomies(this, tenant)
 
-    fun wordpressMarkSold(tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate) = wordpress().markSold(this, tenant, id, price, date)
+    fun wordpressMarkSold(tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = wordpress().markSold(this, tenant, id, price, date, actor)
 
-    fun wordpressSyncAgents(tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>): Int = wordpress().syncAgents(this, tenant, users, userEmails)
+    fun wordpressSyncAgents(tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): Int = wordpress().syncAgents(this, tenant, users, userEmails, actor)
 
     fun wordpressAgents(tenant: Connection): List<WpAgent> = CrmModuleExtensions.wordpress()?.agents(this, tenant).orEmpty()
 
-    fun wordpressMapAgent(tenant: Connection, wpUserId: Long, userId: UUID?) {
-        CrmModuleExtensions.wordpress()?.mapAgent(this, tenant, wpUserId, userId)
+    fun wordpressMapAgent(tenant: Connection, wpUserId: Long, userId: UUID?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) {
+        CrmModuleExtensions.wordpress()?.mapAgent(this, tenant, wpUserId, userId, actor)
     }
 
-    fun wordpressLinkListing(tenant: Connection, leadId: UUID, listing: WpListing, activity: String?) {
-        CrmModuleExtensions.wordpress()?.linkListing(this, tenant, leadId, listing, activity)
+    fun wordpressLinkListing(tenant: Connection, leadId: UUID, listing: WpListing, activity: String?, actor: CrmActor) {
+        CrmModuleExtensions.wordpress()?.linkListing(this, tenant, leadId, listing, activity, actor)
     }
 
     fun recordWordPressError(tenant: Connection, error: String) {
@@ -282,14 +295,14 @@ object CrmHost {
         return if (metaTablesPresent(tenant)) provider.settings(this, tenant) else MetaDisabled
     }
 
-    fun saveMeta(tenant: Connection, settings: CrmMetaSettings) = metaForWrite().save(this, tenant, settings)
+    fun saveMeta(tenant: Connection, settings: CrmMetaSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor = com.ideasdeveloper.bms.server.activity.ActivityActor.system()) = metaForWrite().save(this, tenant, settings, actor)
 
     fun metaMerge(current: CrmMetaSettings, values: Map<String, String>): CrmMetaSettings = metaForWrite().merge(current, values)
 
     fun metaToFormValues(settings: CrmMetaSettings): Map<String, String> = CrmModuleExtensions.meta()?.toFormValues(settings).orEmpty()
 
-    fun metaSetup(tenant: Connection, settings: CrmMetaSettings, page: Boolean = true, whatsApp: Boolean = true): MetaSetup =
-        meta().setup(this, tenant, settings, page, whatsApp)
+    fun metaSetup(tenant: Connection, settings: CrmMetaSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor, page: Boolean = true, whatsApp: Boolean = true): MetaSetup =
+        meta().setup(this, tenant, settings, page, whatsApp, actor)
 
     fun metaLog(tenant: Connection, event: String, detail: String = "") {
         CrmModuleExtensions.meta()?.log(this, tenant, event, detail)
@@ -300,13 +313,13 @@ object CrmHost {
         return if (metaTablesPresent(tenant)) provider.recent(this, tenant) else emptyList()
     }
 
-    fun metaFillNames(tenant: Connection, settings: CrmMetaSettings, limit: Int = 100): MetaNameFill = meta().fillNames(this, tenant, settings, limit)
+    fun metaFillNames(tenant: Connection, settings: CrmMetaSettings, actor: com.ideasdeveloper.bms.server.activity.ActivityActor, limit: Int = 100): MetaNameFill = meta().fillNames(this, tenant, settings, limit, actor)
 
     fun metaSendWhatsApp(settings: CrmMetaSettings, toDigits: String, text: String): String = meta().sendWhatsApp(this, settings, toDigits, text)
 
     fun metaSendPage(settings: CrmMetaSettings, recipient: String, text: String, platform: String): String = meta().sendPage(this, settings, recipient, text, platform)
 
-    fun metaDisconnect(tenant: Connection, company: String) = metaForWrite().disconnect(this, tenant, company)
+    fun metaDisconnect(tenant: Connection, company: String, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = metaForWrite().disconnect(this, tenant, company, actor)
 
     // App de Meta del servidor (vive en el espacio del servidor).
 
@@ -316,7 +329,7 @@ object CrmHost {
 
     fun metaLoadApp(tenant: Connection): CrmMetaServerApp = CrmModuleExtensions.meta()?.loadApp(this, tenant) ?: CrmMetaServerApp()
 
-    fun metaSaveApp(tenant: Connection, app: CrmMetaServerApp) = metaForWrite().saveApp(this, tenant, app)
+    fun metaSaveApp(tenant: Connection, app: CrmMetaServerApp, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) = metaForWrite().saveApp(this, tenant, app, actor)
 
     fun metaMergeApp(current: CrmMetaServerApp, values: Map<String, String>): CrmMetaServerApp = metaForWrite().mergeApp(current, values)
 
@@ -331,14 +344,14 @@ object CrmHost {
 
     fun encuentra24Settings(tenant: Connection): CrmEncuentra24Settings = CrmModuleExtensions.encuentra24()?.settings(this, tenant) ?: CrmEncuentra24Ads.Disabled
 
-    fun saveEncuentra24Form(tenant: Connection, values: Map<String, String>) {
+    fun saveEncuentra24Form(tenant: Connection, values: Map<String, String>, actor: com.ideasdeveloper.bms.server.activity.ActivityActor) {
         val provider = CrmModuleExtensions.encuentra24() ?: throw CrmValidationException(CrmExtensions.inactiveMessage(CrmExtensionIds.Encuentra24))
-        provider.saveForm(this, tenant, values)
+        provider.saveForm(this, tenant, values, actor)
     }
 
-    fun encuentra24Sync(tenant: Connection, from: LocalDate?): CrmEncuentra24SyncResult {
+    fun encuentra24Sync(tenant: Connection, from: LocalDate?, actor: com.ideasdeveloper.bms.server.activity.ActivityActor): CrmEncuentra24SyncResult {
         val provider = CrmModuleExtensions.encuentra24() ?: throw CrmEncuentra24Exception(CrmExtensions.inactiveMessage(CrmExtensionIds.Encuentra24))
-        return provider.sync(this, tenant, from)
+        return provider.sync(this, tenant, from, actor)
     }
 
     // ---- Reservas ----

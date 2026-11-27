@@ -138,7 +138,7 @@ object CrmImportMcpTools {
 
     fun actor(call: McpToolCall): CrmActor {
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
-        return actor.copy(name = "${actor.name} (agente ${call.agentName})")
+        return actor.copy(name = "${actor.name} (agente ${call.agentName})", activity = call.activityActor)
     }
 
     inline fun <T> checked(block: () -> T): T = try {
@@ -199,7 +199,7 @@ object CrmImportMcpTools {
         val context = context(call)
         val (kind, named) = checked { source(context) }
         val (name, table) = named
-        val id = CrmImport.create(call.tenant, kind, name, table, actor(call).userId)
+        val id = CrmImport.create(call.tenant, kind, name, table, actor(call).userId, call.activityActor)
         return buildJsonObject {
             put("job", id.toString())
             put("result", "${table.rows.size} filas leidas. Revisa el mapeo con get_import.")
@@ -264,9 +264,9 @@ object CrmImportMcpTools {
             interests = stringMap(call, "interests").filterValues { it.isNotEmpty() },
         )
         // "new:crm" / "new:cliente" create the field first, typed from the column of the source.
-        val created = CrmImport.saveMappingCreatingFields(call.tenant, job, mapping)
+        val created = CrmImport.saveMappingCreatingFields(call.tenant, job, mapping, call.activityActor)
         val saved = CrmImport.job(call.tenant, job.id)!!
-        call.string("presetName", 80).takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(call.tenant, it, saved.mapping) }
+        call.string("presetName", 80).takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(call.tenant, it, saved.mapping, call.activityActor) }
         val result = previewResult(call, job, context, saved.mapping)
         return if (created.isEmpty()) result else buildJsonObject {
             (result as JsonObject).forEach { (key, value) -> put(key, value) }
@@ -287,13 +287,13 @@ object CrmImportMcpTools {
         val job = job(call)
         if (job.status != "mapping") throw McpToolException("Esa importacion ya empezo.")
         if (job.mapping.columns.values.none { it in setOf("name", "email", "phone") }) throw McpToolException("Mapea al menos el nombre, el correo o el telefono.")
-        CrmImport.setStatus(call.tenant, job, "running")
+        CrmImport.setStatus(call.tenant, job, "running", call.activityActor)
         return buildJsonObject { put("result", "Importacion en marcha: se aplican 300 filas por minuto. Consulta el avance con get_import.") }
     }
 
     private fun cancelImport(call: McpToolCall): JsonElement {
         val job = job(call)
-        CrmImport.setStatus(call.tenant, job, "canceled")
+        CrmImport.setStatus(call.tenant, job, "canceled", call.activityActor)
         return buildJsonObject { put("result", "Importacion ${job.name} cancelada.") }
     }
 
