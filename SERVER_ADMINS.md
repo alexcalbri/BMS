@@ -74,7 +74,7 @@ Principles (security requirements, not suggestions):
 | `server.modules.authorize_unsigned` | Authorize an unsigned module package. **High risk: runs code on the server.** | – |
 | `server.extensions.install` | Browse the catalog; install / update / remove / inspect extension packages | – |
 | `server.extensions.authorize_unsigned` | Authorize an unsigned extension package. **High risk: runs code on the server.** | – |
-| `server.core.update` | Request a Core update and see its status | – |
+| `server.core.update` | Request a Core update and see its status. **High risk: installs and runs the published code on the server** (the exact commit is pinned and, with a signing key installed, must be signed; see SIGNING.md) | – |
 | `server.logs.view` | See recent server errors | – |
 | `server.audit.view` | See the audit log (new screen and route, §5) | yes (rows of scoped companies + own rows; server-wide rows only with all companies) |
 | `server.settings` | Rename the server | – |

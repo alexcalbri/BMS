@@ -32,7 +32,7 @@ enum class ServerPermission(
     ModulesAuthorizeUnsigned(ServerPermissionIds.ModulesAuthorizeUnsigned, "modules", msg("Autorizar modulos sin firma"), msg("Autorizar un paquete de modulo sin firma. Riesgo alto: ejecuta codigo en el servidor."), true, false),
     ExtensionsInstall(ServerPermissionIds.ExtensionsInstall, "extensions", msg("Instalar extensiones"), msg("Ver el catalogo e instalar, actualizar, quitar y revisar paquetes de extensiones."), false, false),
     ExtensionsAuthorizeUnsigned(ServerPermissionIds.ExtensionsAuthorizeUnsigned, "extensions", msg("Autorizar extensiones sin firma"), msg("Autorizar un paquete de extension sin firma. Riesgo alto: ejecuta codigo en el servidor."), true, false),
-    CoreUpdate(ServerPermissionIds.CoreUpdate, "server", msg("Actualizar el servidor"), msg("Pedir una actualizacion del Core y ver su estado."), false, false),
+    CoreUpdate(ServerPermissionIds.CoreUpdate, "server", msg("Actualizar el servidor"), msg("Pedir una actualizacion del Core y ver su estado. Riesgo alto: instala y ejecuta en el servidor el codigo publicado."), true, false),
     LogsView(ServerPermissionIds.LogsView, "server", msg("Ver errores del servidor"), msg("Ver los errores recientes del servidor."), false, false),
     AuditView(ServerPermissionIds.AuditView, "server", msg("Ver el registro de auditoria"), msg("Ver el registro de auditoria: las filas de sus empresas y las propias; las del servidor solo con todas las empresas."), false, true),
     Settings(ServerPermissionIds.Settings, "server", msg("Ajustes del servidor"), msg("Cambiar el nombre del servidor."), false, false),
