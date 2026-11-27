@@ -125,6 +125,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V017__create_two_factor.sql
     database/control/migrations/V018__create_two_factor_email_recovery.sql
     database/control/migrations/V019__session_second_factor_mark.sql
+    database/control/migrations/V020__two_factor_replace.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -783,6 +784,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V016__core_update
 apply_migration "$DB_NAME" control database/control/migrations/V017__create_two_factor.sql
 apply_migration "$DB_NAME" control database/control/migrations/V018__create_two_factor_email_recovery.sql
 apply_migration "$DB_NAME" control database/control/migrations/V019__session_second_factor_mark.sql
+apply_migration "$DB_NAME" control database/control/migrations/V020__two_factor_replace.sql
 # The server owner's role owns the company databases and creates them and their business owner roles. The runtime
 # role is NOT a member of it; the provisioning login may SET ROLE to it (and to the runtime role), never inherits.
 printf '%s' "$SERVER_PASSWORD" | bms_role_set_password "$SERVER_OWNER" 'INHERIT NOSUPERUSER CREATEDB CREATEROLE' ||
