@@ -95,8 +95,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private val ipHits = java.util.concurrent.ConcurrentHashMap<String, java.util.ArrayDeque<Long>>()
     private val ipWindowMillis = Duration.ofMinutes(10).toMillis()
     // Holgados a proposito: un hotel o local comparte una sola IP publica (NAT) entre muchos huespedes.
-    private val maxRegisterPerIp = 60
-    private val maxCodePerIp = 120
+    private val maxRegisterPerIp = 1000
+    private val maxCodePerIp = 2000
     private val maxTrackedIps = 50_000
     private val lastIpCleanup = java.util.concurrent.atomic.AtomicLong(0)
     // Ultima limpieza de la tabla por empresa (cada empresa tiene su base).
@@ -309,17 +309,23 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val continueUrl = guest.continueUrl
         val origin = ipGroup(ip)
         fun codePage(settings: HotspotSettings, message: String) = HotspotPortalPages.code(settings, email, continueUrl, message, guest)
-        // Wrong codes are counted per (address, origin) and per origin: a third party cannot use up the tries of the guest.
-        if (HotspotGuestCodes.tooManyWrongCodes(connection, origin, email)) {
-            return HotspotPortalPages.message(target.settings, tr("Demasiados intentos"), tr("Espera unos minutos y vuelve a intentarlo."))
+        // The attempt is reserved atomically BEFORE the comparison (parallel requests cannot pass the limits); a right code gives it back.
+        val reservation = HotspotGuestCodes.reserveAttempt(connection, origin, email)
+        when (reservation.outcome) {
+            HotspotGuestCodes.Outcome.Blocked ->
+                return HotspotPortalPages.message(target.settings, tr("Demasiados intentos"), tr("Espera unos minutos y vuelve a intentarlo."))
+            HotspotGuestCodes.Outcome.AddressCeiling -> {
+                // Too many wrong codes for this address from everywhere: its unused codes expire (nobody is locked out, the guest asks for a new one).
+                HotspotGuestCodes.endGuessing(connection, email)
+                return HotspotPortalPages.message(target.settings, tr("Codigo vencido"), tr("Por seguridad ese codigo ya no sirve. Vuelve a registrarte para recibir un codigo nuevo."))
+            }
+            HotspotGuestCodes.Outcome.Allowed -> Unit
         }
-        // The code is looked up from the address and the code typed, never from an id of the page.
+        // The code is looked up among the address's valid codes, from the address and the code typed, never from an id of the page.
         val codeId = HotspotGuestCodes.candidates(connection, email)
             .firstOrNull { code.length == 6 && MessageDigest.isEqual(codeHash(it.id, code).toByteArray(), it.hash.toByteArray()) }?.id
-        if (codeId == null) {
-            HotspotGuestCodes.recordWrongCode(connection, origin, email)
-            return codePage(target.settings, tr("Codigo incorrecto. Revisalo e intenta de nuevo."))
-        }
+        if (codeId == null) return codePage(target.settings, tr("Codigo incorrecto. Revisalo e intenta de nuevo."))
+        HotspotGuestCodes.refund(connection, reservation)
         val pending = connection.prepareStatement(
             """
             SELECT registrations.id AS registration_id, registrations.customer_id, registrations.name, registrations.email, registrations.phone,
