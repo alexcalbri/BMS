@@ -166,7 +166,8 @@ class CrmActivityLogTest {
         assertNull(customer.change("email"))
         val lead = rows.first { it.entry.entityType == "lead" && it.action == ActivityActions.Updated }
         assertEquals("+5076000", lead.change("phone")!!.old)
-        assertEquals("VIP", lead.change("details")!!.new)
+        // The free text of the lead is never stored: only that it exists and its length.
+        assertEquals("Mensaje (3 caracteres)", lead.change("details")!!.new)
         assertEquals("1200", lead.change("estimatedValue")!!.old)
         assertEquals("1500", lead.change("estimatedValue")!!.new)
         assertTrue(rows.all { it.display == "Agente de Ana Ruiz" })
@@ -495,7 +496,10 @@ class CrmActivityLogTest {
         assertEquals(2, rows.size)
         assertEquals(listOf("Agente de Ana Ruiz", "Sitio web"), rows.map { it.display })
         assertTrue(rows.all { it.action == ActivityActions.Updated && it.entry.entityLabel == "Luis Mora" })
-        assertTrue(rows.first().entry.summary.contains("Interes agregado: Casa en la playa."))
+        // The summary comes from the kind of the entry, never from its body (it can carry what a customer wrote).
+        assertEquals("Actualizo el lead Luis Mora.", rows.first().entry.summary)
+        assertEquals("Registro actividad del sitio web en el lead Luis Mora.", rows.last().entry.summary)
+        assertTrue(rows.none { it.entry.toString().contains("Casa") })
     }
 
     // ---- Coverage of every write path ----

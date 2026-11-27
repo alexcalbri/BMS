@@ -556,7 +556,7 @@ object CrmImport {
                 tenant, id, "created", "Importado desde $sourceLabel en ${stage.name}.", actor, toStage = stage.id,
                 audit = CrmLeadAudit.Row(
                     ActivityActions.Created, "Importo el lead $shown desde $sourceLabel.",
-                    ActivityChanges.created(
+                    CrmAudit.leadCreated(
                         mapOf(
                             "name" to shown, "email" to values.email, "phone" to values.phone, "stage" to stage.name, "source" to values.fields["source"].orEmpty().ifEmpty { sourceLabel },
                             "language" to values.fields["language"], "message" to values.fields["message"], "details" to values.fields["details"],
@@ -593,7 +593,7 @@ object CrmImport {
         if (beforeLead != null) {
             CrmRepository.lead(tenant, leadId)?.let { after ->
                 val names = CrmNames(context.users, context.interests)
-                val changes = ActivityChanges.diff(
+                val changes = CrmAudit.leadDiff(
                     leadSnapshot(beforeLead, names, context.stages), leadSnapshot(after, names, context.stages),
                     CrmAudit.LeadLabels.filterKeys { it != "name" && it != "email" && it != "phone" && it != "owners" && it != "stage" },
                 ) + CrmFields.activityChanges(context.crmFields, beforeLead.customFields, after.customFields)

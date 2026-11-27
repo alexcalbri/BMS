@@ -64,21 +64,49 @@ object CrmAudit {
         tenant: Connection, actor: ActivityActor, customerId: UUID, label: String, action: String, summary: String, changes: List<ActivityChange> = emptyList(),
     ) = record(tenant, actor, Customer, customerId.toString(), label, action, summary, changes)
 
-    /** The row that mirrors one history entry of a lead ([CrmRepository.addActivity]) when the caller gives no better one. */
-    internal fun fromHistory(kind: String, body: String, label: String): Triple<String, String, List<ActivityChange>> {
-        val first = body.lineSequence().firstOrNull().orEmpty()
-        return when (kind) {
-            "created" -> Triple(ActivityActions.Created, "Creo el lead $label.", listOf(ActivityChange("history", "Detalle", null, body)))
-            "stage" -> {
-                val (from, to) = body.split(" -> ", limit = 2).let { it.first() to it.getOrElse(1) { "" } }
-                Triple(ActivityActions.StatusChanged, "Movio el lead $label a la etapa $to.", listOf(ActivityChange("stage", "Etapa", from, to)))
-            }
-            "owner" -> Triple(ActivityActions.Assigned, "Cambio los asignados del lead $label.", listOf(ActivityChange("owners", "Asignados", null, body)))
-            "note" -> Triple(ActivityActions.Commented, "Agrego una nota al lead $label.", listOf(ActivityChange("note", "Nota", null, body)))
-            "interest" -> Triple(ActivityActions.Updated, "Cambio el interes del lead $label.", listOf(ActivityChange("interest", "Interes", null, body)))
-            else -> Triple(ActivityActions.Updated, "Lead $label: ${ActivityChanges.cut(first, 200)}", listOf(ActivityChange("history", "Detalle", null, body)))
+    /**
+     * The row that mirrors one history entry of a lead ([CrmRepository.addActivity]) when the caller gives no better one.
+     * It is built from the KIND of the entry, never from a free body (it can carry what a customer wrote); only the staff
+     * notes keep their first 500 characters.
+     */
+    fun fromHistory(kind: String, body: String, label: String): Triple<String, String, List<ActivityChange>> = when (kind) {
+        "created" -> Triple(ActivityActions.Created, "Creo el lead $label.", emptyList())
+        "stage" -> {
+            val (from, to) = body.split(" -> ", limit = 2).let { it.first() to it.getOrElse(1) { "" } }
+            Triple(ActivityActions.StatusChanged, "Movio el lead $label a la etapa $to.", listOf(ActivityChange("stage", "Etapa", from, to)))
+        }
+        "owner" -> Triple(ActivityActions.Assigned, "Cambio los asignados del lead $label.", listOf(ActivityChange("owners", "Asignados", null, body)))
+        "note" -> Triple(ActivityActions.Commented, "Agrego una nota al lead $label.", listOf(ActivityChange("note", "Nota", null, ActivityChanges.cut(body, 500))))
+        "interest" -> Triple(ActivityActions.Updated, "Cambio el interes del lead $label.", listOf(ActivityChange("interest", "Interes", null, ActivityChanges.cut(body, 200))))
+        "web" -> Triple(ActivityActions.Updated, "Registro actividad del sitio web en el lead $label.", emptyList())
+        else -> Triple(ActivityActions.Updated, "Actualizo el lead $label.", emptyList())
+    }
+
+
+    /** The change of a free-text field ([label]): "Mensaje (182 caracteres)" when new, "modificado (antes 40, ahora 182 caracteres)" when edited, "eliminado" when cleared. */
+    fun textChange(field: String, label: String, before: String?, after: String?): ActivityChange? {
+        val old = before.orEmpty()
+        val new = after.orEmpty()
+        if (old == new) return null
+        return when {
+            old.isBlank() && new.isBlank() -> null
+            old.isBlank() -> ActivityChange(field, label, null, "Mensaje (${new.length} caracteres)")
+            new.isBlank() -> ActivityChange(field, label, "Mensaje (${old.length} caracteres)", null)
+            else -> ActivityChange(field, label, null, "modificado (antes ${old.length}, ahora ${new.length} caracteres)")
         }
     }
+
+    private val FreeTextFields = listOf("message", "details")
+
+    /** Like [ActivityChanges.diff] for lead fields: the free texts ([FreeTextFields]) only as their length, never their text. */
+    fun leadDiff(before: Map<String, Any?>, after: Map<String, Any?>, labels: Map<String, String>): List<ActivityChange> {
+        val rest = ActivityChanges.diff(before.filterKeys { it !in FreeTextFields }, after.filterKeys { it !in FreeTextFields }, labels.filterKeys { it !in FreeTextFields })
+        val texts = FreeTextFields.mapNotNull { field -> labels[field]?.let { textChange(field, it, before[field] as? String, after[field] as? String) } }
+        return (rest + texts).sortedBy { labels.keys.indexOf(it.field) }
+    }
+
+    /** A created lead's values for the log ([leadDiff] from nothing). */
+    fun leadCreated(values: Map<String, Any?>, labels: Map<String, String>): List<ActivityChange> = leadDiff(emptyMap(), values, labels)
 
     /** Old → new of the fields of the lead form (the stage and the assigned users have their own rows). */
     fun leadChanges(lead: CrmLead, input: CrmLeadInput, fields: List<CrmField>, names: CrmNames?): List<ActivityChange> {
@@ -93,7 +121,7 @@ object CrmAudit {
             "estimatedValue" to input.estimatedValue, "followUpOn" to input.followUpOn,
         )
         val labels = LeadLabels.filterKeys { it != "stage" && it != "owners" && (names != null || it != "interest") }
-        return ActivityChanges.diff(before, after, labels) + CrmFields.activityChanges(fields, lead.customFields, CrmFields.merge(lead.customFields, input.custom))
+        return leadDiff(before, after, labels) + CrmFields.activityChanges(fields, lead.customFields, CrmFields.merge(lead.customFields, input.custom))
     }
 
     /** Contact data of a customer as the log shows it. */

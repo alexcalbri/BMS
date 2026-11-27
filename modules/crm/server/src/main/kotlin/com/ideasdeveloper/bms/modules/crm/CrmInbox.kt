@@ -177,7 +177,7 @@ object CrmInbox {
             tenant, id, "created", "Lead creado en ${stage.name}. Origen: $source.", CrmActor(null, label(inbound.channel), activity), toStage = stage.id,
             audit = CrmLeadAudit.Row(
                 ActivityActions.Created, "Creo el lead $name desde ${label(inbound.channel)}.",
-                ActivityChanges.created(
+                CrmAudit.leadCreated(
                     mapOf(
                         "name" to name, "stage" to stage.name, "source" to source, "language" to inbound.language.take(40),
                         "message" to inbound.message, "details" to inbound.details, "interest" to interest?.let { id -> CrmRepository.interests(tenant).firstOrNull { it.id == id }?.name },
@@ -417,7 +417,7 @@ object CrmInbox {
                 ActivityChange("channel", "Canal", null, via),
                 template?.let { ActivityChange("template", "Plantilla", null, it) },
                 to?.takeIf { it.isNotBlank() }?.let { ActivityChange("to", "Destinatario", null, it) },
-                subject.takeIf { it.isNotBlank() }?.let { ActivityChange("subject", "Asunto", null, it) },
+                subject.takeIf { it.isNotBlank() && direction != "in" }?.let { ActivityChange("subject", "Asunto", null, it) },
                 ActivityChange("status", "Estado", null, status),
                 error.takeIf { it.isNotBlank() }?.let { ActivityChange("error", "Error", null, it) },
             )

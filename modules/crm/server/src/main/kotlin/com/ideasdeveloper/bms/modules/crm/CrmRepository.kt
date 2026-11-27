@@ -436,7 +436,7 @@ object CrmRepository {
             tenant, id, "created", "Lead creado en ${stage.name}.", actor, toStage = stage.id,
             audit = CrmLeadAudit.Row(
                 ActivityActions.Created, "Creo el lead ${input.name} en la etapa ${stage.name}.",
-                ActivityChanges.created(
+                CrmAudit.leadCreated(
                     mapOf(
                         "name" to input.name, "email" to input.email, "phone" to input.phone, "stage" to stage.name, "source" to input.source,
                         "language" to input.language, "message" to input.message, "details" to input.details, "estimatedValue" to input.estimatedValue,
@@ -734,6 +734,11 @@ object CrmRepository {
         // Archived leads sit outside the stages (a stage change would mix them back into the pipeline).
         if (lead.archivedAt != null) throw CrmValidationException(tr("Restaura el lead antes de moverlo."))
         if (stage.id == lead.stageId && lead.closedAt == null == (stage.kind == StageKind.Open)) return false
+        // The new stage, its history and its log row (and the sale of a won lead) are saved together.
+        return CrmAudit.atomically(tenant) { moveRows(tenant, lead, stage, stages, actor) }
+    }
+
+    private fun moveRows(tenant: Connection, lead: CrmLead, stage: CrmStage, stages: List<CrmStage>, actor: CrmActor): Boolean {
         tenant.prepareStatement(
             """
             UPDATE crm_leads SET stage_id = ?, stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, restored_at = NULL,
@@ -783,9 +788,10 @@ object CrmRepository {
     }
 
     // [id]: the history entry's id, so the mentions of the note can hang from it (see CrmMentions.addNote).
-    fun addNote(tenant: Connection, leadId: UUID, body: String, actor: CrmActor, id: UUID = UUID.randomUUID()) {
+    fun addNote(tenant: Connection, leadId: UUID, body: String, actor: CrmActor, id: UUID = UUID.randomUUID()) = CrmAudit.atomically(tenant) {
         addActivity(tenant, leadId, "note", body, actor, id = id)
         tenant.prepareStatement("UPDATE crm_leads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, leadId); it.executeUpdate() }
+        Unit
     }
 
     // Deletes the lead and its activity; the customer stays in Clientes. The activity-log row is written first: the cascade erases the lead's own history.
@@ -951,7 +957,7 @@ object CrmRepository {
         SuggestionResult(added, noAccess)
     }
 
-    fun clearReview(tenant: Connection, lead: CrmLead, actor: CrmActor) {
+    fun clearReview(tenant: Connection, lead: CrmLead, actor: CrmActor) = CrmAudit.atomically(tenant) {
         tenant.prepareStatement("UPDATE crm_leads SET review_reason = '' WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() }
         addActivity(
             tenant, lead.id, "updated", "Revisado: ${lead.reviewReason}", actor,
@@ -979,7 +985,7 @@ object CrmRepository {
         id: UUID = UUID.randomUUID(),
         // What goes to the company activity log next to this history entry (same transaction when the caller has one).
         audit: CrmLeadAudit = CrmLeadAudit.Auto,
-    ) {
+    ) = CrmAudit.atomically(tenant) {
         tenant.prepareStatement(
             "INSERT INTO crm_activity (id, lead_id, kind, body, from_stage_id, to_stage_id, user_id, author) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         ).use { insert ->
