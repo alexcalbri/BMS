@@ -113,6 +113,8 @@ fun AssistantFloatingHost(
     openRequest: Int,
     onOpenServerSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    // Conversacion que abre la peticion (null = el panel como estaba), p. ej. desde una notificacion.
+    openConversationId: String? = null,
 ) {
     val url = serverUrl.orEmpty()
     val token = session?.accessToken.orEmpty()
@@ -124,6 +126,7 @@ fun AssistantFloatingHost(
         token = token,
         code = code,
         openRequest = openRequest,
+        openConversationId = openConversationId,
         onOpenServerSettings = onOpenServerSettings,
         modifier = modifier,
     )
@@ -136,6 +139,7 @@ private fun AssistantFloatingContent(
     token: String,
     code: String,
     openRequest: Int,
+    openConversationId: String?,
     onOpenServerSettings: () -> Unit,
     modifier: Modifier,
 ) {
@@ -148,7 +152,7 @@ private fun AssistantFloatingContent(
     LaunchedEffect(controller, openRequest) {
         if (openRequest > handledRequest) {
             handledRequest = openRequest
-            controller.open()
+            if (openConversationId != null) controller.openConversationById(openConversationId) else controller.open()
         }
     }
 

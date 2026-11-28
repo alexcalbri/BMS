@@ -92,6 +92,7 @@ fun App(initialServerUrl: String = "") {
         var confirmingLogout by remember { mutableStateOf(false) }
         // Sube cada vez que algo pide abrir el panel del asistente (la ruta antigua module/assistant).
         var assistantOpenRequest by remember { mutableStateOf(0) }
+        var assistantOpenConversation by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         remember { CompanyIdentityStore.restore() }
         var clientConfiguration by remember { mutableStateOf(ClientConfigurationStore.load()) }
@@ -209,13 +210,19 @@ fun App(initialServerUrl: String = "") {
         // notificaciones abren la pantalla de su modulo con la misma navegacion de los enlaces entre modulos.
         CompositionLocalProvider(
             LocalNotificationNavigator provides { action ->
-                ModuleDeepLinks.open(action)
-                // Desde otra pantalla de modulo la reemplaza (se vuelve a crear para tomar el enlace pendiente);
-                // desde cualquier otra no apila dos veces el mismo destino.
-                val onModule = navController.currentDestination?.route == "module/{moduleId}"
-                navController.navigate("module/${action.moduleId}") {
-                    launchSingleTop = !onModule
-                    if (onModule) popUpTo("module/{moduleId}") { inclusive = true }
+                // Notificacion del asistente: abre su panel (en la conversacion indicada) en lugar de una pantalla.
+                if (action.moduleId == "assistant") {
+                    assistantOpenConversation = (action.params["conversationId"] ?: action.params["id"])?.takeIf { it.isNotBlank() }
+                    assistantOpenRequest++
+                } else {
+                    ModuleDeepLinks.open(action)
+                    // Desde otra pantalla de modulo la reemplaza (se vuelve a crear para tomar el enlace pendiente);
+                    // desde cualquier otra no apila dos veces el mismo destino.
+                    val onModule = navController.currentDestination?.route == "module/{moduleId}"
+                    navController.navigate("module/${action.moduleId}") {
+                        launchSingleTop = !onModule
+                        if (onModule) popUpTo("module/{moduleId}") { inclusive = true }
+                    }
                 }
             },
         ) {
@@ -316,7 +323,7 @@ fun App(initialServerUrl: String = "") {
                         } else if (moduleId == "assistant") {
                             // El chat ya no es una pantalla: es el boton flotante (AssistantFloatingHost). Esta ruta, por si algun
                             // enlace antiguo la usa, abre su panel y deja la pantalla de la que se venia.
-                            OpenAssistantEffect(onOpen = { assistantOpenRequest++ }, onDone = { navController.popBackStack() })
+                            OpenAssistantEffect(onOpen = { assistantOpenConversation = null; assistantOpenRequest++ }, onDone = { navController.popBackStack() })
                         } else if (moduleId == "company-activity") {
                             // Registro de actividad de la empresa: solo sesiones de empresa; el servidor decide con 403 si no hay permiso.
                             if (currentSession.isServerLevel || currentSession?.companyCode == null) {
@@ -416,6 +423,7 @@ fun App(initialServerUrl: String = "") {
                         serverUrl = clientConfiguration?.serverUrl,
                         session = currentSession,
                         openRequest = assistantOpenRequest,
+                        openConversationId = assistantOpenConversation,
                         onOpenServerSettings = {
                             navController.navigate("module/server-assistant") {
                                 launchSingleTop = true

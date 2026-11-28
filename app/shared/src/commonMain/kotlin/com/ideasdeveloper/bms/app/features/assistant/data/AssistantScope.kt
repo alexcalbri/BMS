@@ -51,3 +51,12 @@ data class AssistantServerCompanyUpdateRequest(
     val companyEnabled: Boolean? = null,
     val acceptDisclosure: Boolean? = null,
 )
+
+// GET /companies/me/assistant/attention: lo que espera a la persona en todos sus dispositivos (en una empresa y en el
+// espacio del servidor). Todo con valor por defecto para tolerar respuestas parciales.
+@Serializable
+data class AssistantAttention(
+    val pendingConfirmations: Int = 0,
+    val unseenFinished: Int = 0,
+    val conversationIds: List<String> = emptyList(),
+)

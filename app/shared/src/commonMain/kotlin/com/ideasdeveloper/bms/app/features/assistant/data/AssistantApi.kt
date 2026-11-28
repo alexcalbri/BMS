@@ -104,6 +104,18 @@ class AssistantApi(serverUrl: String) {
         client.get("$baseUrl/companies/me/assistant/status") { company(token, companyCode) }
     }
 
+    // Lo pendiente de la persona (confirmaciones y respuestas sin ver); un 404 (Core anterior) llega como CompanyException con status 404.
+    suspend fun attention(token: String, companyCode: String): AssistantAttention = call(tr("No se pudo consultar el asistente.")) {
+        client.get("$baseUrl/companies/me/assistant/attention") { company(token, companyCode) }
+    }
+
+    // Marca una conversacion como vista (POST .../conversations/{id}/read, sin cuerpo, 204).
+    suspend fun markRead(token: String, companyCode: String, id: String) {
+        send(tr("No se pudo consultar el asistente.")) {
+            client.post("$baseUrl/companies/me/assistant/conversations/${id.encodeURLPathPart()}/read") { company(token, companyCode) }
+        }
+    }
+
     suspend fun conversations(token: String, companyCode: String, archived: Boolean, before: String?): AssistantConversationListResponse =
         call(tr("No se pudieron cargar las conversaciones.")) {
             client.get("$baseUrl/companies/me/assistant/conversations") {

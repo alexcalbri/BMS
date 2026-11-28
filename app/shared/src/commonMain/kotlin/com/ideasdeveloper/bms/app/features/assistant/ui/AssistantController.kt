@@ -5,10 +5,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ideasdeveloper.bms.AssistantConversationResponse
 import com.ideasdeveloper.bms.AssistantStatusResponse
+import com.ideasdeveloper.bms.app.features.assistant.data.AssistantAttention
 import com.ideasdeveloper.bms.app.features.assistant.data.AssistantApi
 import com.ideasdeveloper.bms.app.features.assistant.data.use
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // Estado del asistente que vive por encima de las pantallas (lo crea el anfitrion del boton flotante, montado en App):
@@ -54,12 +58,22 @@ internal class AssistantController(
         onConversationsChanged = { loadList(true) },
         onStatusChanged = { loadStatus() },
         onTurnFinished = { if (!panelOpen) unread = true },
+        onConversationLoaded = { id -> markRead(id) },
     )
+
+    // Lo que dice el servidor que espera a la persona (tambien lo que paso en otros dispositivos); se consulta cada 20 s.
+    private var remote by mutableStateOf(AssistantAttention())
+    private var pollJob: Job? = null
+
+    // Conversaciones con una confirmacion pendiente o una respuesta sin ver segun el servidor.
+    val attentionIds: Set<String>
+        get() = remote.conversationIds.toSet()
 
     // El boton pide atencion: hay una confirmacion esperando o una respuesta terminada que no se ha visto.
     val attention: Boolean
         get() = !panelOpen && (
             unread ||
+                remote.pendingConfirmations + remote.unseenFinished > 0 ||
                 chat.entries.any { it is ConfirmationCard } ||
                 conversations.any { !it.archived && it.pendingConfirmations > 0 }
             )
@@ -72,6 +86,50 @@ internal class AssistantController(
     fun start() {
         loadStatus()
         loadList(true)
+        startPolling()
+    }
+
+    // Consulta periodica de la atencion pendiente mientras el estado dice que el asistente se ve. 20 s; tras fallos seguidos
+    // 60 s; un 404 (Core anterior) la detiene sin avisar y queda solo lo local. No hay gancho de segundo plano en el proyecto
+    // (la campana de notificaciones tampoco lo usa): sigue mientras la sesion esta abierta.
+    private fun startPolling() {
+        if (pollJob != null) return
+        pollJob = scope.launch {
+            var failures = 0
+            while (true) {
+                if (visible) {
+                    when (refreshAttention()) {
+                        null -> return@launch
+                        true -> failures = 0
+                        false -> failures++
+                    }
+                }
+                delay(if (failures >= 2) 60_000L else 20_000L)
+            }
+        }
+    }
+
+    // true = consultado; false = fallo pasajero; null = el servidor no tiene el endpoint (404).
+    private suspend fun refreshAttention(): Boolean? = try {
+        remote = AssistantApi(serverUrl).use { api -> api.attention(token, companyCode) }
+        true
+    } catch (exception: CancellationException) {
+        throw exception
+    } catch (exception: CompanyException) {
+        if (exception.status == 404) null else false
+    }
+
+    private fun markRead(id: String) {
+        scope.launch {
+            try {
+                AssistantApi(serverUrl).use { api -> api.markRead(token, companyCode, id) }
+                refreshAttention()
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (_: CompanyException) {
+                // 404 u otro fallo: no es un error que mostrar.
+            }
+        }
     }
 
     fun open() {
@@ -79,6 +137,14 @@ internal class AssistantController(
         unread = false
         loadStatus()
         loadList(true)
+        scope.launch { refreshAttention() }
+    }
+
+    // Abre el panel en una conversacion concreta (por ejemplo desde una notificacion).
+    fun openConversationById(id: String) {
+        open()
+        chat.open(id)
+        chatOpen = true
     }
 
     fun close() {
@@ -87,6 +153,8 @@ internal class AssistantController(
 
     // Corta lo que este en curso (sesion cerrada o empresa cambiada).
     fun dispose() {
+        pollJob?.cancel()
+        pollJob = null
         chat.startNew()
     }
 

@@ -180,4 +180,5 @@ internal fun englishAssistantPart(): Map<String, String> = mapOf(
     "Activado en la empresa" to "On in the company",
     "Sin activar en la empresa" to "Not on in the company",
     "Guarda primero el permiso para poder activarlo." to "Save the permission first so it can be turned on.",
+    "Respuesta nueva" to "New answer",
 )

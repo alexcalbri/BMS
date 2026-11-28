@@ -61,6 +61,8 @@ internal class AssistantChatState(
     private val onStatusChanged: () -> Unit,
     // Un turno termino (respuesta completa, pausa por confirmacion o corte): el boton flotante avisa si el panel esta cerrado.
     private val onTurnFinished: () -> Unit = {},
+    // Una conversacion se leyo del servidor y esta a la vista: se marca como vista.
+    private val onConversationLoaded: (String) -> Unit = {},
 ) {
     val entries = mutableStateListOf<ChatEntry>()
     var conversation by mutableStateOf<AssistantConversationResponse?>(null)
@@ -124,6 +126,7 @@ internal class AssistantChatState(
             val detail = AssistantApi(serverUrl).use { api -> api.conversation(token, companyCode, id) }
             // Si mientras tanto empezo otro turno, lo que se ve ya es lo mas reciente.
             if (!streaming) applyDetail(detail)
+            onConversationLoaded(id)
         } catch (exception: CompanyException) {
             banner = ChatBanner(exception.message.orEmpty(), error = true)
         } finally {

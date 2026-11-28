@@ -107,6 +107,7 @@ internal fun AssistantPanelBody(
                 ConversationListPanel(
                     conversations = controller.conversations,
                     selectedId = chat.conversation?.id,
+                    attentionIds = controller.attentionIds,
                     showArchived = controller.showArchived,
                     canLoadMore = controller.nextBefore != null,
                     error = controller.listError,
@@ -181,6 +182,7 @@ private fun UnavailableNotice(status: AssistantStatusResponse, onActivate: (() -
 private fun ConversationListPanel(
     conversations: List<AssistantConversationResponse>,
     selectedId: String?,
+    attentionIds: Set<String>,
     showArchived: Boolean,
     canLoadMore: Boolean,
     error: String?,
@@ -216,6 +218,7 @@ private fun ConversationListPanel(
                 ConversationRow(
                     conversation = conversation,
                     selected = conversation.id == selectedId,
+                    attention = conversation.id in attentionIds,
                     onSelect = { onSelect(conversation) },
                     onRename = { onRename(conversation) },
                     onArchive = { onArchive(conversation) },
@@ -235,6 +238,7 @@ private fun ConversationListPanel(
 private fun ConversationRow(
     conversation: AssistantConversationResponse,
     selected: Boolean,
+    attention: Boolean,
     onSelect: () -> Unit,
     onRename: () -> Unit,
     onArchive: () -> Unit,
@@ -261,13 +265,14 @@ private fun ConversationRow(
             val caption = when {
                 conversation.state == "awaiting_confirmation" || conversation.pendingConfirmations > 0 -> tr("Espera tu aprobacion")
                 conversation.state == "running" -> tr("Respondiendo...")
+                attention -> tr("Respuesta nueva")
                 conversation.state == "closed" -> tr("Cerrada")
                 else -> dateTimeText(conversation.updatedAt)
             }
             Text(
                 caption,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (conversation.pendingConfirmations > 0) colors.warning else colors.muted,
+                color = if (conversation.pendingConfirmations > 0 || attention) colors.warning else colors.muted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
