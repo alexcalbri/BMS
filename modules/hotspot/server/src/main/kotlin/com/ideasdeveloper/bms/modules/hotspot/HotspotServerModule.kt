@@ -122,7 +122,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.15.1",
+        version = "0.15.2",
         minCoreVersion = "0.14.0",
         supportsExtensions = true,
         permissions = listOf(

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.outbound.monday
 
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
@@ -134,6 +135,47 @@ object MondayOutboundMcp {
                 "columns es un objeto campo -> id de columna (cadena vacia quita el mapeo); las columnas deben existir en el tablero y aceptar el tipo del campo " +
                 "(consultalas con ${prefix}outbound_boards). Activar (enabled=true) exige tablero. No toca el token.",
             permission = permission,
+            // Decides which board of monday receives the company's records, and which of their fields.
+            outbound = true,
+            preview = { call ->
+                guard(call)
+                val recordTypeId = call.requiredString("record_type", 63)
+                val recordType = source.recordTypes(call.tenant).firstOrNull { it.id == recordTypeId }
+                    ?: throw McpToolException("Tipo de registro desconocido: $recordTypeId.")
+                val current = sink.config.get(call.tenant, recordTypeId) ?: MondayOutboundConfig(recordTypeId)
+                fun shown(value: String?) = value?.takeIf { it.isNotBlank() } ?: "(vacio)"
+                fun flag(key: String, saved: Boolean) = if (call.has(key)) call.boolean(key) else saved
+                fun yesNo(value: Boolean) = if (value) "Si" else "No"
+                val enabled = flag("enabled", current.enabled)
+                val board = if (call.has("board_id")) call.string("board_id", 20) else current.boardId.orEmpty()
+                val created = flag("send_created", current.sendCreated)
+                val updated = flag("send_updated", current.sendUpdated)
+                val notes = flag("send_notes", current.sendNotes)
+                val files = flag("send_files", current.sendFiles)
+                val imports = flag("send_imports", current.sendImports)
+                val columns = current.columns.mapValues { it.value.id }.toMutableMap()
+                (call.arguments["columns"] as? JsonObject)?.forEach { (field, value) ->
+                    val id = (value as? JsonPrimitive)?.content?.trim().orEmpty()
+                    if (id.isEmpty()) columns.remove(field) else columns[field] = id
+                }
+                // A new board makes the old mapping useless (the tool clears it, as the screen does).
+                if (call.has("board_id") && board != current.boardId.orEmpty() && !call.has("columns")) columns.clear()
+                listOf(
+                    McpPreviewRow("Tipo de registro", "${recordType.label} (${recordType.id})"),
+                    McpPreviewRow("Envio a monday", "${yesNo(current.enabled)} -> ${yesNo(enabled)}"),
+                    McpPreviewRow("Tablero de monday (id)", "${shown(current.boardId)} -> ${shown(board)}"),
+                    McpPreviewRow(
+                        "Que registros se envian",
+                        "Los registros de tipo ${recordType.label} " + listOfNotNull(
+                            "nuevos".takeIf { created }, "modificados".takeIf { updated }, "con sus notas (como actualizaciones)".takeIf { notes },
+                            "con sus archivos (hasta ${if (call.has("max_file_mb")) call.int("max_file_mb", current.maxFileMb, 1..MondayOutboundConfig.MaxFileMb) else current.maxFileMb} MB)".takeIf { files },
+                            "y los importados".takeIf { imports },
+                        ).joinToString(", ").ifEmpty { "(nada)" } + if (enabled) ", desde ahora." else ": mientras este apagado no se envia nada.",
+                    ),
+                    McpPreviewRow("Campos que se envian (campo -> columna)", columns.entries.sortedBy { it.key }.joinToString("; ") { "${it.key} -> ${it.value}" }.ifEmpty { "(ninguno)" }),
+                    McpPreviewRow("Que se envia y a donde", "Esos campos de cada registro salen del servidor hacia el tablero indicado de monday, con el token guardado."),
+                )
+            },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "record_type" to McpSchema.string("Tipo de registro, p. ej. el de los leads."),
@@ -210,6 +252,27 @@ object MondayOutboundMcp {
             title = "Reintentar envios a monday",
             description = "Devuelve a la cola un envio fallido (con id) o todos los fallidos (sin id). Se entregan en la proxima pasada del trabajo.",
             permission = permission,
+            // Puts failed notices back in the queue: the records they carry are sent to monday again.
+            outbound = true,
+            preview = { call ->
+                guard(call)
+                val id = call.string("id", 20)
+                val failed = queueView.events(call.tenant, setOf("failed"), 200)
+                if (id.isEmpty()) {
+                    listOf(
+                        McpPreviewRow("Envios fallidos que se reenviaran", failed.size.toString() + if (failed.size >= 200) " o mas" else ""),
+                        McpPreviewRow("Cuales", failed.take(20).joinToString("; ") { "${it.recordType} ${it.recordId}" }.ifEmpty { "(ninguno)" }),
+                        McpPreviewRow("Que se envia y a donde", "Los registros de esos envios vuelven a salir hacia monday en la proxima pasada del trabajo."),
+                    )
+                } else {
+                    val event = failed.firstOrNull { it.id.toString() == id } ?: throw McpToolException("No hay un envio fallido con el id $id.")
+                    listOf(
+                        McpPreviewRow("Envio", "${event.id}: ${event.kind} de ${event.recordType} ${event.recordId}"),
+                        McpPreviewRow("Fallo anterior", event.detail.ifBlank { "-" }),
+                        McpPreviewRow("Que se envia y a donde", "Ese registro vuelve a salir hacia monday en la proxima pasada del trabajo."),
+                    )
+                }
+            },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.string("Id del envio fallido; vacio reintenta todos los fallidos."))),
             handler = { call ->
                 guard(call)
@@ -231,6 +294,16 @@ object MondayOutboundMcp {
             description = "Descarta un envio fallido: no se enviara nunca a monday. No borra nada en BMS ni en monday.",
             permission = permission,
             destructive = true,
+            preview = { call ->
+                guard(call)
+                val number = call.requiredString("id", 20).toLongOrNull() ?: throw McpToolException("id debe ser numerico.")
+                val event = queueView.events(call.tenant, setOf("failed", "pending"), 500).firstOrNull { it.id == number } ?: throw McpToolException("No hay un envio con el id $number.")
+                listOf(
+                    McpPreviewRow("Envio que se descarta", "${event.id}: ${event.kind} de ${event.recordType} ${event.recordId}"),
+                    McpPreviewRow("Estado y motivo", "${event.status}: ${event.detail.ifBlank { "-" }}"),
+                    McpPreviewRow("Efecto", "No se enviara nunca a monday. No borra nada en BMS ni en monday."),
+                )
+            },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.string("Id del envio fallido.")), required = listOf("id")),
             handler = { call ->
                 guard(call)
