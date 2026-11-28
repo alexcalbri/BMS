@@ -125,6 +125,14 @@ check 'ningun secreto aparece' eval '! grep -q "no-se-imprime" <<< "$output"'
 equals 'el servidor quedo exactamente igual' "$before" "$(snap)"
 equals 'el espejo es lo unico que escribio (el commit del ensayo)' "$(git -C "$release" rev-parse HEAD)" "$(git -C /var/lib/bms/mirror rev-parse HEAD)"
 
+# The in-app assistant (tenant V018-V020): with the detail of every new object, the rolled back transaction of each company
+# ends with assistant_messages readable and appendable only (SELECT, INSERT = "ar") for the runtime role.
+detail=$(BMS_REHEARSE_ALL_NEW=1 BMS_REHEARSE_DETAIL=2000 bash /root/bms-update/update.sh --rehearse --ref master 2>/dev/null)
+check 'asistente: el ensayo de cada empresa crea assistant_messages' bash -c '[[ $(grep -c "^INFO   + objeto public.assistant_messages: r " <<< "$1") == 2 ]]' _ "$detail"
+check 'asistente: y la deja con solo SELECT e INSERT para el runtime' bash -c '[[ $(grep -cE "objeto public\.assistant_messages: r .*\{[^}]*,$2=ar/[^,}]*\}" <<< "$1") == 2 ]]' _ "$detail" "$RUNTIME"
+check 'asistente: sin UPDATE ni DELETE en ninguna linea de assistant_messages' eval '! grep -E "objeto public\.assistant_messages: " <<< "$detail" | grep -qE "$RUNTIME=[a-zA-Z]*[wdD]"'
+equals 'el ensayo con detalle tampoco cambio el servidor' "$before" "$(snap)"
+
 # --- argument handling
 out=$(bash /root/bms-update/update.sh --rehearse --commit 0123456789abcdef0123456789abcdef01234567 2>&1)
 check '--rehearse con --commit se rechaza' grep -q -- '--rehearse no se combina' <<< "$out"
