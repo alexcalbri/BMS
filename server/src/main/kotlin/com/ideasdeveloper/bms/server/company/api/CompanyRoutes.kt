@@ -52,24 +52,7 @@ fun Route.companyRoutes(
 ) {
     companySelfRoutes(selfService)
 
-    get("/companies") {
-        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para consultar empresas.")) ?: return@get
-
-        val service = provisioning
-        if (service == null) {
-            call.respond(
-                HttpStatusCode.ServiceUnavailable,
-                CompanyErrorResponse(
-                    code = "PROVISIONING_NOT_CONFIGURED",
-                    message = tr("El servidor no tiene configuracion de provisioning disponible."),
-                ),
-            )
-            return@get
-        }
-
-        call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.listCompanies(actor.companyScope) })
-    }
+    companyListRoute(authorizer, provisioning)
 
     get("/server/logs") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
