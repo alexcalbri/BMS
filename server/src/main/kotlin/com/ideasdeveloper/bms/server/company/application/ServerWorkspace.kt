@@ -4,6 +4,8 @@ package com.ideasdeveloper.bms.server.company.application
  * Company-like tenant where server owners and their staff use modules without creating a company.
  * It is a row in `companies` flagged `is_server_workspace`, with its own tenant database, hidden
  * from company administration. Staff sign in with the company code [Code].
+ *
+ * Server-level; stays here for binary compatibility (RESTRUCTURE_PLAN §7).
  */
 object ServerWorkspace {
     const val Code = "servidor"
