@@ -79,12 +79,13 @@ class CompanyProvisioningService(
     private val tenantSchema = TenantSchemaProvisioner(central, config, loginDatabases, moduleRegistry)
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
+    private val registry = CompanyRegistryQueries(central, loginDatabases, moduleRegistry, tenantSchema)
     private val workspace = ServerWorkspaceProvisioner(
         central = central,
         config = config,
         loginDatabases = loginDatabases,
         tenantSchema = tenantSchema,
-        tenantRuntimeConnection = { tenant -> tenantRuntimeConnection(tenant) },
+        tenantRuntimeConnection = { tenant -> registry.tenantRuntimeConnection(tenant) },
     )
     private val owners = BusinessOwnerAccounts(
         central = central,
@@ -93,8 +94,8 @@ class CompanyProvisioningService(
         postgresRolePattern = postgresRolePattern,
         firstServerOwnerRole = { installer.firstServerOwnerRole() },
         rejectServerWorkspace = { code -> rejectServerWorkspace(code) },
-        findCompanyAnyState = { connection, code -> findCompanyAnyState(connection, code) },
-        tenantRuntimeConnection = { tenant -> tenantRuntimeConnection(tenant) },
+        findCompanyAnyState = { connection, code -> registry.findCompanyAnyState(connection, code) },
+        tenantRuntimeConnection = { tenant -> registry.tenantRuntimeConnection(tenant) },
         actorName = { actor -> actorName(actor) },
     )
     private val duplication = CompanyDuplication(
@@ -106,11 +107,11 @@ class CompanyProvisioningService(
         owners = owners,
         companyCodePattern = companyCodePattern,
         rejectServerWorkspace = { code -> rejectServerWorkspace(code) },
-        findCompany = { connection, code -> findCompany(connection, code) },
-        tenantRuntimeConnection = { tenant -> tenantRuntimeConnection(tenant) },
+        findCompany = { connection, code -> registry.findCompany(connection, code) },
+        tenantRuntimeConnection = { tenant -> registry.tenantRuntimeConnection(tenant) },
         validate = { code, name, username, password, request -> validate(code, name, username, password, request) },
-        insertCompany = { connection, id, request, database, group -> insertCompany(connection, id, request, database, group) },
-        loadCompanyModules = { database -> loadCompanyModules(database) },
+        insertCompany = { connection, id, request, database, group -> registry.insertCompany(connection, id, request, database, group) },
+        loadCompanyModules = { database -> registry.loadCompanyModules(database) },
         setModuleEnabled = { company, module, enabled, role, actor -> setModuleEnabled(company, module, enabled, role, actor) },
     )
     private val installer = ServerModuleInstaller(
@@ -129,7 +130,7 @@ class CompanyProvisioningService(
         ensureServerWorkspace = { role, actor -> ensureServerWorkspace(role, actor) },
         serverWorkspaceCode = { serverWorkspaceRow()?.code },
         setModuleEnabled = { company, module, enabled, role, actor -> setModuleEnabled(company, module, enabled, role, actor) },
-        countCompaniesWithModuleEnabled = { moduleId -> countCompaniesWithModuleEnabled(moduleId) },
+        countCompaniesWithModuleEnabled = { moduleId -> registry.countCompaniesWithModuleEnabled(moduleId) },
     )
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
     private val modules: List<ModuleDefinition>
@@ -201,7 +202,7 @@ class CompanyProvisioningService(
             central.connection.use { connection ->
                 connection.autoCommit = false
                 try {
-                    insertCompany(connection, companyId, request, databaseName)
+                    registry.insertCompany(connection, companyId, request, databaseName)
                     insertAudit(
                         connection = connection,
                         actor = actor,
@@ -290,7 +291,7 @@ class CompanyProvisioningService(
                 name = company.name,
                 databaseName = company.databaseName,
                 isActive = company.isActive,
-                modules = loadCompanyModules(company.databaseName),
+                modules = registry.loadCompanyModules(company.databaseName),
                 logoUrl = company.logoUrl,
                 primaryColor = company.primaryColor,
                 secondaryColor = company.secondaryColor,
@@ -320,7 +321,7 @@ class CompanyProvisioningService(
         }
 
         val company = central.connection.use { connection ->
-            findCompanyAnyState(connection, normalizedCompanyCode)
+            registry.findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
 
@@ -379,7 +380,7 @@ class CompanyProvisioningService(
             name = companyName,
             databaseName = company.databaseName,
             isActive = company.isActive,
-            modules = loadCompanyModules(company.databaseName),
+            modules = registry.loadCompanyModules(company.databaseName),
             logoUrl = logoUrl,
             primaryColor = request.primaryColor,
             secondaryColor = request.secondaryColor,
@@ -392,7 +393,7 @@ class CompanyProvisioningService(
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
-            findCompanyAnyState(connection, normalizedCompanyCode)
+            registry.findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
 
@@ -434,7 +435,7 @@ class CompanyProvisioningService(
             name = company.name,
             databaseName = company.databaseName,
             isActive = active,
-            modules = loadCompanyModules(company.databaseName),
+            modules = registry.loadCompanyModules(company.databaseName),
             logoUrl = company.logoUrl,
             primaryColor = company.primaryColor,
             secondaryColor = company.secondaryColor,
@@ -462,7 +463,7 @@ class CompanyProvisioningService(
         rejectServerWorkspace(code)
         targetCode?.trim()?.let { rejectServerWorkspace(it) }
         central.connection.use { connection ->
-            findCompanyAnyState(connection, code) ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
+            registry.findCompanyAnyState(connection, code) ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
             val updated = if (targetCode == null) {
                 connection.prepareStatement("UPDATE companies SET owner_group = id WHERE code = ?").use { update ->
                     update.setString(1, code)
@@ -471,7 +472,7 @@ class CompanyProvisioningService(
             } else {
                 val target = targetCode.trim()
                 if (target == code) throw CompanyProvisioningException(tr("Elige otra empresa para vincular."))
-                findCompanyAnyState(connection, target) ?: throw CompanyProvisioningException(tr("La empresa a vincular no existe."))
+                registry.findCompanyAnyState(connection, target) ?: throw CompanyProvisioningException(tr("La empresa a vincular no existe."))
                 connection.prepareStatement(
                     "UPDATE companies SET owner_group = (SELECT owner_group FROM companies WHERE code = ?) WHERE code = ?"
                 ).use { update ->
@@ -507,7 +508,7 @@ class CompanyProvisioningService(
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
-            findCompanyAnyState(connection, normalizedCompanyCode)
+            registry.findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
         if (company.isActive) {
@@ -525,7 +526,7 @@ class CompanyProvisioningService(
             admin.autoCommit = true
             val tenantDatabaseExists = admin.existsDatabase(company.databaseName)
             if (tenantDatabaseExists && tenantConfig != null) {
-                ownerRole = tenantRuntimeConnection(tenantConfig).use { tenant ->
+                ownerRole = registry.tenantRuntimeConnection(tenantConfig).use { tenant ->
                     tenant.prepareStatement(
                         """
                         SELECT users.postgres_role
@@ -653,7 +654,7 @@ class CompanyProvisioningService(
         }
 
         val company = central.connection.use { connection ->
-            findCompany(connection, normalizedCompanyCode)
+            registry.findCompany(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
         val tenantConfig = loginDatabases.tenantConfig(company.databaseName)
@@ -715,7 +716,7 @@ class CompanyProvisioningService(
             name = company.name,
             databaseName = company.databaseName,
             isActive = company.isActive,
-            modules = loadCompanyModules(company.databaseName),
+            modules = registry.loadCompanyModules(company.databaseName),
             logoUrl = company.logoUrl,
             primaryColor = company.primaryColor,
             secondaryColor = company.secondaryColor,
@@ -849,130 +850,6 @@ class CompanyProvisioningService(
         }
     }
 
-    private fun loadCompanyModules(databaseName: String): List<CompanyModuleResponse> {
-        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return modules.map { definition ->
-            definition.toCompanyModuleResponse(enabled = definition.locked)
-        }
-
-        val states = mutableMapOf<String, Boolean>()
-        tenantRuntimeConnection(tenantConfig).use { connection ->
-            connection.prepareStatement("SELECT module_id, status FROM tenant_modules").use { query ->
-                query.executeQuery().use { rows ->
-                    while (rows.next()) {
-                        states[rows.getString("module_id")] = rows.getString("status") == "enabled"
-                    }
-                }
-            }
-        }
-        return modules.map { definition ->
-            definition.toCompanyModuleResponse(enabled = if (definition.locked) true else states[definition.id] == true)
-        }
-    }
-
-    private fun countCompaniesWithModuleEnabled(moduleId: String): Int {
-        val companies = central.connection.use { connection ->
-            connection.prepareStatement("SELECT database_name FROM companies ORDER BY code").use { query ->
-                query.executeQuery().use { rows ->
-                    buildList {
-                        while (rows.next()) {
-                            add(rows.getString("database_name"))
-                        }
-                    }
-                }
-            }
-        }
-        return companies.count { databaseName ->
-            val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: tenantSchema.tenantConfig(databaseName)
-            tenantRuntimeConnection(tenantConfig).use { connection ->
-                connection.prepareStatement(
-                    "SELECT 1 FROM tenant_modules WHERE module_id = ? AND status = 'enabled'"
-                ).use { query ->
-                    query.setString(1, moduleId)
-                    query.executeQuery().use { rows -> rows.next() }
-                }
-            }
-        }
-    }
-
-    private fun tenantRuntimeConnection(tenant: TenantDatabaseConfig): Connection {
-        val source = PGSimpleDataSource().apply {
-            setURL(tenant.jdbcUrl)
-            setUser(tenant.user)
-            setPassword(tenant.password)
-        }
-        return source.connection
-    }
-
-    private fun insertCompany(connection: Connection, companyId: UUID, request: CreateCompanyRequest, databaseName: String, ownerGroup: UUID = companyId) {
-        connection.prepareStatement(
-            """
-            INSERT INTO companies (
-                id, code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active, owner_group
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?)
-            """.trimIndent()
-        ).use { insert ->
-            insert.setObject(1, companyId)
-            insert.setString(2, request.code.trim())
-            insert.setString(3, request.name.trim())
-            insert.setString(4, request.logoUrl?.trim()?.takeIf { it.isNotBlank() })
-            insert.setString(5, request.primaryColor)
-            insert.setString(6, request.secondaryColor)
-            insert.setString(7, request.accentColor)
-            insert.setString(8, databaseName)
-            insert.setObject(9, ownerGroup)
-            insert.executeUpdate()
-        }
-    }
-
-    private fun findCompany(connection: Connection, companyCode: String): CompanyRow? {
-        connection.prepareStatement(
-            "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE code = ? AND is_active = TRUE"
-        ).use { query ->
-            query.setString(1, companyCode)
-            query.executeQuery().use { rows ->
-                return if (rows.next()) {
-                    CompanyRow(
-                        code = rows.getString("code"),
-                        name = rows.getString("name"),
-                        logoUrl = rows.getString("logo_url"),
-                        primaryColor = rows.getString("primary_color"),
-                        secondaryColor = rows.getString("secondary_color"),
-                        accentColor = rows.getString("accent_color"),
-                        databaseName = rows.getString("database_name"),
-                        isActive = rows.getBoolean("is_active"),
-                    )
-                } else {
-                    null
-                }
-            }
-        }
-    }
-
-
-    private fun findCompanyAnyState(connection: Connection, companyCode: String): CompanyRow? {
-        connection.prepareStatement(
-            "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE code = ?"
-        ).use { query ->
-            query.setString(1, companyCode)
-            query.executeQuery().use { rows ->
-                return if (rows.next()) {
-                    CompanyRow(
-                        code = rows.getString("code"),
-                        name = rows.getString("name"),
-                        logoUrl = rows.getString("logo_url"),
-                        primaryColor = rows.getString("primary_color"),
-                        secondaryColor = rows.getString("secondary_color"),
-                        accentColor = rows.getString("accent_color"),
-                        databaseName = rows.getString("database_name"),
-                        isActive = rows.getBoolean("is_active"),
-                    )
-                } else {
-                    null
-                }
-            }
-        }
-    }
-
     /**
      * Runs [change] (a change in the central database, committed inside it) with the company's activity row for it
      * written first on an open transaction of the company database, committed only once [change] returned: a failed
@@ -985,7 +862,7 @@ class CompanyProvisioningService(
     ): T {
         val tenantConfig = loginDatabases.tenantConfig(databaseName)
             ?: throw CompanyProvisioningException(tr("La empresa no tiene conexion tenant configurada."))
-        return tenantRuntimeConnection(tenantConfig).use { tenant ->
+        return registry.tenantRuntimeConnection(tenantConfig).use { tenant ->
             tenant.autoCommit = false
             val result = try {
                 com.ideasdeveloper.bms.server.activity.CoreActivity.record(
@@ -1065,22 +942,4 @@ class CompanyProvisioningService(
     ) = ProvisioningAudit.insert(connection, actor, action, companyCode, moduleId, details)
 
 
-    private fun ModuleDefinition.toCompanyModuleResponse(enabled: Boolean): CompanyModuleResponse =
-        CompanyModuleResponse(
-            moduleId = id,
-            displayName = trIn(I18n.moduleNamespace(id), displayName),
-            enabled = enabled,
-            locked = locked,
-        )
 }
-
-internal data class CompanyRow(
-    val code: String,
-    val name: String,
-    val logoUrl: String?,
-    val primaryColor: String,
-    val secondaryColor: String,
-    val accentColor: String,
-    val databaseName: String,
-    val isActive: Boolean,
-)
