@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Read-only checks of a live BMS server before its first update with the new role layout (SELF_HOSTING.md section 15).
 # Changes nothing: it only reads files, catalogs and command output, and writes only inside its own temporary directory.
-#   sudo bash preflight.sh
-# Put db-roles.sh and nginx-site.sh next to it (same directory as update.sh, e.g. /root/bms-update). Prints one line
-# per check: PASS, WARN (works, but look at it), INFO or FAIL with the reason; exits 1 if any check FAILs. Never prints
-# a secret (server.env values are only tested, not shown).
+#   sudo bash preflight.sh [--ref <branch, tag or commit>]
+# Put db-roles.sh, rehearse.sh and nginx-site.sh next to it (same directory as update.sh, e.g. /root/bms-update). Prints
+# one line per check: PASS, WARN (works, but look at it), INFO or FAIL with the reason; exits 1 if any check FAILs. Never
+# prints a secret (server.env values are only tested, not shown).
+# The last block runs `update.sh --rehearse --ref <ref>` (default: CORE_UPDATE_REF of server.env, else master): the role
+# move, grants and migrations of the real update inside transactions that are rolled back (rehearse.sh). It changes
+# nothing in PostgreSQL; it refreshes the root mirror of the repository, as an update would.
 #
 # For tests only: BMS_PREFLIGHT_PG=host:port (superuser "postgres" over TCP instead of runuser -u postgres),
 # BMS_PREFLIGHT_CONFIG (server.env), BMS_PREFLIGHT_APP_DIR (/opt/bms), BMS_PREFLIGHT_SKIP_HOST=true (skips the host,
-# Nginx, systemd and file checks that need a real install).
+# Nginx, systemd and file checks that need a real install), BMS_PREFLIGHT_UPDATE_SH (the update.sh to rehearse with),
+# BMS_PREFLIGHT_NO_REHEARSE=true (skips the rehearsal: a WARN says so).
 set -uo pipefail
 umask 077
 # The locale this server gives its scripts (LANG from the session or /etc/default/locale), kept before this script fixes
@@ -26,6 +30,13 @@ unset LANGUAGE
 bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REHEARSE_REF=${BMS_PREFLIGHT_REF:-}
+while (( $# > 0 )); do
+    case "$1" in
+        --ref) [[ $# -ge 2 ]] || { printf '%s\n' '--ref requiere un valor.' >&2; exit 2; }; REHEARSE_REF=$2; shift 2 ;;
+        *) printf 'Argumento desconocido: %s\n' "$1" >&2; exit 2 ;;
+    esac
+done
 CONFIG_FILE=${BMS_PREFLIGHT_CONFIG:-/etc/bms/server.env}
 APP_DIR=${BMS_PREFLIGHT_APP_DIR:-/opt/bms}
 NGINX_SITE=/etc/nginx/sites-available/bms
@@ -41,19 +52,19 @@ report() {
     [[ $status != WARN ]] || WARNS=$((WARNS + 1))
 }
 
-# psql as the PostgreSQL superuser, read-only transaction, SQL on stdin.
-pg_read() {
+# The transport db-roles.sh needs: psql as the PostgreSQL superuser, in a read-only transaction, SQL on stdin. It adds
+# nothing about output: bms_pg_query (db-roles.sh) adds -q -X -A -t and ON_ERROR_STOP for every check below.
+bms_pg_transport() {
     local database=$1
     shift
     if [[ -n ${BMS_PREFLIGHT_PG:-} ]]; then
-        PGOPTIONS='-c default_transaction_read_only=on' psql -X -q -At -v ON_ERROR_STOP=1 \
+        PGOPTIONS='-c default_transaction_read_only=on' psql \
             -h "${BMS_PREFLIGHT_PG%:*}" -p "${BMS_PREFLIGHT_PG##*:}" -U postgres -d "$database" "$@"
     else
-        runuser -u postgres -- env PGOPTIONS='-c default_transaction_read_only=on' psql -X -q -At -v ON_ERROR_STOP=1 -d "$database" "$@"
+        runuser -u postgres -- env PGOPTIONS='-c default_transaction_read_only=on' psql -d "$database" "$@"
     fi
 }
-# The libraries only define functions; their superuser hook is the read-only runner.
-bms_pg_super() { pg_read "$@"; }
+pg_read() { bms_pg_query "$@"; }
 
 config_value() { awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$CONFIG_FILE"; }
 
@@ -64,6 +75,8 @@ for library in db-roles.sh nginx-site.sh; do
         source "$SELF_DIR/$library"
     else
         report FAIL "biblioteca $library" "falta junto a preflight.sh (descargala de scripts/ubuntu/ de la misma referencia)"
+        # Every PostgreSQL check goes through db-roles.sh.
+        [[ $library != db-roles.sh ]] || { printf '\n%s FAIL, %s WARN\n' "$FAILS" "$WARNS"; exit 1; }
     fi
 done
 
@@ -157,7 +170,7 @@ if bms_ascii_match "$DB_USER" '^[a-z][a-z0-9_]{0,62}$' && [[ $DB_USER != pg_* &&
 else report FAIL 'DB_USER' 'no es un nombre de rol valido'; fi
 provisioner=$(config_value DB_PROVISIONING_USER)
 if [[ -n $provisioner ]]; then report INFO 'DB_PROVISIONING_USER' "$provisioner (ya configurado)"
-else report INFO 'DB_PROVISIONING_USER' 'no existe aun; update.sh crea bms_provisioner'; fi
+else report INFO 'DB_PROVISIONING_USER' 'no esta en server.env; update.sh crea bms_provisioner o, si ya existe como lo deja un intento anterior, lo adopta'; fi
 if declare -F valid_provisioner_password >/dev/null && grep -q '^DB_PROVISIONING_PASSWORD=' "$CONFIG_FILE"; then
     provisioner_password=$(config_value DB_PROVISIONING_PASSWORD)
     provisioner_password=${provisioner_password#\"}
@@ -328,6 +341,37 @@ if [[ ${BMS_PREFLIGHT_SKIP_HOST:-} != true ]]; then
     fi
     if [[ -f /var/lib/bms/deployed-commit ]]; then report PASS 'commit desplegado' "$(head -c 40 /var/lib/bms/deployed-commit)"
     else report INFO 'commit desplegado' 'no registrado: la primera actualizacion por SSH lo escribe; hasta entonces la app no puede actualizar'; fi
+fi
+
+# --- Rehearsal of the PostgreSQL work of update.sh -----------------------------------------------------------------
+# update.sh --rehearse runs the role move, the grant blocks and the migrations of the real update in transactions that
+# it rolls back, and proves with a before/after snapshot that it changed nothing (rehearse.sh). Its lines are shown as
+# they are (PASS / WARN / INFO / FAIL "ensayo ..."); a FAIL there means the update would fail the same way.
+UPDATE_SH=${BMS_PREFLIGHT_UPDATE_SH:-$SELF_DIR/update.sh}
+if [[ ${BMS_PREFLIGHT_NO_REHEARSE:-} == true ]]; then
+    report WARN 'ensayo de update.sh' 'omitido (BMS_PREFLIGHT_NO_REHEARSE=true): nada prueba que la segunda fase funcione'
+elif [[ ! -f $UPDATE_SH ]]; then
+    report FAIL 'ensayo de update.sh' "falta $UPDATE_SH (update.sh junto a preflight.sh): el ensayo no se pudo hacer"
+else
+    REHEARSE_REF=${REHEARSE_REF:-$(config_value CORE_UPDATE_REF)}
+    REHEARSE_REF=${REHEARSE_REF:-master}
+    rehearse_status=0
+    bash "$UPDATE_SH" --rehearse --ref "$REHEARSE_REF" > "$WORK/rehearse.out" 2> "$WORK/rehearse.err" || rehearse_status=$?
+    rehearse_fails=0
+    while IFS= read -r line; do
+        case $line in
+            FAIL*) printf '%s\n' "$line"; FAILS=$((FAILS + 1)); rehearse_fails=$((rehearse_fails + 1)) ;;
+            WARN*) printf '%s\n' "$line"; WARNS=$((WARNS + 1)) ;;
+            PASS*|INFO*|'        '*) printf '%s\n' "$line" ;;
+        esac
+    done < "$WORK/rehearse.out"
+    if (( rehearse_status == 2 && rehearse_fails == 0 )); then
+        report FAIL 'ensayo de update.sh' 'incompleto: alguna base no se ensayo por bloqueo; no vale como prueba. Repite el ensayo en un momento tranquilo'
+    elif (( rehearse_status != 0 && rehearse_fails == 0 )); then
+        report FAIL 'ensayo de update.sh' "termino con codigo $rehearse_status sin ejecutar el ensayo: $(tail -n 3 "$WORK/rehearse.err" | paste -sd ' ' -)"
+    elif (( rehearse_status == 0 )); then
+        report PASS 'ensayo de update.sh' "update.sh --rehearse --ref $REHEARSE_REF termino bien: la segunda fase (roles, permisos, migraciones) se ejecuto completa y se revirtio"
+    fi
 fi
 
 printf '\n%s FAIL, %s WARN\n' "$FAILS" "$WARNS"
