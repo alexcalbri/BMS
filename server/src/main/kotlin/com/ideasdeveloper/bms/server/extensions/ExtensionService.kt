@@ -23,82 +23,6 @@ import org.slf4j.LoggerFactory
 typealias ExtensionAuditor = (actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) -> Unit
 
 /**
- * Tells a user about something in a company through the Core's notification center. Both overloads are
- * abstract on purpose: the builder one must render in the recipient's language (I18N.md §7), which only
- * the access-backed implementation ([from]) can resolve. `ExtensionNotifier { tenant, module, user, title, text -> }`
- * still compiles (see the factory below) for tests and simple uses; there the builder runs in [I18n.Source]
- * unless a `recipientLanguage` is given.
- */
-interface ExtensionNotifier {
-    fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String)
-
-    /** Like [notify], with title and text written by [build] in the recipient's language (I18N.md §7). */
-    fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText)
-
-    companion object {
-        fun from(access: ModuleAccessService): ExtensionNotifier = object : ExtensionNotifier {
-            override fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) {
-                access.notificationsFor(moduleId).notify(tenant, userId, title, text)
-            }
-
-            override fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText) {
-                access.notificationsFor(moduleId).notify(tenant, userId, build = build)
-            }
-        }
-    }
-}
-
-/** Source-compatible replacement of the former SAM constructor: a notifier from a plain `send` function. */
-fun ExtensionNotifier(
-    recipientLanguage: (Connection, UUID) -> String = { _, _ -> I18n.Source },
-    send: (tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) -> Unit,
-): ExtensionNotifier = object : ExtensionNotifier {
-    override fun notify(tenant: Connection, moduleId: String, userId: UUID, title: String, text: String) =
-        send(tenant, moduleId, userId, title, text)
-
-    override fun notify(tenant: Connection, moduleId: String, userId: UUID, build: () -> NotificationText) {
-        val written = I18n.withLanguage(recipientLanguage(tenant, userId)) { build() }
-        send(tenant, moduleId, userId, written.title, written.text)
-    }
-}
-
-/**
- * Runs the pending tenant migrations of an extension in a company (CompanyProvisioningService,
- * with the provisioning role: the runtime connection cannot create tables); idempotent.
- */
-fun interface ExtensionMigrationRunner {
-    fun run(companyCode: String, extension: ServerExtension)
-}
-
-/**
- * Who acts. [role] is the login of who acts (stored as installed_by); [audit] is who the audit log
- * names; [companyCode] is the company of a business owner. A server administrator has
- * [serverAdmin] set with the companies of their scope (null: all); [serverOwner] stays false for them.
- */
-data class ExtensionActor(
-    val role: String,
-    val serverOwner: Boolean,
-    val companyCode: String? = null,
-    val audit: AuditActor = if (serverOwner) AuditActor.owner(role, null) else AuditActor.businessOwner(role),
-    val serverAdmin: ServerAdminScope? = null,
-    // Who acts for the company activity log; null: derived from [audit].
-    val activity: com.ideasdeveloper.bms.server.activity.ActivityActor? = null,
-) {
-    /** The activity log actor: the session's person, or the server person "(desde el servidor)". */
-    val activityActor: com.ideasdeveloper.bms.server.activity.ActivityActor
-        get() = activity ?: com.ideasdeveloper.bms.server.activity.ActivityActor.fromAudit(audit)
-}
-
-/**
- * Company scope of a server administrator acting on extensions; [companies] null means every
- * company. The server workspace is never part of it.
- */
-data class ServerAdminScope(val companies: Set<String>?) {
-    fun includes(companyCode: String): Boolean =
-        !com.ideasdeveloper.bms.server.admins.isServerWorkspace(companyCode) && (companies == null || companyCode in companies)
-}
-
-/**
  * Extensions per company (PLAN_CAMBIOS_2.md 11.3): list, install, configure, enable, disable,
  * uninstall, mark incompatible and apply to the companies of a linked group. Methods use blocking
  * JDBC; call them from Dispatchers.IO. Secrets are sealed on write and never returned.
@@ -116,7 +40,8 @@ class ExtensionService(
 ) {
     private val log = LoggerFactory.getLogger(ExtensionService::class.java)
     private val secretBox: SecretBox get() = storage.secrets
-    private val runner = OperationRunner(operations)
+    private val groupOperations = ExtensionGroupOperations(this, connections, storage, modules, operations)
+    private val schemaSync = ExtensionSchemaSync(this, connections, storage, registry, clock, migrationRunner)
 
     // ---- Company extensions ----
 
@@ -297,9 +222,6 @@ class ExtensionService(
     /** What one [syncSchemas] did: rows brought to the loaded version, rows suspended, companies it could not read. */
     data class SchemaSyncReport(val updated: Int, val suspended: Int, val unreachable: List<String>)
 
-    // Companies the last sync could not read, so an unreachable one is logged when it starts failing, not every hour.
-    private val unreachableCompanies = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-
     /**
      * Brings the schema of every loaded extension to its loaded version in each active company where it is installed (any
      * status but removed, whether or not its module is enabled there). Updating a package (or a module with bundled
@@ -310,327 +232,52 @@ class ExtensionService(
      * after the module migrations, before the module jobs, and then every hour: a suspended row is retried each time
      * and gets its previous status back once its migrations apply. Never throws.
      */
-    fun syncSchemas(): SchemaSyncReport {
-        val companies = try {
-            activeCompanyCodes()
-        } catch (failure: Exception) {
-            log.error("Extension schemas not checked: the company list could not be read", failure)
-            return SchemaSyncReport(0, 0, listOf("*"))
-        }
-        var updated = 0
-        var suspended = 0
-        val unreachable = mutableListOf<String>()
-        for (company in companies) {
-            try {
-                val (done, failed) = syncCompany(company)
-                updated += done
-                suspended += failed
-                if (unreachableCompanies.remove(company)) log.info("Extension schemas of company {} checked again", company)
-            } catch (failure: Exception) {
-                unreachable += company
-                if (unreachableCompanies.add(company)) {
-                    log.warn("Extension schemas of company {} not checked ({}); retried every hour", company, failure.message)
-                }
-            }
-        }
-        if (updated > 0 || suspended > 0) log.info("Extension schemas: {} brought up to date, {} suspended", updated, suspended)
-        return SchemaSyncReport(updated, suspended, unreachable)
-    }
-
-    private fun syncCompany(companyCode: String): Pair<Int, Int> {
-        val tenant = connections.tenant(companyCode) ?: return 0 to 0
-        return tenant.use {
-            var updated = 0
-            var suspended = 0
-            val applied = runCatching { storage.appliedMigrations(tenant) }.getOrNull()
-            for (state in storage.schemaRows(tenant)) {
-                if (state.row.status == ExtensionStatus.Removed) continue
-                val extension = registry.get(state.row.extensionId) ?: continue
-                if (!schemaBehind(state, extension, applied)) continue
-                try {
-                    migrationRunner.run(companyCode, extension)
-                } catch (failure: Exception) {
-                    suspendForSchema(companyCode, tenant, extension, state, failure)
-                    suspended++
-                    continue
-                }
-                tenant.inTransaction { markSchemaCurrent(tenant, extension) }
-                audit(
-                    AuditActor.system(), "extension.schema_updated", companyCode, extension.manifest.module,
-                    details("extension" to extension.manifest.id, "from" to state.row.version, "to" to extension.manifest.version),
-                )
-                updated++
-            }
-            updated to suspended
-        }
-    }
-
-    /** The company's schema of [extension] is not the loaded version's: another version recorded, a missing migration or a suspension. */
-    private fun schemaBehind(state: TenantExtensionSchemaRow, extension: ServerExtension, applied: Map<String, Set<String>>?): Boolean {
-        if (state.row.version != extension.manifest.version || state.schemaError != null) return true
-        if (applied == null) return false
-        val done = applied[extension.manifest.id].orEmpty()
-        return extension.migrationPaths.any { it.substringAfterLast('/').removeSuffix(".sql") !in done }
-    }
-
-    /**
-     * After the migrations of the loaded version applied: the row records that version and a suspension ends (the previous
-     * status comes back, unless the module is now below the extension's minimum). Call it inside a transaction.
-     */
-    private fun markSchemaCurrent(tenant: Connection, extension: ServerExtension) {
-        val manifest = extension.manifest
-        val now = Timestamp.from(clock())
-        if (!storage.hasSchemaState(tenant)) {
-            tenant.prepareStatement("UPDATE tenant_extensions SET version = ?, updated_at = ? WHERE extension_id = ? AND version <> ? AND status <> 'removed'").use { statement ->
-                statement.setString(1, manifest.version)
-                statement.setTimestamp(2, now)
-                statement.setString(3, manifest.id)
-                statement.setString(4, manifest.version)
-                statement.executeUpdate()
-            }
-            return
-        }
-        val restored = tenant.prepareStatement(
-            """
-            UPDATE tenant_extensions
-            SET version = ?, updated_at = ?,
-                status = CASE WHEN status = 'incompatible' AND status_before_error IS NOT NULL AND ? THEN status_before_error ELSE status END,
-                schema_error = NULL, status_before_error = NULL
-            WHERE extension_id = ? AND status <> 'removed' AND (version <> ? OR schema_error IS NOT NULL OR status_before_error IS NOT NULL)
-            """.trimIndent()
-        ).use { statement ->
-            statement.setString(1, manifest.version)
-            statement.setTimestamp(2, now)
-            statement.setBoolean(3, compatible(manifest))
-            statement.setString(4, manifest.id)
-            statement.setString(5, manifest.version)
-            statement.executeUpdate()
-        }
-        if (restored > 0) {
-            recordActivity(tenant, null, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.Updated, "El servidor aplico las migraciones de la extension ${manifest.displayName} ${manifest.version}.")
-        }
-    }
-
-    private fun suspendForSchema(companyCode: String, tenant: Connection, extension: ServerExtension, state: TenantExtensionSchemaRow, failure: Exception) {
-        val manifest = extension.manifest
-        val reason = (failure.message ?: failure.javaClass.simpleName).lines().first().take(400)
-        val already = state.schemaError
-        try {
-            tenant.inTransaction {
-                if (state.hasSchemaState) {
-                    tenant.prepareStatement(
-                        """
-                        UPDATE tenant_extensions
-                        SET status = 'incompatible', updated_at = ?, schema_error = ?,
-                            status_before_error = COALESCE(status_before_error, CASE WHEN status IN ('installed', 'enabled', 'disabled') THEN status END)
-                        WHERE extension_id = ? AND status <> 'removed'
-                        """.trimIndent()
-                    ).use { statement ->
-                        statement.setTimestamp(1, Timestamp.from(clock()))
-                        statement.setString(2, reason)
-                        statement.setString(3, manifest.id)
-                        statement.executeUpdate()
-                    }
-                } else if (state.row.status != ExtensionStatus.Incompatible) {
-                    setStatus(tenant, manifest.id, ExtensionStatus.Incompatible)
-                }
-                if (already == null) {
-                    recordActivity(tenant, null, extension, com.ideasdeveloper.bms.server.activity.ActivityActions.StatusChanged, "El servidor suspendio la extension ${manifest.displayName}: no se pudieron aplicar las migraciones de la version ${manifest.version}.")
-                }
-            }
-        } catch (written: Exception) {
-            log.error("Extension {} could not be suspended in company {}", manifest.id, companyCode, written)
-        }
-        // Logged, told and audited once per suspension (and again only if the error changes), not on every retry.
-        if (already == reason) {
-            log.debug("Extension {} still suspended in company {}: {}", manifest.id, companyCode, reason)
-            return
-        }
-        log.error("Extension {} {} suspended in company {}: its migrations failed", manifest.id, manifest.version, companyCode, failure)
-        runCatching {
-            notifyBusinessOwner(tenant, manifest.module) {
-                NotificationText(
-                    tr("Extension suspendida: {0}", trIn(I18n.extensionNamespace(manifest.id), manifest.displayName)),
-                    tr("No se pudo poner al dia la base de datos de la empresa para la version {0} ({1}). La extension queda desactivada; el servidor lo vuelve a intentar cada hora y al reiniciar.", manifest.version, reason),
-                )
-            }
-        }.onFailure { log.warn("Business owner of company {} not told about extension {}: {}", companyCode, manifest.id, it.message) }
-        audit(AuditActor.system(), "extension.suspended", companyCode, manifest.module, details("extension" to manifest.id, "version" to manifest.version, "error" to reason))
-    }
+    fun syncSchemas(): SchemaSyncReport = schemaSync.syncSchemas()
 
     // ---- Linked groups ----
 
-    fun group(companyCode: String, actor: ExtensionActor): GroupResponse {
-        authorize(actor, companyCode)
-        // A scoped administrator does not see the companies of the group outside their scope.
-        val members = groupMembers(companyCode).filter { actor.serverAdmin?.includes(it.code) ?: true }
-        return GroupResponse(companyCode, members.map { member ->
-            GroupMemberView(member.code, member.name, member.suspended, ownerEmailMatches = !evaluateGroupOwner(member.code, persist = false).suspendedNow)
-        })
-    }
+    fun group(companyCode: String, actor: ExtensionActor): GroupResponse = groupOperations.group(companyCode, actor)
 
     /** Server owner: puts [companyCode] in the group of [targetCode]; both need the same business owner email. */
-    fun linkGroup(companyCode: String, targetCode: String, actor: ExtensionActor): GroupResponse {
-        requireServerOwner(actor)
-        if (companyCode == targetCode) throw ExtensionException("invalid_group", tr("Elige otra empresa para vincular."), ExtensionException.Kind.BadRequest)
-        val (company, target) = connections.central().use { central -> companyRow(central, companyCode) to companyRow(central, targetCode) }
-        company?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("Empresa no encontrada."), ExtensionException.Kind.NotFound)
-        target?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("La empresa a vincular no existe."), ExtensionException.Kind.NotFound)
-        val email = ownerEmailOf(companyCode)
-        if (email.isNullOrBlank() || !email.equals(ownerEmailOf(targetCode), ignoreCase = true)) {
-            throw ExtensionException("different_business_owner", tr("Las empresas deben tener el mismo correo de business owner para vincularse."))
-        }
-        connections.central().use { central ->
-            central.inTransaction {
-                central.prepareStatement(
-                    "UPDATE companies SET owner_group = (SELECT owner_group FROM companies WHERE code = ?), group_owner_email = ?, group_suspended = FALSE WHERE code = ?"
-                ).use { update ->
-                    update.setString(1, targetCode)
-                    update.setString(2, email.lowercase())
-                    update.setString(3, companyCode)
-                    update.executeUpdate()
-                }
-                // The company it joined may predate group_owner_email: record the baseline there too.
-                central.prepareStatement("UPDATE companies SET group_owner_email = ? WHERE code = ? AND group_owner_email IS NULL").use { update ->
-                    update.setString(1, email.lowercase())
-                    update.setString(2, targetCode)
-                    update.executeUpdate()
-                }
-            }
-        }
-        audit(actor.audit, "extension.group.linked", companyCode, null, details("linkedTo" to targetCode))
-        return group(companyCode, actor)
-    }
+    fun linkGroup(companyCode: String, targetCode: String, actor: ExtensionActor): GroupResponse = groupOperations.linkGroup(companyCode, targetCode, actor)
 
-    fun unlinkGroup(companyCode: String, actor: ExtensionActor): GroupResponse {
-        requireServerOwner(actor)
-        connections.central().use { central ->
-            companyRow(central, companyCode)?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("Empresa no encontrada."), ExtensionException.Kind.NotFound)
-            central.inTransaction {
-                central.prepareStatement("UPDATE companies SET owner_group = id, group_owner_email = NULL, group_suspended = FALSE WHERE code = ?").use { update ->
-                    update.setString(1, companyCode)
-                    update.executeUpdate()
-                }
-            }
-        }
-        audit(actor.audit, "extension.group.unlinked", companyCode, null, details())
-        return group(companyCode, actor)
-    }
+    fun unlinkGroup(companyCode: String, actor: ExtensionActor): GroupResponse = groupOperations.unlinkGroup(companyCode, actor)
 
     /** Server owner: accepts the current business owner email of a suspended company and lifts the suspension. */
-    fun reviewSuspension(companyCode: String, actor: ExtensionActor): GroupResponse {
-        requireServerOwner(actor)
-        val email = ownerEmailOf(companyCode)?.takeIf { it.isNotBlank() }
-            ?: throw ExtensionException("owner_email_missing", tr("El business owner de la empresa no tiene correo."))
-        connections.central().use { central ->
-            companyRow(central, companyCode)?.takeUnless { it.serverWorkspace } ?: throw ExtensionException("company_not_found", tr("Empresa no encontrada."), ExtensionException.Kind.NotFound)
-            central.prepareStatement("UPDATE companies SET group_owner_email = ?, group_suspended = FALSE WHERE code = ?").use { update ->
-                update.setString(1, email.lowercase())
-                update.setString(2, companyCode)
-                update.executeUpdate()
-            }
-        }
-        audit(actor.audit, "extension.group.reviewed", companyCode, null, details())
-        return group(companyCode, actor)
-    }
+    fun reviewSuspension(companyCode: String, actor: ExtensionActor): GroupResponse = groupOperations.reviewSuspension(companyCode, actor)
 
     /**
      * Records the business owner email of a company as its group baseline (call it when a company is
      * created in a group or linked). A company with no baseline yet gets one on its first check.
      */
-    fun recordGroupOwner(companyCode: String) {
-        val email = ownerEmailOf(companyCode)?.takeIf { it.isNotBlank() } ?: return
-        connections.central().use { central ->
-            central.prepareStatement("UPDATE companies SET group_owner_email = ? WHERE code = ? AND group_owner_email IS NULL").use { update ->
-                update.setString(1, email.lowercase())
-                update.setString(2, companyCode)
-                update.executeUpdate()
-            }
-        }
-    }
+    fun recordGroupOwner(companyCode: String) = groupOperations.recordGroupOwner(companyCode)
 
     /**
      * Compares the business owner email of the company now with the one recorded for its group and
      * suspends it in its group when they differ. True when the company may take part in group
      * operations. Call it before every apply.
      */
-    fun checkGroupOwner(companyCode: String): Boolean = !evaluateGroupOwner(companyCode, persist = true).blocked
+    fun checkGroupOwner(companyCode: String): Boolean = groupOperations.checkGroupOwner(companyCode)
 
-    fun previewGroupOperation(sourceCompany: String, extensionId: String, request: GroupOperationRequest, actor: ExtensionActor): GroupOperationPreview {
-        authorize(actor, sourceCompany)
-        val extension = requireExtension(extensionId)
-        val operation = requireOperation(request.operation)
-        val plan = planGroupOperation(sourceCompany, extension, operation, request, persist = false, scope = actor.serverAdmin)
-        val sourceSettings = if (operation == GroupOperationType.Apply) copyableSourceSettings(sourceCompany, extension) else emptyMap()
-        val targets = plan.targets.map { code ->
-            val problem = plan.problems[code]
-            val name = plan.names[code].orEmpty()
-            GroupTargetPreview(code, name, if (problem != null) emptyList() else steps(code, extension, operation, sourceSettings.size), problem)
-        }
-        return GroupOperationPreview(extensionId, operation, sourceCompany, targets)
-    }
+    fun previewGroupOperation(sourceCompany: String, extensionId: String, request: GroupOperationRequest, actor: ExtensionActor): GroupOperationPreview = groupOperations.previewGroupOperation(sourceCompany, extensionId, request, actor)
 
     /** Runs the operation on each target in its own transaction; a failed target does not stop the others. */
-    fun applyToGroup(sourceCompany: String, extensionId: String, request: GroupOperationRequest, actor: ExtensionActor): GroupOperationResult {
-        authorize(actor, sourceCompany)
-        val extension = requireExtension(extensionId)
-        val operation = requireOperation(request.operation)
-        val plan = planGroupOperation(sourceCompany, extension, operation, request, persist = true, scope = actor.serverAdmin)
-        val execute = executorFor(sourceCompany, extension, operation, request, actor)
-        val operationId = runner.start(
-            actor.role, operation, extensionId, sourceCompany, plan.targets,
-            validate = { code -> validateTarget(sourceCompany, extension, code) },
-            execute = execute,
-        )
-        val result = result(operationId)
-        audit(actor.audit, "extension.$operation.group", sourceCompany, extension.manifest.module, details("extension" to extensionId, "operationId" to operationId.toString(), "status" to result.status))
-        return result
-    }
+    fun applyToGroup(sourceCompany: String, extensionId: String, request: GroupOperationRequest, actor: ExtensionActor): GroupOperationResult = groupOperations.applyToGroup(sourceCompany, extensionId, request, actor)
 
     /** Retries only the failed targets of an operation, inside that same operation. */
-    fun retryFailed(sourceCompany: String, extensionId: String, operationId: Long, request: GroupOperationRequest, actor: ExtensionActor): GroupOperationResult {
-        authorize(actor, sourceCompany)
-        val extension = requireExtension(extensionId)
-        val header = operations.header(operationId)
-        if (header == null || header.extensionId != extensionId || header.sourceCompany != sourceCompany) {
-            throw ExtensionException("operation_not_found", tr("La operacion no existe."), ExtensionException.Kind.NotFound)
-        }
-        if (header.operation !in setOf(GroupOperationType.Apply, GroupOperationType.Uninstall)) {
-            throw ExtensionException("operation_not_retryable", tr("Solo se reintentan operaciones sobre un grupo."))
-        }
-        actor.serverAdmin?.let { scope ->
-            operations.targets(operationId).firstOrNull { !scope.includes(it.companyCode) }?.let {
-                throw ExtensionException("forbidden", tr("La empresa {0} no esta en tu alcance.", it.companyCode), ExtensionException.Kind.Forbidden)
-            }
-        }
-        if (!checkGroupOwner(sourceCompany)) {
-            throw ExtensionException("group_suspended", tr("La empresa de origen esta suspendida en su grupo."))
-        }
-        val execute = executorFor(sourceCompany, extension, header.operation, request, actor)
-        runner.retryFailed(operationId, validate = { code -> validateTarget(sourceCompany, extension, code) }, execute = execute)
-        val result = result(operationId)
-        audit(actor.audit, "extension.${header.operation}.retry", sourceCompany, extension.manifest.module, details("extension" to extensionId, "operationId" to operationId.toString(), "status" to result.status))
-        return result
-    }
+    fun retryFailed(sourceCompany: String, extensionId: String, operationId: Long, request: GroupOperationRequest, actor: ExtensionActor): GroupOperationResult = groupOperations.retryFailed(sourceCompany, extensionId, operationId, request, actor)
 
     /**
      * Call it at startup: operations a restart left running end as failed, and their pending targets
      * as failed ("interrumpida"), so the actor can retry them. Returns how many operations it closed.
      */
-    fun recoverInterrupted(): Int = operations.failInterrupted()
+    fun recoverInterrupted(): Int = groupOperations.recoverInterrupted()
 
-    fun result(operationId: Long): GroupOperationResult {
-        val header = operations.header(operationId) ?: throw ExtensionException("operation_not_found", tr("La operacion no existe."), ExtensionException.Kind.NotFound)
-        val targets = operations.targets(operationId)
-        return GroupOperationResult(
-            operationId, header.extensionId, header.operation, header.sourceCompany.orEmpty(), OperationStatus.of(targets),
-            targets.map { GroupTargetResult(it.companyCode, it.status, it.reason, it.attempts) },
-        )
-    }
+    fun result(operationId: Long): GroupOperationResult = groupOperations.result(operationId)
 
     // ---- Steps shared by single-company and group operations ----
 
-    private fun installOne(companyCode: String, extension: ServerExtension, actor: ExtensionActor?) {
+    internal fun installOne(companyCode: String, extension: ServerExtension, actor: ExtensionActor?) {
         val manifest = extension.manifest
         if (!modules.isInstalled(manifest.module)) {
             throw ExtensionException("module_not_installed", tr("El modulo {0} no esta instalado en el servidor.", manifest.module))
@@ -648,7 +295,7 @@ class ExtensionService(
             tenant.inTransaction {
                 val row = storage.rowForUpdate(tenant, manifest.id)
                 if (row != null && row.status != ExtensionStatus.Removed) {
-                    markSchemaCurrent(tenant, extension)
+                    schemaSync.markSchemaCurrent(tenant, extension)
                     return@inTransaction
                 }
                 ExtensionLifecycle.require(row?.status, ExtensionStatus.Installed)
@@ -677,13 +324,13 @@ class ExtensionService(
         }
     }
 
-    private fun enableOne(companyCode: String, extension: ServerExtension, actor: ExtensionActor?) {
+    internal fun enableOne(companyCode: String, extension: ServerExtension, actor: ExtensionActor?) {
         val manifest = extension.manifest
         withTenant(companyCode) { tenant ->
             // The code of this version only runs on a schema at this version: pending migrations first (a suspended
             // extension is retried here), and a failure leaves it as it was.
             val current = storage.schemaRows(tenant).firstOrNull { it.row.extensionId == manifest.id }
-            if (current != null && current.row.status != ExtensionStatus.Removed && schemaBehind(current, extension, storage.appliedMigrations(tenant))) {
+            if (current != null && current.row.status != ExtensionStatus.Removed && schemaSync.schemaBehind(current, extension, storage.appliedMigrations(tenant))) {
                 try {
                     migrationRunner.run(companyCode, extension)
                 } catch (failure: Exception) {
@@ -693,7 +340,7 @@ class ExtensionService(
                         tr("No se pudieron aplicar las migraciones de la extension {0} {1}: {2}", manifest.displayName, manifest.version, failure.message.orEmpty().take(300)),
                     )
                 }
-                tenant.inTransaction { markSchemaCurrent(tenant, extension) }
+                tenant.inTransaction { schemaSync.markSchemaCurrent(tenant, extension) }
             }
             tenant.inTransaction {
                 val row = requireLocked(tenant, manifest.id)
@@ -716,7 +363,7 @@ class ExtensionService(
         }
     }
 
-    private fun uninstallOne(companyCode: String, extension: ServerExtension, choices: Map<String, String>, actor: ExtensionActor?) {
+    internal fun uninstallOne(companyCode: String, extension: ServerExtension, choices: Map<String, String>, actor: ExtensionActor?) {
         val manifest = extension.manifest
         withTenant(companyCode) { tenant ->
             // One transaction: an extension that throws leaves settings, objects and status as they were.
@@ -767,184 +414,8 @@ class ExtensionService(
         return listOf(UninstallItem(null, tr("Ajustes de la extension"), settings, UninstallDefault.Delete)) + own
     }
 
-    // ---- Group planning ----
-
-    private class GroupPlan(val targets: List<String>, val problems: Map<String, String>, val names: Map<String, String>)
-
-    private fun planGroupOperation(sourceCompany: String, extension: ServerExtension, operation: String, request: GroupOperationRequest, persist: Boolean, scope: ServerAdminScope?): GroupPlan {
-        val manifest = extension.manifest
-        val source = evaluateGroupOwner(sourceCompany, persist)
-        if (source.blocked) throw ExtensionException("group_suspended", tr("La empresa de origen esta suspendida en su grupo o no se pudo verificar su business owner."))
-        withTenant(sourceCompany) { tenant ->
-            val row = requireInstalled(tenant, manifest.id)
-            if (operation == GroupOperationType.Apply && row.status in setOf(ExtensionStatus.Incompatible)) {
-                throw ExtensionException("extension_incompatible", tr("La extension de la empresa de origen es incompatible."))
-            }
-        }
-        if (operation == GroupOperationType.Uninstall) UninstallChoices.resolve(manifest.uninstall.options, request.choices)
-        val targets = request.targets.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-        if (targets.size > MaxGroupTargets) {
-            throw ExtensionException("too_many_targets", tr("Elige como maximo {0} empresas por operacion.", MaxGroupTargets), ExtensionException.Kind.BadRequest)
-        }
-        if (targets.isEmpty()) throw ExtensionException("no_targets", tr("Elige al menos una empresa de destino."), ExtensionException.Kind.BadRequest)
-        scope?.let { admin ->
-            targets.firstOrNull { !admin.includes(it) }?.let {
-                throw ExtensionException("forbidden", tr("La empresa {0} no esta en tu alcance.", it), ExtensionException.Kind.Forbidden)
-            }
-        }
-        val members = groupMembers(sourceCompany).associateBy { it.code }
-        val problems = HashMap<String, String>()
-        for (code in targets) {
-            val problem = targetProblem(sourceCompany, extension, code, members[code], persist)
-            if (problem != null) problems[code] = problem
-        }
-        return GroupPlan(targets, problems, members.mapValues { it.value.name })
-    }
-
-    // Validation of a target while the operation runs (the same checks again, persisting a suspension).
-    private fun validateTarget(sourceCompany: String, extension: ServerExtension, code: String): String? =
-        targetProblem(sourceCompany, extension, code, groupMembers(sourceCompany).firstOrNull { it.code == code }, persist = true)
-
-    private fun targetProblem(sourceCompany: String, extension: ServerExtension, code: String, @Suppress("UNUSED_PARAMETER") member: GroupMember?, persist: Boolean): String? {
-        val manifest = extension.manifest
-        val (source, target) = connections.central().use { central -> companyRow(central, sourceCompany) to companyRow(central, code) }
-        val usable = target != null && !target.serverWorkspace
-        val inGroup = usable && target!!.active && source != null && target.ownerGroup == source.ownerGroup
-        val targetOwner = if (inGroup) evaluateGroupOwner(code, persist) else null
-        val moduleEnabled = inGroup && runCatching { withTenant(code) { manifest.module in enabledModules(it) } }.getOrDefault(false)
-        val facts = GroupTargetFacts(
-            companyCode = code,
-            exists = usable,
-            active = target?.active == true,
-            sameGroup = inGroup || (usable && source != null && target!!.ownerGroup == source.ownerGroup),
-            suspended = target?.suspended == true || targetOwner?.suspendedNow == true,
-            ownerEmail = targetOwner?.currentEmail,
-            expectedOwnerEmail = if (inGroup) ownerEmailOf(sourceCompany) else null,
-            moduleEnabled = moduleEnabled,
-            moduleInstalled = modules.isInstalled(manifest.module),
-            compatible = compatible(manifest),
-        )
-        return GroupTargetValidator.problem(facts, sourceCompany)
-    }
-
-    private fun steps(code: String, extension: ServerExtension, operation: String, copyableSettings: Int): List<String> {
-        val manifest = extension.manifest
-        val row = runCatching { withTenant(code) { storage.row(it, manifest.id) } }.getOrNull()
-        if (operation == GroupOperationType.Uninstall) {
-            return if (row == null || row.status == ExtensionStatus.Removed) listOf(tr("La extension no esta instalada: no se hace nada"))
-            else listOf(tr("Desinstalar la extension (se borran sus ajustes)"))
-        }
-        return buildList {
-            if (row == null || row.status == ExtensionStatus.Removed) add(tr("Instalar la extension"))
-            if (manifest.migrations.isNotEmpty() || extension.migrationPaths.isNotEmpty()) add(tr("Ejecutar las migraciones pendientes"))
-            add(tr("Copiar {0} ajustes de la aplicacion, cifrados de nuevo para la empresa; los ajustes de conexion no se copian", copyableSettings))
-            if (row?.status != ExtensionStatus.Enabled) add(tr("Activar la extension"))
-        }
-    }
-
-    private fun executorFor(sourceCompany: String, extension: ServerExtension, operation: String, request: GroupOperationRequest, actor: ExtensionActor): (String) -> Unit {
-        val manifest = extension.manifest
-        if (operation == GroupOperationType.Uninstall) {
-            val choices = UninstallChoices.resolve(manifest.uninstall.options, request.choices)
-            return { code ->
-                val installed = withTenant(code) { storage.row(it, manifest.id)?.status }
-                if (installed != null && installed != ExtensionStatus.Removed) uninstallOne(code, extension, choices, actor)
-                audit(actor.audit, "extension.uninstall", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, choices = choices))
-            }
-        }
-        // Read once for all targets: plain values live only in this closure while the operation runs.
-        val values = copyableSourceSettings(sourceCompany, extension)
-        val secretKeys = manifest.settings.filter { it.secret }.map { it.key }.toSet()
-        return { code ->
-            installOne(code, extension, actor)
-            withTenant(code) { tenant ->
-                tenant.inTransaction {
-                    values.forEach { (key, value) -> storage.putSetting(tenant, manifest.id, key, value, secret = key in secretKeys) }
-                }
-            }
-            enableOne(code, extension, actor)
-            audit(actor.audit, "extension.apply", code, manifest.module, details("extension" to manifest.id, "from" to sourceCompany, keys = values.keys.sorted()))
-        }
-    }
-
-    /** Settings of the source that may be copied (scope other than "connection"), opened with the source's key. */
-    private fun copyableSourceSettings(sourceCompany: String, extension: ServerExtension): Map<String, String> =
-        withTenant(sourceCompany) { tenant ->
-            SettingsCopy.copyable(extension.manifest.settings, storage.settings(tenant, extension.manifest.id).all(includeSecrets = true))
-        }
-
-    // ---- Group ownership ----
-
-    private data class GroupOwnerState(val blocked: Boolean, val suspendedNow: Boolean, val currentEmail: String?)
-
-    private fun evaluateGroupOwner(companyCode: String, persist: Boolean): GroupOwnerState {
-        val row = connections.central().use { companyRow(it, companyCode) } ?: return GroupOwnerState(blocked = true, suspendedNow = false, currentEmail = null)
-        val current = ownerEmailOf(companyCode)?.lowercase()?.takeIf { it.isNotBlank() }
-        if (current == null) return GroupOwnerState(blocked = true, suspendedNow = row.suspended, currentEmail = null)
-        if (row.suspended) return GroupOwnerState(blocked = true, suspendedNow = true, currentEmail = current)
-        val recorded = row.ownerEmail?.lowercase()
-        if (recorded == null) {
-            // Linked before the baseline existed: trust the current owner and remember it.
-            if (persist) recordGroupOwner(companyCode)
-            return GroupOwnerState(blocked = false, suspendedNow = false, currentEmail = current)
-        }
-        if (recorded == current) return GroupOwnerState(blocked = false, suspendedNow = false, currentEmail = current)
-        if (persist) {
-            connections.central().use { central ->
-                central.prepareStatement("UPDATE companies SET group_suspended = TRUE WHERE code = ?").use { update ->
-                    update.setString(1, companyCode)
-                    update.executeUpdate()
-                }
-            }
-            audit(AuditActor.system(), "extension.group.suspended", companyCode, null, details())
-        }
-        return GroupOwnerState(blocked = true, suspendedNow = true, currentEmail = current)
-    }
-
-    private class GroupMember(val code: String, val name: String, val suspended: Boolean)
-
-    private fun groupMembers(companyCode: String): List<GroupMember> = connections.central().use { central ->
-        central.prepareStatement(
-            """
-            SELECT member.code, member.name, member.group_suspended
-            FROM companies origin
-            JOIN companies member ON member.owner_group = origin.owner_group AND member.code <> origin.code
-            WHERE origin.code = ? AND member.is_active AND NOT member.is_server_workspace
-            ORDER BY lower(member.name)
-            """.trimIndent()
-        ).use { query ->
-            query.setString(1, companyCode)
-            query.executeQuery().use { rows -> buildList { while (rows.next()) add(GroupMember(rows.getString(1), rows.getString(2), rows.getBoolean(3))) } }
-        }
-    }
-
-    private class CompanyGroupRow(
-        val code: String,
-        val active: Boolean,
-        val serverWorkspace: Boolean,
-        val ownerGroup: String?,
-        val suspended: Boolean,
-        val ownerEmail: String?,
-    )
-
-    private fun companyRow(central: Connection, code: String): CompanyGroupRow? =
-        central.prepareStatement(
-            "SELECT code, is_active, is_server_workspace, owner_group::text, group_suspended, group_owner_email FROM companies WHERE code = ?"
-        ).use { query ->
-            query.setString(1, code)
-            query.executeQuery().use { rows ->
-                if (rows.next()) CompanyGroupRow(rows.getString(1), rows.getBoolean(2), rows.getBoolean(3), rows.getString(4), rows.getBoolean(5), rows.getString(6)) else null
-            }
-        }
-
-    private fun ownerEmailOf(companyCode: String): String? = connections.tenant(companyCode)?.use { tenant ->
-        tenant.prepareStatement(
-            "SELECT users.email FROM business_owner owner JOIN application_users users ON users.id = owner.user_id ORDER BY users.email LIMIT 1"
-        ).use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getString(1)?.trim()?.lowercase() else null } }
-    }
-
     // Each owner reads it in their own language.
-    private fun notifyBusinessOwner(tenant: Connection, moduleId: String, build: () -> NotificationText) {
+    internal fun notifyBusinessOwner(tenant: Connection, moduleId: String, build: () -> NotificationText) {
         val owners = tenant.prepareStatement("SELECT user_id FROM business_owner").use { query ->
             query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
         }
@@ -953,7 +424,7 @@ class ExtensionService(
 
     // ---- Helpers ----
 
-    private fun authorize(actor: ExtensionActor, companyCode: String) {
+    internal fun authorize(actor: ExtensionActor, companyCode: String) {
         if (actor.serverOwner) return
         actor.serverAdmin?.let { scope ->
             if (!scope.includes(companyCode)) {
@@ -966,14 +437,14 @@ class ExtensionService(
         }
     }
 
-    private fun requireServerOwner(actor: ExtensionActor) {
+    internal fun requireServerOwner(actor: ExtensionActor) {
         if (!actor.serverOwner) throw ExtensionException("server_owner_required", tr("Solo el dueno del servidor puede hacerlo."), ExtensionException.Kind.Forbidden)
     }
 
-    private fun requireExtension(extensionId: String): ServerExtension =
+    internal fun requireExtension(extensionId: String): ServerExtension =
         registry.get(extensionId) ?: throw ExtensionException("extension_not_found", tr("La extension no existe en este servidor."), ExtensionException.Kind.NotFound)
 
-    private fun requireOperation(operation: String): String {
+    internal fun requireOperation(operation: String): String {
         if (operation != GroupOperationType.Apply && operation != GroupOperationType.Uninstall) {
             throw ExtensionException("invalid_operation", tr("La operacion debe ser apply o uninstall."), ExtensionException.Kind.BadRequest)
         }
@@ -981,13 +452,13 @@ class ExtensionService(
     }
 
     // Inside a transaction: the row of the extension, locked until commit.
-    private fun requireLocked(tenant: Connection, extensionId: String): TenantExtensionRow =
+    internal fun requireLocked(tenant: Connection, extensionId: String): TenantExtensionRow =
         storage.rowForUpdate(tenant, extensionId)?.takeIf { it.status != ExtensionStatus.Removed }
             ?: throw ExtensionException("extension_not_installed", tr("La extension no esta instalada en esta empresa."), ExtensionException.Kind.NotFound)
 
     // A failed audit of an owner's, business owner's or the system's change is logged, not thrown.
     // An administrator's action is never left unaudited silently: the failure reaches the caller.
-    private fun audit(actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) {
+    internal fun audit(actor: AuditActor, action: String, companyCode: String?, moduleId: String?, details: String) {
         try {
             auditor(actor, action, companyCode, moduleId, details)
         } catch (failure: Exception) {
@@ -996,11 +467,11 @@ class ExtensionService(
         }
     }
 
-    private fun requireInstalled(tenant: Connection, extensionId: String): TenantExtensionRow =
+    internal fun requireInstalled(tenant: Connection, extensionId: String): TenantExtensionRow =
         storage.row(tenant, extensionId)?.takeIf { it.status != ExtensionStatus.Removed }
             ?: throw ExtensionException("extension_not_installed", tr("La extension no esta instalada en esta empresa."), ExtensionException.Kind.NotFound)
 
-    private fun compatible(manifest: ExtensionManifest) = ExtensionLifecycle.isCompatible(manifest.minModuleVersion, modules.loadedVersion(manifest.module))
+    internal fun compatible(manifest: ExtensionManifest) = ExtensionLifecycle.isCompatible(manifest.minModuleVersion, modules.loadedVersion(manifest.module))
 
     private fun missingRequired(manifest: ExtensionManifest, views: List<ExtensionSettingView>): List<String> {
         val set = views.filter { it.isSet }.map { it.key }.toSet()
@@ -1032,13 +503,13 @@ class ExtensionService(
             )
         }
 
-    private fun enabledModules(tenant: Connection): Set<String> =
+    internal fun enabledModules(tenant: Connection): Set<String> =
         tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
         }
 
     // One row of the company's activity log, in the transaction of the change (ACTIVITY_LOG.md §3).
-    private fun recordActivity(tenant: Connection, actor: ExtensionActor?, extension: ServerExtension, action: String, summary: String, changes: List<com.ideasdeveloper.bms.server.activity.ActivityChange> = emptyList()) {
+    internal fun recordActivity(tenant: Connection, actor: ExtensionActor?, extension: ServerExtension, action: String, summary: String, changes: List<com.ideasdeveloper.bms.server.activity.ActivityChange> = emptyList()) {
         com.ideasdeveloper.bms.server.activity.CoreActivity.record(
             tenant, actor?.activityActor ?: com.ideasdeveloper.bms.server.activity.ActivityActor.system(), "extension", extension.manifest.id,
             extension.manifest.displayName, action, summary, changes,
@@ -1048,7 +519,7 @@ class ExtensionService(
     private fun activityOf(actor: ExtensionActor?): com.ideasdeveloper.bms.server.activity.ActivityActor =
         actor?.activityActor ?: com.ideasdeveloper.bms.server.activity.ActivityActor.system()
 
-    private fun setStatus(tenant: Connection, extensionId: String, status: String) {
+    internal fun setStatus(tenant: Connection, extensionId: String, status: String) {
         tenant.prepareStatement(
             "UPDATE tenant_extensions SET status = ?, updated_at = ?, enabled_at = CASE WHEN ? = 'enabled' THEN ? ELSE enabled_at END WHERE extension_id = ?"
         ).use { statement ->
@@ -1062,39 +533,24 @@ class ExtensionService(
         }
     }
 
-    private fun activeCompanyCodes(): List<String> = connections.central().use { central ->
+    internal fun activeCompanyCodes(): List<String> = connections.central().use { central ->
         central.prepareStatement("SELECT code FROM companies WHERE is_active = TRUE AND NOT is_server_workspace ORDER BY code").use { query ->
             query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
         }
     }
 
-    private fun <T> withTenant(companyCode: String, block: (Connection) -> T): T {
+    internal fun <T> withTenant(companyCode: String, block: (Connection) -> T): T {
         val tenant = connections.tenant(companyCode)
             ?: throw ExtensionException("company_not_found", tr("La empresa no esta activa."), ExtensionException.Kind.NotFound)
         return tenant.use(block)
     }
 
-    private fun details(vararg pairs: Pair<String, String>, keys: List<String>? = null, choices: Map<String, String>? = null): String =
+    internal fun details(vararg pairs: Pair<String, String>, keys: List<String>? = null, choices: Map<String, String>? = null): String =
         buildJsonObject {
             pairs.forEach { (key, value) -> put(key, value) }
             keys?.let { put("keys", JsonArray(it.map { name -> JsonPrimitive(name) })) }
             choices?.let { map -> put("choices", buildJsonObject { map.forEach { (key, value) -> put(key, value) } }) }
         }.toString()
-
-    private fun <T> Connection.inTransaction(block: () -> T): T {
-        val previous = autoCommit
-        autoCommit = false
-        try {
-            val result = block()
-            commit()
-            return result
-        } catch (failure: Throwable) {
-            runCatching { rollback() }
-            throw failure
-        } finally {
-            autoCommit = previous
-        }
-    }
 
     companion object {
         const val MaxGroupTargets = 50

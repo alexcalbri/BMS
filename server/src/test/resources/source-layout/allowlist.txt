@@ -12,7 +12,6 @@ file 1321 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/
 file 1287 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmServerModule.kt   # C1
 file 1155 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/company/ui/CompanyProvisioningScreen.kt   # APP-4
 file 1110 server/src/main/kotlin/com/ideasdeveloper/bms/server/company/api/CompanyRoutes.kt   # A2.8
-file 1102 server/src/main/kotlin/com/ideasdeveloper/bms/server/extensions/ExtensionService.kt   # A2.5
 file 1098 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmRepository.kt   # C1/C2
 file 1033 server/src/main/kotlin/com/ideasdeveloper/bms/server/app/Application.kt   # A2.7
 file 974 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmIntegrationMcpTools.kt   # C2
@@ -23,7 +22,6 @@ file 919 modules/mantenimiento/server/src/main/kotlin/com/ideasdeveloper/bms/mod
 file 905 extensions/inmobiliaria/server/src/main/kotlin/com/ideasdeveloper/bms/extensions/inmobiliaria/InmobiliariaStore.kt   # extension owner
 file 870 modules/membresia/server/src/main/kotlin/com/ideasdeveloper/bms/modules/membresia/MembresiaRepository.kt   # module owner
 file 864 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmMcpTools.kt   # C1
-file 843 server/src/main/kotlin/com/ideasdeveloper/bms/server/auth/application/AccountService.kt   # A2.6
 file 825 modules/compras/server/src/main/kotlin/com/ideasdeveloper/bms/modules/compras/ComprasRepository.kt   # module owner
 file 817 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmImport.kt   # C1
 file 813 modules/tareas/server/src/main/kotlin/com/ideasdeveloper/bms/modules/tareas/TareasScreens.kt   # module owner
