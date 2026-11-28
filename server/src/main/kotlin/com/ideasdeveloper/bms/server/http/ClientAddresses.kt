@@ -1,4 +1,4 @@
-package com.ideasdeveloper.bms.server.auth.application
+package com.ideasdeveloper.bms.server.http
 
 /**
  * Keys of the per-address limits. An IPv6 client usually controls a whole /64 (SLAAC, privacy

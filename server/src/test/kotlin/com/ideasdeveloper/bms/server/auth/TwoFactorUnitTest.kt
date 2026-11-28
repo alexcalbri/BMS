@@ -1,6 +1,6 @@
 package com.ideasdeveloper.bms.server.auth
 
-import com.ideasdeveloper.bms.server.auth.application.ClientAddresses
+import com.ideasdeveloper.bms.server.http.ClientAddresses
 import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.bms.server.auth.twofactor.RecoveryCodes

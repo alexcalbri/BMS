@@ -112,7 +112,7 @@ fun Application.module() {
                 refillPeriod = 60.seconds,
             )
 
-            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
         }
         register(RateLimitName("admin")) {
             rateLimiter(
@@ -122,7 +122,7 @@ fun Application.module() {
 
             // Siempre por IP: una clave derivada de la cabecera Authorization se evade rotando el
             // token (basta con enviar uno distinto en cada peticion) y haria crecer el mapa sin tope.
-            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
         }
         // Lecturas del Core (/version, /modules, /notifications): por IP, holgado para el uso normal
         // de la app pero evita inundaciones que abririan una conexion a la base de datos cada una.
@@ -131,7 +131,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
         }
         // Reads of the activity logs (/companies/me/activity*, /server/activity*): each one reads one or
         // every company database, so per client IP and tighter than the other admin routes.
@@ -140,7 +140,7 @@ fun Application.module() {
                 limit = 30,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
         }
         // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
         // enough for webhook bursts, but it stops floods that would open a database connection each.
@@ -149,7 +149,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> com.ideasdeveloper.bms.server.auth.application.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
         }
     }
     DatabaseFactory.init(environment.config)

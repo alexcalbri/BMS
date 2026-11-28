@@ -19,7 +19,7 @@ import com.ideasdeveloper.bms.server.auth.application.PasswordAttemptLimiter
 import com.ideasdeveloper.bms.server.auth.application.SessionService
 import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.application.UserProfileRules
-import com.ideasdeveloper.bms.server.auth.application.ClientAddresses
+import com.ideasdeveloper.bms.server.http.ClientAddresses
 import com.ideasdeveloper.bms.server.auth.twofactor.CodeCheck
 import com.ideasdeveloper.bms.server.auth.twofactor.EmailRecoveryCheck
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorEmailRecovery
