@@ -112,6 +112,7 @@ equals 'con SET sin INHERIT ni ADMIN vuelve a estar bien' '' "$(bms_check_role_l
 # N1: a NOTICE or WARNING on stderr (any transport, the provisioner's connection) is not part of the answer.
 real_transport=$(declare -f bms_pg_transport)
 real_provisioner=$(declare -f bms_pg_as_provisioner)
+# shellcheck disable=SC2329 # called by db-roles.sh
 bms_pg_transport() { printf 'WARNING:  ruido de prueba\n' >&2; local database=$1; shift; PGOPTIONS='-c client_min_messages=warning' psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "$database" "$@"; }
 bms_pg_as_provisioner() { printf 'NOTICE:  ruido de prueba\n' >&2; local database=$1; shift; PGPASSWORD=$FX_PASSWORD psql -h "$PG_HOST" -p "$PG_PORT" -U "$PROVISIONER" -d "$database" "$@"; }
 check 'bms_verify_role_access: el ruido por stderr no lo hace fallar' bms_verify_role_access "$CONTROL" "$RUNTIME" "$PROVISIONER" "$(bms_tenant_databases "$CONTROL" 2>/dev/null)"
