@@ -11,7 +11,6 @@ file 970 server/src/main/kotlin/com/ideasdeveloper/bms/server/modules/ModuleAcce
 file 1321 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmScreens.kt   # C1
 file 1287 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmServerModule.kt   # C1
 file 1155 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/company/ui/CompanyProvisioningScreen.kt   # APP-4
-file 1110 server/src/main/kotlin/com/ideasdeveloper/bms/server/company/api/CompanyRoutes.kt   # A2.8
 file 1098 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmRepository.kt   # C1/C2
 file 974 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmIntegrationMcpTools.kt   # C2
 file 951 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/company/data/CompanyApi.kt   # APP-3
