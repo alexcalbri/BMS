@@ -30,7 +30,7 @@ import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningServ
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
 import com.ideasdeveloper.bms.server.platform.coreupdate.CoreUpdateService
 import com.ideasdeveloper.bms.server.platform.coreupdate.JdbcCoreUpdateStore
-import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
+import com.ideasdeveloper.bms.server.platform.mcp.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.bms.server.http.ClientAddresses

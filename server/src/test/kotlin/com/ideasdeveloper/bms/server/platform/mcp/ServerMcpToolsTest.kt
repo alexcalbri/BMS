@@ -1,5 +1,6 @@
-package com.ideasdeveloper.bms.server.company.application
+package com.ideasdeveloper.bms.server.platform.mcp
 
+import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.modules.McpToolRules
 import com.ideasdeveloper.bms.server.modules.ServerMcpModuleId
 import com.ideasdeveloper.bms.server.modules.UserModuleAccess
