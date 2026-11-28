@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.server.company.api
 
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.platform.coreupdate.coreUpdateRoutes
 import com.ideasdeveloper.bms.server.modules.install.serverModuleRoutes
 import com.ideasdeveloper.bms.server.platform.serverInfoRoutes
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
@@ -62,39 +63,7 @@ fun Route.companyRoutes(
 
     companyAdminRoutes(authorizer, provisioning, addToScope)
 
-    // Estado de la actualizacion del Core y ultima solicitud hecha desde la app.
-    get("/server/core-update") {
-        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@get
-        val service = coreUpdates
-            ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", tr("La actualizacion del servidor no esta disponible.")))
-        call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.status() })
-    }
-
-    // Pide actualizar el Core a la ultima version del catalogo; la ejecuta el ayudante root del servidor.
-    // Cuerpo opcional {"targetCommit": "<40 hex>"}: el commit que la app mostro (latestCommit del GET).
-    post("/server/core-update") {
-        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@post
-        val service = coreUpdates
-            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", tr("La actualizacion del servidor no esta disponible.")))
-        val text = runCatching { call.receiveText() }.getOrDefault("")
-        val body = if (text.isBlank()) {
-            CoreUpdateRequestBody()
-        } else {
-            runCatching { kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(CoreUpdateRequestBody.serializer(), text) }.getOrNull()
-                ?: return@post call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
-        }
-        when (val outcome = withContext(Dispatchers.IO) { service.request(actor.login, body.targetCommit) }) {
-            is CoreUpdateOutcome.Accepted -> call.respond(HttpStatusCode.Accepted, outcome.request)
-            CoreUpdateOutcome.CatalogUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("VERSION_CATALOG_UNAVAILABLE", tr("No se pudo leer el catalogo de versiones.")))
-            CoreUpdateOutcome.UpToDate -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UP_TO_DATE", tr("El servidor ya tiene la ultima version.")))
-            CoreUpdateOutcome.InProgress -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_IN_PROGRESS", tr("Ya hay una actualizacion en curso.")))
-            CoreUpdateOutcome.CommitUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_COMMIT_UNAVAILABLE", tr("No se pudo leer en GitHub el commit de la ultima version.")))
-            CoreUpdateOutcome.InvalidCommit -> call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("CORE_COMMIT_INVALID", tr("Indica el commit (40 hex) que revisaste.")))
-            is CoreUpdateOutcome.CommitChanged -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_COMMIT_CHANGED", tr("La version publicada cambio (ahora: commit {0}). Revisala otra vez.", outcome.latestCommit)))
-        }
-    }
+    coreUpdateRoutes(authorizer, coreUpdates)
 
     // The business owner of a company, for the server owner to edit it.
     get("/companies/{code}/business-owner") {
