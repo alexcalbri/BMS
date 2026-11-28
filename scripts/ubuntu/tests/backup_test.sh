@@ -10,8 +10,8 @@ WORK=$(mktemp -d)
 DB=bms_seca_tbk
 cleanup() {
     rm -rf -- "$WORK"
-    pg_available && bms_pg_super postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" >/dev/null 2>&1
-    pg_available && bms_pg_super postgres -c "DROP DATABASE IF EXISTS ${DB}_restore WITH (FORCE)" >/dev/null 2>&1
+    pg_available && psu postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" >/dev/null 2>&1
+    pg_available && psu postgres -c "DROP DATABASE IF EXISTS ${DB}_restore WITH (FORCE)" >/dev/null 2>&1
 }
 trap cleanup EXIT
 
@@ -26,7 +26,7 @@ check 'la copia redactada no lleva secretos' eval '! grep -qE "s3cr3t|=abc|=ff|=
 check 'y conserva lo demas' grep -q 'SMTP_HOST=mail' <<< "$redacted"
 
 if pg_available; then
-    bms_pg_super postgres -c "CREATE DATABASE $DB" >/dev/null || die 'base de prueba'
+    psu postgres -c "CREATE DATABASE $DB" >/dev/null || die 'base de prueba'
     sql "$DB" "CREATE TABLE t (id int); INSERT INTO t SELECT generate_series(1, 50)" >/dev/null
     # Only this test's database (the real list is every bms_* database of the server), and the superuser over TCP.
     bms_backup_databases() { printf '%s\n' "$DB"; }
@@ -38,7 +38,7 @@ if pg_available; then
     check 'volcado de las bases' bms_dump_databases "$WORK/db" "$DB"
     equals 'archivos solo de root' '700 600 600' "$(stat -c %a "$WORK/db") $(stat -c %a "$WORK/db/$DB.dump") $(stat -c %a "$WORK/db/roles.sql")"
     check 'sumas de comprobacion' bash -c "cd '$WORK/db' && sha256sum -c --quiet SHA256SUMS"
-    bms_pg_super postgres -c "CREATE DATABASE ${DB}_restore" >/dev/null
+    psu postgres -c "CREATE DATABASE ${DB}_restore" >/dev/null
     check 'el volcado se restaura' pg_restore -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "${DB}_restore" "$WORK/db/$DB.dump"
     equals 'filas restauradas' 50 "$(sql "${DB}_restore" 'SELECT count(*) FROM t')"
 else

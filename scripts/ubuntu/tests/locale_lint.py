@@ -3,7 +3,7 @@
 import os, re, sys
 root = sys.argv[1]
 entry = ['update.sh', 'install.sh', 'core-update.sh', 'domains-sync.sh', 'preflight.sh', 'harden-host.sh', 'backup.sh']
-libraries = ['db-roles.sh', 'nginx-site.sh', 'units.sh', 'dist.sh', 'backup.sh', 'migrations.sh', 'mirror.sh']
+libraries = ['db-roles.sh', 'rehearse.sh', 'nginx-site.sh', 'units.sh', 'dist.sh', 'backup.sh', 'migrations.sh', 'mirror.sh']
 locale_line = 'if [[ $(LC_ALL=C.UTF-8 locale charmap 2>/dev/null) == UTF-8 ]]; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi'
 helper = 'bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }'
 rng = re.compile(r'\[[^\]\s]*[A-Za-z0-9!]-[A-Za-z0-9~][^\]\s]*\]|\[\[:[a-z]+:\]\]')

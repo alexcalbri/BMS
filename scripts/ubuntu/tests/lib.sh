@@ -26,12 +26,23 @@ finish() {
     (( FAILURES == 0 )) || { printf '%s fallos\n' "$FAILURES" >&2; exit 1; }
 }
 
-# Superuser psql of the test server (what update.sh runs as runuser -u postgres).
-bms_pg_super() {
+# The transport of the code under test (db-roles.sh asks every caller for exactly one): psql as the superuser of the test
+# server over TCP, written like the production transports of update.sh, install.sh and preflight.sh: NO -q, NO -X,
+# NO ON_ERROR_STOP, NO PGOPTIONS. It must stay that way: the live failure ("role SET does not exist") hid for as long
+# as the test transport silenced the command tags that the production one printed. bms_pg_query and bms_pg_exec add the
+# flags, in db-roles.sh only. (client_min_messages only quiets server NOTICEs, which go to stderr; it never changes
+# what psql prints on stdout.)
+bms_pg_transport() {
+    local database=$1
+    shift
+    PGOPTIONS='-c client_min_messages=warning' psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "$database" "$@"
+}
+# The tests' own superuser psql, for preparing and checking things (not the code under test): quiet, stops on errors.
+psu() {
     local database=$1
     shift
     PGOPTIONS='-c client_min_messages=warning' psql -X -q -v ON_ERROR_STOP=1 -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "$database" "$@"
 }
-sql() { bms_pg_super "$1" -At -c "$2"; }
+sql() { psu "$1" -At -c "$2"; }
 pg_available() { psql -X -h "$PG_HOST" -p "$PG_PORT" -U postgres -d postgres -Atc 'SELECT 1' >/dev/null 2>&1; }
 strip_tx() { python3 -c 'import sys; s=open(sys.argv[1]).read().strip(); print(s[len("BEGIN;"):-len("COMMIT;")])' "$1"; }
