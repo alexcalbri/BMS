@@ -373,6 +373,7 @@
   "Lo que se omitio sin fallar: un campo sin columna, una mencion sin usuario en monday, un valor que la columna no acepta.": "What was skipped without failing: a field without a column, a mention without a monday user, a value the column does not accept.",
   "Lo que viene de monday nunca se devuelve a monday.": "What comes from monday is never sent back to monday.",
   "Los colores deben usar formato hexadecimal #RRGGBB.": "Colors must use the hexadecimal format #RRGGBB.",
+  "Los datos de \"{0}\" cambiaron despues de mostrar la confirmacion; no se ejecuto. El asistente la propondra de nuevo si hace falta.": "The data of \"{0}\" changed after the confirmation was shown; it was not run. The assistant will propose it again if needed.",
   "Los datos que el asistente consulte se envian a Anthropic para generar la respuesta.": "The data the assistant looks up is sent to Anthropic to generate the answer.",
   "Modulo no encontrado en el catalogo configurado.": "Module not found in the configured catalog.",
   "Modulo no reconocido o no instalado en el servidor.": "Module not recognized or not installed on the server.",

@@ -198,16 +198,11 @@ object AnthropicRequests {
 object AnthropicResponses {
     private val dropBeforeFallback = setOf("thinking", "redacted_thinking", "tool_use", "server_tool_use")
 
-    fun from(message: BetaMessage): ModelResponse {
-        val param = Json.parseToJsonElement(jsonMapper().writeValueAsString(message.toParam())).jsonObject
-        val content = when (val raw = param["content"]) {
-            is JsonArray -> raw
-            is JsonPrimitive -> JsonArray(listOf(buildJsonObject { put("type", "text"); put("text", raw.content) }))
-            else -> JsonArray(emptyList())
-        }
+    /** What the provider billed for [message], read on its own so a message that cannot be parsed is still charged. */
+    fun usageOf(message: BetaMessage): ModelUsage = runCatching {
         val usage = message.usage()
         val iterations = usage.iterations().orElse(emptyList())
-        val total = if (iterations.isNotEmpty()) {
+        if (iterations.isNotEmpty()) {
             iterations.fold(ModelUsage()) { sum, it ->
                 sum + ModelUsage(it.inputTokens(), it.outputTokens(), it.cacheReadInputTokens(), it.cacheCreationInputTokens())
             }
@@ -217,6 +212,17 @@ object AnthropicResponses {
                 usage.cacheReadInputTokens().orElse(0L), usage.cacheCreationInputTokens().orElse(0L),
             )
         }
+    }.getOrDefault(ModelUsage())
+
+    fun from(message: BetaMessage): ModelResponse {
+        val param = Json.parseToJsonElement(jsonMapper().writeValueAsString(message.toParam())).jsonObject
+        val content = when (val raw = param["content"]) {
+            is JsonArray -> raw
+            is JsonPrimitive -> JsonArray(listOf(buildJsonObject { put("type", "text"); put("text", raw.content) }))
+            else -> JsonArray(emptyList())
+        }
+        val iterations = message.usage().iterations().orElse(emptyList())
+        val total = usageOf(message)
         val types = content.mapNotNull { ((it as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull }
         return ModelResponse(
             stopReason = message.stopReason().map { it.asString() }.orElse(null),
@@ -356,7 +362,7 @@ class AnthropicModelClient(private val client: AnthropicClient, private val retr
                     Thread.sleep(retryPause.toMillis())
                     continue
                 }
-                throw failure.withUsage(progress.usage)
+                throw failure.withUsage(progress.estimatedUsage())
             }
         }
     }
@@ -365,9 +371,28 @@ class AnthropicModelClient(private val client: AnthropicClient, private val retr
     class StreamProgress {
         var started = false
         var usage: ModelUsage? = null
+        // Characters of text, thinking and tool-input deltas received so far.
+        var characters = 0L
+
+        /**
+         * What to charge for a request that did not finish: output tokens only arrive in the last message_delta, so a
+         * stopped or broken stream would be billed ~1 output token. Charge max(reported, estimated), estimated =
+         * [characters] / [CharactersPerToken] (GLOBAL_AGENT.md, Usage).
+         */
+        fun estimatedUsage(): ModelUsage? = usage?.let { it.copy(outputTokens = maxOf(it.outputTokens, characters / CharactersPerToken)) }
+
+        companion object {
+            const val CharactersPerToken = 3L
+        }
 
         fun onEvent(event: com.anthropic.models.beta.messages.BetaRawMessageStreamEvent) {
             started = true
+            event.contentBlockDelta().ifPresent { block ->
+                val delta = block.delta()
+                delta.text().ifPresent { characters += it.text().length }
+                delta.thinking().ifPresent { characters += it.thinking().length }
+                delta.inputJson().ifPresent { characters += it.partialJson().length }
+            }
             event.messageStart().ifPresent { start ->
                 val usage = start.message().usage()
                 this.usage = ModelUsage(usage.inputTokens(), usage.outputTokens(), usage.cacheReadInputTokens().orElse(0L), usage.cacheCreationInputTokens().orElse(0L))
@@ -389,7 +414,7 @@ class AnthropicModelClient(private val client: AnthropicClient, private val retr
             client.beta().messages().createStreaming(params).use { stream ->
                 for (event in stream) {
                     progress.onEvent(event)
-                    if (listener.cancelled) throw AssistantCancelledException(progress.usage)
+                    if (listener.cancelled) throw AssistantCancelledException(progress.estimatedUsage())
                     accumulator.accumulate(event)
                     event.contentBlockDelta().flatMap { it.delta().text() }.ifPresent { listener.text(it.text()) }
                 }
@@ -402,7 +427,7 @@ class AnthropicModelClient(private val client: AnthropicClient, private val retr
             throw AnthropicErrors.classify(failure.statusCode())
         } catch (failure: AnthropicIoException) {
             log.warn("Assistant model request failed: {}", failure.javaClass.simpleName)
-            if (listener.cancelled) throw AssistantCancelledException(progress.usage)
+            if (listener.cancelled) throw AssistantCancelledException(progress.estimatedUsage())
             throw AnthropicErrors.unavailable()
         }
         return accumulator.message()

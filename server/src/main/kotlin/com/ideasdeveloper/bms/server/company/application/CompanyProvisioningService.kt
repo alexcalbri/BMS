@@ -2003,6 +2003,9 @@ class CompanyProvisioningService(
         // Lease tokens, closed conversations and the confirmation preview (tenant V019); no new grants.
         val safety = "database/tenant/migrations/V019__assistant_turn_safety.sql"
         applyMigration(connection, "tenant", safety, Files.readString(Path.of(config.migrationsRoot).resolve(safety)))
+        // The fingerprint of the confirmation card an approved call is checked against (tenant V020); no new grants.
+        val previewHash = "database/tenant/migrations/V020__assistant_preview_hash.sql"
+        applyMigration(connection, "tenant", previewHash, Files.readString(Path.of(config.migrationsRoot).resolve(previewHash)))
         grantIfMissing(connection, config.runtimeUser, "assistant_messages", listOf("SELECT", "INSERT"))
         grantSequenceIfMissing(connection, config.runtimeUser, "assistant_messages", "assistant_messages_id_seq", listOf("USAGE", "SELECT"))
         try {

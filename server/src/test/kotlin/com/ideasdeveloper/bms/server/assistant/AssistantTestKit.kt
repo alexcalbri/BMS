@@ -161,6 +161,9 @@ class MemoryAssistantStore : AssistantStore {
     override fun createConversation(userId: UUID, ownerKey: String, title: String, now: Instant) =
         AssistantConversation(UUID.randomUUID(), userId, ownerKey, title, AssistantConversation.Idle, null, now, now, null).also { conversations[it.id] = it }
 
+    @Synchronized override fun createConversationCapped(userId: UUID, ownerKey: String, title: String, now: Instant, max: Int): AssistantConversation? =
+        if (conversationCount(userId, ownerKey) >= max) null else createConversation(userId, ownerKey, title, now)
+
     override fun conversation(id: UUID, userId: UUID, ownerKey: String) = conversations[id]?.takeIf { it.userId == userId && it.ownerKey == ownerKey }
 
     override fun conversations(userId: UUID, ownerKey: String, archived: Boolean, limit: Int, before: Instant?) =
@@ -241,6 +244,7 @@ class MemoryAssistantStore : AssistantStore {
     @Synchronized override fun decide(id: UUID, status: String, now: Instant): Boolean {
         val call = pendingCalls[id]?.takeIf { it.status == AssistantPendingCall.Pending && it.expiresAt.isAfter(now) } ?: return false
         pendingCalls[id] = call.copy(status = status)
+        decidedAt[id] = now
         return true
     }
 
@@ -265,6 +269,13 @@ class MemoryAssistantStore : AssistantStore {
     override fun expiredConversations(now: Instant) =
         pendingCalls.values.filter { it.status == AssistantPendingCall.Pending && !it.expiresAt.isAfter(now) }.map { it.conversationId }.distinct()
 
+    val decidedAt = mutableMapOf<UUID, Instant>()
+
+    override fun stuckConversations(before: Instant) = conversations.values.filter { conversation ->
+        conversation.state == AssistantConversation.Awaiting && pending(conversation.id).none { it.status == AssistantPendingCall.Pending } &&
+            (pending(conversation.id).mapNotNull { decidedAt[it.id] }.maxOrNull() ?: conversation.updatedAt).isBefore(before)
+    }.map { it.id }
+
     override fun recordUsage(day: LocalDate, userId: UUID, keySource: String, usage: ModelUsage, requests: Long) {
         val key = Triple(day, userId, keySource)
         val previous = usageRows[key]
@@ -279,10 +290,42 @@ class MemoryAssistantStore : AssistantStore {
     override fun usage(month: YearMonth) = usageRows.values.filter { YearMonth.from(it.day) == month }
 
     override fun purge(before: Instant, usageBefore: LocalDate): Int {
-        val old = conversations.values.filter { it.updatedAt.isBefore(before) }.map { it.id }
+        val old = conversations.values.filter {
+            it.updatedAt.isBefore(before) && (it.state != AssistantConversation.Running || it.leaseUntil == null || it.leaseUntil.isBefore(before))
+        }.map { it.id }
         old.forEach { id -> conversations.remove(id); messages.removeIf { it.first == id } }
         return old.size
     }
 }
 
 fun jsonArrayOf(vararg elements: JsonElement) = buildJsonArray { elements.forEach { add(it) } }
+
+/**
+ * The real registry of tools of the server: every module on the classpath with the extensions of `extensions/` linked to it
+ * (their tools join the module's, as the server does at startup), so tests see what the assistant can really be offered.
+ */
+object RealToolRegistry {
+    private val root = com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck.repoRoot()
+
+    /** Every extension of `extensions/`, built from its provider class (found by its source file); fails when one has no provider. */
+    val extensions: List<com.ideasdeveloper.bms.server.extensions.ServerExtension> by lazy {
+        java.io.File(root, "extensions").listFiles().orEmpty().filter { it.isDirectory }.sortedBy { it.name }.map { directory ->
+            val provider = directory.walkTopDown().filter { it.isFile && it.extension == "kt" && "/src/main/" in it.path }.firstNotNullOfOrNull { file ->
+                val text = file.readText()
+                Regex("class (\\w+ServerExtensionProvider)\\b").find(text)?.let { match ->
+                    Regex("^package ([\\w.]+)", RegexOption.MULTILINE).find(text)!!.groupValues[1] + "." + match.groupValues[1]
+                }
+            } ?: error("extension ${directory.name} has no ServerExtensionProvider")
+            (Class.forName(provider).getDeclaredConstructor().newInstance() as com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider).create()
+        }
+    }
+
+    val modules: List<com.ideasdeveloper.bms.server.modules.ServerModule> by lazy {
+        java.util.ServiceLoader.load(com.ideasdeveloper.bms.server.modules.ServerModuleProvider::class.java).map { it.create() }.distinctBy { it.definition.id }
+            .also { modules -> modules.forEach { module -> module.linkExtensions(extensions.filter { it.manifest.module == module.definition.id }) } }
+    }
+
+    val registry: com.ideasdeveloper.bms.server.modules.ModuleRegistry by lazy {
+        com.ideasdeveloper.bms.server.modules.ModuleRegistry(modules, modules.map { it.definition.id }.toSet())
+    }
+}

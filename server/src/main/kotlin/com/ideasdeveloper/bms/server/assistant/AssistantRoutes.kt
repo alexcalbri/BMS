@@ -123,10 +123,10 @@ fun Route.assistantRoutes(service: AssistantService?) {
             if (!availability.visible) return@company refused(403, availability.unavailable?.reason ?: AssistantIds.ReasonCompanyDisabled, availability.unavailable?.message.orEmpty())
             val key = "${context.caller.companyCode}/${context.caller.userId}/${context.caller.ownerKey}"
             if (!assistant.limits.allowNewConversation(key)) return@company refused(429, "ASSISTANT_RATE_LIMITED", tr("Demasiadas conversaciones nuevas; espera un minuto."))
-            if (context.store.conversationCount(context.caller.userId, context.caller.ownerKey) >= AssistantService.MaxConversationsPerUser) {
-                return@company refused(409, "TOO_MANY_CONVERSATIONS", tr("Tienes demasiadas conversaciones guardadas; borra algunas para empezar otra."))
-            }
-            val conversation = context.store.createConversation(context.caller.userId, context.caller.ownerKey, request.title?.trim()?.take(80).orEmpty(), Instant.now())
+            // Counted and created in one step: two requests at once cannot both take the last place.
+            val conversation = context.store.createConversationCapped(
+                context.caller.userId, context.caller.ownerKey, request.title?.trim()?.take(80).orEmpty(), Instant.now(), AssistantService.MaxConversationsPerUser,
+            ) ?: return@company refused(409, "TOO_MANY_CONVERSATIONS", tr("Tienes demasiadas conversaciones guardadas; borra algunas para empezar otra."))
             Answer.Ok(HttpStatusCode.Created, AssistantView.conversation(conversation, 0))
         }
     }
@@ -187,7 +187,9 @@ fun Route.assistantRoutes(service: AssistantService?) {
             val engine = assistant.engine(context.store)
             val turn = engine.prepareMessage(context.caller, id, request.text)
             val toolbox = assistant.toolbox(context);
-            { sink: AssistantSink -> engine.runMessage(context.caller, runtime, toolbox, turn, request.text, sink) }
+            PreparedTurn({ sink: AssistantSink -> engine.runMessage(context.caller, runtime, toolbox, turn, request.text, sink) }) {
+                engine.abandon(turn.conversation.id, turn.token, AssistantConversation.Idle)
+            }
         }
     }
 
@@ -207,7 +209,9 @@ fun Route.assistantRoutes(service: AssistantService?) {
             val engine = assistant.engine(context.store)
             val decision = engine.prepareDecision(context.caller, id, approve)
             val toolbox = assistant.toolbox(context);
-            { sink: AssistantSink -> engine.runDecision(context.caller, runtime, toolbox, decision, sink) }
+            PreparedTurn({ sink: AssistantSink -> engine.runDecision(context.caller, runtime, toolbox, decision, sink) }) {
+                decision.token?.let { engine.abandon(decision.conversationId, it, AssistantConversation.Awaiting) }
+            }
         }
     }
 
@@ -324,6 +328,9 @@ private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRo
     }
 }
 
+/** A turn taken but not started: what runs it and how to give the conversation back when it never runs. */
+internal class PreparedTurn(val run: (AssistantSink) -> Unit, val abandon: () -> Unit)
+
 /**
  * A turn: everything that can be refused is checked first and answered as JSON; then the stream starts and the turn
  * runs on the assistant's own threads, its events going out as they come (Server-Sent Events, a ping every 15 s).
@@ -331,12 +338,12 @@ private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRo
  */
 private suspend fun ApplicationCall.turn(
     service: AssistantService?,
-    prepare: (AssistantService, AssistantContext, Connection) -> ((AssistantSink) -> Unit),
+    prepare: (AssistantService, AssistantContext, Connection) -> PreparedTurn,
 ) {
     response.headers.append(HttpHeaders.CacheControl, "no-store")
     val assistant = service ?: return respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("ASSISTANT_UNAVAILABLE", tr("El asistente no esta disponible en este servidor.")))
     var slot: Pair<String, String>? = null
-    var run: ((AssistantSink) -> Unit)? = null
+    var prepared: PreparedTurn? = null
     val answer = try {
         withContext(Dispatchers.IO) {
             resolve(assistant, this@turn, statusRoute = false) { _, context, tenant ->
@@ -344,7 +351,7 @@ private suspend fun ApplicationCall.turn(
                 if (!assistant.limits.allow(user)) return@resolve refused(429, "ASSISTANT_RATE_LIMITED", tr("Demasiadas solicitudes al asistente; espera un minuto."))
                 assistant.limits.openStream(user, context.caller.companyCode)?.let { return@resolve refused(it.status, it.code, it.message.orEmpty()) }
                 try {
-                    run = prepare(assistant, context, tenant)
+                    prepared = prepare(assistant, context, tenant)
                     slot = user to context.caller.companyCode
                     Answer.Ok(HttpStatusCode.OK, null)
                 } catch (refusal: AssistantRefusal) {
@@ -357,10 +364,17 @@ private suspend fun ApplicationCall.turn(
             }
         }
     } catch (_: SQLException) {
+        // Even closing the connection after the conversation was taken can fail: it must not keep its lease.
+        prepared?.abandon?.invoke()
         refused(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
+    } catch (failure: Throwable) {
+        prepared?.abandon?.invoke()
+        slot?.let { (user, company) -> assistant.limits.release(user, company) }
+        throw failure
     }
-    val turn = run
+    val turn = prepared?.run
     if (answer is Answer.Refused || turn == null) {
+        if (answer is Answer.Refused) prepared?.abandon?.invoke()
         slot?.let { (user, company) -> assistant.limits.release(user, company) }
         val refusal = answer as? Answer.Refused ?: refused(500, "INTERNAL", tr("No se pudo completar la respuesta."))
         if (refusal.status == HttpStatusCode.TooManyRequests || refusal.status == HttpStatusCode.ServiceUnavailable) response.header(HttpHeaders.RetryAfter, "60")

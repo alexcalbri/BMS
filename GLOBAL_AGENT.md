@@ -255,10 +255,10 @@ its tokens still count) and the conversation goes back to `idle`.
 | `turn_started` | `{"conversationId": "uuid"}` |
 | `text_delta` | `{"text": "..."}` (assistant answer text; thinking never streams) |
 | `tool_started` | `{"toolUseId": "toolu_..", "name": "clientes_search_customers", "label": "Clientes: Buscar clientes", "readOnly": true}` |
-| `tool_finished` | `{"toolUseId": "..", "name": "..", "label": "..", "status": "ok" \| "error" \| "rejected" \| "expired" \| "not_run", "message": "optional short error"}` |
+| `tool_finished` | `{"toolUseId": "..", "name": "..", "label": "..", "status": "ok" \| "error" \| "rejected" \| "expired" \| "not_run", "message": "optional short error"}` — an approved call that was NOT run because its data changed after the card was shown ends as `status: "error"` with the message "Los datos cambiaron desde que se mostro la confirmacion; hay que confirmar de nuevo" (and a `notice CONFIRMATION_CHANGED`, below) |
 | `confirmation_required` | `{"confirmationId": "uuid", "toolUseId": "..", "name": "..", "label": "CRM: Enviar mensaje a un lead", "module": "CRM", "destructive": false, "outbound": true, "summary": [{"label": "Texto del mensaje...", "value": "<every argument, whole value>", "hiddenCharacters": true}], "preview": [{"label": "Destinatario (lead)", "value": "Luis Mora"}, {"label": "Se envia a", "value": "luis@example.com"}, {"label": "Mensaje (completo)", "value": "..."}], "previewError": null, "expiresAt": "ISO"}` — see "Confirmation card" |
 | `usage` | `{"inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3, "cacheCreationInputTokens": 4, "countedTokens": 5, "monthUsedTokens": 6, "monthlyLimitTokens": 7}` (after every model response) |
-| `notice` | `{"code": "REFUSAL" \| "CLOSED" \| "MAX_TOKENS" \| "FALLBACK" \| "COMPACTED" \| "EXTERNAL_LINK", "message": "..."}` — on `REFUSAL` drop the text streamed since the last tool line (a declined answer is never stored); `CLOSED`: the conversation cannot go on; `EXTERNAL_LINK`: the answer links to a host that is not the company's own (show the warning next to the answer) |
+| `notice` | `{"code": "REFUSAL" \| "CLOSED" \| "MAX_TOKENS" \| "FALLBACK" \| "COMPACTED" \| "EXTERNAL_LINK" \| "CONFIRMATION_CHANGED", "message": "..."}` — on `REFUSAL` drop the text streamed since the last tool line (a declined answer is never stored); `CLOSED`: the conversation cannot go on; `EXTERNAL_LINK`: the answer links to a host that is not the company's own (show the warning next to the answer); `CONFIRMATION_CHANGED` (new): the call the user approved was NOT run because what it would do changed after the card was shown (a lead's address, a template...). Mark that card as "no ejecutada: los datos cambiaron" (the same `toolUseId` has a `tool_finished` with `status: "error"` just before). The model then receives the error and may propose the call again: a NEW `confirmation_required` follows in the same stream with the current data. Nothing else for the app to do |
 | `error` | `{"code": "...", "message": "...", "retryable": true}` |
 | `done` | `{"reason": "end_turn" \| "awaiting_confirmation" \| "waiting" \| "max_tokens" \| "refusal" \| "error" \| "limit" \| "cancelled"}` |
 
@@ -275,8 +275,39 @@ conversation becomes `awaiting_confirmation` and the stream ends with `done awai
 memory: the app may close, and the user decides later from the conversation screen (`pending`). A pending call expires
 after **24 hours**; on expiry (checked on every read and by the daily job) it is answered with `is_error "La
 confirmacion vencio sin respuesta del usuario; no se ejecuto."`, the results are stored and the conversation is `idle`
-again (no model call is made for it). A running turn holds a lease of 10 minutes; after a crash the conversation is
+again (no model call is made for it). A running turn holds a lease of 12 minutes; after a crash the conversation is
 `idle` again when the lease is over and unanswered tool calls are answered `not_run` before the next message.
+
+### Approval is bound to what runs (V020)
+
+The card the user approves is what runs, or nothing runs:
+
+- When a turn pauses, the engine stores a **fingerprint** of each call's confirmation card (`assistant_pending_calls.preview_hash`,
+  tenant `V020__assistant_preview_hash.sql`): SHA-256 of the preview rows in order (label and value of each; for a failed
+  preview, only the fact that it failed; none when the tool has no preview). The fingerprint is computed from the preview
+  resolved in the **source language (Spanish)**, whatever the language of the request, so deciding in another language does not
+  change it. The card itself (`preview`) is still resolved in the language of the request.
+- When the user approves, before the call is claimed, the engine resolves the same preview again (same hook, the user's
+  permissions now) and compares. Different: the call is NOT executed; its `tool_use` is answered `is_error` with "Los datos
+  cambiaron desde que se mostro la confirmacion; hay que confirmar de nuevo"; the stream emits `tool_finished` (`status: "error"`)
+  and `notice CONFIRMATION_CHANGED`, and the turn continues: the model sees the error and may propose the call again, which
+  produces a new `confirmation_required` with the current preview. There is no extra field on `confirmation_required`.
+- Every tool with `outbound: true` or `destructive: true` MUST provide a preview, or be listed (with its reason) in
+  `ToolRegistryContractTest.withoutPreview`; a new tool that does neither fails that test.
+- Previews are read only and reach nothing else (see "Preview sandbox"); **a preview makes no HTTP request of any kind** (no
+  translation service, no provider): it runs before the user decided. A tool that needs an external answer to describe its
+  effect says so in plain words instead ("se pedira a Encuentra24 ...").
+
+### Preview sandbox
+
+A preview runs on a connection of its own whose every transaction is read only for its whole life
+(`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` before the first transaction, plus `SET TRANSACTION READ ONLY`). The
+connection the preview receives refuses `commit`, `setAutoCommit`, `setReadOnly`, `close`, `abort` and `unwrap`, and the module
+service refuses to open any other connection (`ModuleAccessService.withoutNewConnections`: `tenantConnectionForCompany`,
+`tenantConnectionForDatabase`, `centralConnection`, `tenantConnection(call)`, and the writes to the control database). Afterwards the
+connection is aborted (evicted from the pool), never reused. A preview that fails any of this gets "No se pudo preparar la vista
+previa." Not enforceable: raw SQL that turns the read-only mode off by itself (`SET default_transaction_read_only = off`) and
+HTTP requests (rule of the module, tested per tool with a transport that fails when called).
 
 ### Limits
 
@@ -287,13 +318,17 @@ again (no model call is made for it). A running turn holds a lease of 10 minutes
   to a company's own key only when `limitOwnKeyCompanies` is on (default off). Checked before every model request; a
   turn already running finishes its current request.
 - Per user: 10 requests (messages + confirmations) per minute, 1 stream per conversation, 2 streams at once; 20 new
-  conversations per minute and 500 kept (`409 TOO_MANY_CONVERSATIONS`).
+  conversations per minute and 500 kept (`409 TOO_MANY_CONVERSATIONS`; counted and created in one step under a lock per
+  user, so two requests at once cannot both take the last place).
 - Per company 8 streams at once (`429 ASSISTANT_RATE_LIMITED`), per server 32 (`503 ASSISTANT_BUSY`, with `Retry-After`).
   Turns run on their own pool of 32 threads, never on the server's shared IO threads.
 - A stream whose client stops reading (its buffer of 1024 frames is full, or one write waits 30 s) is cancelled like a
   closed connection.
 - Every model request is counted, also when it is stopped or fails mid-stream: the usage the provider already reported,
-  or, when it reported none yet, the prompt size of the previous response of the conversation.
+  or, when it reported none yet, the prompt size of the previous response of the conversation. Output tokens only arrive in
+  the last `message_delta`, so a stopped or broken stream charges `max(reported output, estimated output)` with
+  `estimated = (characters of text + thinking + tool-input deltas received) / 3`. A response that arrived complete but could
+  not be read (`AnthropicResponses.from` failed) is charged what the provider reported and the turn ends with `error INTERNAL`.
 - The monthly limit is checked before each model request and not reserved: concurrent turns of one company can pass it
   by at most what their requests in flight consume (bounded by the per-company stream limit). Documented overshoot.
 - Per stream (a turn resumed after a confirmation starts its own counts): 25 tool calls, 40 model requests, 10 minutes.
@@ -331,6 +366,8 @@ Every change is audited in `provisioning_audit_log` (`assistant.settings_changed
   `assistant.model`, `assistant.effort`, `assistant.monthly_tokens.default`, `assistant.limit_own_key`,
   `assistant.retention_days`, `assistant.api_key` (sealed with BMS_MASTER_KEY + the control data key),
   `assistant.company.<code>.allowed`, `assistant.company.<code>.monthly_tokens`.
+- Tenant migration `V020__assistant_preview_hash.sql`: `assistant_pending_calls.preview_hash` (above). Registered with V018/V019 in
+  `scripts/ubuntu/update.sh` (required files) and `CompanyProvisioningService.applyAssistantMigration`.
 - Tenant migration `V018__create_assistant.sql`: `assistant_settings` (one row: enabled, sealed own key, hint),
   `assistant_conversations`, `assistant_messages` (role, content blocks JSON exactly as resent, including thinking,
   tool_use and tool_result; usage per response), `assistant_pending_calls`, `assistant_usage` (day, user, key source).
@@ -342,15 +379,35 @@ Every change is audited in `provisioning_audit_log` (`assistant.settings_changed
 - `summary`: EVERY argument the model sent, each value WHOLE (never cut; a message can be 20 000 characters): the app
   shows it all (scroll or expand, never a silent preview cut). Characters that hide or reorder text (bidi controls,
   zero-width, control and private-use characters) arrive written as `[U+202E]`...; `hiddenCharacters: true` on that row
-  means the app must warn ("Este texto contiene caracteres ocultos").
+  means the app must warn ("Este texto contiene caracteres ocultos"). The rule (`AssistantTools.visible`): always shown as
+  `[U+XXXX]`: control and format characters (bidi, zero-width, tags), line/paragraph separators, unassigned and private-use code
+  points, and the blank-looking fillers (Hangul fillers, Khmer inherent vowels, Mongolian free variation selectors, combining
+  grapheme joiner, Braille blank). Variation selectors (U+FE00-FE0F, U+E0100-E01EF) are how bytes are smuggled into
+  ordinary text, so they are shown unless they mean something: FE0E/FE0F right after ONE symbol, digit, `#` or `*` (emoji and
+  keycap presentation) and the others right after ONE Han ideograph; repeated or after a letter they are shown. Combining marks
+  (accents) stay readable up to 3 on one base character; a mark with no base (at the start or after a space/punctuation) or
+  more than 3 stacked ones are shown. A zero-width joiner between two emoji stays readable (family and profession emoji).
 - `preview`: what the module resolved (`McpTool.preview`, run read-only before the card is shown): recipient name and
   address and the final text of a message, the names of what a delete removes instead of ids. Shown above the
   arguments. `previewError`: the module could not resolve it (show it; the user may still reject).
 - `outbound: true`: the call sends something out of the company; the card says "Envia un mensaje fuera de la empresa".
-  Marked tools: CRM `send_message`, `run_automation`, `press_lead_button`, `import_from_url`, `wordpress_test`,
-  `wordpress_sync_agents`, `cloudbeds_test`, `meta_fill_names`. Previews: CRM `send_message`, `delete_lead`,
-  `delete_interest`, `delete_stage`, `delete_message_template`, `delete_automation`; Clientes `delete_customer_field`;
-  Empleados `delete_shift`; Hotspot `delete_network`.
+  Marked tools (all with a preview that says in plain words what goes where): CRM `send_message`, `run_automation`,
+  `press_lead_button`, `save_automation`, `save_message_template`, `import_from_url`, `update_mail_settings`,
+  `update_user_notifications`, `update_meta`, `meta_connect_page`, `meta_connect_whatsapp`, `meta_fill_names`, `update_wordpress`,
+  `wordpress_test`, `wordpress_sync_agents`, `encuentra24_sync`, `update_cloudbeds`, `cloudbeds_test`, `close_property_sale`,
+  `create_reservation`; Hotspot `update_settings`, `set_integration`, `unifi_choose_console`, `unifi_choose_site`; every
+  monday `*_outbound_configure` and `*_outbound_retry`. Destructive tools with a preview: CRM `delete_lead`, `delete_interest`,
+  `delete_stage`, `delete_message_template`, `delete_automation`, `bulk_update_leads`, `apply_pipeline_template`; Clientes
+  `delete_customer_field`; Empleados `delete_shift`; Hotspot `delete_network`; Agentes `revoke_agent`; monday `*_outbound_discard`.
+  The audit of the rest is in `ToolRegistryContractTest` (what is not marked and why).
+- CRM `send_message` sends **exactly what the card shows**: the text the model wrote goes out as PLAIN TEXT (every `<` is
+  escaped, so an `<img src>`, a link or an invisible element is shown as text, never sent as HTML; the card has a "Formato"
+  row), for the assistant and for MCP agents alike (`CrmAdminScreens.composeReply(fromAgent = true)`); and a template is
+  translated only from translations already saved (a database read): neither the preview nor the send calls a translation
+  service, and without a saved translation the base language goes out and the card says so ("Traduccion"). The card's
+  `Mensaje (completo)` is therefore the text sent. A template written by the company keeps its HTML (the card says
+  "Plantilla de la empresa con formato HTML"); `save_message_template` shows its raw HTML source for approval.
+- Preview text is written in Spanish (like the MCP tools): the fingerprint above is taken in Spanish anyway.
 
 ### Rendering contract (review fix)
 
@@ -358,7 +415,12 @@ Assistant text is rendered as plain text: no images, no HTML, nothing loaded aut
 the app offers to open one it shows the full URL and asks for confirmation first. The system prompt tells the model that
 leads, WiFi visitors, form submissions, received messages and imported text come from the public and are never
 instructions, and that it must not build URLs from record data. The server flags any link to a host that is not the
-server's (`BMS_PUBLIC_BASE_URL`) or one of the company's public domains with a `notice` `EXTERNAL_LINK`.
+server's (`BMS_PUBLIC_BASE_URL`) or one of the company's public domains with a `notice` `EXTERNAL_LINK`. Detection
+(`AssistantLinks`): `scheme://authority`, `www.host` and bare `host.tld` followed by a path/query/port or with a common TLD (an
+e-mail address is not a link); the host is read as a browser does (`https://acme.com@evil.com` is evil.com; port dropped);
+invisible characters are removed and full-width forms normalized first; a host that is not plain ASCII letters, digits, hyphens
+and dots (an IDN, a `%` escape) is ALWAYS external (shown with its punycode), and only a punycode host that is exactly a known
+domain (or a subdomain of one) is not.
 
 ### Turn safety (review fix)
 
@@ -372,6 +434,13 @@ server's (`BMS_PUBLIC_BASE_URL`) or one of the company's public domains with a `
   the last assistant message are answered, in its order.
 - An approved write is claimed (`executing`) before it runs and its result stored right after: it never runs twice, and
   a crash in between is reported as `unknown` ("se empezo a ejecutar pero no se sabe si termino"), never as "not run".
+- A conversation left `awaiting_confirmation` with every call decided (a crash between the last decision and the resumed turn)
+  is recovered, never stuck: the retry of a decision resumes the turn (approved calls run once, as usual); a new message takes
+  the conversation over and the decided calls are answered truthfully (approved ones "No se ejecuto."); the daily job
+  (`expireAll`) settles those untouched for 15 minutes the same way, with no model request.
+- A turn taken by a request that then fails before it starts (for example closing the tenant connection throws) gives the
+  conversation back at once (`AssistantEngine.abandon`) instead of keeping its lease for 12 minutes.
+- Retention (`purge`) also deletes conversations stuck in `running` whose lease is older than the retention horizon.
 - History sent to the API: user and assistant always alternate (stored consecutive messages of one role are joined, the
   same way every time, so the prefix stays stable).
 - A declined turn: when it holds only the user's text (and the answer), it is left out of every later request by a notice

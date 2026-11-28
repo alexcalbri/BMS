@@ -125,28 +125,104 @@ object AssistantTools {
         }
     }
 
-    /** [text] with every invisible or reordering character written as [U+XXXX] (newlines and tabs kept); true when any. */
+    /**
+     * [text] with every invisible, reordering or data-smuggling character written as [U+XXXX] (newlines and tabs kept);
+     * true when any. The rule:
+     *  - always: control and format characters (bidi, zero-width, tags), line and paragraph separators, unassigned and
+     *    private-use code points, and the blank-looking fillers (Hangul fillers, Khmer inherent vowels, Mongolian free
+     *    variation selectors, combining grapheme joiner, Braille blank);
+     *  - variation selectors (U+FE00-FE0F, U+E0100-E01EF) only where they mean something: FE0E/FE0F right after one
+     *    symbol, digit, # or * (emoji or keycap presentation), the others right after one Han ideograph. Anywhere else
+     *    (after a letter, repeated, stacked) they are how bytes are hidden in plain-looking text, so they are shown;
+     *  - combining marks (accents, vowel signs): readable inside ordinary text, up to 3 on one base character. A mark
+     *    with no base (at the start, after a space or after another non-letter) or more than 3 stacked ones are shown.
+     */
     fun visible(text: String): Pair<String, Boolean> {
-        var found = false
-        val out = StringBuilder(text.length)
+        val codes = text.codePoints().toArray()
+        val hidden = BooleanArray(codes.size)
         var index = 0
-        while (index < text.length) {
-            val code = text.codePointAt(index)
-            val type = Character.getType(code)
-            val hidden = code != '\n'.code && code != '\t'.code && (
-                type == Character.FORMAT.toInt() || type == Character.CONTROL.toInt() ||
-                    type == Character.LINE_SEPARATOR.toInt() || type == Character.PARAGRAPH_SEPARATOR.toInt() ||
-                    type == Character.UNASSIGNED.toInt() || type == Character.PRIVATE_USE.toInt() || code == 0x115F || code == 0x1160 || code == 0x3164
-                )
-            if (hidden) {
+        while (index < codes.size) {
+            val code = codes[index]
+            if ((alwaysHidden(code) && !(code == 0x200D && joinsEmoji(codes, index))) || (isVariationSelector(code) && !legitimateSelector(codes, index))) hidden[index] = true
+            index++
+        }
+        // Marks: a run of combining marks belongs to the character before it.
+        index = 0
+        while (index < codes.size) {
+            if (!isMark(codes[index])) { index++; continue }
+            var end = index
+            while (end < codes.size && isMark(codes[end])) end++
+            // A selector that passed above is not a stacked mark.
+            val run = (index until end).filter { !isVariationSelector(codes[it]) && !hidden[it] }
+            val base = if (index == 0) null else codes[index - 1]
+            val baseless = base == null || Character.isWhitespace(base) || isMarkless(base)
+            if (run.size > 3 || (baseless && run.isNotEmpty())) run.forEach { hidden[it] = true }
+            index = end
+        }
+        val out = StringBuilder(text.length)
+        var found = false
+        codes.forEachIndexed { at, code ->
+            if (hidden[at]) {
                 found = true
                 out.append("[U+").append(String.format("%04X", code)).append(']')
             } else {
                 out.appendCodePoint(code)
             }
-            index += Character.charCount(code)
         }
         return out.toString() to found
+    }
+
+    private fun alwaysHidden(code: Int): Boolean {
+        if (code == '\n'.code || code == '\t'.code) return false
+        val type = Character.getType(code)
+        return type == Character.FORMAT.toInt() || type == Character.CONTROL.toInt() ||
+            type == Character.LINE_SEPARATOR.toInt() || type == Character.PARAGRAPH_SEPARATOR.toInt() ||
+            type == Character.UNASSIGNED.toInt() || type == Character.PRIVATE_USE.toInt() ||
+            code == 0x115F || code == 0x1160 || code == 0x3164 || code == 0xFFA0 || code == 0x17B4 || code == 0x17B5 ||
+            code in 0x180B..0x180F || code == 0x034F || code == 0x2800
+    }
+
+    private fun isEmojiBase(code: Int) = code in 0x1F000..0x1FAFF || code in 0x2190..0x2BFF || code in 0x2600..0x27BF || code == 0x2764
+
+    /** A zero-width joiner between two emoji (one family or profession emoji), possibly with a presentation selector. */
+    private fun joinsEmoji(codes: IntArray, index: Int): Boolean {
+        var before = index - 1
+        if (before >= 0 && (codes[before] == 0xFE0F || codes[before] == 0xFE0E)) before--
+        return before >= 0 && index + 1 < codes.size && isEmojiBase(codes[before]) && isEmojiBase(codes[index + 1])
+    }
+
+    private fun isVariationSelector(code: Int) = code in 0xFE00..0xFE0F || code in 0xE0100..0xE01EF
+
+    private fun isMark(code: Int): Boolean {
+        val type = Character.getType(code)
+        return type == Character.NON_SPACING_MARK.toInt() || type == Character.ENCLOSING_MARK.toInt() || type == Character.COMBINING_SPACING_MARK.toInt()
+    }
+
+    // A character that cannot carry a mark: nothing before it, or something that is not a letter, digit, symbol or mark.
+    private fun isMarkless(code: Int): Boolean {
+        val type = Character.getType(code)
+        return when (type.toByte()) {
+            Character.CONTROL, Character.FORMAT, Character.SPACE_SEPARATOR, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR,
+            Character.CONNECTOR_PUNCTUATION, Character.DASH_PUNCTUATION, Character.START_PUNCTUATION, Character.END_PUNCTUATION,
+            Character.INITIAL_QUOTE_PUNCTUATION, Character.FINAL_QUOTE_PUNCTUATION, Character.OTHER_PUNCTUATION -> true
+            else -> false
+        }
+    }
+
+    /** A variation selector at [index] that has a base it belongs to and is the only one on it. */
+    private fun legitimateSelector(codes: IntArray, index: Int): Boolean {
+        if (index == 0) return false
+        val base = codes[index - 1]
+        if (isVariationSelector(base) || (index + 1 < codes.size && isVariationSelector(codes[index + 1]))) return false
+        val code = codes[index]
+        return if (code == 0xFE0E || code == 0xFE0F) {
+            val type = Character.getType(base)
+            base == '#'.code || base == '*'.code || Character.isDigit(base) ||
+                type == Character.OTHER_SYMBOL.toInt() || type == Character.MATH_SYMBOL.toInt() || type == Character.CURRENCY_SYMBOL.toInt() ||
+                isEmojiBase(base)
+        } else {
+            Character.UnicodeScript.of(base) == Character.UnicodeScript.HAN
+        }
     }
 }
 
@@ -195,19 +271,30 @@ class ModuleAssistantToolbox(
         }
     } ?: AssistantToolResult(false, "No se pudo abrir la empresa.")
 
+    /**
+     * The tool's own preview, run before the user decided, so it can change nothing and reach nothing else (GLOBAL_AGENT.md,
+     * Preview sandbox). It gets a connection of its own whose every transaction is read only for its whole life
+     * (`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`, set before the first transaction), wrapped so that
+     * commit, autocommit and read-only changes, close and unwrap fail; the module service refuses to open any other
+     * connection meanwhile ([ModuleAccessService.withoutNewConnections]); and the connection is evicted from the pool
+     * afterwards, never reused. A preview makes no HTTP request of any kind either: that is the module's rule (and its
+     * tests'), the JVM cannot enforce it here.
+     */
     override fun preview(name: String, arguments: JsonObject): AssistantPreview = tenant { connection ->
         val user = user(connection) ?: return@tenant AssistantPreview(JsonArray(emptyList()))
         val registered = access.moduleMcp().filter { it.moduleId != ServerMcpModuleId }.flatMap { it.tools }.firstOrNull { it.qualifiedName == name }
         val preview = registered?.tool?.preview ?: return@tenant AssistantPreview(JsonArray(emptyList()))
         val permissions = user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) }
             ?: return@tenant AssistantPreview(JsonArray(emptyList()))
-        val call = McpToolCall(arguments, permissions.withActivityActor(actor().viaAssistant()), connection, access, ActivityActor.AssistantAgentName, registered.moduleId)
-        // Read only, whatever the module does: the preview runs before the user decided.
-        val autoCommit = connection.autoCommit
+        // Resolved before the sandbox closes: it may open a connection of its own.
+        val activity = actor().viaAssistant()
         try {
+            connection.autoCommit = true
+            connection.createStatement().use { it.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY") }
             connection.autoCommit = false
             connection.createStatement().use { it.execute("SET TRANSACTION READ ONLY") }
-            AssistantPreview(JsonArray(preview(call).map { AssistantTools.row(it.label, it.value) }))
+            val call = McpToolCall(arguments, permissions.withActivityActor(activity), PreviewConnection.guard(connection), access, ActivityActor.AssistantAgentName, registered.moduleId)
+            AssistantPreview(JsonArray(access.withoutNewConnections { preview(call) }.map { AssistantTools.row(it.label, it.value) }))
         } catch (failure: McpToolException) {
             AssistantPreview(JsonArray(emptyList()), failure.message.orEmpty())
         } catch (failure: Exception) {
@@ -215,7 +302,27 @@ class ModuleAssistantToolbox(
             AssistantPreview(JsonArray(emptyList()), "No se pudo preparar la vista previa.")
         } finally {
             runCatching { connection.rollback() }
-            runCatching { connection.autoCommit = autoCommit }
+            // Its session settings may have been changed: the pool gets it back only as a closed physical connection.
+            if (runCatching { connection.abort { it.run() } }.isFailure) {
+                runCatching { connection.autoCommit = true }
+                runCatching { connection.createStatement().use { it.execute("RESET default_transaction_read_only") } }
+            }
         }
     } ?: AssistantPreview(JsonArray(emptyList()), "No se pudo abrir la empresa.")
+}
+
+/** The connection a preview works on: reads and rollbacks only. */
+internal object PreviewConnection {
+    private val refused = setOf("commit", "setAutoCommit", "setReadOnly", "close", "abort", "unwrap", "setTransactionIsolation", "releaseSavepoint", "setHoldability")
+
+    fun guard(real: Connection): Connection = java.lang.reflect.Proxy.newProxyInstance(
+        Connection::class.java.classLoader, arrayOf(Connection::class.java),
+    ) { _, method, arguments ->
+        if (method.name in refused) throw java.sql.SQLException("Una vista previa solo puede leer: no confirma ni cambia la transaccion.")
+        try {
+            method.invoke(real, *(arguments ?: emptyArray()))
+        } catch (failure: java.lang.reflect.InvocationTargetException) {
+            throw failure.targetException
+        }
+    } as Connection
 }

@@ -62,6 +62,8 @@ data class AssistantPendingCall(
     val preview: JsonArray = JsonArray(emptyList()),
     val previewError: String? = null,
     val outbound: Boolean = false,
+    // Fingerprint of the card the user saw (AssistantEngine.fingerprint); null when the tool has no preview.
+    val previewHash: String? = null,
 ) {
     companion object {
         const val Pending = "pending"
@@ -91,6 +93,8 @@ class AssistantLeaseLostException : Exception("lease lost")
  */
 interface AssistantStore {
     fun createConversation(userId: UUID, ownerKey: String, title: String, now: Instant): AssistantConversation
+    /** Like [createConversation], but null when the person already keeps [max] conversations (counted and inserted atomically). */
+    fun createConversationCapped(userId: UUID, ownerKey: String, title: String, now: Instant, max: Int): AssistantConversation?
     fun conversation(id: UUID, userId: UUID, ownerKey: String): AssistantConversation?
     fun conversations(userId: UUID, ownerKey: String, archived: Boolean, limit: Int, before: Instant?): List<AssistantConversation>
     fun conversationCount(userId: UUID, ownerKey: String): Int
@@ -128,6 +132,11 @@ interface AssistantStore {
     fun completePending(conversationId: UUID, token: UUID, content: JsonArray, now: Instant): AssistantStoredMessage?
     /** Conversations with a pending call whose time is over. */
     fun expiredConversations(now: Instant): List<UUID>
+    /**
+     * Conversations left awaiting a confirmation with no call still pending (a crash between the last decision and the
+     * resumed turn), untouched since [before].
+     */
+    fun stuckConversations(before: Instant): List<UUID>
 
     fun recordUsage(day: LocalDate, userId: UUID, keySource: String, usage: ModelUsage, requests: Long)
     fun monthUsage(month: YearMonth, keySources: Set<String>): Long
@@ -182,6 +191,31 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
     private val columns = "id, user_id, owner_key, title, state, lease_until, created_at, updated_at, archived_at"
 
     override fun createConversation(userId: UUID, ownerKey: String, title: String, now: Instant): AssistantConversation = use { connection ->
+        connection.prepareStatement(
+            "INSERT INTO public.assistant_conversations (id, user_id, owner_key, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING $columns",
+        ).use { insert ->
+            insert.setObject(1, UUID.randomUUID())
+            insert.setObject(2, userId)
+            insert.setString(3, ownerKey)
+            insert.setString(4, title)
+            insert.setTimestamp(5, Timestamp.from(now))
+            insert.setTimestamp(6, Timestamp.from(now))
+            insert.executeQuery().use { rows -> rows.next(); rows.conversation() }
+        }
+    }
+
+    override fun createConversationCapped(userId: UUID, ownerKey: String, title: String, now: Instant, max: Int): AssistantConversation? = transaction { connection ->
+        // Two creations at once of the same person take turns: the count and the insert are one step.
+        connection.prepareStatement("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))").use { lock ->
+            lock.setString(1, "assistant-conversations/$userId/$ownerKey")
+            lock.execute()
+        }
+        val count = connection.prepareStatement("SELECT count(*) FROM public.assistant_conversations WHERE user_id = ? AND owner_key = ?").use { query ->
+            query.setObject(1, userId)
+            query.setString(2, ownerKey)
+            query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
+        }
+        if (count >= max) return@transaction null
         connection.prepareStatement(
             "INSERT INTO public.assistant_conversations (id, user_id, owner_key, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING $columns",
         ).use { insert ->
@@ -379,8 +413,8 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
             connection.prepareStatement(
                 """
                 INSERT INTO public.assistant_pending_calls (id, conversation_id, position, tool_use_id, tool_name, arguments, label, module_name,
-                    destructive, summary, status, result, expires_at, preview, preview_error, outbound)
-                VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?, ?)
+                    destructive, summary, status, result, expires_at, preview, preview_error, outbound, preview_hash)
+                VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?, ?, ?)
                 """.trimIndent(),
             ).use { insert ->
                 calls.forEach { call ->
@@ -400,6 +434,7 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
                     insert.setString(14, call.preview.toString())
                     insert.setString(15, call.previewError)
                     insert.setBoolean(16, call.outbound)
+                    insert.setString(17, call.previewHash)
                     insert.addBatch()
                 }
                 insert.executeBatch()
@@ -408,7 +443,7 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
     }
 
     private val pendingColumns = "p.id, p.conversation_id, p.position, p.tool_use_id, p.tool_name, p.arguments::text, p.label, p.module_name, " +
-        "p.destructive, p.summary::text, p.status, p.result::text, p.expires_at, p.preview::text, p.preview_error, p.outbound"
+        "p.destructive, p.summary::text, p.status, p.result::text, p.expires_at, p.preview::text, p.preview_error, p.outbound, p.preview_hash"
 
     private fun ResultSet.pendingCall() = AssistantPendingCall(
         id = getObject(1, UUID::class.java),
@@ -427,6 +462,7 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
         preview = Json.parseToJsonElement(getString(14)).jsonArray,
         previewError = getString(15),
         outbound = getBoolean(16),
+        previewHash = getString(17),
     )
 
     override fun pending(conversationId: UUID): List<AssistantPendingCall> = use { connection ->
@@ -497,6 +533,20 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
         }
     }
 
+    override fun stuckConversations(before: Instant): List<UUID> = use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT c.id FROM public.assistant_conversations c
+            WHERE c.state = 'awaiting_confirmation'
+              AND NOT EXISTS (SELECT 1 FROM public.assistant_pending_calls p WHERE p.conversation_id = c.id AND p.status = 'pending')
+              AND COALESCE((SELECT max(p.decided_at) FROM public.assistant_pending_calls p WHERE p.conversation_id = c.id), c.updated_at) < ?
+            """.trimIndent(),
+        ).use { query ->
+            query.setTimestamp(1, Timestamp.from(before))
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+        }
+    }
+
     override fun recordUsage(day: LocalDate, userId: UUID, keySource: String, usage: ModelUsage, requests: Long) {
         use { connection ->
             connection.prepareStatement(
@@ -563,8 +613,12 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
     }
 
     override fun purge(before: Instant, usageBefore: LocalDate): Int = use { connection ->
-        val conversations = connection.prepareStatement("DELETE FROM public.assistant_conversations WHERE updated_at < ? AND state <> 'running'").use { delete ->
+        // A turn that crashed leaves its conversation 'running' for ever: once its lease is older than the retention, it is old data like any other.
+        val conversations = connection.prepareStatement(
+            "DELETE FROM public.assistant_conversations WHERE updated_at < ? AND (state <> 'running' OR lease_until IS NULL OR lease_until < ?)",
+        ).use { delete ->
             delete.setTimestamp(1, Timestamp.from(before))
+            delete.setTimestamp(2, Timestamp.from(before))
             delete.executeUpdate()
         }
         connection.prepareStatement("DELETE FROM public.assistant_usage WHERE day < ?").use { delete ->

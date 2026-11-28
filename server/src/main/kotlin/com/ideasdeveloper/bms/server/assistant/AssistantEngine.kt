@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.server.assistant
 
 import com.ideasdeveloper.bms.AssistantIds
+import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -81,6 +82,8 @@ class AssistantEngine(
     private val models: AssistantModelClients,
     private val clock: () -> Instant = Instant::now,
     val limits: AssistantTurnLimits = AssistantTurnLimits(),
+    // How a model message is read (replaceable in tests).
+    private val parse: (com.anthropic.models.beta.messages.BetaMessage) -> ModelResponse = AnthropicResponses::from,
 ) {
     private val log = LoggerFactory.getLogger(AssistantEngine::class.java)
 
@@ -96,14 +99,21 @@ class AssistantEngine(
         expireIfDue(conversation.id)
         val current = store.conversation(conversation.id, caller.userId, caller.ownerKey) ?: throw notFound()
         if (current.state == AssistantConversation.Closed) throw closed()
-        if (current.state == AssistantConversation.Awaiting) {
-            throw AssistantRefusal(409, "CONFIRMATION_PENDING", tr("Primero aprueba o rechaza las acciones pendientes del asistente."))
+        // Awaiting with every call decided (or none left) is a conversation a crash left behind: this message takes it
+        // over and the decided calls are answered truthfully (approved ones were not run).
+        val from = if (current.state == AssistantConversation.Awaiting) {
+            if (store.pending(current.id).any { it.status == AssistantPendingCall.Pending }) {
+                throw AssistantRefusal(409, "CONFIRMATION_PENDING", tr("Primero aprueba o rechaza las acciones pendientes del asistente."))
+            }
+            AssistantConversation.Awaiting
+        } else {
+            AssistantConversation.Idle
         }
         if (store.messageCount(current.id) >= limits.maxStoredMessages) {
             throw AssistantRefusal(409, "CONVERSATION_TOO_LONG", tr("Esta conversacion es demasiado larga. Empieza una conversacion nueva."))
         }
         val now = clock()
-        val token = store.startTurn(current.id, AssistantConversation.Idle, now.plus(limits.lease), now) ?: throw busy()
+        val token = store.startTurn(current.id, from, now.plus(limits.lease), now) ?: throw busy()
         return AssistantTurn(current, token)
     }
 
@@ -122,7 +132,15 @@ class AssistantEngine(
         }
         val conversation = owned(caller, call.conversationId)
         if (conversation.state != AssistantConversation.Awaiting) throw busy()
-        if (call.status != AssistantPendingCall.Pending) throw decided()
+        if (call.status != AssistantPendingCall.Pending) {
+            // Every call decided but nobody resumed the turn (a crash between the last decision and its start): the
+            // retry of a decision resumes it. Otherwise the call was simply decided already.
+            if (store.pending(call.conversationId).none { it.status == AssistantPendingCall.Pending }) {
+                val now = clock()
+                return Decision(call.conversationId, store.startTurn(call.conversationId, AssistantConversation.Awaiting, now.plus(limits.lease), now) ?: throw busy())
+            }
+            throw decided()
+        }
         if (!store.decide(call.id, if (approve) AssistantPendingCall.Approved else AssistantPendingCall.Rejected, clock())) {
             // Decided meanwhile, or its time ran out between the two reads.
             if (!call.expiresAt.isAfter(clock())) {
@@ -135,6 +153,16 @@ class AssistantEngine(
         val now = clock()
         // Two last decisions at once: only one resumes the turn, the other just records its decision.
         return Decision(call.conversationId, store.startTurn(call.conversationId, AssistantConversation.Awaiting, now.plus(limits.lease), now))
+    }
+
+    /**
+     * Gives back a conversation taken by [prepareMessage] or [prepareDecision] whose turn will never run (the request
+     * failed after preparing it), instead of leaving it with a lease for [AssistantTurnLimits.lease]. [state] is where
+     * it was: idle for a message, awaiting_confirmation for a decision.
+     */
+    fun abandon(conversationId: UUID, token: UUID, state: String) {
+        runCatching { store.release(conversationId, token, state, clock()) }
+            .onFailure { log.error("Assistant conversation {} was not released: {}", conversationId, it.javaClass.name) }
     }
 
     private fun owned(caller: AssistantCaller, id: UUID): AssistantConversation =
@@ -243,7 +271,14 @@ class AssistantEngine(
                 failure.usage?.let { charge(caller, runtime, it) }
                 return fail(sink, failure.code, failure.message.orEmpty(), failure.retryable)
             }
-            val response = AnthropicResponses.from(message)
+            val response = try {
+                parse(message)
+            } catch (failure: Exception) {
+                // The provider billed it even though it cannot be read.
+                log.error("Assistant model response could not be read: {}", failure.javaClass.name)
+                charge(caller, runtime, AnthropicResponses.usageOf(message))
+                return fail(sink, "INTERNAL", tr("No se pudo completar la respuesta."), true)
+            }
             previousPrompt = response.usage.inputTokens + response.usage.cacheReadInputTokens + response.usage.cacheCreationInputTokens
             val now = clock()
             charge(caller, runtime, response.usage)
@@ -389,6 +424,7 @@ class AssistantEngine(
                 preview = preview.rows,
                 previewError = preview.error,
                 outbound = plan.tool?.outbound ?: false,
+                previewHash = if (plan.result == null && plan.tool != null) sourceFingerprint(toolbox, plan.tool.name, arguments, preview) else null,
             )
         }
         store.savePending(token, calls)
@@ -423,7 +459,12 @@ class AssistantEngine(
                 }
                 AssistantPendingCall.Approved -> if (toolbox == null) toolResult(toolUseId, false, NotRun) else {
                     renew(conversationId, token)
-                    if (!store.claim(call.id, conversationId, token)) toolResult(toolUseId, false, UnknownOutcome) else {
+                    if (changedSinceShown(toolbox, call)) {
+                        // What the user approved is not what would run now: nothing runs, the model may ask again.
+                        sink?.event(AssistantIds.EventToolFinished, finishedEvent(toolUseId, call.toolName, call.label, "error", DataChanged))
+                        sink?.event(AssistantIds.EventNotice, noticeEvent("CONFIRMATION_CHANGED", tr("Los datos de \"{0}\" cambiaron despues de mostrar la confirmacion; no se ejecuto. El asistente la propondra de nuevo si hace falta.", call.label)))
+                        toolResult(toolUseId, false, DataChanged)
+                    } else if (!store.claim(call.id, conversationId, token)) toolResult(toolUseId, false, UnknownOutcome) else {
                         sink?.event(AssistantIds.EventToolStarted, toolEvent(toolUseId, call.toolName, call.label, readOnly = false))
                         val outcome = toolbox.execute(call.toolName, call.arguments)
                         val result = toolResult(toolUseId, outcome.ok, outcome.text)
@@ -437,6 +478,26 @@ class AssistantEngine(
             }
         }
     }
+
+    /**
+     * Whether the card the user approved no longer matches what the call would show now. The tool's preview is resolved
+     * again (same hook, same permissions) and its fingerprint compared with the one stored when the turn paused; a
+     * tool the user may not use any more is left to [AssistantToolbox.execute], which refuses it.
+     */
+    private fun changedSinceShown(toolbox: AssistantToolbox, call: AssistantPendingCall): Boolean {
+        val stored = call.previewHash ?: return false
+        if (toolbox.tools().none { it.name == call.toolName }) return false
+        return sourceFingerprint(toolbox, call.toolName, call.arguments, null) != stored
+    }
+
+    /**
+     * The fingerprint of a preview resolved in the source language (Spanish), whatever language the request that shows
+     * or runs it has: the user may decide in another language than the one that paused the turn. [shown] is the preview
+     * already resolved for this request, reused when that language is the source one.
+     */
+    private fun sourceFingerprint(toolbox: AssistantToolbox, name: String, arguments: JsonObject, shown: AssistantPreview?): String? =
+        if (shown != null && I18n.language() == I18n.Source) fingerprint(shown)
+        else I18n.withLanguage(I18n.Source) { fingerprint(toolbox.preview(name, arguments)) }
 
     private fun limitReached(runtime: AssistantRuntime): Boolean {
         val limit = runtime.monthlyLimit ?: return false
@@ -499,7 +560,27 @@ class AssistantEngine(
     }
 
     /** Expires every due confirmation of the company (daily job). */
-    fun expireAll(): Int = store.expiredConversations(clock()).count { runCatching { expireIfDue(it) }.getOrDefault(false) }
+    fun expireAll(): Int = store.expiredConversations(clock()).count { runCatching { expireIfDue(it) }.getOrDefault(false) } +
+        store.stuckConversations(clock().minus(StuckAfter)).count { runCatching { settleStuck(it) }.getOrDefault(false) }
+
+    /**
+     * Returns a conversation left awaiting with every call decided (a crash between the last decision and the resumed
+     * turn) to idle: its calls are answered truthfully without running anything (approved ones were not run), in one
+     * user message, and no model request is made. The user's next message goes on from there.
+     */
+    fun settleStuck(conversationId: UUID): Boolean {
+        if (store.pending(conversationId).any { it.status == AssistantPendingCall.Pending }) return false
+        val now = clock()
+        val token = store.startTurn(conversationId, AssistantConversation.Awaiting, now.plus(limits.lease), now) ?: return false
+        var state = AssistantConversation.Awaiting
+        try {
+            store.completePending(conversationId, token, JsonArray(answers(conversationId, toolbox = null, token = token, sink = null)), clock())
+            state = AssistantConversation.Idle
+        } finally {
+            store.release(conversationId, token, state, clock())
+        }
+        return true
+    }
 
     companion object {
         const val Rejected = "El usuario no autorizo esta accion"
@@ -507,9 +588,30 @@ class AssistantEngine(
         // Tool results are stored and sent again as they are: Spanish, never translated.
         const val NotRun = "No se ejecuto."
         const val TooManyTools = "Se alcanzo el maximo de herramientas por respuesta; no se ejecuto."
+        const val DataChanged = "Los datos cambiaron desde que se mostro la confirmacion; hay que confirmar de nuevo"
+        // How long a decided but unresumed conversation is left alone before the daily job settles it.
+        val StuckAfter: Duration = Duration.ofMinutes(15)
         const val UnknownOutcome = "La accion se empezo a ejecutar pero no se sabe si termino; revisa el resultado antes de repetirla."
         // Marks the context block of each user message (not shown to the user).
         const val ContextPrefix = "<contexto_bms>"
+
+        /**
+         * What the user saw on the card, as one fingerprint: the preview rows in order (label and value of each), or the
+         * fact that it failed; null when the tool shows no preview. Compared again before an approved call runs.
+         */
+        fun fingerprint(preview: AssistantPreview): String? {
+            val text = when {
+                // The wording of an error depends on the language of the request, so only the fact of the error counts.
+                preview.error != null -> "error"
+                preview.rows.isEmpty() -> return null
+                else -> preview.rows.joinToString("\u0001") { row ->
+                    val fields = row as? JsonObject
+                    "${(fields?.get("label") as? JsonPrimitive)?.contentOrNull.orEmpty().length}:${(fields?.get("label") as? JsonPrimitive)?.contentOrNull.orEmpty()}" +
+                        "\u0000${(fields?.get("value") as? JsonPrimitive)?.contentOrNull.orEmpty().length}:${(fields?.get("value") as? JsonPrimitive)?.contentOrNull.orEmpty()}"
+                }
+            }
+            return java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        }
 
         fun id(use: JsonObject): String = (use["id"] as? JsonPrimitive)?.contentOrNull.orEmpty()
 
@@ -617,15 +719,49 @@ object Roles {
     const val Notice = "notice"
 }
 
-/** Links in the assistant's text. */
+/**
+ * Links in the assistant's text (the app shows them as text; a notice warns about hosts that are not the company's own).
+ *
+ * What counts as a link: `scheme://authority` (any scheme), `www.host`, and a bare `host.tld` written with a path, query,
+ * fragment or port, or with a common public TLD (an e-mail address is not a link). The host is read the way a browser
+ * does: user info before the last `@` is dropped (`https://acme.com@evil.com` is evil.com), then the port. A host that is
+ * not plain ASCII letters, digits, hyphens and dots (an IDN, a `%` escape) is ALWAYS external: only a punycode `xn--`
+ * host that is exactly a known domain (or a subdomain of one) is not.
+ */
 object AssistantLinks {
-    private val url = Regex("(?i)\\b(?:https?://|www\\.)([a-z0-9.-]+)")
+    private val scheme = Regex("(?i)(?<![\\p{L}\\p{N}+.-])[a-z][a-z0-9+.-]{1,15}://([^\\s/?#<>\"'\\\\]+)")
+    private val www = Regex("(?i)(?<![\\p{L}\\p{N}@._/:-])(www\\.[^\\s/?#<>\"'\\\\]+)")
+    private val bare = Regex("(?<![\\p{L}\\p{N}@._/:%-])((?:[\\p{L}\\p{N}][\\p{L}\\p{N}-]*\\.)+\\p{L}{2,24})(?::\\d{1,5})?([/?#])?")
+    private val commonTlds = setOf(
+        "com", "net", "org", "info", "biz", "io", "co", "app", "dev", "xyz", "online", "site", "shop", "store", "top", "club", "link", "click",
+        "me", "tv", "ly", "gl", "cc", "ru", "cn", "es", "mx", "ar", "br", "cl", "pe", "uy", "ec", "pa", "us", "uk", "de", "fr", "it",
+    )
+    private val plainHost = Regex("[a-z0-9.-]+")
 
-    /** Hosts of the links in [text] that are not [own] (nor a subdomain of them). */
-    fun foreignHosts(text: String, own: Set<String>): List<String> = url.findAll(text).map { match ->
-        val raw = match.value.lowercase()
-        (if (raw.startsWith("www.")) raw else match.groupValues[1].lowercase()).trimEnd('.')
-    }.filter { host -> own.none { host == it || host.endsWith(".$it") } }.distinct().take(5).toList()
+    /** Hosts of the links in [text] that are not [own] (nor a subdomain of them), at most 5. */
+    fun foreignHosts(text: String, own: Set<String>): List<String> {
+        // What a person reads: no invisible characters inside a host, full-width forms as plain ones.
+        val clean = java.text.Normalizer.normalize(text.replace(Regex("[\\p{Cf}]"), ""), java.text.Normalizer.Form.NFKC)
+        val hosts = mutableListOf<String>()
+        scheme.findAll(clean).forEach { hosts += hostOf(it.groupValues[1]) }
+        www.findAll(clean).forEach { hosts += hostOf(it.groupValues[1]) }
+        bare.findAll(clean).forEach { match ->
+            val host = match.groupValues[1].lowercase()
+            if (match.groupValues[2].isNotEmpty() || match.value.contains(':') || host.substringAfterLast('.') in commonTlds) hosts += host
+        }
+        return hosts.filter { it.isNotEmpty() }.distinct()
+            .filter { host -> !(plainHost.matches(host) && own.any { host == it || host.endsWith(".$it") }) }
+            .map(::shown).distinct().take(5)
+    }
+
+    // The host a browser would connect to for an authority such as "user:pw@host:8080".
+    private fun hostOf(authority: String): String {
+        val host = authority.substringAfterLast('@').lowercase().replace(Regex(":\\d*$"), "")
+        return host.trim('.', ',', ';', ':', '!', '?', ')', ']', '}', '(', '[', '{', '"', '\'')
+    }
+
+    private fun shown(host: String): String =
+        if (host.all { it.code < 128 }) host else runCatching { java.net.IDN.toASCII(host) }.getOrNull()?.let { "$host ($it)" } ?: host
 }
 
 /** The system prompt: stable for a user, so it is cached with the tools (date and language go in the user's turn). */
