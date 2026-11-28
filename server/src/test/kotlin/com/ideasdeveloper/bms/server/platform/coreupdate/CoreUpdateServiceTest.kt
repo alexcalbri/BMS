@@ -1,4 +1,4 @@
-package com.ideasdeveloper.bms.server.company.application
+package com.ideasdeveloper.bms.server.platform.coreupdate
 
 import java.time.Instant
 import kotlin.test.Test

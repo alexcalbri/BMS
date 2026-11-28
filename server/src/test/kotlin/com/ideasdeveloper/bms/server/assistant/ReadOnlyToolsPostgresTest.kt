@@ -91,7 +91,7 @@ class ReadOnlyToolsPostgresTest {
     /** Source files that use an HTTP client of the JDK or the project's HTTP abstractions: a new one fails the test until reviewed. */
     private val knownHttpFiles = setOf(
         "CrmTranslate.kt", "CrmMeta.kt", "CrmMetaServer.kt", "CrmCloudbeds.kt", "CrmEncuentra24.kt", "UnifiClient.kt", "MondayApi.kt",
-        "WordPressClient.kt", "VersionCatalogClient.kt", "CoreUpdateService.kt", "RemoteExtensionCatalog.kt", "RemoteModuleCatalog.kt",
+        "WordPressClient.kt", "VersionCatalogClient.kt", "CoreRelease.kt", "RemoteExtensionCatalog.kt", "RemoteModuleCatalog.kt",
         "ExtensionPackageBuilder.kt", "ModulePackages.kt", "AssistantModel.kt", "ExtensionService.kt", "CrmImport.kt", "MailHostGuard.kt",
         // The default transport of the sends and renders of the CRM (button, template mail, automation engine): writes, never a read-only tool.
         "CrmButtons.kt", "CrmTemplateMailer.kt", "CrmAutomationEngine.kt",

@@ -17,9 +17,6 @@ import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningExce
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.bms.server.company.application.CompanySelfException
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
-import com.ideasdeveloper.bms.server.company.application.CoreUpdateOutcome
-import com.ideasdeveloper.bms.server.company.application.CoreUpdateRequestBody
-import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.CompanyMailInput
 import com.ideasdeveloper.bms.server.modules.install.serverModuleRoutes

@@ -28,8 +28,8 @@ import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningExce
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
-import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
-import com.ideasdeveloper.bms.server.company.application.JdbcCoreUpdateStore
+import com.ideasdeveloper.bms.server.platform.coreupdate.CoreUpdateService
+import com.ideasdeveloper.bms.server.platform.coreupdate.JdbcCoreUpdateStore
 import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.infrastructure.database.DatabaseFactory

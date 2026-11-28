@@ -3,7 +3,7 @@ package com.ideasdeveloper.bms.server.company.api
 import com.ideasdeveloper.bms.server.platform.coreupdate.coreUpdateRoutes
 import com.ideasdeveloper.bms.server.modules.install.serverModuleRoutes
 import com.ideasdeveloper.bms.server.platform.serverInfoRoutes
-import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
+import com.ideasdeveloper.bms.server.platform.coreupdate.CoreUpdateService
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.bms.server.company.application.CompanySelfService
 import com.ideasdeveloper.bms.server.admins.ServerActorResolver

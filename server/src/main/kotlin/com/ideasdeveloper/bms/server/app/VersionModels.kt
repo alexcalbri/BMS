@@ -1,6 +1,6 @@
 package com.ideasdeveloper.bms.server.app
 
-import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
+import com.ideasdeveloper.bms.server.platform.coreupdate.CoreUpdateService
 import kotlinx.serialization.Serializable
 
 const val BMSVersion = "0.14.0"

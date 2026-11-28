@@ -1,4 +1,4 @@
-package com.ideasdeveloper.bms.server.company.application
+package com.ideasdeveloper.bms.server.platform.coreupdate
 
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
 import org.postgresql.ds.PGSimpleDataSource
