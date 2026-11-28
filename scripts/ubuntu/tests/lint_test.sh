@@ -28,6 +28,28 @@ done
 equals 'update.sh: dos GRANT del registro de actividad' 2 "$(sed -n '/^-- Activity log (tenant V011/,/^SQL$/p' "$SCRIPTS/update.sh" | grep -c '^GRANT')"
 check 'update.sh no migra empresas como superusuario' bash -c '! grep -nE "runuser -u postgres -- psql[^|]*tenant_db" "$1"' _ "$SCRIPTS/update.sh"
 
+# psql output (db-roles.sh, "THE ONE RULE ABOUT psql OUTPUT"): the flags that keep command tags out of captured output live
+# in bms_pg_query and bms_pg_exec only.
+check 'ningun script usa ya bms_pg_super (cada transporte es bms_pg_transport)' bash -c '! grep -nE "^[^#]*\bbms_pg_super\b" "$1"/*.sh "$1"/tests/*.sh | grep -v "lint_test.sh"' _ "$SCRIPTS"
+check 'bms_pg_transport solo lo llaman bms_pg_query y bms_pg_exec' bash -c '[[ $(grep -hE "^[^#]*bms_pg_transport \"" "$1"/db-roles.sh "$1"/rehearse.sh | wc -l) == 2 ]]' _ "$SCRIPTS"
+check 'nunca se captura la salida de bms_pg_exec' bash -c '! grep -nE "\$\([^)]*bms_pg_exec" "$1"/*.sh' _ "$SCRIPTS"
+check 'todo psql cuya salida se captura lleva -q (o es bms_pg_query)' python3 - "$SCRIPTS" <<'PY'
+import os, re, sys
+bad = []
+for name in sorted(os.listdir(sys.argv[1])):
+    if not name.endswith('.sh'):
+        continue
+    for number, line in enumerate(open(os.path.join(sys.argv[1], name), encoding='utf-8'), 1):
+        code = line.strip()
+        if code.startswith('#') or '$(' not in code and '`' not in code:
+            continue
+        if re.search(r'\$\([^)]*\bpsql\b', code) and not re.search(r'\s-[A-Za-z]*q|--quiet', code):
+            bad.append(f'{name}:{number}: {code}')
+for line in bad:
+    print('    ' + line, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+
 # Locale (tests/locale_test.sh): no check may depend on the locale the server runs the scripts with (the update that
 # rejected a valid 64-hex password ran under LANG=en_US.UTF-8, where [!-~] is not printable ASCII). The agreed protection:
 #   1. every entry point fixes its locale at the top (LC_ALL=C.UTF-8, or C when missing);
