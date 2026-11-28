@@ -307,17 +307,33 @@ fun jsonArrayOf(vararg elements: JsonElement) = buildJsonArray { elements.forEac
 object RealToolRegistry {
     private val root = com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck.repoRoot()
 
-    /** Every extension of `extensions/`, built from its provider class (found by its source file); fails when one has no provider. */
+    /**
+     * Every extension of `extensions/` whose provider class is on the test classpath. The local helper adds the extensions' sources
+     * to the server tests; the CI server job does not, so there an extension is skipped (its class is genuinely absent). The tools
+     * under test live in the modules, so the registry contract holds in both; only the extension-specific wiring (automation
+     * providers, tenant rows) is exercised just when the extensions are present. An extension with no provider declared in its
+     * sources still fails, so a new extension cannot slip by.
+     */
     val extensions: List<com.ideasdeveloper.bms.server.extensions.ServerExtension> by lazy {
-        java.io.File(root, "extensions").listFiles().orEmpty().filter { it.isDirectory }.sortedBy { it.name }.map { directory ->
+        java.io.File(root, "extensions").listFiles().orEmpty().filter { it.isDirectory }.sortedBy { it.name }.mapNotNull { directory ->
             val provider = directory.walkTopDown().filter { it.isFile && it.extension == "kt" && "/src/main/" in it.path }.firstNotNullOfOrNull { file ->
                 val text = file.readText()
                 Regex("class (\\w+ServerExtensionProvider)\\b").find(text)?.let { match ->
                     Regex("^package ([\\w.]+)", RegexOption.MULTILINE).find(text)!!.groupValues[1] + "." + match.groupValues[1]
                 }
             } ?: error("extension ${directory.name} has no ServerExtensionProvider")
-            (Class.forName(provider).getDeclaredConstructor().newInstance() as com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider).create()
+            val type = try {
+                Class.forName(provider)
+            } catch (_: ClassNotFoundException) {
+                return@mapNotNull null
+            }
+            (type.getDeclaredConstructor().newInstance() as com.ideasdeveloper.bms.server.extensions.ServerExtensionProvider).create()
         }
+    }
+
+    /** True when every extension of `extensions/` is on the classpath (local helper); false on the CI server job, which has the modules only. */
+    val extensionsComplete: Boolean by lazy {
+        extensions.size == java.io.File(root, "extensions").listFiles().orEmpty().count { it.isDirectory }
     }
 
     val modules: List<com.ideasdeveloper.bms.server.modules.ServerModule> by lazy {

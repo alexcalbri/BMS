@@ -211,7 +211,8 @@ class ReadOnlyToolsPostgresTest {
         }
         val all = registry.mcp().flatMap { it.tools }
         val tools = all.filter { it.tool.readOnly }
-        assertTrue(tools.size > 90, "expected the read-only tools of every module and extension, got ${tools.size}")
+        // The modules alone (CI server job) have fewer read-only tools than modules plus extensions (local helper).
+        assertTrue(tools.size > if (RealToolRegistry.extensionsComplete) 90 else 60, "expected the read-only tools of every module and extension, got ${tools.size}")
 
         // ---- Seed: the tools' own write handlers, and SQL where nothing creates the record ----
         val ids = mutableMapOf<String, String>()
@@ -337,9 +338,12 @@ class ReadOnlyToolsPostgresTest {
         assertEquals(loggedReads, loggedWriters, "reads that leave an activity-log row")
         // Network: only the listed providers, and they are real read-only tools.
         assertTrue(networkers.all { it in externalReads }, "read-only tools that reach the network and are not in externalReads: ${networkers - externalReads.keys}")
-        externalReads.keys.forEach { name -> assertTrue(tools.any { it.qualifiedName == name }, "$name is not a read-only tool of the registry") }
+        // Tools of the extensions (monday, inmobiliaria) exist only where the extensions are on the classpath (local helper, not the CI server job).
+        fun fromExtension(name: String) = "monday" in name || "inmobiliaria" in name
+        externalReads.keys.filter { RealToolRegistry.extensionsComplete || !fromExtension(it) }
+            .forEach { name -> assertTrue(tools.any { it.qualifiedName == name }, "$name is not a read-only tool of the registry") }
         // Everything else got past the gate: a tool that still refuses must say why in `refuses`.
-        assertEquals(refuses.keys.sorted(), refusing.sorted(), "tools that refuse under the seed (list them in refuses with the reason, or seed what they need)")
+        assertEquals(refuses.keys.filter { RealToolRegistry.extensionsComplete || !fromExtension(it) }.sorted(), refusing.sorted(), "tools that refuse under the seed (list them in refuses with the reason, or seed what they need)")
         // The check sees writes: a tool that does write (it is not declared read only) is caught the same way.
         val writer = all.first { it.qualifiedName == "hotspot_my_wifi_code" }
         connect(company).use { tenant ->

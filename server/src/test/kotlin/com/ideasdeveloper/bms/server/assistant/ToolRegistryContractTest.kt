@@ -83,7 +83,10 @@ class ToolRegistryContractTest {
         val unknown = tools.values.filter { it.tool.outbound && it.qualifiedName !in expected }.map { it.qualifiedName }
         assertTrue(unknown.isEmpty(), "outbound tools not in the reviewed list: $unknown")
         // Every monday outbound tool of every module that has them is configured, retried and previewed.
-        assertTrue(tools.keys.count { it.endsWith("_outbound_configure") } >= 1, "no outbound_configure tool in: ${tools.keys.filter { "outbound" in it }}")
+        // (The monday tools come from the extensions: checked only where the extensions are on the classpath, see RealToolRegistry.)
+        if (RealToolRegistry.extensionsComplete) {
+            assertTrue(tools.keys.count { it.endsWith("_outbound_configure") } >= 1, "no outbound_configure tool in: ${tools.keys.filter { "outbound" in it }}")
+        }
     }
 
     @Test
