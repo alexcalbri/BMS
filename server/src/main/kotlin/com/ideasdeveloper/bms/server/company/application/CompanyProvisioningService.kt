@@ -78,6 +78,13 @@ class CompanyProvisioningService(
     private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
     private val tenantSchema = TenantSchemaProvisioner(central, config, loginDatabases, moduleRegistry)
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
+    private val workspace = ServerWorkspaceProvisioner(
+        central = central,
+        config = config,
+        loginDatabases = loginDatabases,
+        tenantSchema = tenantSchema,
+        tenantRuntimeConnection = { tenant -> tenantRuntimeConnection(tenant) },
+    )
     private val owners = BusinessOwnerAccounts(
         central = central,
         loginDatabases = loginDatabases,
@@ -969,103 +976,15 @@ class CompanyProvisioningService(
 
     // Code of the server workspace, creating it with its own tenant database on first use.
     @Synchronized
-    fun ensureServerWorkspace(provisioningRole: String, actor: AuditActor): String {
-        serverWorkspaceRow()?.let { return it.code }
-        val code = ServerWorkspace.Code
-        val databaseName = ServerWorkspace.DatabaseName
-        central.connection.use { connection ->
-            if (connection.exists("companies", "code", code)) {
-                throw CompanyProvisioningException(tr("Ya existe una empresa con el codigo {0}; cambia su codigo para crear el espacio del servidor.", code))
-            }
-        }
-        tenantSchema.adminConnection(provisioningRole).use { admin ->
-            admin.autoCommit = true
-            // A database left by an interrupted attempt is reused; its migrations are idempotent.
-            if (!admin.existsDatabase(databaseName)) {
-                admin.createStatement().use { statement ->
-                    statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
-                    statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
-                    statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
-                    tenantSchema.grantProvisioningConnect(statement, databaseName)
-                }
-            }
-        }
-        val tenantConfig = tenantSchema.tenantConfig(databaseName)
-        tenantSchema.tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
-            tenantSchema.applyTenantCoreMigrations(tenant)
-            tenantSchema.applyBaseModuleMigrations(tenant)
-            tenantSchema.grantTenantPermissions(tenant, ownerUsername = null)
-        }
-        central.connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                connection.prepareStatement(
-                    """
-                    INSERT INTO companies (
-                        id, code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active, is_server_workspace
-                    ) VALUES (?, ?, ?, NULL, '#667EEA', '#764BA2', '#FFFFFF', ?, TRUE, TRUE)
-                    """.trimIndent()
-                ).use { insert ->
-                    insert.setObject(1, UUID.randomUUID())
-                    insert.setString(2, code)
-                    insert.setString(3, ServerWorkspace.Name)
-                    insert.setString(4, databaseName)
-                    insert.executeUpdate()
-                }
-                insertAudit(connection, actor, "server_workspace.created", code, null, auditDetails("databaseName" to databaseName))
-                connection.commit()
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
-            } finally {
-                connection.autoCommit = true
-            }
-        }
-        loginDatabases.registerTenant(tenantConfig)
-        log.info("Server workspace created in database {}", databaseName)
-        return code
-    }
+    fun ensureServerWorkspace(provisioningRole: String, actor: AuditActor): String =
+        workspace.ensureServerWorkspace(provisioningRole, actor)
 
-    private fun serverWorkspaceRow(): CompanyRow? = try {
-        central.connection.use { connection ->
-            connection.prepareStatement(
-                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE is_server_workspace"
-            ).use { query ->
-                query.executeQuery().use { rows ->
-                    if (!rows.next()) null else CompanyRow(
-                        code = rows.getString("code"),
-                        name = rows.getString("name"),
-                        logoUrl = rows.getString("logo_url"),
-                        primaryColor = rows.getString("primary_color"),
-                        secondaryColor = rows.getString("secondary_color"),
-                        accentColor = rows.getString("accent_color"),
-                        databaseName = rows.getString("database_name"),
-                        isActive = rows.getBoolean("is_active"),
-                    )
-                }
-            }
-        }
-    } catch (_: java.sql.SQLException) {
-        // Before control migration V006 there is no workspace column.
-        null
-    }
+    private fun serverWorkspaceRow(): CompanyRow? = workspace.serverWorkspaceRow()
 
     // Modules enabled in the server workspace, or null when it does not exist yet.
-    private fun serverWorkspaceModules(): Set<String>? {
-        val workspace = serverWorkspaceRow() ?: return null
-        val tenant = loginDatabases.tenantConfig(workspace.databaseName) ?: return emptySet()
-        return tenantRuntimeConnection(tenant).use { connection ->
-            connection.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
-                query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
-            }
-        }
-    }
+    private fun serverWorkspaceModules(): Set<String>? = workspace.serverWorkspaceModules()
 
-    private fun rejectServerWorkspace(companyCode: String) {
-        if (companyCode == ServerWorkspace.Code && serverWorkspaceRow()?.code == companyCode) {
-            throw CompanyProvisioningException(tr("El espacio del servidor no se administra como una empresa."))
-        }
-    }
+    private fun rejectServerWorkspace(companyCode: String) = workspace.rejectServerWorkspace(companyCode)
 
     private fun validate(
         code: String,
