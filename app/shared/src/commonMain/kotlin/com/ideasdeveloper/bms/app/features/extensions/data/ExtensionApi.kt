@@ -440,6 +440,9 @@ data class ExtensionPackageInspection(
     val signed: Boolean = false,
     val keyId: String? = null,
     val signatureProblem: String? = null,
+    /** Version del catalogo y la instalada; null si el servidor es anterior a estos campos. */
+    val version: String? = null,
+    val installedVersion: String? = null,
 )
 
 // Paquete subido (ZIP) o descargado (URL) y dejado en preparacion por el servidor.

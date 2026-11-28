@@ -68,6 +68,9 @@ data class ExtensionPackageInspection(
     val keyId: String? = null,
     /** Por que una firma presente no vale (hash distinto, llave desconocida...). */
     val signatureProblem: String? = null,
+    /** Version del paquete segun el catalogo y la ya instalada (null si no hay); opcionales por compatibilidad. */
+    val version: String? = null,
+    val installedVersion: String? = null,
 )
 
 /**
@@ -567,6 +570,8 @@ class ExtensionPackageService(
             signed = inspected.signed,
             keyId = inspected.keyId,
             signatureProblem = inspected.signatureProblem,
+            version = remote.manifest.version,
+            installedVersion = store.find(id)?.takeIf { it.status != "removed" }?.version,
         )
     }
 
