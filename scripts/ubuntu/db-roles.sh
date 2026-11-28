@@ -484,13 +484,13 @@ SQL
 }
 
 # Snapshots of everything a role layout move may touch, one row per fact: <tag>|<kind>|<key>|<value>. Variable: tag.
-# Global: roles (attributes and a hash of the password verifier), memberships, databases (owner, ACL). Columns of
+# Global: roles (attributes and a SHA-256 of the password verifier; not md5, which a FIPS build refuses), memberships, databases (owner, ACL). Columns of
 # pg_auth_members come from to_jsonb, so the options of PostgreSQL 16+ are included and older versions still work.
 bms_sql_snapshot_global() {
     cat <<'SQL'
 SELECT :'tag' || '|role|' || r.rolname || '|' || concat_ws(',', r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb,
        r.rolcanlogin, r.rolreplication, r.rolbypassrls, r.rolconnlimit, COALESCE(r.rolvaliduntil::text, ''),
-       COALESCE(r.rolconfig::text, ''), COALESCE(pg_catalog.md5(a.rolpassword), ''))
+       COALESCE(r.rolconfig::text, ''), CASE WHEN a.rolpassword IS NULL THEN '' ELSE pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(a.rolpassword, 'UTF8')), 'hex') END)
 FROM pg_catalog.pg_roles r JOIN pg_catalog.pg_authid a ON a.oid = r.oid
 UNION ALL
 SELECT :'tag' || '|member|' || pg_catalog.pg_get_userbyid(m.member) || '>' || pg_catalog.pg_get_userbyid(m.roleid) || '|'
