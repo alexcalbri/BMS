@@ -83,6 +83,17 @@ data class AssistantConversationResponse(
     val pendingConfirmations: Int = 0,
 )
 
+/**
+ * GET /companies/me/assistant/attention: what waits for the caller (own conversations only), cheap enough to poll every
+ * 15-30 s. [conversationIds]: up to 20, the ones with a pending confirmation first.
+ */
+@Serializable
+data class AssistantAttentionResponse(
+    val pendingConfirmations: Int = 0,
+    val unseenFinished: Int = 0,
+    val conversationIds: List<String> = emptyList(),
+)
+
 @Serializable
 data class AssistantConversationListResponse(val conversations: List<AssistantConversationResponse>, val nextBefore: String? = null)
 
@@ -243,11 +254,13 @@ data class AssistantServerCompany(
     val allowed: Boolean,
     val monthlyTokens: Long? = null,
     val effectiveMonthlyTokens: Long? = null,
+    // The company's own switch; [enabled] is the same value under its older name (0.14.0 apps), [companyEnabled] the current one.
     val enabled: Boolean,
+    val companyEnabled: Boolean = enabled,
     val ownKeySet: Boolean,
     val monthUsedTokens: Long,
-    // The server workspace's own row (server owner only): its switch is the server one.
-    val workspace: Boolean = false,
+    // The server workspace's own row (code "servidor"; server owner only): its switch is the server one.
+    val serverWorkspace: Boolean = false,
 )
 
 @Serializable
@@ -259,6 +272,8 @@ data class AssistantCompanyAllowanceRequest(
     val allowed: Boolean? = null,
     val monthlyTokens: Long? = null,
     // The company's own assistant switch, set by the server person; turning it on needs acceptDisclosure.
+    // [companyEnabled] is the current name; [enabled] is accepted as the same thing when companyEnabled is absent.
+    val companyEnabled: Boolean? = null,
     val enabled: Boolean? = null,
     val acceptDisclosure: Boolean? = null,
 )

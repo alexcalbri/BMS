@@ -397,8 +397,8 @@ class AssistantServerPeopleTest {
             assertEquals("server|2", scalar(workspaceDb, "SELECT key_source || '|' || requests FROM assistant_usage"))
             val list = json("GET", "/server/assistant/companies", ownerToken, null)["companies"]!!.jsonArray.map { it.jsonObject }
             assertEquals("servidor", list.first().text("code"))
-            assertTrue(list.first().flag("workspace") && list.first().flag("enabled"))
-            assertEquals(1, list.count { it.flag("workspace") })
+            assertTrue(list.first().flag("serverWorkspace") && list.first().flag("enabled") && list.first().flag("companyEnabled") && list.first().text("code") == "servidor")
+            assertEquals(1, list.count { it.flag("serverWorkspace") })
             assertTrue(json("GET", "/server/assistant/usage", ownerToken, null)["companies"]!!.jsonArray.first().jsonObject.text("serverKeyTokens").toLong() > 0)
             // Its allowance and limit are its own row; its switch is the server's.
             assertEquals(HttpStatusCode.Conflict, server("PUT", "/server/assistant/companies/servidor", ownerToken, """{"enabled":false}""").status)
@@ -521,7 +521,7 @@ class AssistantServerPeopleTest {
                 scalar(central, "SELECT actor_kind || '|' || actor_user_id || '|' || ((details::jsonb)->>'disclosureAccepted') || '|' || ((details::jsonb)->>'enabled.from') || '|' || ((details::jsonb)->>'via') FROM provisioning_audit_log WHERE action = 'company.assistant_changed' AND company_code = 'acme'"),
             )
             // The owner turns it off and on again; the allowance is untouched by a body with no `allowed`.
-            assertFalse(json("PUT", "/server/assistant/companies/acme", ownerToken, null, """{"enabled":false}""").flag("enabled"))
+            assertFalse(json("PUT", "/server/assistant/companies/acme", ownerToken, null, """{"companyEnabled":false}""").flag("companyEnabled"))
             assertEquals("COMPANY_DISABLED", status(due, "acme").text("reason"))
             assertTrue(json("PUT", "/server/assistant/companies/acme", ownerToken, null, """{"enabled":true,"acceptDisclosure":true,"allowed":true,"monthlyTokens":5000000}""").flag("enabled"))
             assertTrue(status(due, "acme").flag("available"))
@@ -609,6 +609,113 @@ class AssistantServerPeopleTest {
             // Out of scope (or without the right to enter any more): the session stops at its next request.
             env.grant(ServerPermission.AssistantUse, ServerPermission.AssistantManage, scope = emptyList())
             assertEquals(HttpStatusCode.Unauthorized, call("GET", "/companies/me/assistant/status", anaSession, "acme").status)
+        }
+    }
+
+    private fun unread(database: String, userId: Any) = scalar(database, "SELECT count(*) FROM notifications WHERE user_id = '$userId' AND read_at IS NULL")!!.toInt()
+    private fun notifications(database: String, userId: Any) = scalar(database, "SELECT coalesce(string_agg(title || '|' || body || '|' || target_screen || '|' || target_params || '|' || module_id, ';'), '') FROM notifications WHERE user_id = '$userId'")!!
+
+    @Test
+    fun theOwnersOtherDevicesLearnWhatWaitsForThemThroughTheInboxAndTheAttentionEndpointAndNobodyElseDoes() {
+        if (url == null) return
+        val env = Env()
+        val chat = "texto-privado-" + UUID.randomUUID()
+        inApp(env) {
+            val ownerToken = env.ownerToken
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/settings", ownerToken, """{"enabled":true,"acceptDisclosure":true}""").status)
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/key", ownerToken, """{"apiKey":"$serverKey"}""").status)
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/companies/acme", ownerToken, """{"enabled":true,"acceptDisclosure":true}""").status)
+            connect(acmeDb).use { it.run("INSERT INTO application_user_permissions (user_id, permission_id) SELECT id, 'empresa.assistant.use' FROM application_users WHERE postgres_role = 'eva_acme'") }
+            val eva = env.logins.service.login(LoginCredentials("eva_acme", password, "acme").withClientAddress("10.3.3.5"))!!.accessToken
+            val due = env.dueno.accessToken
+            val dueId = scalar(acmeDb, "SELECT id FROM application_users WHERE postgres_role = 'dueno_acme'")!!
+            val evaId = scalar(acmeDb, "SELECT id FROM application_users WHERE postgres_role = 'eva_acme'")!!
+            suspend fun attention(token: String, company: String) = json("GET", "/companies/me/assistant/attention", token, company)
+            fun write(id: String) = Scripted.toolUse(id, "demo_add_note", buildJsonObject { put("texto", "nota") })
+
+            assertEquals(0, attention(due, "acme")["pendingConfirmations"]!!.jsonPrimitive.content.toInt())
+            // 1. A turn pauses: ONE notification for the owner of the conversation, generic, with a target and no chat text.
+            val conversation = json("POST", "/companies/me/assistant/conversations", due, "acme", "{}").text("id")
+            env.models.add(Scripted.message("tool_use", write("toolu_1")))
+            val paused = turn("/companies/me/assistant/conversations/$conversation/messages", due, "acme", """{"text":"$chat"}""")
+            val card = paused.single { it.first == "confirmation_required" }.second
+            val attentionNow = attention(due, "acme")
+            assertEquals("1", attentionNow.text("pendingConfirmations"))
+            assertEquals("0", attentionNow.text("unseenFinished"))
+            assertEquals(listOf(conversation), attentionNow["conversationIds"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(1, unread(acmeDb, dueId))
+            val stored = notifications(acmeDb, dueId)
+            assertEquals("Asistente: confirmacion pendiente", stored.substringBefore('|'))
+            assertTrue(stored.contains("\"conversationId\":\"$conversation\"") && stored.contains("|assistant|") && stored.endsWith("|assistant"), stored)
+            assertFalse(stored.contains(chat) || stored.contains("nota"), stored)
+            // Nobody else sees anything: not another user of the company, not the owner's other places.
+            assertEquals("0", attention(eva, "acme").text("pendingConfirmations"))
+            assertEquals(0, unread(acmeDb, evaId))
+            assertEquals("", notifications(acmeDb, evaId))
+            assertEquals("0", scalar(acmeDb, "SELECT count(*) FROM notifications WHERE user_id <> '$dueId'"))
+            // 2. A second pause of the same conversation replaces it: still one live notification.
+            env.models.add(Scripted.message("tool_use", write("toolu_2")))
+            val second = turn("/companies/me/assistant/confirmations/${card.text("confirmationId")}", due, "acme", """{"decision":"approve"}""")
+            val card2 = second.single { it.first == "confirmation_required" }.second
+            assertEquals(1, unread(acmeDb, dueId))
+            assertEquals("2", scalar(acmeDb, "SELECT count(*) FROM notifications WHERE user_id = '$dueId'"))
+            // 3. The decision resumes the turn and it finishes: the pending one is resolved, "answer ready" is the live one.
+            env.models.add(Scripted.message("end_turn", Scripted.text("Listo.")))
+            turn("/companies/me/assistant/confirmations/${card2.text("confirmationId")}", due, "acme", """{"decision":"approve"}""")
+            assertEquals(1, unread(acmeDb, dueId))
+            assertEquals("Asistente: respuesta lista", scalar(acmeDb, "SELECT title FROM notifications WHERE user_id = '$dueId' AND read_at IS NULL"))
+            val after = attention(due, "acme")
+            assertEquals(listOf("0", "1"), listOf(after.text("pendingConfirmations"), after.text("unseenFinished")))
+            assertFalse(notifications(acmeDb, dueId).contains(chat))
+            // Loading the conversation alone is not reading it; the read marker (POST .../read, 204) is.
+            assertEquals(HttpStatusCode.OK, call("GET", "/companies/me/assistant/conversations/$conversation", due, "acme").status)
+            assertEquals("1", attention(due, "acme").text("unseenFinished"))
+            // Another person's id never marks it: a user who is not the owner gets 404 and changes nothing.
+            assertEquals(HttpStatusCode.NotFound, call("POST", "/companies/me/assistant/conversations/$conversation/read", eva, "acme").status)
+            assertEquals(HttpStatusCode.NotFound, call("POST", "/companies/me/assistant/conversations/${UUID.randomUUID()}/read", due, "acme").status)
+            assertEquals("1", attention(due, "acme").text("unseenFinished"))
+            assertEquals(1, unread(acmeDb, dueId))
+            assertEquals(HttpStatusCode.NoContent, call("POST", "/companies/me/assistant/conversations/$conversation/read", due, "acme").status)
+            assertEquals("0", attention(due, "acme").text("unseenFinished"))
+            assertEquals(0, unread(acmeDb, dueId))
+            // Reading twice changes nothing.
+            assertEquals(HttpStatusCode.NoContent, call("POST", "/companies/me/assistant/conversations/$conversation/read", due, "acme").status)
+            // 4. A confirmation that expires resolves its notification too.
+            val other = json("POST", "/companies/me/assistant/conversations", due, "acme", "{}").text("id")
+            env.models.add(Scripted.message("tool_use", write("toolu_3")))
+            turn("/companies/me/assistant/conversations/$other/messages", due, "acme", """{"text":"otra"}""")
+            assertEquals(1, unread(acmeDb, dueId))
+            connect(acmeDb).use { it.run("UPDATE assistant_pending_calls SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'") }
+            env.service.daily("acme")
+            assertEquals(0, unread(acmeDb, dueId))
+            assertEquals("0", attention(due, "acme").text("pendingConfirmations"))
+            // 5. The endpoint is not part of the chat rate limit: many polls in a row all answer.
+            repeat(15) { assertEquals(HttpStatusCode.OK, call("GET", "/companies/me/assistant/attention", due, "acme").status) }
+
+            // 6. A switcher session's conversations notify nobody (the business owner above all) but are counted for their own person.
+            val ownerSession = env.ownerInAcme()!!.accessToken
+            val mine = json("POST", "/companies/me/assistant/conversations", ownerSession, "acme", "{}").text("id")
+            val dueBefore = notifications(acmeDb, dueId)
+            env.models.add(Scripted.message("tool_use", write("toolu_4")))
+            turn("/companies/me/assistant/conversations/$mine/messages", ownerSession, "acme", """{"text":"desde el selector"}""")
+            assertEquals("1", attention(ownerSession, "acme").text("pendingConfirmations"))
+            assertEquals("0", attention(due, "acme").text("pendingConfirmations"))
+            assertEquals(dueBefore, notifications(acmeDb, dueId))
+            assertEquals("0", scalar(acmeDb, "SELECT count(*) FROM notifications WHERE user_id = '$ownerId'"))
+
+            // 7. In the server workspace the owner is notified (its own inbox); an administrator has no inbox there and is not.
+            val wsConversation = json("POST", "/companies/me/assistant/conversations", ownerToken, "servidor", "{}").text("id")
+            env.models.add(Scripted.message("tool_use", Scripted.toolUse("toolu_5", "servidor_set_company_active", buildJsonObject { put("code", "acme") })))
+            turn("/companies/me/assistant/conversations/$wsConversation/messages", ownerToken, "servidor", """{"text":"$chat"}""")
+            assertEquals("1", attention(ownerToken, "servidor").text("pendingConfirmations"))
+            assertEquals(1, unread(workspaceDb, ownerId))
+            assertFalse(notifications(workspaceDb, ownerId).contains(chat))
+            env.grant(ServerPermission.AuditView, ServerPermission.AssistantUse)
+            assertEquals("0", attention(env.anaToken, "servidor").text("pendingConfirmations"))
+            val anaConversation = json("POST", "/companies/me/assistant/conversations", env.anaToken, "servidor", "{}").text("id")
+            env.models.add(Scripted.message("end_turn", Scripted.text("Nada.")))
+            turn("/companies/me/assistant/conversations/$anaConversation/messages", env.anaToken, "servidor", """{"text":"hola"}""")
+            assertEquals("0", scalar(workspaceDb, "SELECT count(*) FROM notifications WHERE user_id = '${env.anaId}'"))
         }
     }
 }

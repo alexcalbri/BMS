@@ -79,8 +79,8 @@ class AssistantServerAdmin(val central: DataSource, val service: AssistantServic
         } ?: ((if (workspace) AssistantCompanySettings(enabled = settings.enabled) else AssistantCompanySettings()) to 0L)
         return AssistantServerCompany(
             code = code, name = name, allowed = allowance.allowed, monthlyTokens = allowance.monthlyTokens,
-            effectiveMonthlyTokens = config.monthlyLimit(settings, allowance), enabled = company.enabled, ownKeySet = company.ownKeySet,
-            monthUsedTokens = used, workspace = workspace,
+            effectiveMonthlyTokens = config.monthlyLimit(settings, allowance), enabled = company.enabled, companyEnabled = company.enabled, ownKeySet = company.ownKeySet,
+            monthUsedTokens = used, serverWorkspace = workspace,
         )
     }
 
@@ -199,19 +199,20 @@ fun Route.assistantServerRoutes(authorizer: ServerActorResolver, admin: Assistan
         val actor = call.serverActor(authorizer, notServerUser) ?: return@put
         val assistant = admin ?: return@put call.unavailable()
         val code = call.parameters["code"].orEmpty().trim()
-        val request = call.json<AssistantCompanyAllowanceRequest>()
-            ?.takeIf { it.allowed != null || it.enabled != null }
-            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar allowed o enabled.")))
+        val body = call.json<AssistantCompanyAllowanceRequest>()
+        val switch = body?.companyEnabled ?: body?.enabled
+        val request = body?.takeIf { it.allowed != null || switch != null }
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar allowed o companyEnabled.")))
         val name = withContext(Dispatchers.IO) { assistant.companies(actor).firstOrNull { it.first == code }?.second }
             ?: return@put call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("COMPANY_NOT_FOUND", tr("Empresa no encontrada.")))
         // The workspace has no switch of its own: it is the server's.
-        if (request.enabled != null && isServerWorkspace(code)) {
+        if (switch != null && isServerWorkspace(code)) {
             return@put call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("USE_SERVER_SETTINGS", tr("En el espacio del servidor el asistente se configura en los ajustes del servidor.")))
         }
         val answer = try {
             withContext(Dispatchers.IO) {
                 // The switch first: without the disclosure nothing else changes.
-                request.enabled?.let { assistant.setCompanyEnabled(code, it, request.acceptDisclosure, actor) }
+                switch?.let { assistant.setCompanyEnabled(code, it, request.acceptDisclosure, actor) }
                 val allowance = request.allowed?.let { assistant.config.setAllowance(code, it, request.monthlyTokens, actor.audit) } ?: assistant.config.allowance(code)
                 assistant.company(code, name, assistant.config.read(), allowance)
             }

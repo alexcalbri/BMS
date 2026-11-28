@@ -2032,6 +2032,9 @@ class CompanyProvisioningService(
         // Conversations of server people, whose accounts are central (tenant V021); no new grants.
         val serverPeople = "database/tenant/migrations/V021__assistant_server_people.sql"
         applyMigration(connection, "tenant", serverPeople, Files.readString(Path.of(config.migrationsRoot).resolve(serverPeople)))
+        // What needs attention on another device: read marks and the live notification (tenant V022); no new grants.
+        val attention = "database/tenant/migrations/V022__assistant_attention.sql"
+        applyMigration(connection, "tenant", attention, Files.readString(Path.of(config.migrationsRoot).resolve(attention)))
         grantIfMissing(connection, config.runtimeUser, "assistant_messages", listOf("SELECT", "INSERT"))
         grantSequenceIfMissing(connection, config.runtimeUser, "assistant_messages", "assistant_messages_id_seq", listOf("USAGE", "SELECT"))
         try {

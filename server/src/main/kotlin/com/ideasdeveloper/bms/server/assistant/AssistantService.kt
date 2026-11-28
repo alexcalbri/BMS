@@ -168,7 +168,13 @@ class AssistantService(
         access.tenantConnectionForCompany(companyCode) ?: throw java.sql.SQLException("company not available", "08001")
     }
 
-    fun engine(store: AssistantStore): AssistantEngine = AssistantEngine(store, models, clock, turnLimits)
+    /** The engine of [store]; with [companyCode] it also notifies the owner's inbox (a store without a connection source never does). */
+    fun engine(store: AssistantStore, companyCode: String? = null): AssistantEngine {
+        val notifier = companyCode?.takeIf { store.connections != null }?.let { code ->
+            AssistantNotifier(access, code) { userId -> (liveServerActor?.invoke(userId) as? ServerActorLookup.Found)?.actor?.isOwner == true }
+        }
+        return AssistantEngine(store, models, clock, turnLimits, notifier = notifier)
+    }
 
     /**
      * The caller of a company request: [companyCode] and [userId] come from the validated session (userSession),
@@ -375,7 +381,7 @@ class AssistantService(
         val store = if (databaseName == null) store(companyCode) else JdbcAssistantStore {
             access.tenantConnectionForDatabase(databaseName) ?: throw java.sql.SQLException("company not available", "08001")
         }
-        val expired = engine(store).expireAll()
+        val expired = engine(store, companyCode).expireAll()
         val retention = serverConfig.read().retentionDays
         val now = clock()
         val purged = store.purge(now.minus(java.time.Duration.ofDays(retention.toLong())), now.atZone(ZoneOffset.UTC).toLocalDate().minusMonths(13).withDayOfMonth(1))

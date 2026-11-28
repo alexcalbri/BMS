@@ -144,7 +144,25 @@ interface AssistantStore {
 
     /** Deletes the conversations not updated since [before]; usage rows older than [usageBefore]. */
     fun purge(before: Instant, usageBefore: LocalDate): Int
+
+    // ---- What needs attention on another device (tenant V022; no-ops for a store without it) ----
+
+    /** Opens a connection on the same database (for the Core's notifications), or null. */
+    val connections: (() -> Connection)? get() = null
+    /** The owner (user id, owner key) of a conversation. */
+    fun owner(id: UUID): Pair<UUID, String>? = null
+    /** The last turn of the conversation finished at [at]; [read]: someone was watching it, so it is not unseen. */
+    fun markFinished(id: UUID, read: Boolean, at: Instant) {}
+    /** The owner opened the conversation: its read mark. Returns the live notification to resolve, when it is not awaiting. */
+    fun markRead(id: UUID, userId: UUID, ownerKey: String, at: Instant): UUID? = null
+    fun liveNotification(id: UUID): UUID? = null
+    fun setLiveNotification(id: UUID, notificationId: UUID?) {}
+    /** Pending confirmations and unseen finished conversations of one person, in one query. */
+    fun attention(userId: UUID, ownerKey: String, now: Instant): AssistantAttention = AssistantAttention(0, 0, emptyList())
 }
+
+/** [pending]: open confirmations not expired; [unseen]: conversations finished after the owner last read them. */
+data class AssistantAttention(val pending: Int, val unseen: Int, val conversationIds: List<UUID>)
 
 /** [AssistantStore] on a company database; every call takes a pooled connection for itself. */
 class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore {
@@ -172,6 +190,93 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
             query.executeQuery().use { it.next() }
         }
         if (!held) throw AssistantLeaseLostException()
+    }
+
+    override val connections: (() -> Connection)? get() = connect
+
+    override fun owner(id: UUID): Pair<UUID, String>? = use { connection ->
+        connection.prepareStatement("SELECT user_id, owner_key FROM public.assistant_conversations WHERE id = ?").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) to rows.getString(2) else null }
+        }
+    }
+
+    override fun markFinished(id: UUID, read: Boolean, at: Instant) = use { connection ->
+        connection.prepareStatement(
+            "UPDATE public.assistant_conversations SET finished_at = ?, last_read_at = CASE WHEN ? THEN ? ELSE last_read_at END WHERE id = ?",
+        ).use { update ->
+            update.setTimestamp(1, Timestamp.from(at))
+            update.setBoolean(2, read)
+            update.setTimestamp(3, Timestamp.from(at))
+            update.setObject(4, id)
+            update.executeUpdate()
+        }
+        Unit
+    }
+
+    override fun markRead(id: UUID, userId: UUID, ownerKey: String, at: Instant): UUID? = use { connection ->
+        connection.prepareStatement(
+            "UPDATE public.assistant_conversations SET last_read_at = ? WHERE id = ? AND user_id = ? AND owner_key = ? " +
+                "RETURNING CASE WHEN state <> 'awaiting_confirmation' THEN notification_id END",
+        ).use { update ->
+            update.setTimestamp(1, Timestamp.from(at))
+            update.setObject(2, id)
+            update.setObject(3, userId)
+            update.setString(4, ownerKey)
+            update.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+        }
+    }
+
+    override fun liveNotification(id: UUID): UUID? = use { connection ->
+        connection.prepareStatement("SELECT notification_id FROM public.assistant_conversations WHERE id = ?").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+        }
+    }
+
+    override fun setLiveNotification(id: UUID, notificationId: UUID?) = use { connection ->
+        connection.prepareStatement("UPDATE public.assistant_conversations SET notification_id = ? WHERE id = ?").use { update ->
+            update.setObject(1, notificationId)
+            update.setObject(2, id)
+            update.executeUpdate()
+        }
+        Unit
+    }
+
+    override fun attention(userId: UUID, ownerKey: String, now: Instant): AssistantAttention = use { connection ->
+        // One indexed query over the person's own conversations (the partial index of V022); at most 200 rows are read.
+        connection.prepareStatement(
+            """
+            SELECT c.id,
+                   (SELECT count(*) FROM public.assistant_pending_calls p
+                     WHERE p.conversation_id = c.id AND p.status = 'pending' AND p.expires_at > ?) AS pending,
+                   (c.state IN ('idle', 'closed') AND c.finished_at IS NOT NULL
+                     AND (c.last_read_at IS NULL OR c.finished_at > c.last_read_at)) AS unseen
+            FROM public.assistant_conversations c
+            WHERE c.user_id = ? AND c.owner_key = ? AND c.archived_at IS NULL
+              AND (c.state = 'awaiting_confirmation' OR c.finished_at IS NOT NULL)
+            ORDER BY c.updated_at DESC
+            LIMIT 200
+            """.trimIndent(),
+        ).use { query ->
+            query.setTimestamp(1, Timestamp.from(now))
+            query.setObject(2, userId)
+            query.setString(3, ownerKey)
+            query.executeQuery().use { rows ->
+                var pending = 0
+                var unseen = 0
+                val withPending = mutableListOf<UUID>()
+                val withUnseen = mutableListOf<UUID>()
+                while (rows.next()) {
+                    val id = rows.getObject(1, UUID::class.java)
+                    val count = rows.getInt(2)
+                    pending += count
+                    if (count > 0) withPending += id
+                    if (rows.getBoolean(3)) { unseen++; withUnseen += id }
+                }
+                AssistantAttention(pending, unseen, (withPending + withUnseen).distinct().take(20))
+            }
+        }
     }
 
     private fun ResultSet.instant(column: String): Instant? = getTimestamp(column)?.toInstant()

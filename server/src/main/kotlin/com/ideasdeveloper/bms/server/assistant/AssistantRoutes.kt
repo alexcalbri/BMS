@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.assistant
 
+import com.ideasdeveloper.bms.AssistantAttentionResponse
 import com.ideasdeveloper.bms.AssistantCompanySettingsRequest
 import com.ideasdeveloper.bms.AssistantCompanySettingsResponse
 import com.ideasdeveloper.bms.AssistantCompanyUsageResponse
@@ -96,13 +97,22 @@ fun Route.assistantRoutes(service: AssistantService?) {
         call.company(statusRoute = true) { assistant, context, tenant -> Answer.Ok(HttpStatusCode.OK, assistant.status(assistant.availability(tenant, context), context)) }
     }
 
+    // Polled by every open app every 15-30 s: one indexed query on the caller's own conversations, no model call, and not
+    // part of the chat rate limit (only the general per-address limits apply).
+    get("/companies/me/assistant/attention") {
+        call.company { _, context, _ ->
+            val found = if (context.mayUse) context.store.attention(context.caller.userId, context.caller.ownerKey, Instant.now()) else AssistantAttention(0, 0, emptyList())
+            Answer.Ok(HttpStatusCode.OK, AssistantAttentionResponse(found.pending, found.unseen, found.conversationIds.map { it.toString() }))
+        }
+    }
+
     get("/companies/me/assistant/conversations") {
         val archived = call.request.queryParameters["archived"] == "true"
         val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 50
         val before = call.request.queryParameters["before"]?.let { runCatching { Instant.parse(it) }.getOrNull() }
         call.company { assistant, context, _ ->
             val rows = context.store.conversations(context.caller.userId, context.caller.ownerKey, archived, limit, before)
-            val engine = assistant.engine(context.store)
+            val engine = assistant.engine(context.store, context.caller.companyCode)
             val listed = rows.map { conversation ->
                 if (engine.expireIfDue(conversation.id)) context.store.conversation(conversation.id, context.caller.userId, context.caller.ownerKey) ?: conversation else conversation
             }
@@ -138,7 +148,8 @@ fun Route.assistantRoutes(service: AssistantService?) {
             id ?: return@company notFoundConversation()
             // Only the owner's conversation is touched (expiry included).
             context.store.conversation(id, context.caller.userId, context.caller.ownerKey) ?: return@company notFoundConversation()
-            assistant.engine(context.store).expireIfDue(id)
+            val engine = assistant.engine(context.store, context.caller.companyCode)
+            engine.expireIfDue(id)
             val conversation = context.store.conversation(id, context.caller.userId, context.caller.ownerKey) ?: return@company notFoundConversation()
             val pending = context.store.pending(id)
             val labels = assistant.access.mcpTools().associate { it.qualifiedName to "${it.moduleName}: ${it.tool.title}" }
@@ -150,6 +161,18 @@ fun Route.assistantRoutes(service: AssistantService?) {
                     pending.filter { it.status == AssistantPendingCall.Pending }.map(AssistantView::confirmation),
                 ),
             )
+        }
+    }
+
+    // The app shows the conversation to the person: it is read (the "unseen" mark and its inbox notification). No body, 204;
+    // another person's (or an unknown) id is 404 and changes nothing. Not part of the chat rate limit.
+    post("/companies/me/assistant/conversations/{id}/read") {
+        val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        call.company { assistant, context, _ ->
+            id ?: return@company notFoundConversation()
+            context.store.conversation(id, context.caller.userId, context.caller.ownerKey) ?: return@company notFoundConversation()
+            assistant.engine(context.store, context.caller.companyCode).opened(context.caller, id)
+            Answer.Ok(HttpStatusCode.NoContent, null)
         }
     }
 
@@ -185,7 +208,7 @@ fun Route.assistantRoutes(service: AssistantService?) {
         call.turn(service) { assistant, context, tenant ->
             id ?: throw AssistantRefusal(404, "CONVERSATION_NOT_FOUND", tr("Esa conversacion no existe."))
             val runtime = assistant.runtime(tenant, assistant.availability(tenant, context))
-            val engine = assistant.engine(context.store)
+            val engine = assistant.engine(context.store, context.caller.companyCode)
             val turn = engine.prepareMessage(context.caller, id, request.text)
             val toolbox = assistant.toolbox(context);
             PreparedTurn({ sink: AssistantSink -> engine.runMessage(context.caller, runtime, toolbox, turn, request.text, sink) }) {
@@ -207,7 +230,7 @@ fun Route.assistantRoutes(service: AssistantService?) {
             val availability = assistant.availability(tenant, context)
             // Rejecting needs no model request when other calls still wait; approving always needs the assistant available.
             val runtime = assistant.runtime(tenant, availability)
-            val engine = assistant.engine(context.store)
+            val engine = assistant.engine(context.store, context.caller.companyCode)
             val decision = engine.prepareDecision(context.caller, id, approve)
             val toolbox = assistant.toolbox(context);
             PreparedTurn({ sink: AssistantSink -> engine.runDecision(context.caller, runtime, toolbox, decision, sink) }) {

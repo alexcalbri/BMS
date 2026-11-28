@@ -367,7 +367,8 @@ SERVER_PERMISSION_REQUIRED`. The per-company route stays scoped by its path and 
 `400 EFFORT_INVALID`, `400 VALUE_INVALID`).
 `PUT /server/assistant/key` `{"apiKey": "sk-ant-..."}` / `DELETE /server/assistant/key` → the settings.
 `GET /server/assistant/companies` → `{"companies": [{"code", "name", "allowed", "monthlyTokens" (override or null),
-"effectiveMonthlyTokens", "enabled", "ownKeySet", "monthUsedTokens"}]}` (administrators: their scope).
+"effectiveMonthlyTokens", "enabled", "companyEnabled", "ownKeySet", "monthUsedTokens", "serverWorkspace"}]}` (administrators:
+their scope; `enabled` and `companyEnabled` are the same value, `enabled` kept for 0.14.0 apps).
 `PUT /server/assistant/companies/{code}` `{"allowed": true, "monthlyTokens": null}` → that company row (scoped by
 path; `404 COMPANY_NOT_FOUND`).
 `GET /server/assistant/usage?month=2026-11` → `{"month", "companies": [{"code", "name", "requests", "countedTokens",
@@ -670,22 +671,23 @@ disclosure was accepted in that call). The conversations of a switcher session s
 
 `PUT /server/assistant/companies/{code}` (policy unchanged: `server.assistant.manage`, company of the path in scope) body:
 ```json
-{"allowed": true, "monthlyTokens": null, "enabled": true, "acceptDisclosure": true}
+{"allowed": true, "monthlyTokens": null, "companyEnabled": true, "acceptDisclosure": true}
 ```
-- all four optional (core `AssistantCompanyAllowanceRequest`: `allowed` and `enabled` become nullable);
+- all four optional (core `AssistantCompanyAllowanceRequest`); `enabled` is still accepted as an alias of `companyEnabled`
+  (`companyEnabled` wins when both come);
 - with `allowed` present the allowance is replaced as before (`monthlyTokens` null clears the override); without it the
-  allowance is untouched; at least one of `allowed`/`enabled` is needed (`400 INVALID_REQUEST`);
-- `enabled` turns the company's assistant switch on/off exactly like the business owner does. Turning it on needs
+  allowance is untouched; at least one of `allowed`/`companyEnabled` is needed (`400 INVALID_REQUEST`);
+- `companyEnabled` turns the company's assistant switch on/off exactly like the business owner does. Turning it on needs
   `acceptDisclosure: true` (`400 DISCLOSURE_REQUIRED`), recorded as given by that server person: company activity row
   ("<nombre> (desde el servidor)", kind `server_owner`/`server_admin`) and `provisioning_audit_log`
   `company.assistant_changed` with `enabled.from/to` and `disclosureAccepted`;
 - answer: the company row (below). `404 COMPANY_NOT_FOUND`, `400 VALUE_INVALID` as before.
 
-`GET /server/assistant/companies` rows gain `workspace: Boolean` (core `AssistantServerCompany`). For the SERVER OWNER the list
-starts with the workspace row `{"code": "servidor", "name": "Empresa del servidor", "workspace": true, "allowed": ..,
-"monthlyTokens": .., "effectiveMonthlyTokens": .., "enabled": <the server switch>, "ownKeySet": false, ...}`: its own entry
+`GET /server/assistant/companies` rows gain `companyEnabled: Boolean` and `serverWorkspace: Boolean` (core `AssistantServerCompany`). For the SERVER OWNER the list
+starts with the workspace row `{"code": "servidor", "name": "Empresa del servidor", "serverWorkspace": true, "allowed": ..,
+"monthlyTokens": .., "effectiveMonthlyTokens": .., "enabled": <the server switch>, "companyEnabled": <the same>, "ownKeySet": false, ...}`: its own entry
 for the allowance and the monthly limit override (`PUT /server/assistant/companies/servidor` with `allowed`/`monthlyTokens`;
-with `enabled` it answers `409 USE_SERVER_SETTINGS`). Only the owner sees and edits that row (the workspace is never in an
+with `companyEnabled` it answers `409 USE_SERVER_SETTINGS`). Only the owner sees and edits that row (the workspace is never in an
 administrator's scope). `GET /server/assistant/usage` lists it too for the owner. The monthly limit and `limitOwnKeyCompanies`
 apply to it like to a company; its usage is always on the server key (`serverKeyTokens`).
 
@@ -700,3 +702,44 @@ Unchanged shape. In the workspace the owner's non-read-only `servidor_*` tools a
 in full; the ones that delete or destroy (`destructive`) or change what leaves the server (`outbound`) carry a `preview`
 written in plain words (company name instead of code, what is deleted, which owner/email is created). The classification is
 listed in "Implementation, Core 0.14.1" below. The preview hash binding and the 24 h expiry are unchanged.
+
+### Cross-device awareness (Core 0.14.1)
+
+**`GET /companies/me/assistant/attention`** (company session, the workspace session of the owner/administrator, or a switcher
+session; the caller's OWN conversations only, same ownership as the list: owner key `self` or `server:<person id>`).
+```json
+{"pendingConfirmations": 1, "unseenFinished": 2, "conversationIds": ["uuid", "uuid"]}
+```
+- `pendingConfirmations`: open (not expired) confirmation cards across the person's conversations; `unseenFinished`:
+  non-archived conversations whose last turn finished after the person last read them; `conversationIds`: up to 20, those with a
+  pending confirmation first. All zeros when the caller may not use the assistant. Core DTO `AssistantAttentionResponse`.
+- Built to be polled every 15-30 s by every open app: one indexed query (partial index of tenant `V022`, at most 200 rows
+  read), no model call, no tenant-wide scan, NOT part of the per-minute chat limit (only the general per-address limits).
+- Read marker: **`POST /companies/me/assistant/conversations/{id}/read`**, no body, `204 No Content`; sets the person's read mark
+  and resolves the conversation's live notification. `404 CONVERSATION_NOT_FOUND` for an unknown id or another person's
+  conversation (nothing changes); idempotent; not part of the chat rate limit. `GET .../conversations/{id}` does NOT mark it.
+  A turn the client watched from its start (or stopped) is read at once; a turn resumed by an approval
+  (`POST .../confirmations/{id}`) that finishes is unseen until some device posts `read`, so the device that approved should
+  post it when its stream ends and the conversation is on screen.
+- Not added to the status response (it is a separate cheap poll).
+
+**Inbox notification** (Core notification center, the person's own inbox): ONE live notification per conversation, for the
+conversation's own user, created when (1) a turn pauses with confirmations pending ("Asistente: confirmacion pendiente"), and (2)
+a turn resumed by an approval finishes (answer ready, or ended in error or at the limit; "Asistente: respuesta lista"). The new
+one replaces the previous (the old is marked read, never deleted); the pending one is marked read when every call is decided or
+expires, and either is marked read when the conversation is opened. Text is generic and has NO chat content: the body is a fixed
+sentence, never the conversation title (an automatic title comes from the first message) and never tool arguments; translated in
+the recipient's language. Stored as `moduleId: "assistant"`, `target: {"screen": "assistant", "params": {"conversationId": "<uuid>"}}`
+(the existing `NotificationTarget` format: the app opens the assistant on that conversation). Nothing is written to the activity log.
+- Recipients: only a person's own session (`self`): company users and the business owner in their company, and the server owner
+  in the workspace. NOT notified: switcher sessions (the inbox of the company is read by the business owner's session, so a
+  notification for the real opener could never be read there and one for the business owner would leak that the server person
+  used the assistant) and administrators in the workspace (they have no inbox there). Use `attention` polling for those.
+- A turn does not continue after its client disconnects (it is cancelled), so "finished with nobody attached" can only happen to a
+  turn resumed by an approval, which is the case covered. Devices are not identified: the notification also reaches the device
+  that approved, and clears when that device reloads the conversation.
+- There are no per-user notification preferences in the Core to honour.
+- Tenant migration `V022__assistant_attention.sql` (`last_read_at`, `finished_at`, `notification_id` on `assistant_conversations`
+  and the partial index); registered like V020 (`update.sh` required files and its sorted tenant loop; the startup catch-up in
+  `CompanyProvisioningService`; rehearsal checks in `scripts/ubuntu/tests/rehearse_test.sh`). Grants: the runtime role's table-level
+  grant on `assistant_conversations` covers the columns; `notifications` is already `SELECT, INSERT, DELETE, UPDATE(read_at)`.

@@ -86,6 +86,8 @@ class AssistantEngine(
     val limits: AssistantTurnLimits = AssistantTurnLimits(),
     // How a model message is read (replaceable in tests).
     private val parse: (com.anthropic.models.beta.messages.BetaMessage) -> ModelResponse = AnthropicResponses::from,
+    // Inbox notifications for the other devices of the owner (Core 0.14.1); null: none.
+    private val notifier: AssistantNotifier? = null,
 ) {
     private val log = LoggerFactory.getLogger(AssistantEngine::class.java)
 
@@ -180,7 +182,7 @@ class AssistantEngine(
 
     fun runMessage(caller: AssistantCaller, runtime: AssistantRuntime, toolbox: AssistantToolbox, turn: AssistantTurn, text: String, sink: AssistantSink) {
         val conversationId = turn.conversation.id
-        run(conversationId, turn.token, sink) {
+        run(conversationId, turn.token, sink, resumed = false) {
             sink.event(AssistantIds.EventTurnStarted, buildJsonObject { put("conversationId", conversationId.toString()) })
             val now = clock()
             // Calls of the last response never answered (a cut answer, a crashed turn) are answered first, truthfully.
@@ -193,7 +195,9 @@ class AssistantEngine(
 
     fun runDecision(caller: AssistantCaller, runtime: AssistantRuntime, toolbox: AssistantToolbox, decision: Decision, sink: AssistantSink) {
         val token = decision.token ?: return done(sink, "waiting")
-        run(decision.conversationId, token, sink) {
+        run(decision.conversationId, token, sink, resumed = true) {
+            // Every call is decided: the "pending confirmation" notification has done its job.
+            runCatching { notifier?.resolve(store, decision.conversationId) }
             sink.event(AssistantIds.EventTurnStarted, buildJsonObject { put("conversationId", decision.conversationId.toString()) })
             val results = answers(decision.conversationId, toolbox, token, sink)
             store.completePending(decision.conversationId, token, JsonArray(results), clock())
@@ -202,7 +206,7 @@ class AssistantEngine(
     }
 
     /** Runs a turn holding the conversation, and always gives it back (idle unless it paused or closed). */
-    private fun run(conversationId: UUID, token: UUID, sink: AssistantSink, block: () -> String) {
+    private fun run(conversationId: UUID, token: UUID, sink: AssistantSink, resumed: Boolean, block: () -> String) {
         var state = AssistantConversation.Idle
         try {
             state = block()
@@ -220,9 +224,35 @@ class AssistantEngine(
             }
         } finally {
             // Only the turn that still holds the conversation gives it back.
-            runCatching { store.release(conversationId, token, state, clock()) }
+            val released = runCatching { store.release(conversationId, token, state, clock()) }
                 .onFailure { log.error("Assistant conversation {} was not released: {}", conversationId, it.javaClass.name) }
+                .getOrDefault(false)
+            if (released) runCatching { afterTurn(conversationId, state, sink.cancelled, resumed) }
+                .onFailure { log.warn("Assistant attention of conversation {} not recorded: {}", conversationId, it.javaClass.name) }
         }
+    }
+
+    /**
+     * What other devices of the owner learn from a turn that ended. Paused with confirmations: one inbox notification. Finished:
+     * the conversation is marked finished; a turn resumed by an approval is "unseen" (the device that approved reads it at
+     * once, which resolves the notification; any other device sees the badge) and notifies; a turn the client watched from its
+     * start, or that the client stopped, is read.
+     */
+    private fun afterTurn(conversationId: UUID, state: String, cancelled: Boolean, resumed: Boolean) {
+        when (state) {
+            AssistantConversation.Awaiting -> notifier?.paused(store, conversationId)
+            AssistantConversation.Idle, AssistantConversation.Closed -> {
+                val notify = resumed && !cancelled
+                store.markFinished(conversationId, read = !notify, at = clock())
+                if (notify) notifier?.finished(store, conversationId) else notifier?.resolve(store, conversationId)
+            }
+        }
+    }
+
+    /** The owner opened the conversation: it is read, and its live notification is resolved. */
+    fun opened(caller: AssistantCaller, conversationId: UUID) {
+        val live = store.markRead(conversationId, caller.userId, caller.ownerKey, clock())
+        if (live != null) runCatching { notifier?.resolve(store, conversationId) }
     }
 
     private fun renew(conversationId: UUID, token: UUID) {
@@ -558,6 +588,7 @@ class AssistantEngine(
         } finally {
             store.release(conversationId, token, state, clock())
         }
+        runCatching { notifier?.resolve(store, conversationId) }
         return true
     }
 
