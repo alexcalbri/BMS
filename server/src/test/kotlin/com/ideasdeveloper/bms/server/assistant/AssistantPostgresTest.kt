@@ -193,6 +193,9 @@ class AssistantPostgresTest {
         provisioning(databases).applyPendingModuleMigrations()
         provisioning(databases).applyPendingModuleMigrations()
         assertEquals("1", scalar(company, "SELECT count(*) FROM schema_migrations WHERE version LIKE 'V018__create_assistant%'"))
+        // The fingerprint of the confirmation card (V020) is applied once, with its column.
+        assertEquals("1", scalar(company, "SELECT count(*) FROM schema_migrations WHERE version LIKE 'V020__assistant_preview_hash%'"))
+        assertEquals("1", scalar(company, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'assistant_pending_calls' AND column_name = 'preview_hash'"))
         // Narrower rights: the runtime role only reads and appends messages; the rest of the tables are ordinary.
         assertEquals("f|t|t|f", scalar(company, "SELECT has_table_privilege('bms_as_runtime', 'assistant_messages', 'UPDATE') || '|' || has_table_privilege('bms_as_runtime', 'assistant_messages', 'INSERT') || '|' || has_table_privilege('bms_as_runtime', 'assistant_conversations', 'DELETE') || '|' || has_table_privilege('bms_as_runtime', 'assistant_messages', 'DELETE')")?.replace("true", "t")?.replace("false", "f"))
 
@@ -428,5 +431,114 @@ class AssistantPostgresTest {
         // Deleting the conversation takes its messages (cascade as the table owner).
         assertTrue(store.deleteConversation(mine.id, eva, "self"))
         assertEquals("0", scalar(company, "SELECT count(*) FROM assistant_messages"))
+    }
+
+    @Test
+    fun theStoreKeepsThePreviewFingerprintCapsConversationsAtomicallyAndPurgesStuckTurns() {
+        if (url == null) return
+        reset()
+        provisioning(loginDatabases()).applyPendingModuleMigrations()
+        connect(company).use { db -> db.run("GRANT USAGE ON SCHEMA public TO bms_as_runtime") }
+        val runtime = { DriverManager.getConnection(urlOf(company).substringBefore("?") + "?user=bms_as_runtime&password=runtime-pass") }
+        val store = JdbcAssistantStore(runtime)
+        val eva = UUID.fromString(scalar(company, "SELECT id FROM application_users WHERE postgres_role = 'eva_acme'"))
+        val now = Instant.now()
+        // The fingerprint of the card travels with the pending call.
+        val conversation = store.createConversation(eva, "self", "", now)
+        val token = store.startTurn(conversation.id, AssistantConversation.Idle, now.plusSeconds(600), now)!!
+        val call = AssistantPendingCall(UUID.randomUUID(), conversation.id, 0, "toolu_1", "demo_add_note", JsonObject(emptyMap()), "Demo", "Demo", false, JsonArray(emptyList()), AssistantPendingCall.Pending, null, now.plusSeconds(3600), previewHash = "abc123")
+        store.savePending(token, listOf(call))
+        assertEquals("abc123", store.pending(conversation.id).single().previewHash)
+        assertEquals("abc123", scalar(company, "SELECT preview_hash FROM assistant_pending_calls"))
+        // Awaiting with every call decided is found once nothing happened for a while (not before).
+        assertTrue(store.release(conversation.id, token, AssistantConversation.Awaiting, now))
+        assertTrue(store.stuckConversations(now.plusSeconds(3600)).isEmpty() || store.pending(conversation.id).any { it.status == AssistantPendingCall.Pending })
+        assertTrue(store.decide(call.id, AssistantPendingCall.Approved, now))
+        assertEquals(emptyList(), store.stuckConversations(now.minusSeconds(60)))
+        assertEquals(listOf(conversation.id), store.stuckConversations(now.plusSeconds(60)))
+        // Two requests at once for the last place: exactly one gets it.
+        val other = UUID.fromString(scalar(company, "SELECT id FROM application_users WHERE postgres_role = 'leo_acme'"))
+        repeat(3) { store.createConversation(other, "self", "", now) }
+        val created = java.util.concurrent.atomic.AtomicInteger()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(6)
+        try {
+            val start = java.util.concurrent.CountDownLatch(1)
+            val jobs = (1..6).map { pool.submit { start.await(); if (store.createConversationCapped(other, "self", "", now, 4) != null) created.incrementAndGet() } }
+            start.countDown()
+            jobs.forEach { it.get(30, java.util.concurrent.TimeUnit.SECONDS) }
+        } finally {
+            pool.shutdown()
+        }
+        assertEquals(1, created.get())
+        assertEquals(4, store.conversationCount(other, "self"))
+        // Retention also deletes a turn stuck in 'running' whose lease is long over, and keeps a live one.
+        val old = now.minusSeconds(100L * 86_400)
+        val stuck = store.createConversation(eva, "self", "", old)
+        store.startTurn(stuck.id, AssistantConversation.Idle, old.plusSeconds(600), old)
+        val live = store.createConversation(eva, "self", "", old)
+        store.startTurn(live.id, AssistantConversation.Idle, now.plusSeconds(600), old)
+        assertEquals(1, store.purge(now.minusSeconds(90L * 86_400), java.time.LocalDate.of(2025, 1, 1)))
+        assertEquals(null, store.conversation(stuck.id, eva, "self"))
+        assertTrue(store.conversation(live.id, eva, "self") != null)
+    }
+
+    // ---- F4: the preview sandbox ----
+
+    private fun previewTool(name: String, preview: (com.ideasdeveloper.bms.server.modules.McpToolCall) -> List<com.ideasdeveloper.bms.server.modules.McpPreviewRow>) =
+        RegisteredMcpTool(
+            "demo", "Demo",
+            McpTool(name, name, "Prueba $name.", "demo.write", McpSchema.obj(), preview = preview) { JsonPrimitive("hecho") },
+        )
+
+    @Test
+    fun aPreviewRunsOnAReadOnlyConnectionThatCannotCommitReachOtherConnectionsAndIsNotReused() {
+        if (url == null) return
+        reset()
+        val databases = loginDatabases()
+        provisioning(databases).applyPendingModuleMigrations()
+        connect(company).use { it.run("CREATE TABLE demo_notes (id SERIAL PRIMARY KEY, text TEXT)") }
+        fun notes() = scalar(company, "SELECT count(*) FROM demo_notes")
+        val sneaky = RegisteredModuleMcp(
+            "demo", "Demo", "",
+            listOf(
+                previewTool("ok") { call ->
+                    val readOnly = call.tenant.createStatement().use { st -> st.executeQuery("SHOW transaction_read_only").use { it.next(); it.getString(1) } }
+                    listOf(com.ideasdeveloper.bms.server.modules.McpPreviewRow("Solo lectura", readOnly))
+                },
+                previewTool("writes") { call -> call.tenant.createStatement().use { it.execute("INSERT INTO demo_notes (text) VALUES ('a')") }; emptyList() },
+                previewTool("commits") { call -> call.tenant.createStatement().use { it.execute("SELECT 1") }; call.tenant.commit(); emptyList() },
+                previewTool("flips") { call -> call.tenant.autoCommit = true; call.tenant.createStatement().use { it.execute("INSERT INTO demo_notes (text) VALUES ('b')") }; emptyList() },
+                previewTool("unlocks") { call -> call.tenant.isReadOnly = false; call.tenant.createStatement().use { it.execute("INSERT INTO demo_notes (text) VALUES ('c')") }; emptyList() },
+                previewTool("closes") { call -> call.tenant.close(); emptyList() },
+                previewTool("another") { call ->
+                    // A second connection would not be read only: the service refuses to open one while a preview runs.
+                    call.access.tenantConnectionForCompany("acme")!!.use { other -> other.createStatement().use { it.execute("INSERT INTO demo_notes (text) VALUES ('d')") } }
+                    emptyList()
+                },
+                previewTool("central") { call -> call.access.centralConnection().use { it.createStatement().use { st -> st.execute("SELECT 1") } }; emptyList() },
+            ),
+        )
+        val access = ModuleAccessService(source(central), databases, moduleInstalled = { true }, moduleMcp = { listOf(sneaky) })
+        val eva = UUID.fromString(scalar(company, "SELECT id FROM application_users WHERE postgres_role = 'eva_acme'"))
+        val toolbox = ModuleAssistantToolbox(access, "acme", eva) { com.ideasdeveloper.bms.server.activity.ActivityActor.user(eva, "Eva Acme") }
+        // A preview that only reads works, and sees a read-only transaction.
+        val fine = toolbox.preview("demo_ok", JsonObject(emptyMap()))
+        assertEquals(null, fine.error)
+        assertEquals("on", fine.rows.single().jsonObject.text("value"))
+        // Everything that tries to write, commit, flip the mode, close or open another connection fails; nothing is written.
+        listOf("writes", "commits", "flips", "unlocks", "closes", "another", "central").forEach { name ->
+            val result = toolbox.preview("demo_$name", JsonObject(emptyMap()))
+            assertEquals("No se pudo preparar la vista previa.", result.error, name)
+            assertEquals("0", notes(), name)
+        }
+        // Its connection was discarded: the next one of the pool is an ordinary read-write one, in an ordinary transaction.
+        access.tenantConnectionForCompany("acme")!!.use { next ->
+            val mode = next.createStatement().use { st -> st.executeQuery("SHOW default_transaction_read_only").use { it.next(); it.getString(1) } }
+            assertEquals("off", mode)
+            next.createStatement().use { it.execute("INSERT INTO demo_notes (text) VALUES ('real')") }
+        }
+        assertEquals("1", notes())
+        // The service works normally again after a preview: the guard is only for the thread that runs one.
+        access.centralConnection().use { it.createStatement().use { st -> st.execute("SELECT 1") } }
     }
 }

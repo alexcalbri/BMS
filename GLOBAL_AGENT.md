@@ -300,12 +300,12 @@ The card the user approves is what runs, or nothing runs:
 
 ### Preview sandbox
 
-A preview runs on a connection of its own whose every transaction is read only for its whole life
+A preview runs on a connection of its own (opened for it, NOT taken from the pool, closed for good afterwards) whose every transaction is read only for its whole life
 (`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` before the first transaction, plus `SET TRANSACTION READ ONLY`). The
 connection the preview receives refuses `commit`, `setAutoCommit`, `setReadOnly`, `close`, `abort` and `unwrap`, and the module
 service refuses to open any other connection (`ModuleAccessService.withoutNewConnections`: `tenantConnectionForCompany`,
 `tenantConnectionForDatabase`, `centralConnection`, `tenantConnection(call)`, and the writes to the control database). Afterwards the
-connection is aborted (evicted from the pool), never reused. A preview that fails any of this gets "No se pudo preparar la vista
+connection is closed physically: nothing it did to its session can reach another request. A preview that fails any of this gets "No se pudo preparar la vista
 previa." Not enforceable: raw SQL that turns the read-only mode off by itself (`SET default_transaction_read_only = off`) and
 HTTP requests (rule of the module, tested per tool with a transport that fails when called).
 

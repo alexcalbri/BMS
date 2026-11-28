@@ -737,6 +737,25 @@ class ModuleAccessService(
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
     }
 
+    /**
+     * A connection of its own to the company database, NOT from the pool: the caller closes it and it is gone (physically),
+     * so nothing it did to its session can reach the next borrower. For code that must run on a connection it may leave in
+     * any state, such as the confirmation previews of the in-app assistant.
+     */
+    fun dedicatedTenantConnectionForCompany(companyCode: String): Connection? {
+        noNewConnection()
+        val databaseName = findActiveDatabase(companyCode) ?: return null
+        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null
+        val connection = java.sql.DriverManager.getConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
+        try {
+            connection.createStatement().use { it.execute("SET search_path TO public") }
+        } catch (failure: Exception) {
+            runCatching { connection.close() }
+            throw failure
+        }
+        return connection
+    }
+
     fun tenantConnectionForCompany(companyCode: String): Connection? {
         noNewConnection()
         val databaseName = findActiveDatabase(companyCode) ?: return null

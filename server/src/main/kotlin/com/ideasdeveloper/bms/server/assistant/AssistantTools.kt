@@ -273,42 +273,39 @@ class ModuleAssistantToolbox(
 
     /**
      * The tool's own preview, run before the user decided, so it can change nothing and reach nothing else (GLOBAL_AGENT.md,
-     * Preview sandbox). It gets a connection of its own whose every transaction is read only for its whole life
-     * (`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`, set before the first transaction), wrapped so that
-     * commit, autocommit and read-only changes, close and unwrap fail; the module service refuses to open any other
-     * connection meanwhile ([ModuleAccessService.withoutNewConnections]); and the connection is evicted from the pool
-     * afterwards, never reused. A preview makes no HTTP request of any kind either: that is the module's rule (and its
-     * tests'), the JVM cannot enforce it here.
+     * Preview sandbox). It gets a connection of its own, NOT from the pool, closed for good afterwards, whose every
+     * transaction is read only for its whole life (`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` before the first
+     * transaction, plus `SET TRANSACTION READ ONLY`); the connection the module code sees refuses commit, autocommit and
+     * read-only changes, close and unwrap; and the module service refuses to open any other connection meanwhile
+     * ([ModuleAccessService.withoutNewConnections]). A preview makes no HTTP request of any kind either: that is the
+     * module's rule (and its tests'), the JVM cannot enforce it here.
      */
-    override fun preview(name: String, arguments: JsonObject): AssistantPreview = tenant { connection ->
-        val user = user(connection) ?: return@tenant AssistantPreview(JsonArray(emptyList()))
-        val registered = access.moduleMcp().filter { it.moduleId != ServerMcpModuleId }.flatMap { it.tools }.firstOrNull { it.qualifiedName == name }
-        val preview = registered?.tool?.preview ?: return@tenant AssistantPreview(JsonArray(emptyList()))
-        val permissions = user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) }
-            ?: return@tenant AssistantPreview(JsonArray(emptyList()))
-        // Resolved before the sandbox closes: it may open a connection of its own.
-        val activity = actor().viaAssistant()
+    override fun preview(name: String, arguments: JsonObject): AssistantPreview {
+        val connection = access.dedicatedTenantConnectionForCompany(companyCode) ?: return AssistantPreview(JsonArray(emptyList()), "No se pudo abrir la empresa.")
         try {
+            val user = user(connection) ?: return AssistantPreview(JsonArray(emptyList()))
+            val registered = access.moduleMcp().filter { it.moduleId != ServerMcpModuleId }.flatMap { it.tools }.firstOrNull { it.qualifiedName == name }
+            val preview = registered?.tool?.preview ?: return AssistantPreview(JsonArray(emptyList()))
+            val permissions = user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) }
+                ?: return AssistantPreview(JsonArray(emptyList()))
+            // Resolved before the sandbox closes: it may open a connection of its own.
+            val activity = actor().viaAssistant()
             connection.autoCommit = true
             connection.createStatement().use { it.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY") }
             connection.autoCommit = false
             connection.createStatement().use { it.execute("SET TRANSACTION READ ONLY") }
             val call = McpToolCall(arguments, permissions.withActivityActor(activity), PreviewConnection.guard(connection), access, ActivityActor.AssistantAgentName, registered.moduleId)
-            AssistantPreview(JsonArray(access.withoutNewConnections { preview(call) }.map { AssistantTools.row(it.label, it.value) }))
+            return AssistantPreview(JsonArray(access.withoutNewConnections { preview(call) }.map { AssistantTools.row(it.label, it.value) }))
         } catch (failure: McpToolException) {
-            AssistantPreview(JsonArray(emptyList()), failure.message.orEmpty())
+            return AssistantPreview(JsonArray(emptyList()), failure.message.orEmpty())
         } catch (failure: Exception) {
             log.error("Assistant preview {} failed in company {}: {}", name, companyCode, failure.javaClass.name)
-            AssistantPreview(JsonArray(emptyList()), "No se pudo preparar la vista previa.")
+            return AssistantPreview(JsonArray(emptyList()), "No se pudo preparar la vista previa.")
         } finally {
             runCatching { connection.rollback() }
-            // Its session settings may have been changed: the pool gets it back only as a closed physical connection.
-            if (runCatching { connection.abort { it.run() } }.isFailure) {
-                runCatching { connection.autoCommit = true }
-                runCatching { connection.createStatement().use { it.execute("RESET default_transaction_read_only") } }
-            }
+            runCatching { connection.close() }
         }
-    } ?: AssistantPreview(JsonArray(emptyList()), "No se pudo abrir la empresa.")
+    }
 }
 
 /** The connection a preview works on: reads and rollbacks only. */
