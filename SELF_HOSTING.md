@@ -414,6 +414,40 @@ reported. After the move it proves, as the runtime role, that it can connect to 
 control database and in every company database (and the activity log in each company), and that the provisioning
 login can connect and `SET ROLE` to each database's owner (a real connection with its password); any failure rolls the
 update back.
+
+What a failed attempt leaves, and how the next one handles it. The rollback restores `server.env` and the runtime
+role's membership in the server owner roles (with `INHERIT` and `SET`, as `install.sh` made it), using only the role
+names step 0 validated and recorded before anything changed (nothing is queried during a rollback; every role is tried,
+and the exact `GRANT` is printed for any that cannot be restored). It does not remove the provisioning role, the owners
+already moved or the grants already given. So the next `update.sh` may find: the role `bms_provisioner` without its keys
+in `server.env`: if it has no ownership, no privilege except `CONNECT` on databases, memberships only in the server owner
+roles and the runtime role, no `SUPERUSER`/`CREATEDB`/`CREATEROLE`/`REPLICATION`/`BYPASSRLS`, no role settings, connection
+limit or expiry, and nobody is a member of it, it is **adopted** (a new random password goes to `server.env`); anything
+else stops the update at step 0, before changing anything, naming what is wrong. And company databases moved in part
+(some objects already the owner's, some grants missing, some databases already done): the move only selects what is
+still owned by a superuser or the runtime role and what is missing, so it finishes the work and a second run changes
+nothing. Step 0 prints which databases are half moved and whether the provisioning role carries the marks of an attempt.
+
+**Rehearsal (phase 1).** `sudo bash update.sh --rehearse --ref <branch, tag or commit>` (or the last block of
+`preflight.sh`, which runs it) executes the PostgreSQL work of the real update on the live cluster and leaves nothing
+behind. For the control database and for each company database it opens one transaction, runs the same SQL as the real
+run (the role layout move, the membership revocation, the checks, then the migrations and grant blocks that would be
+applied, as the owner role through `SET SESSION AUTHORIZATION` to the provisioning role and `SET ROLE` to the owner), runs
+the access checks again over the result, prints what would change (roles, memberships, owners and ACLs, and how many
+objects the migrations create) and **rolls back**. Roles are cluster-wide but `CREATE ROLE`, `ALTER ROLE`, `GRANT`,
+`REVOKE` and `ALTER ... OWNER` are transactional, so each database's transaction creates (or alters) the provisioning role
+itself and the rollback removes it: no throwaway role is needed. Before the first transaction and after the last one the
+whole cluster is snapshotted (roles with a hash of their password verifier, memberships with their options, database
+owners and ACLs, and in every connectable database the owners and ACLs of relations, columns, routines, types, schemas
+and the default ACLs); if the two differ the rehearsal prints `FAIL ensayo sin cambios` with the difference. The service
+keeps running: `lock_timeout` is 500 ms (`BMS_REHEARSE_LOCK_TIMEOUT`) and a database whose locks cannot be taken after 3
+tries is reported `WARN ... no ensayado por bloqueo` instead of waited for.
+Limits: `ALTER ... OWNER` takes `ACCESS EXCLUSIVE` locks on the tables that would change owner, held until the rollback
+(well under a second for the catalog work, and only on objects of an old layout; a company already moved takes none);
+passwords, `pg_hba`/real TCP login, the new release's own startup and anything outside PostgreSQL are not rehearsed;
+a statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`, `VACUUM`) would also fail the real run (every
+migration already runs inside `BEGIN`/`COMMIT`); somebody else changing permissions while it runs shows up as a
+difference (the output says so). The only thing it writes outside PostgreSQL is the root mirror of the repository.
 The superuser only runs catalog queries, `GRANT`/`REVOKE` and `ALTER ... OWNER` there, with `search_path` pinned to
 `pg_catalog`, never code the company database defines. If the update is rolled back, the runtime role becomes a member
 of the owner's role again (the previous release needs it); the next update moves it again.
@@ -998,7 +1032,7 @@ pre-update dump (only when the disk cannot hold it and a daily backup is recent)
 `harden-host.sh` at the end (section 16).
 
 Download `update.sh` and `mirror.sh` into a root-owned directory and run it from there. Before the first update with
-this layout, run the read-only `preflight.sh` (with `db-roles.sh` and `nginx-site.sh` next to it): it checks versions
+this layout, run the read-only `preflight.sh` (with `db-roles.sh` and `nginx-site.sh` next to it; the rehearsal block needs `update.sh` and `mirror.sh` there too): it checks versions
 (Nginx, one PostgreSQL cluster and a matching `pg_dump`, Java 21), memory, `fs.protected_*`, `server.env` keys (never
 printing values), the server owner roles, every company database (name, owner, owners of its objects, extra schemas,
 the owner's `CREATE` on `public`), the runtime role, `pg_hba` for 127.0.0.1, pending update requests, free disk, the
@@ -1012,6 +1046,12 @@ done
 sudo bash /root/bms-update/preflight.sh
 sudo bash /root/bms-update/update.sh
 ```
+
+Phase 1 (nothing changes) is `preflight.sh`, which ends by running `update.sh --rehearse` against `CORE_UPDATE_REF`
+(`master` by default; `preflight.sh --ref <ref>` or `BMS_PREFLIGHT_REF` change it). Run it alone with
+`sudo bash /root/bms-update/update.sh --rehearse --ref master`. Every line is PASS, WARN, INFO or FAIL; do not start
+phase 2 (`update.sh`) until there is no FAIL and every WARN is understood. A `WARN ... no ensayado por bloqueo` means the
+service was using those tables: repeat the rehearsal, or accept that database is untested.
 
 **Locale.** Every script under `scripts/ubuntu` runs with `LC_ALL=C.UTF-8` (plain `C` when that locale is missing),
 whatever the server's `LANG` is, and each exact ASCII check (role names, commits, passwords, domains) also sets
