@@ -59,6 +59,10 @@ internal class AssistantChatState(
     private val onConversationsChanged: () -> Unit,
     // El estado del asistente cambio (limite alcanzado, desactivado...): hay que volver a pedirlo.
     private val onStatusChanged: () -> Unit,
+    // Un turno termino (respuesta completa, pausa por confirmacion o corte): el boton flotante avisa si el panel esta cerrado.
+    private val onTurnFinished: () -> Unit = {},
+    // Una conversacion se leyo del servidor y esta a la vista: se marca como vista.
+    private val onConversationLoaded: (String) -> Unit = {},
 ) {
     val entries = mutableStateListOf<ChatEntry>()
     var conversation by mutableStateOf<AssistantConversationResponse?>(null)
@@ -122,6 +126,7 @@ internal class AssistantChatState(
             val detail = AssistantApi(serverUrl).use { api -> api.conversation(token, companyCode, id) }
             // Si mientras tanto empezo otro turno, lo que se ve ya es lo mas reciente.
             if (!streaming) applyDetail(detail)
+            onConversationLoaded(id)
         } catch (exception: CompanyException) {
             banner = ChatBanner(exception.message.orEmpty(), error = true)
         } finally {
@@ -286,6 +291,7 @@ internal class AssistantChatState(
             banner = ChatBanner(tr("La respuesta se interrumpio. Revisa la conversacion y vuelve a intentarlo."), error = true)
         }
         onConversationsChanged()
+        onTurnFinished()
         // Con una respuesta normal o una pausa por confirmacion lo que se ve ya es lo guardado; en los demas casos se
         // vuelve a leer del servidor (la respuesta parcial no se guarda, un aviso si).
         if (!finished || (reason != "end_turn" && reason != "awaiting_confirmation")) {
