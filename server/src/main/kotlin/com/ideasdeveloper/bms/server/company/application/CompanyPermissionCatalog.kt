@@ -233,12 +233,6 @@ internal fun java.sql.Connection.isBusinessOwner(userId: UUID): Boolean =
         query.executeQuery().use { rows -> rows.next() }
     }
 
-internal fun java.sql.Connection.existsRole(name: String): Boolean =
-    prepareStatement("SELECT 1 FROM pg_roles WHERE rolname = ?").use { query ->
-        query.setString(1, name)
-        query.executeQuery().use { rows -> rows.next() }
-    }
-
 internal fun java.sql.Connection.existsUser(name: String): Boolean =
     prepareStatement("SELECT 1 FROM application_users WHERE postgres_role = ?").use { query ->
         query.setString(1, name)
