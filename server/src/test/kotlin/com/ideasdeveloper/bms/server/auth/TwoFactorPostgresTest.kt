@@ -21,7 +21,7 @@ import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorRequiredException
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorSignInException
 import com.ideasdeveloper.bms.server.admins.AuditActor
-import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
+import com.ideasdeveloper.bms.server.admins.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
 import com.ideasdeveloper.bms.server.modules.AgentSignIn
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService

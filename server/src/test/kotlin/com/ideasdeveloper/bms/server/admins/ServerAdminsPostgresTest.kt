@@ -34,7 +34,6 @@ import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import java.time.Duration
 import java.time.Instant
-import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject

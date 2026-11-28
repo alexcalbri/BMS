@@ -1,10 +1,5 @@
-package com.ideasdeveloper.bms.server.company.application
+package com.ideasdeveloper.bms.server.admins
 
-import com.ideasdeveloper.bms.server.admins.ServerActor
-import com.ideasdeveloper.bms.server.admins.ServerActorKind
-import com.ideasdeveloper.bms.server.admins.ServerActorLookup
-import com.ideasdeveloper.bms.server.admins.ServerActorResolver
-import com.ideasdeveloper.bms.server.admins.ServerAdminStore
 import com.ideasdeveloper.bms.server.auth.application.SessionService
 import java.sql.Connection
 import java.util.UUID

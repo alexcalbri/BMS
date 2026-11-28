@@ -12,7 +12,7 @@ import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.bms.server.platform.mcp.ServerMcpTools
-import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
+import com.ideasdeveloper.bms.server.admins.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.ModuleRegistry
