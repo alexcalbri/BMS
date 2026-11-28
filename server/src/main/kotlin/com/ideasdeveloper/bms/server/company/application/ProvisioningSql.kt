@@ -4,6 +4,7 @@ import org.slf4j.LoggerFactory
 import java.security.MessageDigest
 import java.sql.Connection
 import java.util.HexFormat
+import javax.sql.DataSource
 
 private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
 
@@ -83,4 +84,16 @@ internal fun sha256(value: String): String {
 internal fun sha256(bytes: ByteArray): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
     return HexFormat.of().formatHex(digest)
+}
+
+internal fun <T> DataSource.inCentralTransaction(block: (Connection) -> T): T = connection.use { connection ->
+    connection.autoCommit = false
+    try {
+        block(connection).also { connection.commit() }
+    } catch (failure: Throwable) {
+        runCatching { connection.rollback() }
+        throw failure
+    } finally {
+        runCatching { connection.autoCommit = true }
+    }
 }
