@@ -198,7 +198,7 @@ internal class AssistantController(
         }
     }
 
-    fun setShowArchived(value: Boolean) {
+    fun selectArchived(value: Boolean) {
         showArchived = value
         loadList(true)
     }

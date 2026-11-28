@@ -112,7 +112,7 @@ internal fun AssistantPanelBody(
                     canLoadMore = controller.nextBefore != null,
                     error = controller.listError,
                     canCreate = current.available,
-                    onShowArchived = controller::setShowArchived,
+                    onShowArchived = controller::selectArchived,
                     onNew = controller::newConversation,
                     onSelect = controller::openConversation,
                     onRename = { renaming = it },
