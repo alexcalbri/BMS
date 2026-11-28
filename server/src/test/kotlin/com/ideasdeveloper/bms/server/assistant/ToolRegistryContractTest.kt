@@ -138,6 +138,31 @@ class ToolRegistryContractTest {
     }
 
     @Test
+    fun theWorkspacePolicyHoldsBackReadsAndFlagsWritesOfToolsThatExistAndMeanIt() {
+        // Reads of other companies' data wait for a card in the assistant (not for MCP agents): they stay plain read-only tools with no preview of their own.
+        ServerCallPolicy.HeldReads.forEach { name ->
+            val tool = serverTools.getValue("servidor_$name").tool
+            assertTrue(tool.readOnly && !tool.outbound && !tool.destructive, name)
+        }
+        // Writes whose single call is flagged (logo URL, group apply with confirm, deactivation) have a preview and are not read only.
+        ServerCallPolicy.FlaggedWrites.forEach { name ->
+            val tool = serverTools.getValue("servidor_$name").tool
+            assertTrue(!tool.readOnly && tool.preview != null, name)
+        }
+        // Their tool-level flags stay as reviewed (the flag of a CALL is added by the policy): update_company and set_company_active are neither outbound
+        // nor destructive as tools, apply_extension_to_group is destructive (uninstall) and becomes outbound only for apply with confirm=true.
+        assertTrue(listOf("servidor_update_company", "servidor_create_company", "servidor_set_company_active").none { serverTools.getValue(it).tool.outbound || serverTools.getValue(it).tool.destructive })
+        assertTrue(serverTools.getValue("servidor_apply_extension_to_group").tool.destructive && !serverTools.getValue("servidor_apply_extension_to_group").tool.outbound)
+        // The calls it flags really are (the policy's own cases are in ServerCallPolicyTest).
+        val policy = ServerCallPolicy({ true }, { null })
+        fun flagged(tool: String, vararg pairs: Pair<String, kotlinx.serialization.json.JsonElement>) = policy.evaluate(tool, kotlinx.serialization.json.JsonObject(mapOf(*pairs)))
+        val text = { value: String -> kotlinx.serialization.json.JsonPrimitive(value) }
+        assertTrue(flagged("servidor_update_company", "logo_url" to text("https://x.example/l.png")).outbound)
+        assertTrue(flagged("servidor_apply_extension_to_group", "confirm" to kotlinx.serialization.json.JsonPrimitive(true)).outbound)
+        assertTrue(flagged("servidor_set_company_active", "active" to kotlinx.serialization.json.JsonPrimitive(false)).destructive)
+    }
+
+    @Test
     fun theServerToolsAreNotPartOfWhatACompanyAssistantCanOffer() {
         assertTrue(tools.keys.none { it.startsWith("servidor_") })
         assertTrue(serverTools.keys.all { it.startsWith("servidor_") })

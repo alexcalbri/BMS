@@ -95,6 +95,9 @@ class FakeToolbox(vararg tools: AssistantTool) : AssistantToolbox {
     val handlers = mutableMapOf<String, (JsonObject) -> AssistantToolResult>()
     val executed = mutableListOf<Pair<String, JsonObject>>()
     val previews = mutableMapOf<String, (JsonObject) -> AssistantPreview>()
+    val policies = mutableMapOf<String, (JsonObject) -> AssistantCallPolicy>()
+
+    override fun policy(name: String, arguments: JsonObject): AssistantCallPolicy = policies[name]?.invoke(arguments) ?: AssistantCallPolicy.None
 
     override fun tools(): List<AssistantTool> = available.sortedBy { it.name }
 

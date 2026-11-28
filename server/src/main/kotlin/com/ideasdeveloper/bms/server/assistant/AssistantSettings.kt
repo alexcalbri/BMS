@@ -42,6 +42,13 @@ data class AssistantAllowance(val allowed: Boolean = true, val monthlyTokens: Lo
 /** The disclosure every settings screen shows before enabling (GLOBAL_AGENT.md §5). */
 fun assistantDisclosure(): String = tr("Los datos que el asistente consulte se envian a Anthropic para generar la respuesta.")
 
+/**
+ * The disclosure accepted when the server owner (or an administrator) enables the assistant at server level: the common one
+ * plus what only the server workspace adds (the audit and the activity of the companies the person may see).
+ */
+fun serverAssistantDisclosure(): String =
+    assistantDisclosure() + " " + tr("El asistente del espacio del servidor puede leer la auditoria y la actividad de las empresas que la persona puede ver.")
+
 /** Checks an API key's shape (never its value against anything) and builds the hint shown instead of it. */
 object AssistantKeys {
     private val pattern = Regex("^sk-ant-[A-Za-z0-9_-]{16,300}$")

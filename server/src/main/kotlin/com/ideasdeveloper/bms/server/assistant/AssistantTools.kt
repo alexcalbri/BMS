@@ -65,6 +65,12 @@ interface AssistantToolbox {
 
     /** The tool's own preview of the call (read only, the user's permissions now); empty rows when it has none. */
     fun preview(name: String, arguments: JsonObject): AssistantPreview = AssistantPreview(JsonArray(emptyList()))
+
+    /**
+     * What this place adds to one call (a read that waits for a card, a call flagged outbound or destructive); [AssistantCallPolicy.None]
+     * for the usual toolbox. The engine asks before it runs a read by itself.
+     */
+    fun policy(name: String, arguments: JsonObject): AssistantCallPolicy = AssistantCallPolicy.None
 }
 
 object AssistantTools {
@@ -355,6 +361,8 @@ class ModuleAssistantToolbox(
     private val userId: UUID,
     private val grants: AssistantGrantSource = CompanyGrants(access, companyCode, userId),
     private val executed: (RegisteredMcpTool, JsonObject, Boolean) -> Unit = { _, _, _ -> },
+    // The place's policy per call (tool name + arguments), see [AssistantCallPolicy]; none in a company.
+    private val callPolicy: AssistantCallPolicyHook = AssistantCallPolicyHook.None,
     private val actor: () -> ActivityActor,
 ) : AssistantToolbox {
     private val log = LoggerFactory.getLogger(ModuleAssistantToolbox::class.java)
@@ -366,6 +374,14 @@ class ModuleAssistantToolbox(
     }.orEmpty()
 
     override fun instructions(): List<Pair<String, String>> = tenant { connection -> grants.grants(connection)?.guidance }.orEmpty()
+
+    /** Fails closed: a policy that cannot be worked out makes the call wait for the card, flagged outbound. */
+    override fun policy(name: String, arguments: JsonObject): AssistantCallPolicy = try {
+        callPolicy.evaluate(name, arguments)
+    } catch (failure: Exception) {
+        log.error("Assistant policy of {} in company {} failed: {}", name, companyCode, failure.javaClass.name)
+        AssistantCallPolicy(confirm = true, outbound = true)
+    }
 
     override fun execute(name: String, arguments: JsonObject): AssistantToolResult = tenant { connection ->
         // The assistant never acts in another company: only the MCP bridge implements acting_company, and this runs on the place's own connection.
@@ -402,11 +418,13 @@ class ModuleAssistantToolbox(
      */
     override fun preview(name: String, arguments: JsonObject): AssistantPreview {
         if (AssistantTools.actsInAnotherCompany(arguments)) return AssistantPreview(JsonArray(emptyList()), AssistantTools.actingCompanyRefusal())
+        // The rows the policy puts first (why a read waits), resolved before the sandbox: they may read the control database.
+        val policyRows = policy(name, arguments).rows.map { (label, value) -> AssistantTools.row(label, value) }
         val connection = access.dedicatedTenantConnectionForCompany(companyCode) ?: return AssistantPreview(JsonArray(emptyList()), "No se pudo abrir la empresa.")
         try {
             val now = grants.grants(connection) ?: return AssistantPreview(JsonArray(emptyList()))
             val registered = now.tools.firstOrNull { it.qualifiedName == name }
-            val preview = registered?.tool?.preview ?: return AssistantPreview(JsonArray(emptyList()))
+            val preview = registered?.tool?.preview ?: return AssistantPreview(JsonArray(if (registered == null) emptyList() else policyRows))
             val permissions = now.permissions(registered) ?: return AssistantPreview(JsonArray(emptyList()))
             // Resolved before the sandbox closes: it may open a connection of its own.
             val activity = actor().viaAssistant()
@@ -415,7 +433,7 @@ class ModuleAssistantToolbox(
             connection.autoCommit = false
             connection.createStatement().use { it.execute("SET TRANSACTION READ ONLY") }
             val call = McpToolCall(arguments, permissions.withActivityActor(activity), PreviewConnection.guard(connection), access, ActivityActor.AssistantAgentName, registered.moduleId)
-            return AssistantPreview(JsonArray(access.withoutNewConnections { preview(call) }.map { AssistantTools.row(it.label, it.value) }))
+            return AssistantPreview(JsonArray(policyRows + access.withoutNewConnections { preview(call) }.map { AssistantTools.row(it.label, it.value) }))
         } catch (failure: McpToolException) {
             return AssistantPreview(JsonArray(emptyList()), failure.message.orEmpty())
         } catch (failure: Exception) {

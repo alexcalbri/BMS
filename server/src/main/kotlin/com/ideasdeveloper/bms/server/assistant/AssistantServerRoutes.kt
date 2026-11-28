@@ -61,7 +61,7 @@ class AssistantServerAdmin(val central: DataSource, val service: AssistantServic
         return AssistantServerSettingsResponse(
             enabled = settings.enabled, keySet = settings.keySet, keyHint = settings.keyHint, model = settings.model, effort = settings.effort,
             defaultMonthlyTokens = settings.defaultMonthlyTokens, limitOwnKeyCompanies = settings.limitOwnKeyCompanies,
-            retentionDays = settings.retentionDays, secretsAvailable = config.secretsAvailable, disclosure = assistantDisclosure(),
+            retentionDays = settings.retentionDays, secretsAvailable = config.secretsAvailable, disclosure = serverAssistantDisclosure(),
         )
     }
 

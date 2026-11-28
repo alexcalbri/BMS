@@ -221,6 +221,8 @@ class AssistantServerPeopleTest {
             listOf(
                 tool("list_companies", readOnly = true),
                 tool("set_company_active", readOnly = false),
+                tool("update_company", readOnly = false),
+                tool("list_extensions", readOnly = true),
                 tool("delete_company", readOnly = false, destructive = true) { call -> listOf(McpPreviewRow("Empresa que se elimina", "Acme SA (${call.string("code")})")) },
             ) + audit.tools.map { RegisteredMcpTool(ServerMcpModuleId, "Servidor", it) },
         )
@@ -659,6 +661,92 @@ class AssistantServerPeopleTest {
             assertEquals("error", turn.single { it.first == "tool_finished" }.second.text("status"))
             assertTrue(turn.single { it.first == "tool_finished" }.second.toString().contains("entra a esa empresa"))
             assertFalse(env.models.body(0).toString().replace("lista las notas de acme", "").contains("acting_company"))
+        }
+    }
+
+    @Test
+    fun readsOfCompaniesThatNeverOptedInWaitForACardAndWritesThatOpenAChannelAreFlagged() {
+        if (url == null) return
+        val env = Env()
+        fun reads() = scalar(central, "SELECT count(*) FROM provisioning_audit_log WHERE action = 'server_audit.agent_read'")
+        inApp(env) {
+            val ownerToken = env.ownerToken
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/settings", ownerToken, """{"enabled":true,"acceptDisclosure":true}""").status)
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/key", ownerToken, """{"apiKey":"$serverKey"}""").status)
+            val conversation = json("POST", "/companies/me/assistant/conversations", ownerToken, "servidor", "{}").text("id")
+            val path = "/companies/me/assistant/conversations/$conversation/messages"
+            fun read(id: String, company: String?) = Scripted.toolUse(id, "servidor_list_company_activity", buildJsonObject { company?.let { put("company", it) } })
+            suspend fun decide(card: JsonObject, decision: String): List<Pair<String, JsonObject>> {
+                env.models.add(Scripted.message("end_turn", Scripted.text("Listo.")))
+                return turn("/companies/me/assistant/confirmations/${card.text("confirmationId")}", ownerToken, "servidor", """{"decision":"$decision"}""")
+            }
+
+            // 1. acme never turned the assistant on: its activity is NOT read by itself. A card says whose data goes where.
+            env.models.add(Scripted.message("tool_use", read("toolu_1", "acme"), Scripted.toolUse("toolu_2", "servidor_list_companies")))
+            val first = turn(path, ownerToken, "servidor", """{"text":"que paso en acme"}""")
+            assertEquals("awaiting_confirmation", first.last().second.text("reason"), first.toString())
+            val card = first.single { it.first == "confirmation_required" }.second
+            assertTrue(card.flag("outbound") && !card.flag("destructive"), card.toString())
+            assertEquals("Lee la actividad de Acme SA (acme) (no ha activado el asistente) y la envia al proveedor de IA.", card["preview"]!!.jsonArray[0].jsonObject.text("value"))
+            assertEquals("acme", card["summary"]!!.jsonArray[0].jsonObject.text("value"))
+            assertEquals("0", reads())
+            assertEquals(listOf("list_companies/Asistente/$ownerId"), serverRan)
+            // Approved, it reads (and the server audit records the read); the reply is the usual one.
+            assertEquals("end_turn", decide(card, "approve").last().second.text("reason"))
+            assertEquals("1", reads())
+
+            // 2. "All companies" (no company) always waits, even when every company opted in; rejecting reads nothing.
+            env.models.add(Scripted.message("tool_use", read("toolu_3", null)))
+            val all = turn(path, ownerToken, "servidor", """{"text":"todo"}""")
+            val allCard = all.single { it.first == "confirmation_required" }.second
+            assertEquals("Lee la actividad de todas las empresas a tu alcance y la envia al proveedor de IA.", allCard["preview"]!!.jsonArray[0].jsonObject.text("value"))
+            assertTrue(allCard.flag("outbound"))
+            assertEquals("end_turn", decide(allCard, "reject").last().second.text("reason"))
+            assertEquals("1", reads())
+
+            // 3. acme turns it on (server allowance on by default + its own switch): its activity is read at once, no card.
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/companies/acme", ownerToken, """{"enabled":true,"acceptDisclosure":true}""").status)
+            env.models.add(Scripted.message("tool_use", read("toolu_4", "acme")), Scripted.message("end_turn", Scripted.text("Nada.")))
+            val direct = turn(path, ownerToken, "servidor", """{"text":"otra vez acme"}""")
+            assertEquals("end_turn", direct.last().second.text("reason"), direct.toString())
+            assertTrue(direct.none { it.first == "confirmation_required" })
+            assertEquals("ok", direct.single { it.first == "tool_finished" }.second.text("status"))
+            assertEquals("2", reads())
+            val toolbox = workspaceToolbox(env, env.owner)
+            assertFalse(toolbox.policy("servidor_list_company_activity", buildJsonObject { put("company", "acme") }).confirm)
+            // 4. The server takes the allowance away again: the switch alone is not enough.
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/companies/acme", ownerToken, """{"allowed":false}""").status)
+            assertTrue(toolbox.policy("servidor_list_company_activity", buildJsonObject { put("company", "acme") }).confirm)
+            // 5. The extensions of a company that did not opt in wait too (the tool's own argument is `code`); an administrator gets the same rule.
+            env.models.add(Scripted.message("tool_use", Scripted.toolUse("toolu_5", "servidor_list_extensions", buildJsonObject { put("code", "acme") })))
+            val extensions = turn(path, ownerToken, "servidor", """{"text":"extensiones de acme"}""")
+            val extCard = extensions.single { it.first == "confirmation_required" }.second
+            assertEquals("Lee las extensiones y los ajustes de Acme SA (acme) (no ha activado el asistente) y los envia al proveedor de IA.", extCard["preview"]!!.jsonArray[0].jsonObject.text("value"))
+            assertTrue(extCard.flag("outbound"))
+            assertTrue(serverRan.none { it.startsWith("list_extensions") })
+            decide(extCard, "approve")
+            assertTrue(serverRan.any { it.startsWith("list_extensions") })
+            env.grant(ServerPermission.AuditView, ServerPermission.AssistantUse)
+            val anaToolbox = workspaceToolbox(env, env.ana())
+            assertTrue(anaToolbox.policy("servidor_list_company_activity", buildJsonObject { put("company", "acme") }).confirm)
+            assertTrue(anaToolbox.policy("servidor_list_company_activity", JsonObject(emptyMap())).confirm)
+            assertTrue(anaToolbox.preview("servidor_list_company_activity", JsonObject(emptyMap())).rows.toString().contains("todas las empresas"))
+
+            // 6. Writes that open a channel or switch a company off are flagged for that call: a logo URL (every client loads it), deactivating.
+            env.models.add(
+                Scripted.message(
+                    "tool_use",
+                    Scripted.toolUse("toolu_6", "servidor_update_company", buildJsonObject { put("code", "acme"); put("logo_url", "https://example.com/l.png") }),
+                    Scripted.toolUse("toolu_7", "servidor_set_company_active", buildJsonObject { put("code", "acme"); put("active", false) }),
+                    Scripted.toolUse("toolu_8", "servidor_update_company", buildJsonObject { put("code", "acme"); put("name", "Otro") }),
+                ),
+            )
+            val writes = turn(path, ownerToken, "servidor", """{"text":"cambia cosas"}""")
+            val flags = writes.filter { it.first == "confirmation_required" }.map { it.second }.associate { card -> card["summary"]!!.jsonArray.joinToString { row -> row.jsonObject.text("value") } to (card.flag("outbound") to card.flag("destructive")) }
+            assertEquals(
+                mapOf("acme, https://example.com/l.png" to (true to false), "acme, false" to (false to true), "acme, Otro" to (false to false)),
+                flags,
+            )
         }
     }
 

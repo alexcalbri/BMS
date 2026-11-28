@@ -102,6 +102,51 @@ class AssistantEngineTest {
     }
 
     @Test
+    fun aReadTheToolboxPolicyHoldsBackWaitsForACardLikeAWriteAndRunsOnlyWhenApproved() {
+        val toolbox = FakeToolbox(search, create)
+        // The place's policy: a read of this company (nombre = otra) waits, flagged outbound; any other runs at once.
+        toolbox.policies["clientes_search_customers"] = { arguments ->
+            if (arguments.string("nombre") == "otra") AssistantCallPolicy(confirm = true, outbound = true, rows = listOf("Que pasa" to "Lee la actividad de otra y la envia al proveedor de IA.")) else AssistantCallPolicy.None
+        }
+        toolbox.previews["clientes_search_customers"] = { AssistantPreview(JsonArray(listOf(AssistantTools.row("Que pasa", "Lee la actividad de otra y la envia al proveedor de IA.")))) }
+        val models = FakeModelClients(
+            Scripted.message("tool_use", Scripted.toolUse("toolu_1", "clientes_search_customers", buildJsonObject { put("nombre", "propia") }), Scripted.toolUse("toolu_2", "clientes_search_customers", buildJsonObject { put("nombre", "otra") })),
+            Scripted.message("end_turn", Scripted.text("Listo.")),
+        )
+        val (id, sink) = send(models, toolbox, "Mira la actividad")
+        assertEquals("awaiting_confirmation", sink.done())
+        // The allowed read ran at once; the held one did not run and is a normal confirmation card, outbound, readOnly tool or not.
+        assertEquals(listOf("clientes_search_customers"), toolbox.executed.map { it.first })
+        assertEquals("propia", toolbox.executed.single().second.string("nombre"))
+        val card = sink.all("confirmation_required").single()
+        assertTrue(card["outbound"]!!.jsonPrimitive.boolean)
+        assertFalse(card["destructive"]!!.jsonPrimitive.boolean)
+        assertEquals("Lee la actividad de otra y la envia al proveedor de IA.", card["preview"]!!.jsonArray[0].jsonObject.string("value"))
+        assertEquals("otra", card["summary"]!!.jsonArray[0].jsonObject.string("value"))
+        // Approved: it runs and the turn goes on; rejected would run nothing.
+        val approved = decide(models, toolbox, card.string("confirmationId")!!, approve = true)
+        assertEquals("end_turn", approved.done())
+        assertEquals(listOf("propia", "otra"), toolbox.executed.map { it.second.string("nombre") })
+        assertEquals(2, store.messages(id).last { it.role == Roles.User }.content.size)
+    }
+
+    @Test
+    fun aPolicyFlagMakesTheCardOfAWriteDestructiveOrOutboundForThatCallOnly() {
+        val toolbox = FakeToolbox(create)
+        toolbox.policies["clientes_create_customer"] = { arguments -> AssistantCallPolicy(destructive = arguments.string("nombre") == "baja", outbound = arguments.string("nombre") == "logo") }
+        val models = FakeModelClients(
+            Scripted.message(
+                "tool_use", Scripted.toolUse("toolu_1", "clientes_create_customer", buildJsonObject { put("nombre", "baja") }),
+                Scripted.toolUse("toolu_2", "clientes_create_customer", buildJsonObject { put("nombre", "logo") }),
+                Scripted.toolUse("toolu_3", "clientes_create_customer", buildJsonObject { put("nombre", "normal") }),
+            ),
+        )
+        val (_, sink) = send(models, toolbox, "Crea")
+        val flags = sink.all("confirmation_required").map { it["summary"]!!.jsonArray[0].jsonObject.string("value") to (it["destructive"]!!.jsonPrimitive.boolean to it["outbound"]!!.jsonPrimitive.boolean) }
+        assertEquals(listOf("baja" to (true to false), "logo" to (false to true), "normal" to (false to false)), flags)
+    }
+
+    @Test
     fun aPermissionRemovedWhileWaitingStopsTheApprovedCall() {
         val toolbox = FakeToolbox(search, create)
         val models = FakeModelClients(Scripted.message("tool_use", Scripted.toolUse("toolu_1", "clientes_create_customer", buildJsonObject { put("nombre", "Ana") })))

@@ -319,7 +319,7 @@ class AssistantService(
         limitApplies = availability.keySource == null || availability.keySource in availability.limitedSources,
         confirmationHours = turnLimits.confirmationTtl.toHours().toInt(),
         maxMessageChars = turnLimits.maxMessageChars,
-        disclosure = assistantDisclosure(),
+        disclosure = if (context.workspace) serverAssistantDisclosure() else assistantDisclosure(),
     )
 
     /** Who can fix [reason], when this session cannot (one sentence for the screen that explains why it is off). */
@@ -369,7 +369,32 @@ class AssistantService(
                 // The tool wrote its own row (who did it, as the owner); this one says it was the assistant of that person.
                 serverConfig.auditAssistantTool(person.audit, caller.displayName, tool.qualifiedName, arguments, ok)
             },
+            callPolicy = ServerCallPolicy(::companyOptedIn, ::companyName),
         ) { context.actor }
+    }
+
+    /**
+     * Whether the assistant may read data of company [code] without asking: the server allows it there AND the company's own
+     * switch is on (the server workspace has no switch of its own: the server's). Anything that cannot be read counts as "no".
+     */
+    internal fun companyOptedIn(code: String): Boolean = try {
+        serverConfig.allowance(code).allowed &&
+            (code.equals(ServerWorkspace.Code, ignoreCase = true) || access.tenantConnectionForCompany(code)?.use { AssistantCompanyConfig.read(it).enabled } == true)
+    } catch (failure: Exception) {
+        log.warn("Assistant could not read whether company {} opted in: {}", code, failure.javaClass.name)
+        false
+    }
+
+    // The name of a company for a card (a plain read of the control database), null when unknown.
+    private fun companyName(code: String): String? = try {
+        access.centralConnection().use { central ->
+            central.prepareStatement("SELECT name FROM companies WHERE code = ?").use { query ->
+                query.setString(1, code)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        }
+    } catch (_: Exception) {
+        null
     }
 
     /**

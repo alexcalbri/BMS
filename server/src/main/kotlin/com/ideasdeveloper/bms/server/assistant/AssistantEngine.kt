@@ -412,24 +412,26 @@ class AssistantEngine(
         // The list as it is now: a tool the user lost since the model saw it, or one it never had, is refused.
         val current = toolbox.tools().associateBy { it.name }
         val expires = clock().plus(limits.confirmationTtl)
-        class Planned(val use: JsonObject, val tool: AssistantTool?, val result: JsonObject?)
+        class Planned(val use: JsonObject, val tool: AssistantTool?, val result: JsonObject?, val policy: AssistantCallPolicy = AssistantCallPolicy.None)
         val planned = uses.map { use ->
             val name = (use["name"] as? JsonPrimitive)?.contentOrNull.orEmpty()
             val arguments = use["input"] as? JsonObject ?: JsonObject(emptyMap())
             val tool = current[name]
+            val policy = if (tool != null) toolbox.policy(tool.name, arguments) else AssistantCallPolicy.None
             when {
                 tool == null -> {
                     sink.event(AssistantIds.EventToolFinished, finishedEvent(id(use), name.take(96), name.take(96), "error", AssistantTools.UnknownTool))
                     Planned(use, null, toolResult(id(use), false, AssistantTools.UnknownTool))
                 }
-                tool.readOnly -> {
+                // A read the place's policy holds back (it sends data of a company that never opted in) waits for a card like a write.
+                tool.readOnly && !policy.confirm -> {
                     renew(conversationId, token)
                     sink.event(AssistantIds.EventToolStarted, toolEvent(id(use), tool.name, tool.label, readOnly = true))
                     val result = toolbox.execute(tool.name, arguments)
                     sink.event(AssistantIds.EventToolFinished, finishedEvent(id(use), tool.name, tool.label, if (result.ok) "ok" else "error", result.text.takeUnless { result.ok }?.take(300)))
                     Planned(use, tool, toolResult(id(use), result.ok, result.text))
                 }
-                else -> Planned(use, tool, null)
+                else -> Planned(use, tool, null, policy)
             }
         }
         if (planned.all { it.result != null }) {
@@ -448,14 +450,14 @@ class AssistantEngine(
                 arguments = arguments,
                 label = plan.tool?.label.orEmpty(),
                 moduleName = plan.tool?.moduleName.orEmpty(),
-                destructive = plan.tool?.destructive ?: false,
+                destructive = (plan.tool?.destructive ?: false) || plan.policy.destructive,
                 summary = AssistantTools.summary(plan.tool, arguments),
                 status = if (plan.result == null) AssistantPendingCall.Pending else AssistantPendingCall.Done,
                 result = plan.result,
                 expiresAt = expires,
                 preview = preview.rows,
                 previewError = preview.error,
-                outbound = plan.tool?.outbound ?: false,
+                outbound = (plan.tool?.outbound ?: false) || plan.policy.outbound,
                 previewHash = if (plan.result == null && plan.tool != null) sourceFingerprint(toolbox, plan.tool.name, arguments, preview) else null,
             )
         }
