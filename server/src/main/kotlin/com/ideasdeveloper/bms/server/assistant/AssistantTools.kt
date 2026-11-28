@@ -121,6 +121,13 @@ object AssistantTools {
     /** Tool names that only make sense for an MCP agent (they feed acting_company), never offered to the assistant. */
     val OnlyForMcpAgents: Set<String> = setOf("agentes_list_group_companies")
 
+    /**
+     * Server tools the assistant is NEVER offered, whoever the server owner is: they cannot be undone (the company and its whole
+     * database, a module's code). They stay in the app and for the MCP agents as before; the model is told to say they are done
+     * from the app ([ServerMcpTools.AssistantNote]). A tool listed here that is renamed is caught by ToolRegistryContractTest.
+     */
+    val ServerDenyList: Set<String> = setOf("servidor_delete_company", "servidor_remove_module")
+
     private val ActingHints = listOf(ActingCompany, "list_group_companies")
 
     /**
@@ -318,8 +325,30 @@ class ServerOwnerGrants(private val access: ModuleAccessService, private val use
     override fun grants(tenant: Connection): AssistantGrants? {
         val user = access.userAccess(tenant, ServerWorkspace.Code, userId, serverOwner = true)?.takeIf { it.serverOwner } ?: return null
         val modules = access.moduleMcp()
-        val tools = AssistantTools.registered(modules, user, includeServer = true)
+        val tools = AssistantTools.registered(modules, user, includeServer = true).filter { it.qualifiedName !in AssistantTools.ServerDenyList }
         return AssistantGrants(tools, { registered -> user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) } }, guidanceOf(modules, tools))
+    }
+}
+
+/**
+ * A session a server person opened from the switcher (an administrator's, or the owner's) in a company: the business owner's
+ * tools ([delegate]), but only while the person who opened it still may, read from the database on EVERY call (like
+ * [ServerAdminGrants]): the owner is still an active owner, or the administrator is still active, still holds server.assistant.use,
+ * the company is still in scope and [ModuleAccessService.openerMayEnter] (active, server.companies.enter, scope) still says yes.
+ * The request that started the turn decided once; this is what stops a turn that is already running.
+ */
+class SwitcherGrants(
+    private val delegate: AssistantGrantSource,
+    private val access: ModuleAccessService,
+    private val companyCode: String,
+    private val opener: com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener,
+    private val live: (UUID) -> ServerActorLookup,
+) : AssistantGrantSource {
+    override fun grants(tenant: Connection): AssistantGrants? {
+        val person = (live(opener.userId) as? ServerActorLookup.Found)?.actor ?: return null
+        val mayUse = person.isOwner || (person.has(ServerPermission.AssistantUse) && person.mayActOn(companyCode))
+        if (!mayUse || !access.openerMayEnter(companyCode, opener)) return null
+        return delegate.grants(tenant)
     }
 }
 

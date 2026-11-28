@@ -50,7 +50,8 @@ object ServerMcpTools {
     // What the in-app assistant is told about acting in other companies and about what it never does (ASSISTANT_NOTES in GLOBAL_AGENT.md).
     const val AssistantNote =
         "Desde este espacio solo trabajas en el espacio del servidor: no puedes actuar dentro de otra empresa; " +
-            "si el usuario quiere algo dentro de otra empresa, dile que entre a esa empresa y use alli el asistente."
+            "si el usuario quiere algo dentro de otra empresa, dile que entre a esa empresa y use alli el asistente. " +
+            "Eliminar una empresa y quitar un modulo del servidor no los haces tu: son irreversibles y se hacen desde la app; dilo asi."
 
     /** The guidance of the server module as the in-app assistant gets it: no acting_company sentence, plus [AssistantNote]. */
     fun forAssistant(instructions: String): String =

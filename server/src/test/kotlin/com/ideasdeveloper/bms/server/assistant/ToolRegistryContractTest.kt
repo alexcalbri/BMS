@@ -138,6 +138,17 @@ class ToolRegistryContractTest {
     }
 
     @Test
+    fun theIrreversibleServerToolsOfTheDenyListExistAreDestructiveAndNeverOfferedToTheAssistant() {
+        // Renaming or dropping one of them must show up here, not silently offer the replacement to the assistant.
+        assertEquals(setOf("servidor_delete_company", "servidor_remove_module"), AssistantTools.ServerDenyList)
+        assertTrue(AssistantTools.ServerDenyList.all { it in serverTools && serverTools.getValue(it).tool.destructive })
+        // Every destructive server tool is either on the deny list or one the assistant may offer behind a card with a preview (reviewed list).
+        val destructiveButOffered = serverDestructive - AssistantTools.ServerDenyList
+        assertEquals(setOf("servidor_uninstall_extension", "servidor_apply_extension_to_group"), destructiveButOffered)
+        assertTrue(destructiveButOffered.all { serverTools.getValue(it).tool.preview != null })
+    }
+
+    @Test
     fun theWorkspacePolicyHoldsBackReadsAndFlagsWritesOfToolsThatExistAndMeanIt() {
         // Reads of other companies' data wait for a card in the assistant (not for MCP agents): they stay plain read-only tools with no preview of their own.
         ServerCallPolicy.HeldReads.forEach { name ->

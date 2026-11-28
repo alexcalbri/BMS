@@ -55,6 +55,8 @@ class AssistantContext(
     val mayManage: Boolean = caller.businessOwner,
     val serverPerson: ServerActor? = null,
     val workspace: Boolean = false,
+    // Who opened the company session (a switcher), when it is not the account's own: the toolbox re-checks it on every call.
+    val opener: SessionOpener? = null,
 ) {
     val actor: ActivityActor by lazy(actorResolver)
 }
@@ -216,7 +218,7 @@ class AssistantService(
         val server = (liveServerActor?.invoke(opener.userId) as? ServerActorLookup.Found)?.actor
         val mayUse = server != null && (server.isOwner || (server.has(ServerPermission.AssistantUse) && server.mayActOn(companyCode)))
         val mayManage = server != null && (server.isOwner || (server.has(ServerPermission.AssistantManage) && server.mayActOn(companyCode)))
-        return AssistantContext(caller, permitted, resolver, store, mayUse = mayUse, mayManage = mayManage, serverPerson = server)
+        return AssistantContext(caller, permitted, resolver, store, mayUse = mayUse, mayManage = mayManage, serverPerson = server, opener = opener)
     }
 
     /**
@@ -358,7 +360,13 @@ class AssistantService(
 
     fun toolbox(context: AssistantContext): AssistantToolbox {
         val caller = context.caller
-        if (!context.workspace) return ModuleAssistantToolbox(access, caller.companyCode, caller.userId) { context.actor }
+        if (!context.workspace) {
+            val own = CompanyGrants(access, caller.companyCode, caller.userId)
+            // A session a server person opened: their rights are read again on every call, not once per request.
+            val opener = context.opener?.takeIf { it.kind == SessionOpener.Server }
+            val grants = if (opener == null) own else SwitcherGrants(own, access, caller.companyCode, opener, liveServerActor ?: { ServerActorLookup.None })
+            return ModuleAssistantToolbox(access, caller.companyCode, caller.userId, grants) { context.actor }
+        }
         // The server workspace: the owner's own tools there, or the administrator's (the same as their MCP agents).
         val person = context.serverPerson ?: return ModuleAssistantToolbox(access, caller.companyCode, caller.userId, AssistantGrantSource { null }) { context.actor }
         val grants = if (person.isOwner) ServerOwnerGrants(access, person.userId)

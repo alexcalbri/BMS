@@ -220,10 +220,11 @@ class AssistantServerPeopleTest {
             ServerMcpModuleId, "Servidor", ServerMcpTools.Instructions,
             listOf(
                 tool("list_companies", readOnly = true),
-                tool("set_company_active", readOnly = false),
+                tool("set_company_active", readOnly = false) { call -> listOf(McpPreviewRow("Empresa", "Acme SA (${call.string("code")})")) },
                 tool("update_company", readOnly = false),
                 tool("list_extensions", readOnly = true),
                 tool("delete_company", readOnly = false, destructive = true) { call -> listOf(McpPreviewRow("Empresa que se elimina", "Acme SA (${call.string("code")})")) },
+                tool("remove_module", readOnly = false, destructive = true) { call -> listOf(McpPreviewRow("Modulo", call.string("code"))) },
             ) + audit.tools.map { RegisteredMcpTool(ServerMcpModuleId, "Servidor", it) },
         )
     }
@@ -373,15 +374,17 @@ class AssistantServerPeopleTest {
             env.models.add(
                 Scripted.message(
                     "tool_use", Scripted.text("Reviso."), Scripted.toolUse("toolu_1", "servidor_list_companies"),
-                    Scripted.toolUse("toolu_2", "servidor_delete_company", buildJsonObject { put("code", "acme") }),
+                    Scripted.toolUse("toolu_2", "servidor_set_company_active", buildJsonObject { put("code", "acme") }),
                 ),
             )
-            val first = turn("/companies/me/assistant/conversations/$ownerConversation/messages", ownerToken, "servidor", """{"text":"borra acme"}""")
+            val first = turn("/companies/me/assistant/conversations/$ownerConversation/messages", ownerToken, "servidor", """{"text":"cambia acme"}""")
             assertEquals("awaiting_confirmation", first.last().second.text("reason"), first.toString())
             val offered = toolNames(env.models, 0)
-            assertTrue(offered.containsAll(listOf("demo_add_note", "demo_list_notes", "servidor_list_companies", "servidor_set_company_active", "servidor_delete_company", "servidor_list_server_audit")), offered.toString())
+            assertTrue(offered.containsAll(listOf("demo_add_note", "demo_list_notes", "servidor_list_companies", "servidor_set_company_active", "servidor_list_server_audit")), offered.toString())
+            // Irreversible tools are never offered to the assistant (they are done from the app), though the server module has them.
+            assertTrue(offered.none { it == "servidor_delete_company" || it == "servidor_remove_module" }, offered.toString())
             val card = first.single { it.first == "confirmation_required" }.second
-            assertEquals("Servidor: delete_company", card.text("label"))
+            assertEquals("Servidor: set_company_active", card.text("label"))
             assertEquals("acme", card["summary"]!!.jsonArray[0].jsonObject.text("value"))
             assertEquals("Acme SA (acme)", card["preview"]!!.jsonArray[0].jsonObject.text("value"))
             assertEquals(listOf("list_companies/Asistente/${ownerId}"), serverRan)
@@ -391,9 +394,9 @@ class AssistantServerPeopleTest {
             env.models.add(Scripted.message("end_turn", Scripted.text("Hecho."), input = 500, output = 50))
             val approved = turn("/companies/me/assistant/confirmations/${card.text("confirmationId")}", ownerToken, "servidor", """{"decision":"approve"}""")
             assertEquals("end_turn", approved.last().second.text("reason"), approved.toString())
-            assertEquals(listOf("list_companies/Asistente/$ownerId", "delete_company/Asistente/$ownerId"), serverRan)
+            assertEquals(listOf("list_companies/Asistente/$ownerId", "set_company_active/Asistente/$ownerId"), serverRan)
             assertEquals(
-                "server_owner|Asistente de Duena|servidor_delete_company|acme",
+                "server_owner|Asistente de Duena|servidor_set_company_active|acme",
                 scalar(central, "SELECT actor_kind || '|' || ((details::jsonb)->>'actor') || '|' || ((details::jsonb)->>'tool') || '|' || company_code FROM provisioning_audit_log WHERE action = 'assistant.server_tool'"),
             )
             // Usage is on the server key under the workspace's own entry, and the server list shows that entry to the owner.
@@ -748,6 +751,102 @@ class AssistantServerPeopleTest {
                 flags,
             )
         }
+    }
+
+    @Test
+    fun theOwnersWorkspaceAssistantNeitherListsNorRunsTheIrreversibleServerTools() {
+        if (url == null) return
+        val env = Env()
+        val toolbox = workspaceToolbox(env, env.owner)
+        assertTrue(AssistantTools.ServerDenyList == setOf("servidor_delete_company", "servidor_remove_module"))
+        val offered = toolbox.tools().map { it.name }
+        assertTrue("servidor_set_company_active" in offered && "servidor_list_companies" in offered, offered.toString())
+        assertTrue(AssistantTools.ServerDenyList.none { it in offered }, offered.toString())
+        // Even when the model names them (or the user "approved" a stored call): unknown, nothing runs, no card text.
+        AssistantTools.ServerDenyList.forEach { name ->
+            val args = buildJsonObject { put("code", "acme") }
+            assertEquals(AssistantToolResult(false, AssistantTools.UnknownTool).text, toolbox.execute(name, args).text)
+            assertFalse(toolbox.execute(name, args).ok)
+            assertEquals(0, toolbox.preview(name, args).rows.size)
+        }
+        assertTrue(serverRan.none { it.startsWith("delete_company") || it.startsWith("remove_module") }, serverRan.toString())
+        assertEquals("1", scalar(central, "SELECT count(*) FROM companies WHERE code = 'acme'"))
+        // The model is told these are done from the app. The MCP agents keep both tools (the registry still has them) and their own guidance.
+        val guidance = toolbox.instructions().joinToString("\n") { it.second }
+        assertTrue(guidance.contains("Eliminar una empresa y quitar un modulo del servidor") && guidance.contains("desde la app"), guidance)
+        assertTrue(env.access.mcpTools().any { it.qualifiedName == "servidor_delete_company" } && env.access.mcpTools().any { it.qualifiedName == "servidor_remove_module" })
+        assertFalse(ServerMcpTools.Instructions.contains("desde la app; dilo asi"))
+        // In a turn: a call the model makes is an error and no confirmation is asked.
+        inApp(env) {
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/settings", env.ownerToken, """{"enabled":true,"acceptDisclosure":true}""").status)
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/key", env.ownerToken, """{"apiKey":"$serverKey"}""").status)
+            val conversation = json("POST", "/companies/me/assistant/conversations", env.ownerToken, "servidor", "{}").text("id")
+            env.models.add(
+                Scripted.message("tool_use", Scripted.toolUse("toolu_1", "servidor_delete_company", buildJsonObject { put("code", "acme") }), Scripted.toolUse("toolu_2", "servidor_remove_module", buildJsonObject { put("module_id", "crm") })),
+                Scripted.message("end_turn", Scripted.text("Eso se hace desde la app.")),
+            )
+            val turn = turn("/companies/me/assistant/conversations/$conversation/messages", env.ownerToken, "servidor", """{"text":"borra acme"}""")
+            assertEquals("end_turn", turn.last().second.text("reason"), turn.toString())
+            assertTrue(turn.none { it.first == "confirmation_required" })
+            assertEquals(listOf("error", "error"), turn.filter { it.first == "tool_finished" }.map { it.second.text("status") })
+            assertFalse(toolNames(env.models, 0).any { it in AssistantTools.ServerDenyList })
+        }
+        assertTrue(serverRan.isEmpty(), serverRan.toString())
+    }
+
+    @Test
+    fun aSwitcherSessionStopsAtTheNextToolWhenThePersonLosesTheRightMidTurn() {
+        if (url == null) return
+        val env = Env()
+        val dueId = UUID.fromString(scalar(acmeDb, "SELECT id FROM application_users WHERE postgres_role = 'dueno_acme'")!!)
+        // The request that starts a turn decides once (context); the toolbox is what the running turn keeps using.
+        fun toolboxOf(token: String): AssistantToolbox {
+            val context = env.access.tenantConnectionForCompany("acme")!!.use { env.service.context(it, "acme", dueId, token) }!!
+            assertTrue(context.mayUse && context.serverPerson != null, "the turn starts")
+            return env.service.toolbox(context)
+        }
+        fun usable(toolbox: AssistantToolbox) = toolbox.tools().any { it.name == "demo_list_notes" } && toolbox.execute("demo_list_notes", buildJsonObject { }).ok
+        val read = buildJsonObject { }
+
+        // Ana, an administrator in a switcher session of acme, with the rights to use it.
+        env.grant(ServerPermission.CompaniesEnter, ServerPermission.AssistantUse)
+        val anaSession = env.anaInAcme()!!.accessToken
+        val ana = toolboxOf(anaSession)
+        assertTrue(usable(ana))
+        // 1. server.assistant.use revoked: nothing is offered and nothing runs, the very next call.
+        env.grant(ServerPermission.CompaniesEnter)
+        assertEquals(emptyList(), ana.tools().map { it.name })
+        assertEquals(AssistantTools.UnknownTool, ana.execute("demo_list_notes", read).text)
+        assertEquals(AssistantTools.UnknownTool, ana.execute("demo_add_note", buildJsonObject { put("texto", "no") }).text)
+        assertEquals(0, ana.preview("demo_add_note", buildJsonObject { put("texto", "no") }).rows.size)
+        assertEquals(emptyList(), ana.instructions())
+        assertEquals("0", notesIn(acmeDb))
+        // 2. Given back, it works again (the grants are read live, never kept).
+        env.grant(ServerPermission.CompaniesEnter, ServerPermission.AssistantUse)
+        assertTrue(usable(ana))
+        // 3. server.companies.enter revoked.
+        env.grant(ServerPermission.AssistantUse)
+        assertFalse(usable(ana))
+        env.grant(ServerPermission.CompaniesEnter, ServerPermission.AssistantUse)
+        assertTrue(usable(ana))
+        // 4. The company leaves her scope.
+        env.grant(ServerPermission.CompaniesEnter, ServerPermission.AssistantUse, scope = emptyList())
+        assertFalse(usable(ana))
+        env.grant(ServerPermission.CompaniesEnter, ServerPermission.AssistantUse)
+        assertTrue(usable(ana))
+        // 5. Deactivated.
+        env.admins.setActive(env.owner, env.anaId.toString(), false)
+        assertFalse(usable(ana))
+        assertEquals(AssistantTools.UnknownTool, ana.execute("demo_list_notes", read).text)
+        env.admins.setActive(env.owner, env.anaId.toString(), true)
+
+        // The server owner in a switcher session: always may while still the owner (no permission to lose), and the business owner's own session is untouched.
+        val ownerToolbox = toolboxOf(env.ownerInAcme()!!.accessToken)
+        assertTrue(usable(ownerToolbox))
+        val business = env.access.tenantConnectionForCompany("acme")!!.use { env.service.context(it, "acme", dueId, env.dueno.accessToken) }!!
+        assertTrue(business.serverPerson == null && usable(env.service.toolbox(business)))
+        env.grant(ServerPermission.AuditView) // the administrator's rights do not touch the business owner's own toolbox
+        assertTrue(usable(env.service.toolbox(business)))
     }
 
     private fun unread(database: String, userId: Any) = scalar(database, "SELECT count(*) FROM notifications WHERE user_id = '$userId' AND read_at IS NULL")!!.toInt()
