@@ -525,3 +525,114 @@ model (block binding and compaction on Sonnet/Haiku 5.5, `fallbacks: "default"` 
 fallback/compaction blocks, prompt-cache hit rates (`cache_read_input_tokens` is recorded per response and in the usage
 screens, to be checked on a real server), and SSE through a real Nginx (the generated config is checked by `nginx -t`
 in `scripts/ubuntu/tests`).
+
+## App contract changes (Core 0.14.1: the assistant in the server workspace and for server people)
+
+This section is the contract the app builds against. Everything not named here is unchanged. Core 0.14.1 answers the
+two problems found on the live server: (1) the assistant did not appear for the server owner; (2) a server person could
+not turn it on in a company or test it from a switcher session.
+
+### Who uses it where (all checked again on every request)
+
+| Where | Who | Needs | Tools |
+|---|---|---|---|
+| Server workspace (`X-Company-Code: servidor`, central session) | server owner | nothing (always) | the module tools of the modules enabled in the workspace + the owner's `servidor_*` tools (exactly what the owner's agent gets in the workspace) |
+| Server workspace | server administrator | `server.assistant.use` | only the two audit read tools an administrator's agent gets (`servidor_list_server_audit`, `servidor_list_company_activity`); the administrator must also hold `server.audit.view` for them to be offered |
+| A company, own session | business owner / user | as before (`empresa.assistant.use`) | the company tools of that user; never a `servidor_*` tool |
+| A company, switcher session of a server person | server owner | nothing (always) | the company tools of the business owner session; never `servidor_*` |
+| A company, switcher session of a server person | administrator | `server.assistant.use` (and the session's own entry rights: `server.companies.enter`, company in scope) | the same company tools; never `servidor_*` |
+
+`empresa.assistant.use` is NOT needed by a server person in a switcher session. An administrator without
+`server.assistant.use` is refused (`403 PERMISSION_REQUIRED`), also when the switcher session is the business owner's.
+Staff accounts of the workspace (company users that sign in with the code `servidor`) are still out: they get
+`SERVER_WORKSPACE` (`visible=false`). That is now the only use of the constant.
+
+### Permissions
+
+| Id | Level | Default | Allows |
+|---|---|---|---|
+| `server.assistant.use` (NEW) | server administrator permission (group Servidor, NOT high risk, scoped) | owner only (the owner always may) | Use the assistant in the server workspace (audit tools) and inside the companies the administrator may enter. Listed in `GET /server/admin-permissions` with `risk: "normal"`, `scoped: true`. |
+| `server.assistant.manage` | unchanged (high risk) | owner only | Now also: turn the assistant ON/OFF for a company of the administrator's scope (server routes and, inside a switcher session, the company settings routes). |
+
+`ServerPermissionIds.AssistantUse = "server.assistant.use"` and `AssistantIds.ServerUsePermission` are added to `core`.
+`ServerPermissionIds.All` gets it after `AssistantManage`.
+
+### Status (`GET /companies/me/assistant/status`)
+
+Same fields as before plus three optional ones (defaults keep old servers' answers valid):
+
+```json
+{"visible": true, "available": false, "reason": "COMPANY_DISABLED", "message": "...",
+ "canManage": true, "workspace": false, "serverPerson": true, "manageHint": null,
+ "model": "...", "keySource": "server", "monthlyLimitTokens": 2000000, "monthUsedTokens": 0,
+ "limitApplies": true, "confirmationHours": 24, "maxMessageChars": 20000, "disclosure": "..."}
+```
+
+- `canManage`: this session may change the assistant switch of THIS place. True for: a business owner (own session or a
+  group owner's switcher session); a switcher session opened by the server owner; one opened by an administrator holding
+  `server.assistant.manage` with the company in scope; in the workspace the owner, and an administrator holding
+  `server.assistant.manage` with every company in scope (the server settings need that). The app offers "Activar" when
+  `reason == COMPANY_DISABLED` (company) and `canManage`; in the workspace the switch is the server one
+  (`PUT /server/assistant/settings`), so with `reason == SERVER_DISABLED` and `canManage` it opens the server assistant
+  screen.
+- `workspace`: this is the server workspace (the Company switch does not exist there: the server switch is the switch).
+- `serverPerson`: the person behind the session is the server owner or an administrator (own session in the
+  workspace, or a switcher session opened from the server).
+- `manageHint`: one translated sentence saying who can turn it on, only when `canManage` is false and the reason is one
+  that someone else can fix; otherwise null.
+- `visible`: now also true for whoever `canManage` (to configure it), as for the business owner.
+- Reasons in the workspace: `SERVER_DISABLED`, `COMPANY_NOT_ALLOWED` (the "servidor" row of the per-company list says
+  not allowed), `NO_API_KEY` (the server key only: the workspace has no own key), `SECRETS_UNAVAILABLE`,
+  `PERMISSION_REQUIRED` (administrator without `server.assistant.use`), `LIMIT_REACHED`. Never `COMPANY_DISABLED` there.
+- `SERVER_WORKSPACE`: only for staff accounts of the workspace (see above).
+
+### Company routes inside a switcher session (existing paths, new rules)
+
+`GET`/`PUT /companies/me/assistant/settings` and `GET /companies/me/assistant/usage`:
+- own business-owner session: unchanged;
+- switcher session opened by the server owner: allowed; opened by an administrator: allowed only with
+  `server.assistant.manage` and the company in scope, else `403 SERVER_PERMISSION_REQUIRED` ("Necesitas el permiso
+  server.assistant.manage."); a plain user: `403 BUSINESS_OWNER_REQUIRED` as before;
+- in the server workspace: `GET` settings and `GET` usage answer for the owner and for an administrator holding
+  `server.assistant.manage` (the workspace's own usage); `PUT` settings answers `409 USE_SERVER_SETTINGS` (the switch and
+  the key of the workspace are the server's: `PUT /server/assistant/settings` and `/server/assistant/key`).
+A change made by a server person through these routes writes the company's activity row with the real person
+(`real_actor_*`, "<nombre> (desde el servidor)") and a `provisioning_audit_log` row `company.assistant_changed`
+(actor kind `server_owner` / `server_admin`, `enabled.from/to`, `via: "switcher"`, `disclosureAccepted: true` when the
+disclosure was accepted in that call). The conversations of a switcher session stay separate from the business owner's
+(owner key `server:<person id>`), as before.
+
+### Server routes
+
+`PUT /server/assistant/companies/{code}` (policy unchanged: `server.assistant.manage`, company of the path in scope) body:
+```json
+{"allowed": true, "monthlyTokens": null, "enabled": true, "acceptDisclosure": true}
+```
+- all four optional (core `AssistantCompanyAllowanceRequest`: `allowed` and `enabled` become nullable);
+- with `allowed` present the allowance is replaced as before (`monthlyTokens` null clears the override); without it the
+  allowance is untouched; at least one of `allowed`/`enabled` is needed (`400 INVALID_REQUEST`);
+- `enabled` turns the company's assistant switch on/off exactly like the business owner does. Turning it on needs
+  `acceptDisclosure: true` (`400 DISCLOSURE_REQUIRED`), recorded as given by that server person: company activity row
+  ("<nombre> (desde el servidor)", kind `server_owner`/`server_admin`) and `provisioning_audit_log`
+  `company.assistant_changed` with `enabled.from/to` and `disclosureAccepted`;
+- answer: the company row (below). `404 COMPANY_NOT_FOUND`, `400 VALUE_INVALID` as before.
+
+`GET /server/assistant/companies` rows gain `workspace: Boolean` (core `AssistantServerCompany`). For the SERVER OWNER the list
+starts with the workspace row `{"code": "servidor", "name": "Empresa del servidor", "workspace": true, "allowed": ..,
+"monthlyTokens": .., "effectiveMonthlyTokens": .., "enabled": <the server switch>, "ownKeySet": false, ...}`: its own entry
+for the allowance and the monthly limit override (`PUT /server/assistant/companies/servidor` with `allowed`/`monthlyTokens`;
+with `enabled` it answers `409 USE_SERVER_SETTINGS`). Only the owner sees and edits that row (the workspace is never in an
+administrator's scope). `GET /server/assistant/usage` lists it too for the owner. The monthly limit and `limitOwnKeyCompanies`
+apply to it like to a company; its usage is always on the server key (`serverKeyTokens`).
+
+### Error codes (all with `{code, message}`)
+
+New: `USE_SERVER_SETTINGS` (409), `SERVER_PERMISSION_REQUIRED` (403, also from the company routes above). Existing ones
+keep their meaning (`PERMISSION_REQUIRED` 403, `BUSINESS_OWNER_REQUIRED` 403, `DISCLOSURE_REQUIRED` 400, `COMPANY_NOT_FOUND` 404).
+
+### Confirmation card for server tools
+
+Unchanged shape. In the workspace the owner's non-read-only `servidor_*` tools always pause for the card with every argument
+in full; the ones that delete or destroy (`destructive`) or change what leaves the server (`outbound`) carry a `preview`
+written in plain words (company name instead of code, what is deleted, which owner/email is created). The classification is
+listed in "Implementation, Core 0.14.1" below. The preview hash binding and the 24 h expiry are unchanged.
