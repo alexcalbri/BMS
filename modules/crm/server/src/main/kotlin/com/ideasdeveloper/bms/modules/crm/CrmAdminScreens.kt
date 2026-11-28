@@ -79,8 +79,13 @@ object CrmAdminScreens {
     /**
      * Builds the message to send from the reply form: a typed text, or the chosen template filled for the lead (translated to
      * the guest's language when the template asks for it). A failed translation is added to [notes] for the lead's activity.
+     *
+     * [fromAgent]: the message of an agent or of the in-app assistant. What they type is sent as plain text, never as
+     * HTML ([CrmMail.render] `plain`), and a template is translated only from the translations already saved (a
+     * database read): no request to a translation service is made, neither to show the confirmation nor to send, so
+     * the text that was shown is the text that goes out.
      */
-    fun composeReply(context: CrmScreens.Context, lead: CrmLead, values: Map<String, String>, notes: MutableList<String>? = null): Pair<CrmChannel, CrmEmail> {
+    fun composeReply(context: CrmScreens.Context, lead: CrmLead, values: Map<String, String>, notes: MutableList<String>? = null, fromAgent: Boolean = false): Pair<CrmChannel, CrmEmail> {
         val channel = CrmChannels.all.firstOrNull { it.label == values["channel"] } ?: throw CrmValidationException(tr("Elige el canal."))
         channel.unavailable(CrmChannelContext(context.tenant, context.serverMail), lead)?.let { throw CrmValidationException(it) }
         val template = values["template"]?.takeIf { it.isNotBlank() && it != NoTemplate }?.let { name ->
@@ -92,9 +97,9 @@ object CrmAdminScreens {
         val placeholders = CrmInbox.templateValues(context.tenant, lead, context.names, context.stages) +
             if (text.isEmpty() && template != null) CrmTemplateMailer.dynamicValues(context.tenant, lead) else emptyMap()
         val email = when {
-            text.isNotEmpty() -> CrmMail.render(subject.ifEmpty { template?.subject.orEmpty() }, text, placeholders)
+            text.isNotEmpty() -> CrmMail.render(subject.ifEmpty { template?.subject.orEmpty() }, text, placeholders, plain = fromAgent)
             template != null && subject.isEmpty() -> {
-                val mail = CrmTemplateMailer.renderFor(context.tenant, template, lead)
+                val mail = CrmTemplateMailer.renderFor(context.tenant, template, lead, remote = !fromAgent)
                 mail.note?.let { notes?.add("${template.name}: $it") }
                 mail.toEmail()
             }

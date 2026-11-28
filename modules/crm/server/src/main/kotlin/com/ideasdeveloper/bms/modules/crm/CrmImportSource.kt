@@ -90,8 +90,16 @@ object CrmImportSources {
     val mcpTools: List<McpTool> get() = all.flatMap { source -> source.mcpTools.map { guarded(source.extensionId, it) } }
 
     /** La herramienta responde "La extension X no esta activa" si la extension de su fuente no esta activa en la empresa. */
+    // Every property of the tool travels with it (outbound and preview too: the confirmation card of the assistant depends on them).
     fun guarded(extensionId: String?, tool: McpTool): McpTool = if (extensionId == null) tool else McpTool(
-        tool.name, tool.title, tool.description, tool.permission, tool.inputSchema, tool.readOnly, tool.destructive,
+        name = tool.name, title = tool.title, description = tool.description, permission = tool.permission, inputSchema = tool.inputSchema,
+        readOnly = tool.readOnly, destructive = tool.destructive, outbound = tool.outbound,
+        preview = tool.preview?.let { preview ->
+            { call ->
+                CrmExtensions.inactive(call.tenant, extensionId)?.let { throw McpToolException(it) }
+                preview(call)
+            }
+        },
     ) { call ->
         CrmExtensions.inactive(call.tenant, extensionId)?.let { throw McpToolException(it) }
         tool.handler(call)

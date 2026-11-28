@@ -54,6 +54,7 @@ import com.ideasdeveloper.bms.app.features.auth.data.isServerLevel
 import com.ideasdeveloper.bms.app.features.auth.data.isServerOwner
 import com.ideasdeveloper.bms.app.core.version.isCoreAtLeast
 import com.ideasdeveloper.bms.app.features.activitylog.data.ActivityLogApi
+import com.ideasdeveloper.bms.app.features.assistant.data.AssistantApi
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.bms.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.bms.app.features.shell.ui.toComposeColor
@@ -87,6 +88,9 @@ fun DashboardScreen(
     var serverAdminsSupported by remember { mutableStateOf(false) }
     // Registro de actividad de la empresa (Core >= 0.12.0): el business owner siempre; otro usuario si el servidor le deja leerlo.
     var activityLogAvailable by remember { mutableStateOf(false) }
+    // Asistente global (Core >= 0.14.0): en una empresa, cuando el servidor dice que debe verse; en el servidor, solo con el Core que lo tiene.
+    var assistantVisible by remember { mutableStateOf(false) }
+    var assistantSupported by remember { mutableStateOf(false) }
     var targets by remember(session?.accessToken) { mutableStateOf<SwitchTargetsResponse?>(null) }
     var companyMessage by remember { mutableStateOf<String?>(null) }
     var switching by remember { mutableStateOf(false) }
@@ -176,11 +180,27 @@ fun DashboardScreen(
         }
     }
 
+    // El asistente solo aparece si el servidor lo tiene (un 404 o cualquier fallo lo oculta sin avisar) y dice que es visible.
+    LaunchedEffect(serverUrl, session?.accessToken, session?.role, session?.companyCode) {
+        assistantVisible = false
+        val url = serverUrl ?: return@LaunchedEffect
+        val active = session ?: return@LaunchedEffect
+        val code = active.companyCode ?: return@LaunchedEffect
+        if (active.isServerLevel) return@LaunchedEffect
+        val api = AssistantApi(url)
+        try {
+            assistantVisible = api.statusOrNull(active.accessToken, code)?.visible == true
+        } finally {
+            api.close()
+        }
+    }
+
     LaunchedEffect(serverUrl, session?.role, session?.serverPermissions) {
         if (session.isServerLevel && !serverUrl.isNullOrBlank()) {
             // El servidor solo da las novedades de Core y modulos a quien las pide con su sesion.
             val version = VersionApi(serverUrl).use { it.version(session?.accessToken) }
             serverAdminsSupported = version?.coreVersion?.let { isCoreAtLeast(it, 0, 11, 0) } == true
+            assistantSupported = version?.coreVersion?.let { isCoreAtLeast(it, 0, 14, 0) } == true
             // El aviso de actualizaciones y su boton son para quien puede actualizar el Core.
             if (!session.can(ServerPermission.CoreUpdate)) return@LaunchedEffect
             val notices = buildList {
@@ -295,12 +315,18 @@ fun DashboardScreen(
                 if (serverAdminsSupported && session.can(ServerPermission.AuditView)) {
                     add(DashboardCardData(tr("Registro de auditoria"), tr("Consulta quien hizo que en el servidor y en las empresas"), "R", "server-audit"))
                 }
+                if (assistantVisible) {
+                    add(DashboardCardData(tr("Asistente"), tr("Pregunta y pide tareas en lenguaje natural, con tus permisos"), "IA", "assistant"))
+                }
+                if (assistantSupported && session.can(ServerPermission.AssistantManage)) {
+                    add(DashboardCardData(tr("Asistente del servidor"), tr("Activa el asistente, su clave, modelo, limites y uso por empresa"), "IA", "server-assistant"))
+                }
                 if (activityLogAvailable) {
                     add(DashboardCardData(tr("Registro de actividad"), tr("Consulta quien hizo que y cuando en la empresa"), "L", "company-activity"))
                 }
                 // Modulos activos recibidos desde el servidor.
                 enabledModules
-                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" && it != "server-logs" && it != "server-update" && it != "server-admins" && it != "server-audit" && it != "company-activity" }
+                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" && it != "server-logs" && it != "server-update" && it != "server-admins" && it != "server-audit" && it != "company-activity" && it != "assistant" && it != "server-assistant" }
                     .forEach { moduleId ->
                         val module = moduleId.toDashboardModule()
                         add(DashboardCardData(module.title, module.description, module.iconText, moduleId))

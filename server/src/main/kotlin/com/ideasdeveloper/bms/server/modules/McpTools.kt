@@ -33,9 +33,22 @@ class McpTool(
     val readOnly: Boolean = false,
     // Deletes or overwrites data that cannot be recovered.
     val destructive: Boolean = false,
+    // Sends something out of the company (an email, a WhatsApp message, a request to another service...). The in-app
+    // assistant's confirmation card says so (Core 0.14.0).
+    val outbound: Boolean = false,
+    /**
+     * What the call would really do, resolved for a person to confirm it (Core 0.14.0): the record's name instead of its
+     * id, the recipient's name and address, the final text of a message. Read only (it runs before the user decides,
+     * with the same permissions); throw McpToolException when the arguments do not resolve. Null: the confirmation
+     * shows the arguments only.
+     */
+    val preview: ((McpToolCall) -> List<McpPreviewRow>)? = null,
     // Runs on an IO thread with the company's tenant database; returns the result for the agent.
     val handler: (McpToolCall) -> JsonElement,
 )
+
+/** One line of a tool's [McpTool.preview]: a label for people and the resolved value, both shown in full. */
+data class McpPreviewRow(val label: String, val value: String)
 
 /**
  * What the registry checks before offering a module's tool, so a mistake in one module never breaks

@@ -421,3 +421,14 @@ logged; the access history stays in `hotspot_accesses`. See `ACTIVITY_LOG_MODULE
   notification per hour. 16 KB bodies.
 - The email is marked verified only while the customer still has the address the code was sent to.
 - `hotspot_my_wifi_code` is not declared read-only (it creates the user's code the first time): read-only agent tokens cannot call it.
+
+## 0.15.1 (needs Core 0.14.0)
+
+Confirmation card of the Core's in-app assistant (GLOBAL_AGENT.md): delete_network has a `preview` (the SSID). `list_user_codes` (declared read only) no longer writes: it reads the users' codes and WiFi-access state as they are instead of creating a missing Core code or `hotspot_user_codes` row; same answer as before (a user with no code yet shows "sin codigo" in this tool only). Nothing changes for people: the screen, `my_wifi_code` and the portal create codes and rows exactly as before.
+
+## 0.15.2 (needs Core 0.14.0)
+
+Review fixes of the Core's in-app assistant: `update_settings` (visitor redirect, text of the code mail, portal address and texts),
+`set_integration`, `unifi_choose_console` and `unifi_choose_site` are marked `outbound` and have a `preview` that says in plain words what
+changes and where the portal sends visitors' authorizations (settings before -> after, the console and site, the controller that is
+replaced). The previews read the saved settings only: they never ask UniFi anything.

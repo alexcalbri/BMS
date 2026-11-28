@@ -15,6 +15,7 @@ private fun buildEnglishStrings(): Map<String, String> {
     map.putAll(englishPart5())
     map.putAll(englishPart6())
     map.putAll(englishSecurityPart())
+    map.putAll(englishAssistantPart())
     return map
 }
 
@@ -370,6 +371,8 @@ private fun englishPart2(): Map<String, String> = mapOf(
 private fun englishPart3(): Map<String, String> = mapOf(
     "Instalar desde archivo o URL" to "Install from file or URL",
     "Instalar {0}" to "Install {0}",
+    "Actualizacion disponible: {0} → {1}" to "Update available: {0} → {1}",
+    "Actualizar {0} a {1}" to "Update {0} to {1}",
     "La firma del paquete no vale ({0}). No se puede autorizar ni instalar." to "The package signature is not valid ({0}). It cannot be authorized or installed.",
     "La sesion de instalacion caduco (dura 30 minutos). Vuelve a subir o descargar el paquete." to "The installation session expired (it lasts 30 minutes). Upload or download the package again.",
     "Los paquetes vienen del catalogo de extensiones configurado en el servidor. Un paquete firmado se instala directamente; uno sin firma necesita tu autorizacion expresa." to "Packages come from the extension catalog configured on the server. A signed package is installed directly; an unsigned one needs your explicit authorization.",

@@ -37,8 +37,14 @@ data class ActivityActor(
         origin = Origins.Agent,
     ).rebuilt()
 
+    /**
+     * The same person acting through the in-app assistant (GLOBAL_AGENT.md): "Asistente de <usuario>". Only Core sets
+     * it (AssistantTools); the fixed [AssistantAgentName] with [Origins.Assistant] is what the display recognises.
+     */
+    fun viaAssistant(): ActivityActor = copy(agentName = AssistantAgentName, origin = Origins.Assistant).rebuilt()
+
     /** The same actor with [display] as every screen rebuilds it from the structured fields ([ActivityDisplay]). */
-    fun rebuilt(): ActivityActor = copy(display = ActivityDisplay.of(kind, name, agentName, realKind, realName).display)
+    fun rebuilt(): ActivityActor = copy(display = ActivityDisplay.of(kind, name, agentName, realKind, realName, origin).display)
 
     /** The same actor with another origin (an api route, a webhook...). */
     fun withOrigin(origin: String): ActivityActor = copy(origin = origin)
@@ -152,7 +158,7 @@ data class ActivityActor(
                 val name = text("name")?.let(::clean)?.takeIf { it.isNotEmpty() } ?: return null
                 val agent = text("agentName")?.let(::clean)?.takeIf { it.isNotEmpty() }?.let(ActivityNames::neutral)
                 val realName = text("realName")?.let(::clean)?.takeIf { it.isNotEmpty() }
-                val display = ActivityDisplay.of(kind, name, agent, realKind, realName).display
+                val display = ActivityDisplay.of(kind, name, agent, realKind, realName, origin).display
                 ActivityActor(kind, id("userId"), name, display, agent, realKind, id("realUserId"), realName, origin)
             } catch (_: Exception) {
                 null
@@ -197,6 +203,9 @@ data class ActivityActor(
             ).rebuilt()
 
         internal fun clean(text: String): String = ActivityText.clean(text).take(MaxText)
+
+        // Agent name of the in-app assistant's rows (with origin [Origins.Assistant]); never a user-chosen name.
+        const val AssistantAgentName = "Asistente"
     }
 
     object Kinds {
@@ -222,8 +231,10 @@ data class ActivityActor(
         const val Automation = "automation"
         const val Import = "import"
         const val Webhook = "webhook"
+        // The in-app assistant acting for a user (GLOBAL_AGENT.md).
+        const val Assistant = "assistant"
 
-        val all: Set<String> = setOf(App, Agent, Api, Automation, Import, Webhook)
+        val all: Set<String> = setOf(App, Agent, Api, Automation, Import, Webhook, Assistant)
     }
 }
 
@@ -396,6 +407,7 @@ object ActivityChanges {
 object ActivityNames {
     private val markers = listOf(
         Regex("(?U)agente\\s+de(\\s|$)"),
+        Regex("(?U)asistente\\s+de(\\s|$)"),
         Regex("(?U)desde\\s+el\\s+servidor"),
         Regex("(?U)importacion\\s*\\("),
         Regex("(?U)automatizacion(\\s|$)"),
@@ -457,18 +469,22 @@ data class ActivityDisplay(
     val kindLabel: String,
     val viaAgent: Boolean,
     val fromServer: Boolean,
+    // The in-app assistant acted for the person ("Asistente de <usuario>"); [viaAgent] is then false.
+    val viaAssistant: Boolean = false,
 ) {
     companion object {
-        fun of(kind: String, name: String, agentName: String?, realKind: String?, realName: String?): ActivityDisplay {
-            val viaAgent = !agentName.isNullOrBlank()
+        fun of(kind: String, name: String, agentName: String?, realKind: String?, realName: String?, origin: String? = null): ActivityDisplay {
+            // Only the fixed name with the assistant origin, as Core writes it: a token called "Asistente" stays an agent.
+            val viaAssistant = origin == ActivityActor.Origins.Assistant && agentName == ActivityActor.AssistantAgentName
+            val viaAgent = !agentName.isNullOrBlank() && !viaAssistant
             val serverKinds = ActivityActor.Kinds.server
             val fromServer = kind in serverKinds || realKind in serverKinds
             val cleanName = ActivityActor.clean(name).ifEmpty { "Desconocido" }
             val ownName = ActivityNames.neutral(cleanName)
             val real = realName?.let(ActivityActor::clean)?.takeIf { it.isNotEmpty() }?.let(ActivityNames::neutralPerson)
             // A person (or the person who started an import or automation), with the agent and server markers.
-            fun person(who: String) = (if (viaAgent) "Agente de " else "") + who + (if (fromServer) " (desde el servidor)" else "")
-            val starter = if (real != null || viaAgent) person(real ?: "Desconocido") else null
+            fun person(who: String) = (if (viaAgent) "Agente de " else if (viaAssistant) "Asistente de " else "") + who + (if (fromServer) " (desde el servidor)" else "")
+            val starter = if (real != null || viaAgent || viaAssistant) person(real ?: "Desconocido") else null
             val display = when (kind) {
                 ActivityActor.Kinds.Automation -> "Automatizacion $ownName" + (starter?.let { " ($it)" } ?: "")
                 ActivityActor.Kinds.Import -> "Importacion" + (starter?.let { " ($it)" } ?: "")
@@ -486,9 +502,10 @@ data class ActivityDisplay(
                     ActivityActor.Kinds.System -> add("Sistema")
                 }
                 if (viaAgent) add("Agente IA")
+                if (viaAssistant) add("Asistente IA")
                 if (fromServer) add("Desde el servidor")
             }
-            return ActivityDisplay(display, labels.joinToString(", "), viaAgent, fromServer)
+            return ActivityDisplay(display, labels.joinToString(", "), viaAgent, fromServer, viaAssistant)
         }
     }
 }
@@ -597,7 +614,7 @@ object ActivityLog {
             insert.setString(13, clean.action)
             insert.setString(14, clean.summary)
             insert.setString(15, changesJson(clean.changes).toString())
-            insert.setString(16, clean.origin ?: actor.origin)
+            insert.setString(16, rowOrigin(clean.origin, actor.origin))
             insert.executeQuery().use { rows -> rows.next(); rows.getLong(1) }
         }
     }
@@ -622,6 +639,16 @@ object ActivityLog {
     )
 
     private fun clip(text: String) = ActivityText.clean(text).take(100)
+
+    /**
+     * The origin a row stores: the entry's, else the actor's. The assistant origin is the actor's alone: an assistant
+     * actor keeps it whatever the entry says, and an entry cannot claim it for anyone else.
+     */
+    internal fun rowOrigin(entryOrigin: String?, actorOrigin: String?): String? = when {
+        actorOrigin == ActivityActor.Origins.Assistant -> actorOrigin
+        entryOrigin == ActivityActor.Origins.Assistant -> actorOrigin
+        else -> entryOrigin ?: actorOrigin
+    }
 
     fun changesJson(changes: List<ActivityChange>): JsonArray = JsonArray(changes.map { change ->
         JsonObject(buildMap {

@@ -152,7 +152,7 @@ class ModuleAccessService(
      * server does not support (see I18n.Languages).
      */
     fun setCompanyLanguage(companyCode: String, language: String): Boolean =
-        central.connection.use { connection -> com.ideasdeveloper.bms.server.i18n.setCompanyLanguage(connection, companyCode, language) }
+        noNewConnection().let { central.connection }.use { connection -> com.ideasdeveloper.bms.server.i18n.setCompanyLanguage(connection, companyCode, language) }
 
     /**
      * Language to render something for [userId] of the company behind [tenant]: the user's own, else the
@@ -621,7 +621,7 @@ class ModuleAccessService(
      * workspace and the same owner group, else [CompanyLinkException]. The caller checks the business owner.
      */
     fun linkCompany(companyCode: String, targetCode: String, purpose: String, linkedBy: String): List<GroupCompany> =
-        central.connection.use { connection -> CompanyLinks.link(connection, companyCode, targetCode, purpose, linkedBy) }
+        noNewConnection().let { central.connection }.use { connection -> CompanyLinks.link(connection, companyCode, targetCode, purpose, linkedBy) }
 
     /**
      * Removes [targetCode] (it may be [companyCode]) from the group of [companyCode]; the same owner
@@ -629,7 +629,7 @@ class ModuleAccessService(
      * [companyCode] (only it when it no longer is).
      */
     fun unlinkCompany(companyCode: String, targetCode: String, purpose: String): List<GroupCompany> =
-        central.connection.use { connection -> CompanyLinks.unlink(connection, companyCode, targetCode, purpose) }
+        noNewConnection().let { central.connection }.use { connection -> CompanyLinks.unlink(connection, companyCode, targetCode, purpose) }
 
     /**
      * Whether the user of [permissions] may see in the customer's file the history rows written by
@@ -679,7 +679,31 @@ class ModuleAccessService(
     }
 
     // Central control-plane connection for module-owned central tables such as public_domains.
-    fun centralConnection(): Connection = central.connection
+    fun centralConnection(): Connection {
+        noNewConnection()
+        return central.connection
+    }
+
+    /**
+     * Runs [block] (a confirmation preview of the in-app assistant) with no way to open another connection or write to
+     * the control database through this service: a preview works on the one read-only connection it was given. Only
+     * for the calling thread; scopes nest.
+     */
+    fun <T> withoutNewConnections(block: () -> T): T {
+        val before = readOnlyScope.get()
+        readOnlyScope.set(true)
+        try {
+            return block()
+        } finally {
+            if (before == null) readOnlyScope.remove() else readOnlyScope.set(before)
+        }
+    }
+
+    private fun noNewConnection() {
+        check(readOnlyScope.get() != true) { "Una vista previa no puede abrir otra conexion ni escribir." }
+    }
+
+    private val readOnlyScope = ThreadLocal<Boolean>()
 
     // Web module pages authenticate with cookies scoped to /modules/{moduleId}/ instead of headers.
     fun companyCode(call: ApplicationCall): String? = (call.request.header("X-Company-Code") ?: call.request.cookies[CompanyCookie])
@@ -708,11 +732,32 @@ class ModuleAccessService(
      * companies' activity logs); null when the name is not a configured or valid tenant database.
      */
     fun tenantConnectionForDatabase(databaseName: String): Connection? {
+        noNewConnection()
         val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
     }
 
+    /**
+     * A connection of its own to the company database, NOT from the pool: the caller closes it and it is gone (physically),
+     * so nothing it did to its session can reach the next borrower. For code that must run on a connection it may leave in
+     * any state, such as the confirmation previews of the in-app assistant.
+     */
+    fun dedicatedTenantConnectionForCompany(companyCode: String): Connection? {
+        noNewConnection()
+        val databaseName = findActiveDatabase(companyCode) ?: return null
+        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null
+        val connection = java.sql.DriverManager.getConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
+        try {
+            connection.createStatement().use { it.execute("SET search_path TO public") }
+        } catch (failure: Exception) {
+            runCatching { connection.close() }
+            throw failure
+        }
+        return connection
+    }
+
     fun tenantConnectionForCompany(companyCode: String): Connection? {
+        noNewConnection()
         val databaseName = findActiveDatabase(companyCode) ?: return null
         val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
@@ -958,6 +1003,7 @@ class ModuleAccessService(
     }
 
     fun tenantConnection(call: ApplicationCall): Connection? {
+        noNewConnection()
         val companyCode = companyCode(call) ?: return null
         val databaseName = findActiveDatabase(companyCode) ?: return null
         val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null

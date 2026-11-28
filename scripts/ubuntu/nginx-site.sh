@@ -13,6 +13,11 @@
 #   POST /companies/me/backups/import      company profile backup ZIP, multipart (512 MB, BackupImportLimits), streamed.
 #   POST /server/extensions/upload         extension package ZIP, multipart (50 MB, ExtensionPackageService.MaxZipBytes).
 # JSON routes that stay under 2 MB on purpose: module screen actions, the MCP endpoint of Agentes (1 MB), OAuth (64 KB).
+#
+# Long-lived answers: the in-app assistant (/companies/me/assistant/, GLOBAL_AGENT.md) streams its turns as
+# Server-Sent Events. Its location passes every frame at once (proxy_buffering off; the backend also sends
+# X-Accel-Buffering: no) and waits up to 15 minutes between bytes (a turn lasts at most 10; the backend pings every 15 s).
+# The CSP needs nothing more: the stream is a same-origin request (connect-src 'self').
 
 # Sourced: the parsing here never relies on the caller's locale (bms_ascii_match, LC_ALL=C on grep, sed, awk and sort).
 # [[ =~ ]] with LC_ALL=C for this one test, whatever the caller's locale: [a-z], [0-9a-f] or [!-~] mean ASCII.
@@ -107,6 +112,8 @@ NGINX
     printf '    include %s/*.conf;\n' "$BMS_NGINX_LOCAL_DIR"
     bms_nginx_location /auth/ "$port" $'limit_req zone=bms_req burst=400 nodelay;\nlimit_req zone=bms_auth burst=40 nodelay;'
     bms_nginx_location /companies "$port"
+    printf '    # Asistente de IA: respuestas en streaming (Server-Sent Events), sin buffer y con espera larga.\n'
+    bms_nginx_location /companies/me/assistant/ "$port" "$(printf 'proxy_buffering off;\nproxy_cache off;\nproxy_read_timeout 900s;\nproxy_send_timeout 900s;')"
     # Company profile backup (ZIP, at most 512 MB in BackupImportLimits): streamed, the backend reads and checks it.
     bms_nginx_location '= /companies/me/backups/import' "$port" "$(printf 'client_max_body_size 520m;\nproxy_request_buffering off;\nclient_body_timeout 300s;\nproxy_send_timeout 3600s;\nproxy_read_timeout 3600s;')"
     bms_nginx_location /server "$port"
@@ -276,7 +283,7 @@ bms_nginx_unknown_lines() {
 ^limit_(req|conn)_status 429;$
 ^include /etc/nginx/bms\.d/\*\.conf;$
 ^add_header (X-Content-Type-Options|X-Frame-Options|Referrer-Policy|Content-Security-Policy|Strict-Transport-Security|Alt-Svc|Cache-Control) .+ always;$
-^location (/auth/|/companies|/server|= /version|/notifications|/\.well-known/oauth-|/modules|/|= /companies/me/backups/import|= /server/extensions/upload|= /modules/crm/ui/import) \{$
+^location (/auth/|/companies|/companies/me/assistant/|/server|= /version|/notifications|/\.well-known/oauth-|/modules|/|= /companies/me/backups/import|= /server/extensions/upload|= /modules/crm/ui/import) \{$
 ^location ~ \\\.map\$ \{$
 ^location ~ "\^/modules/\[a-z\]\[a-z0-9_\]\{0,62\}/ui/files\$" \{$
 ^location /\.well-known/acme-challenge/ \{ root [^;]+; \}$
@@ -285,6 +292,8 @@ bms_nginx_unknown_lines() {
 ^proxy_http_version 1\.1;$
 ^proxy_set_header (Host|X-Real-IP|X-Forwarded-For|X-Forwarded-Proto|X-Forwarded-Host) \$[a-z_]+;$
 ^proxy_request_buffering off;$
+^proxy_buffering off;$
+^proxy_cache off;$
 ^proxy_(send|read)_timeout [0-9]+s;$
 ^try_files \$uri \$uri/ /index\.html;$
 ^return 404;$

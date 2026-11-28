@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.hotspot
 
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -102,6 +103,9 @@ object HotspotMcpTools {
             description = "Cambia la configuracion del portal. Solo cambia los campos enviados. Afecta de inmediato a los visitantes del WiFi: " +
                 "confirma los cambios con el usuario antes. La API key de UniFi y la consola se configuran en la app. El envio de correo usa el SMTP de la empresa y no se cambia desde aqui.",
             permission = HotspotScreens.SettingsManage,
+            // Changes what visitors receive: the redirect after connecting, the text of the code mail, the portal's address.
+            outbound = true,
+            preview = { call -> settingsPreview(call) },
             inputSchema = McpSchema.obj(settingArguments),
         ) { call -> updateSettings(call) },
         McpTool(
@@ -145,6 +149,7 @@ object HotspotMcpTools {
             title = "Eliminar red WiFi",
             description = "Elimina la configuracion de una red; sus visitantes vuelven al formulario de registro y a los tiempos generales. Confirma con el usuario antes.",
             permission = HotspotScreens.SettingsManage,
+            preview = { call -> networkPreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la red (list_networks).")), required = listOf("id")),
         ) { call -> deleteNetwork(call) },
@@ -154,6 +159,9 @@ object HotspotMcpTools {
             description = "Activa o desactiva una integracion del hotspot (ids en get_settings). Activar un controlador de red desactiva el otro. " +
                 "Solo el dueno de la empresa o del servidor. Confirma con el usuario antes.",
             permission = HotspotScreens.SettingsManage,
+            // Turning on a network controller makes the portal send every visitor's authorization to it.
+            outbound = true,
+            preview = { call -> integrationPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "id" to McpSchema.string("Id de la integracion."),
@@ -226,6 +234,9 @@ object HotspotMcpTools {
             title = "Elegir consola UniFi",
             description = "Guarda la consola UniFi del hotspot y lista sus sitios; si tiene uno solo lo elige.$ConfirmFirst",
             permission = HotspotScreens.SettingsManage,
+            // The console is where the portal authorizes every visitor, with the saved API key.
+            outbound = true,
+            preview = { call -> consolePreview(call) },
             inputSchema = McpSchema.obj(mapOf("consoleId" to McpSchema.string("Id de la consola (unifi_list_consoles).")), required = listOf("consoleId")),
         ) { call -> chooseConsole(call) },
         McpTool(
@@ -233,6 +244,8 @@ object HotspotMcpTools {
             title = "Elegir sitio UniFi",
             description = "Guarda el sitio de la consola UniFi donde se autoriza a los visitantes.$ConfirmFirst",
             permission = HotspotScreens.SettingsManage,
+            outbound = true,
+            preview = { call -> sitePreview(call) },
             inputSchema = McpSchema.obj(mapOf("siteId" to McpSchema.string("Id del sitio (unifi_choose_console).")), required = listOf("siteId")),
         ) { call -> chooseSite(call) },
         McpTool(
@@ -330,6 +343,79 @@ object HotspotMcpTools {
                 ),
             )
         }
+    }
+
+    // ---- Previews: read only, no request of any kind ----
+
+    private fun shown(value: String?) = value?.takeIf { it.isNotBlank() } ?: "(vacio)"
+
+    private fun settingsPreview(call: McpToolCall): List<McpPreviewRow> {
+        val values = call.arguments.filterKeys { it in settingArguments }
+        if (values.isEmpty()) throw McpToolException("Envia al menos un campo a cambiar.")
+        val saved = HotspotSettingsRepository.load(call.tenant)
+        val current = mapOf(
+            "domain" to saved.domain, "networkName" to saved.networkName, "portalTitle" to saved.portalTitle, "portalSubtitle" to saved.portalSubtitle,
+            "logoUrl" to saved.logoUrl, "consentText" to saved.consentText, "termsUrl" to saved.termsUrl, "privacyUrl" to saved.privacyUrl,
+            "footerText" to saved.footerText, "successUrl" to saved.successUrl, "accessMinutes" to saved.accessMinutes.toString(),
+            "reconnectMinutes" to saved.reconnectMinutes.toString(), "codeTtlMinutes" to saved.codeTtlMinutes.toString(),
+            "newCustomersPerHour" to saved.newCustomersPerHour.toString(), "dataLimitMb" to saved.dataLimitMb.toString(),
+            "rxKbps" to saved.rxKbps.toString(), "txKbps" to saved.txKbps.toString(), "emailSubject" to saved.emailSubject,
+        )
+        val rows = values.entries.sortedBy { it.key }.map { (key, value) ->
+            val before = current[key]
+            val after = (value as? JsonPrimitive)?.contentOrNull ?: throw McpToolException("'$key' debe ser un valor simple.")
+            McpPreviewRow(settingArguments[key]?.get("description")?.let { (it as? JsonPrimitive)?.contentOrNull }?.substringBefore('.')?.take(120) ?: key, "${shown(before)} -> ${shown(after)}")
+        }
+        val outward = buildList {
+            if ("successUrl" in values) add("los visitantes son enviados a esa direccion al conectarse")
+            if ("emailSubject" in values) add("el asunto del correo con el codigo que reciben")
+            if ("domain" in values) add("la direccion publica del portal (el servidor configura Nginx y HTTPS)")
+            if ("logoUrl" in values || "termsUrl" in values || "privacyUrl" in values || "consentText" in values || "footerText" in values) add("lo que ven en el portal")
+        }
+        return rows + McpPreviewRow("Que cambia para los visitantes", if (outward.isEmpty()) "Solo tiempos y limites de acceso." else outward.joinToString("; ").replaceFirstChar { it.uppercase() } + ".")
+    }
+
+    private fun integrationPreview(call: McpToolCall): List<McpPreviewRow> {
+        if (!call.has("enabled")) throw McpToolException("El argumento 'enabled' es obligatorio.")
+        val id = call.requiredString("id", 100)
+        val known = HotspotIntegrations.catalog(call.tenant)
+        val integration = known.firstOrNull { it.id == id } ?: throw McpToolException("Integracion desconocida.")
+        val enabled = call.boolean("enabled")
+        val active = HotspotIntegrations.enabled(call.tenant)
+        val replaced = if (enabled && integration.kind == HotspotIntegrations.Network) known.filter { it.kind == HotspotIntegrations.Network && it.id in active && it.id != id }.map { it.title } else emptyList()
+        return listOfNotNull(
+            McpPreviewRow("Integracion", integration.title),
+            McpPreviewRow("Estado", "${if (id in active) "Activa" else "Apagada"} -> ${if (enabled) "Activa" else "Apagada"}"),
+            replaced.takeIf { it.isNotEmpty() }?.let { McpPreviewRow("Se desactiva", it.joinToString()) },
+            McpPreviewRow(
+                "Que se envia y a donde",
+                if (integration.kind == HotspotIntegrations.Network) {
+                    if (enabled) "El portal envia a ${integration.title}, con la API key guardada, la autorizacion de cada visitante que se conecta (su direccion de red)." else "El portal deja de autorizar visitantes en ${integration.title}."
+                } else {
+                    "Cambia quien puede entrar al WiFi con su codigo; no envia datos a un servicio externo."
+                },
+            ),
+        )
+    }
+
+    private fun consolePreview(call: McpToolCall): List<McpPreviewRow> {
+        val (settings, _) = unifiSettings(call)
+        val consoleId = call.requiredString("consoleId", 200)
+        return listOf(
+            McpPreviewRow("Consola UniFi", "${shown(settings.unifiConsoleId)} -> $consoleId"),
+            McpPreviewRow("Sitio elegido", if (consoleId != settings.unifiConsoleId) "Se borra: hay que elegirlo de nuevo (o se elige solo si la consola tiene uno)" else shown(settings.unifiSiteId)),
+            McpPreviewRow("Que se envia y a donde", "Se piden los sitios de esa consola a UniFi con la API key guardada. Desde entonces el portal autoriza a los visitantes en esa consola."),
+        )
+    }
+
+    private fun sitePreview(call: McpToolCall): List<McpPreviewRow> {
+        val (settings, _) = unifiSettings(call)
+        if (settings.unifiConsoleId.isNullOrBlank()) throw McpToolException("Elige primero la consola con unifi_choose_console.")
+        return listOf(
+            McpPreviewRow("Consola UniFi", settings.unifiConsoleId.orEmpty()),
+            McpPreviewRow("Sitio", "${shown(settings.unifiSiteId)} -> ${call.requiredString("siteId", 200)}"),
+            McpPreviewRow("Que se envia y a donde", "El portal autorizara a los visitantes en ese sitio de la consola, con la API key guardada."),
+        )
     }
 
     private fun updateSettings(call: McpToolCall): JsonElement {
@@ -451,6 +537,15 @@ object HotspotMcpTools {
         }
     }
 
+    private fun networkPreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val ssid = call.tenant.prepareStatement("SELECT ssid FROM hotspot_networks WHERE id = ?").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: throw McpToolException("Esa red no existe; revisa list_networks.")
+        return listOf(McpPreviewRow("Red WiFi que se elimina", ssid))
+    }
+
     private fun deleteNetwork(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
         if (!HotspotActivity.deleteNetwork(call.tenant, call.activityActor, id)) throw McpToolException("Esa red no existe; revisa list_networks.")
@@ -499,21 +594,24 @@ object HotspotMcpTools {
         }
     }
 
+    // Read only, with the same answer as before: it reads the codes and access state as they are and creates nothing (no
+    // Core code, no hotspot_user_codes row). A user with no code yet shows "sin codigo" here only; the screen and the
+    // portal keep creating them as before.
     private fun userCodes(call: McpToolCall): JsonElement {
         if (!call.permissions.businessOwner) throw McpToolException("Solo el dueno de la empresa o del servidor ve los codigos de todos los usuarios.")
         val access = HotspotAccess(call.access)
         val users = if (access.isServerCompanyOwner(call.permissions)) {
-            call.access.centralConnection().use { central -> HotspotUserCodes.users(call.tenant, central) }
+            call.access.centralConnection().use { central -> HotspotUserCodes.usersReadOnly(call.tenant, central) }
         } else {
-            HotspotUserCodes.users(call.tenant, null)
+            HotspotUserCodes.usersReadOnly(call.tenant, null)
         }
         return buildJsonObject {
             put("usersIntegrationEnabled", HotspotIntegrations.isEnabled(call.tenant, HotspotIntegrations.Users))
-            put("users", JsonArray(users.map { user ->
+            put("users", JsonArray(users.map { (user, hasCode) ->
                 buildJsonObject {
                     put("user", user.username)
                     put("name", user.name)
-                    put("code", user.code)
+                    put("code", if (hasCode) user.code else "sin codigo")
                     put("serverOwner", user.serverOwner)
                     put("active", user.active)
                 }
