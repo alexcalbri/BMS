@@ -102,6 +102,24 @@ equals 'bms_verify_role_access: en silencio cuando esta bien' '' "$(bms_verify_r
 psu postgres -c "GRANT $OWNER TO $RUNTIME"
 equals 'bms_check_role_layout: dice el problema exacto' "ERROR: organizacion de roles incompleta: el rol $RUNTIME es miembro de $OWNER, que crea bases o roles o es dueno de una base" "$(bms_check_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2>&1)"
 psu postgres -c "REVOKE $OWNER FROM $RUNTIME"
+# PostgreSQL 16+: inheritance belongs to each grant, not to the role's rolinherit.
+psu postgres -c "GRANT $OWNER TO $PROVISIONER WITH INHERIT TRUE, SET TRUE"
+equals 'bms_check_role_layout: un GRANT con INHERIT al aprovisionamiento se detecta (PostgreSQL 16+)' "ERROR: organizacion de roles incompleta: el rol $PROVISIONER hereda privilegios (INHERIT)" "$(bms_check_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2>&1)"
+psu postgres -c "GRANT $OWNER TO $PROVISIONER WITH INHERIT FALSE, SET TRUE, ADMIN TRUE"
+equals 'y uno con ADMIN OPTION' "ERROR: organizacion de roles incompleta: el rol $PROVISIONER hereda privilegios (INHERIT)" "$(bms_check_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2>&1)"
+psu postgres -c "GRANT $OWNER TO $PROVISIONER WITH INHERIT FALSE, SET TRUE, ADMIN FALSE"
+equals 'con SET sin INHERIT ni ADMIN vuelve a estar bien' '' "$(bms_check_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2>&1)"
+# N1: a NOTICE or WARNING on stderr (any transport, the provisioner's connection) is not part of the answer.
+real_transport=$(declare -f bms_pg_transport)
+real_provisioner=$(declare -f bms_pg_as_provisioner)
+bms_pg_transport() { printf 'WARNING:  ruido de prueba\n' >&2; local database=$1; shift; PGOPTIONS='-c client_min_messages=warning' psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "$database" "$@"; }
+bms_pg_as_provisioner() { printf 'NOTICE:  ruido de prueba\n' >&2; local database=$1; shift; PGPASSWORD=$FX_PASSWORD psql -h "$PG_HOST" -p "$PG_PORT" -U "$PROVISIONER" -d "$database" "$@"; }
+check 'bms_verify_role_access: el ruido por stderr no lo hace fallar' bms_verify_role_access "$CONTROL" "$RUNTIME" "$PROVISIONER" "$(bms_tenant_databases "$CONTROL" 2>/dev/null)"
+equals 'y no imprime nada' '' "$(bms_verify_role_access "$CONTROL" "$RUNTIME" "$PROVISIONER" "$(bms_tenant_databases "$CONTROL" 2>/dev/null)" 2>&1 | grep -v 'ruido de prueba')"
+psu postgres -c "REVOKE CONNECT ON DATABASE $TB FROM $RUNTIME"
+eval "$real_transport"
+eval "$real_provisioner"
+psu postgres -c "GRANT CONNECT ON DATABASE $TB TO $RUNTIME"
 psu postgres -c "REVOKE CONNECT ON DATABASE $TB FROM $RUNTIME"
 equals 'bms_verify_role_access: nombra la base sin acceso' "ERROR: el rol $RUNTIME no puede leer $TB: ERROR: se detiene" "$(bms_verify_role_access "$CONTROL" "$RUNTIME" "$PROVISIONER" "$(bms_tenant_databases "$CONTROL")" 2>&1 | sed -E 's/(no puede leer [a-z0-9_]+: ).*/\1ERROR: se detiene/' | head -n 1)"
 psu postgres -c "GRANT CONNECT ON DATABASE $TB TO $RUNTIME"

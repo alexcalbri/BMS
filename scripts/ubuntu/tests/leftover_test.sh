@@ -129,6 +129,40 @@ unexpected 'configuracion propia' 'configuracion propia' 'psu postgres -c "ALTER
 unexpected 'caducidad' 'limite de conexiones o fecha de caducidad' 'psu postgres -c "ALTER ROLE $PROVISIONER VALID UNTIL '"'"'2030-01-01'"'"'"'
 unexpected 'limite de conexiones' 'limite de conexiones o fecha de caducidad' 'psu postgres -c "ALTER ROLE $PROVISIONER CONNECTION LIMIT 1"'
 
+unexpected 'INHERIT en una pertenencia (PostgreSQL 16+)' 'INHERIT o ADMIN OPTION' 'psu postgres -c "GRANT $OWNER TO $PROVISIONER WITH INHERIT TRUE"'
+unexpected 'ADMIN OPTION en una pertenencia' 'INHERIT o ADMIN OPTION' 'psu postgres -c "GRANT $OWNER TO $PROVISIONER WITH ADMIN TRUE, INHERIT FALSE"'
+# What an attempt leaves (SET without INHERIT) is fine.
+setup
+psu postgres -c "CREATE ROLE $PROVISIONER LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
+psu postgres -c "GRANT $OWNER TO $PROVISIONER WITH INHERIT FALSE, SET TRUE"
+equals 'una pertenencia con SET y sin INHERIT ni ADMIN se adopta' 'adoptable touched' "$(bms_provisioner_assess "$RUNTIME" "$PROVISIONER" "$LAYOUT_OWNER_ROLES")"
+
+# --- 4b. The provisioning login really connects before the role move (check_provisioner_login of update.sh).
+setup
+fx_provisioner
+# shellcheck disable=SC2034 # read by check_provisioner_login
+ROOT_STATE_DIR=$WORK MIGRATION_HOST=$PG_HOST MIGRATION_PORT=$PG_PORT
+out=$( ( check_provisioner_login ) 2>&1 )
+equals 'login real antes del movimiento: pasa (tras darle CONNECT)' 0 "$?"
+snapshot "$WORK/before"
+# A login that fails (the real cause would be pg_hba or ::1 versus 127.0.0.1): the update stops, nothing is changed.
+real_provisioner=$(declare -f bms_pg_as_provisioner)
+# shellcheck disable=SC2329 # called by db-roles.sh
+bms_pg_as_provisioner() { local database=$1; shift; psql -h "$PG_HOST" -p "$PG_PORT" -U seca_l_inexistente -d "$database" "$@"; }
+out=$( ( check_provisioner_login ) 2>&1 )
+equals 'login que falla: la actualizacion se detiene' 1 "$?"
+check 'con el motivo y sin cambiar roles' grep -q 'No se cambio ningun rol ni permiso: solo la contrasena del rol' <<< "$out"
+check 'y la causa probable (pg_hba, ::1)' grep -q 'pg_hba.conf' <<< "$out"
+# Only the company database fails.
+bms_pg_as_provisioner() { local database=$1; shift; local user=$PROVISIONER; [[ $database == "$TA" ]] && user=seca_l_inexistente; psql -h "$PG_HOST" -p "$PG_PORT" -U "$user" -d "$database" "$@"; }
+out=$( ( check_provisioner_login ) 2>&1 )
+equals 'falla solo en una empresa: tambien se detiene' 1 "$?"
+check 'y nombra la base' grep -q "$TA" <<< "$out"
+eval "$real_provisioner"
+snapshot "$WORK/after"
+check 'ningun cambio en el cluster' cmp -s "$WORK/before" "$WORK/after"
+equals 'el runtime sigue siendo miembro (nada se movio)' 't t' "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER'), pg_has_role('$RUNTIME', '$OWNER2', 'MEMBER')" | tr '|' ' ')"
+
 # --- 5. Half moved company databases.
 setup
 fx_provisioner

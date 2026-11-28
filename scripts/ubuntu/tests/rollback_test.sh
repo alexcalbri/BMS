@@ -36,6 +36,7 @@ source "$WORK/validators.sh"
 source "$WORK/layout.sh"
 CONFIG_FILE=$WORK/server.env
 BACKUP_DIR=$WORK/backup
+LAYOUT_RUNTIME_ATTRIBUTES=''
 # shellcheck disable=SC2034 # read by the functions of update.sh
 DEFAULT_PROVISIONER=bms_provisioner
 
@@ -126,6 +127,28 @@ equals 'sin lista registrada se dice y termina con error' 1 "$?"
 LAYOUT_CHANGED=false
 rollback_config_and_roles 2>/dev/null
 equals 'si el movimiento no empezo, no se toca ninguna pertenencia' 0 "$?"
+
+# --- N2: the runtime role's own attributes (CREATEDB, CREATEROLE, a connection limit) come back too.
+fx_cleanup
+fx_minimal
+fx_provisioner
+psu postgres -c "ALTER ROLE $RUNTIME CREATEDB CREATEROLE CONNECTION LIMIT 7"
+# shellcheck disable=SC2034 # read by update.sh's functions
+DB_USER=$RUNTIME CONTROL_DB=$CONTROL
+LAYOUT_RUNTIME_ATTRIBUTES=$(bms_runtime_attributes "$RUNTIME")
+equals 'los atributos del runtime se registran en el paso 0' 'NOSUPERUSER CREATEDB CREATEROLE INHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 7' "$LAYOUT_RUNTIME_ATTRIBUTES"
+LAYOUT_OWNER_ROLES=$(bms_server_owner_roles "$CONTROL")
+LAYOUT_CHANGED=true
+bms_migrate_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" "$LAYOUT_OWNER_ROLES" 2>/dev/null || fail 'el movimiento'
+equals 'el movimiento los quita' 'f f' "$(sql postgres "SELECT rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = '$RUNTIME'" | tr '|' ' ')"
+rollback_config_and_roles 2> "$WORK/rollback.err"
+equals 'el rollback termina bien' 0 "$?"
+equals 'y los devuelve (CREATEDB, CREATEROLE, limite 7)' 't t 7' "$(sql postgres "SELECT rolcreatedb, rolcreaterole, rolconnlimit FROM pg_roles WHERE rolname = '$RUNTIME'" | tr '|' ' ')"
+equals 'y la pertenencia tambien' 't t' "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER'), pg_has_role('$RUNTIME', '$OWNER2', 'MEMBER')" | tr '|' ' ')"
+LAYOUT_RUNTIME_ATTRIBUTES='NOSUPERUSER; DROP DATABASE x'
+rollback_config_and_roles 2> "$WORK/rollback.err"
+equals 'unos atributos registrados que no son validos: error con la orden a mano (no se ejecutan)' 1 "$?"
+check 'que dice que atributos' grep -q 'no se pudieron devolver al rol' "$WORK/rollback.err"
 
 # --- migrate_role_layout (update.sh): a server owner created while the build ran stops the move before changing anything.
 fx_cleanup

@@ -116,7 +116,11 @@ check 'el rol sobrante bms_provisioner se adopta' grep -q '^INFO rol bms_provisi
 check 'ensaya la base central' grep -q "^PASS ensayo control $CONTROL — ejecutado y revertido" <<< "$output"
 check 'ensaya cada empresa' bash -c '[[ $(grep -c "^PASS ensayo tenant .* — ejecutado y revertido" <<< "$1") == 2 ]]' _ "$output"
 check 'cero cambios comprobado' grep -q '^PASS ensayo sin cambios' <<< "$output"
-check 'resumen sin FAIL' grep -q '^0 FAIL, 0 WARN' <<< "$output"
+check 'resumen sin FAIL (el unico WARN: el pg_hba de pruebas es trust)' grep -q '^0 FAIL, 1 WARN' <<< "$output"
+check 'pg_hba y login TCP del aprovisionador revisados' grep -q '^PASS login TCP como el aprovisionador' <<< "$output"
+check 'cada base dice su duracion' bash -c '[[ $(grep -cE " en [0-9]+ ms " <<< "$1") == 3 ]]' _ "$output"
+check 'y lo que no se ensayo' grep -q '^INFO NO ensayado' <<< "$output"
+equals 'no queda ningun rol de prueba' 0 "$(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'")"
 check 'ningun secreto aparece' eval '! grep -q "no-se-imprime" <<< "$output"'
 equals 'el servidor quedo exactamente igual' "$before" "$(snap)"
 equals 'el espejo es lo unico que escribio (el commit del ensayo)' "$(git -C "$release" rev-parse HEAD)" "$(git -C /var/lib/bms/mirror rev-parse HEAD)"
@@ -153,7 +157,7 @@ status=$?
 printf '%s\n' "$output" | grep -E '^(FAIL|[0-9]+ FAIL)' | sed 's/^/    | /'
 equals 'con una migracion rota update.sh --rehearse sale con 1 (y llega al final)' 1 "$status"
 check 'una linea FAIL por empresa, con el error de PostgreSQL' bash -c '[[ $(grep -c "^FAIL ensayo tenant .*tabla_que_no_existe" <<< "$1") == 2 ]]' _ "$output"
-check 'el resumen cuenta los FAIL' grep -q '^2 FAIL, 0 WARN' <<< "$output"
+check 'el resumen cuenta los FAIL' grep -q '^2 FAIL, 1 WARN' <<< "$output"
 check 'y comprueba que no cambio nada' grep -q '^PASS ensayo sin cambios' <<< "$output"
 check 'y no hay errores de bash sin explicar' eval '! grep -q "interrumpida" "$WORK/rehearse.err"'
 equals 'el servidor sigue igual' "$before" "$(snap)"

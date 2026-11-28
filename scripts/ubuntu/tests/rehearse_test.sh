@@ -53,6 +53,9 @@ setup() {
     printf 'DB_USER=%s\nDB_URL=jdbc:postgresql://127.0.0.1:5432/%s\n' "$RUNTIME" "$CONTROL" > "$CONFIG_FILE"
 }
 rehearse() { bms_rehearse_run "$CONTROL" "$RUNTIME" "$PROVISIONER" 2>&1; }
+# The same with environment settings for this one run (a plain VAR=x before an assignment would stay set).
+# shellcheck disable=SC2163 # the argument is the NAME=value to export
+rehearse_with() { ( for assignment in "$@"; do export "$assignment"; done; rehearse ); }
 section() { awk -v start="$2" '$0 ~ /^(PASS|WARN|FAIL|INFO) +[a-z]/ { inside = index($0, start) > 0 } inside' <<< "$1"; }
 
 # --- 1. The live server's state: the provisioning role left by the failed attempts (LOGIN NOINHERIT, nothing else).
@@ -60,7 +63,7 @@ setup
 psu postgres -c "CREATE ROLE $PROVISIONER LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
 equals 'antes: los objetos de TA son de postgres' 'postgres' "$(sql "$TA" "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'public.business_owner'::regclass")"
 LAYOUT_OWNER_ROLES=$(bms_server_owner_roles "$CONTROL")
-BMS_REHEARSE_DETAIL=500 BMS_REHEARSE_ALL_NEW=1 output=$(rehearse)
+output=$(rehearse_with BMS_REHEARSE_DETAIL=500 BMS_REHEARSE_ALL_NEW=1)
 status=$?
 printf '%s\n' "$output" | sed 's/^/    | /'
 equals 'el ensayo termina bien' 0 "$status"
@@ -169,14 +172,16 @@ LAYOUT_OWNER_ROLES=$(bms_server_owner_roles "$CONTROL")
 holder=$!
 sleep 1
 started=$SECONDS
-BMS_REHEARSE_LOCK_TIMEOUT=300ms BMS_REHEARSE_ATTEMPTS=2 BMS_REHEARSE_RETRY_SLEEP=0.2 output=$(rehearse)
+output=$(rehearse_with BMS_REHEARSE_LOCK_TIMEOUT=300ms BMS_REHEARSE_ATTEMPTS=2 BMS_REHEARSE_RETRY_SLEEP=0.2)
 status=$?
 elapsed=$((SECONDS - started))
 kill "$holder" 2>/dev/null
 wait "$holder" 2>/dev/null
 check 'un bloqueo no se espera: aviso "no ensayado por bloqueo"' grep -q "^WARN ensayo tenant $TA — no ensayado por bloqueo" <<< "$output"
 check 'las demas bases se ensayan' grep -q "^PASS ensayo tenant $TB " <<< "$output"
-equals 'sin FAIL, el ensayo termina bien' 0 "$status"
+equals 'un ensayo con una base sin ensayar es INCOMPLETO: sale con 2, no con 0' 2 "$status"
+check 'y lo dice (WARN ensayo incompleto, repetir en un momento tranquilo)' grep -q '^WARN ensayo incompleto .*momento tranquilo' <<< "$output"
+check 'sin ninguna linea FAIL' eval '! grep -q "^FAIL" <<< "$output"'
 check 'y tarda segundos, no el bloqueo entero' test "$elapsed" -lt 15
 check 'y no deja cambios' grep -q '^PASS ensayo sin cambios' <<< "$output"
 printf '%s\n' "$output" | grep -E '^WARN' | sed 's/^/    | /'
@@ -185,11 +190,11 @@ printf '%s\n' "$output" | grep -E '^WARN' | sed 's/^/    | /'
 setup
 LAYOUT_OWNER_ROLES=$(bms_server_owner_roles "$CONTROL")
 real_hook=$(declare -f bms_rehearse_steps_sql)
-# A statement outside the transaction (a psql shell escape): the snapshots must differ.
+# A change made outside the transaction while the rehearsal runs (here by the hook itself): the snapshots must differ.
 # shellcheck disable=SC2329 # called by rehearse.sh
 bms_rehearse_steps_sql() {
     [[ $1 == control ]] || return 0
-    printf '\\! psql -X -q -h %s -p %s -U postgres -d postgres -c "CREATE ROLE %s_escapado"\n' "$PG_HOST" "$PG_PORT" "$FX"
+    psu postgres -c "CREATE ROLE ${FX}_escapado"
 }
 output=$(rehearse)
 status=$?
@@ -197,10 +202,121 @@ equals 'un cambio fuera de la transaccion: el ensayo FALLA' 1 "$status"
 check 'con el mensaje fuerte' grep -q '^FAIL ensayo sin cambios — EL ENSAYO DEJO CAMBIOS' <<< "$output"
 check 'y la diferencia' grep -q "${FX}_escapado" <<< "$output"
 psu postgres -c "DROP ROLE IF EXISTS ${FX}_escapado"
-# A COMMIT in the SQL is refused before anything runs.
-bms_rehearse_steps_sql() { printf 'COMMIT;\n'; }
+# Every way of ending the transaction early: refused before anything runs (the first five), or stopped by the tripwire (END;).
+HOOK_SQL=''
+# shellcheck disable=SC2329 # called by rehearse.sh
+bms_rehearse_steps_sql() { printf '%s\n' "$HOOK_SQL"; }
+bypass() {
+    local description=$1 expected=$2
+    HOOK_SQL=$3
+    output=$(rehearse)
+    check "$description: se rechaza o falla" grep -q '^FAIL ensayo' <<< "$output"
+    check "$description: dice por que ($expected)" grep -q -- "$expected" <<< "$output"
+    check "$description: y no queda ningun cambio" grep -q '^PASS ensayo sin cambios' <<< "$output"
+    equals "$description: el runtime sigue siendo miembro (nada se confirmo)" t "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER')")"
+}
+bypass 'COMMIT;' 'control de transaccion' 'COMMIT;'
+bypass 'COMMIT; con sangria' 'control de transaccion' '    COMMIT;'
+bypass 'COMMIT; BEGIN; en una linea' 'control de transaccion' 'COMMIT; BEGIN;'
+bypass 'SELECT 1; COMMIT;' 'control de transaccion' 'SELECT 1; COMMIT;'
+bypass '\c' 'orden de psql no permitida' '\c postgres'
+bypass '\!' 'orden de psql no permitida' '\! true'
+bypass '\copy' 'orden de psql no permitida' '\copy (select 1) to /dev/null'
+bypass '\set AUTOCOMMIT on' 'orden de psql no permitida' '\set AUTOCOMMIT on'
+bypass 'END; (no lo ve la guarda: lo para la trampa)' 'violates foreign key constraint' 'END;'
+bypass 'ROLLBACK; (tampoco deja seguir)' 'control de transaccion' 'rollback;'
+
+# Limits: a statement that takes longer than the limit is a FAIL (never retried, never a lock WARN), with the database.
+HOOK_SQL='SELECT pg_sleep(3);'
+started=$SECONDS
+output=$(rehearse_with BMS_REHEARSE_STATEMENT_TIMEOUT=1s)
+status=$?
+check 'tiempo agotado (57014): FAIL con la base' grep -q "^FAIL ensayo control $CONTROL — tiempo agotado o cancelado (57014)" <<< "$output"
+check 'no se reintenta ni sale como bloqueo' eval '! grep -q "no ensayado por bloqueo" <<< "$output"'
+equals 'y el ensayo falla (1)' 1 "$status"
+check 'sin esperar los intentos' test $((SECONDS - started)) -lt 14
+HOOK_SQL=''
+output=$(rehearse_with BMS_REHEARSE_STATEMENT_TIMEOUT=banana)
+check 'un limite mal escrito se rechaza' grep -q 'tiempo limite del ensayo no valido' <<< "$output"
+output=$(rehearse_with BMS_REHEARSE_LOCK_TIMEOUT=4s)
+check 'los limites se pueden cambiar' grep -q '^PASS ensayo control' <<< "$output"
+
+# Deferred constraints run at the end, as the real COMMIT would (the migration below violates one).
+setup
+tree=$WORK/tree-diferida
+mkdir -p "$tree"
+cp -a "$REPO/database" "$REPO/modules" "$tree/" 2>/dev/null
+printf 'BEGIN;\nCREATE TABLE zz_p (id int PRIMARY KEY);\nCREATE TABLE zz_c (id int REFERENCES zz_p DEFERRABLE INITIALLY DEFERRED);\nINSERT INTO zz_c VALUES (1);\nCOMMIT;\n' > "$tree/database/tenant/migrations/V099__diferida.sql"
+eval "$real_hook"
+# shellcheck disable=SC2034
+TRUSTED_DIR=$tree
+LAYOUT_OWNER_ROLES=$(bms_server_owner_roles "$CONTROL")
 output=$(rehearse)
-check 'COMMIT en el SQL: se rechaza' grep -q 'contiene control de transaccion' <<< "$output"
-check 'y no queda cambio' grep -q '^PASS ensayo sin cambios' <<< "$output"
+status=$?
+equals 'una restriccion diferida violada por una migracion: el ensayo FALLA' 1 "$status"
+check 'en las empresas, en el paso de restricciones diferidas' bash -c '[[ $(grep -c "^FAIL ensayo tenant .* fallo en .restricciones diferidas.: .*violates foreign key constraint" <<< "$1") == 2 ]]' _ "$output"
+check 'la base central pasa' grep -q "^PASS ensayo control $CONTROL" <<< "$output"
+# shellcheck disable=SC2034
+TRUSTED_DIR=$REPO
+
+# Duration per database, and what was NOT rehearsed.
+setup
+LAYOUT_OWNER_ROLES=$(bms_server_owner_roles "$CONTROL")
+output=$(rehearse)
+check 'cada base dice cuanto duro (y que los bloqueos duraron eso como maximo)' bash -c '[[ $(grep -cE "^PASS ensayo (control|tenant) .* — ejecutado y revertido \(ROLLBACK\) en [0-9]+ ms" <<< "$1") == 3 ]]' _ "$output"
+check 'y una linea final con lo que NO se ensayo' grep -q '^INFO NO ensayado — .*login real' <<< "$output"
+
+# --- The provisioner's pg_hba rule and real TCP login (before the role move, which is committed for good).
+hba_rows=$'host|all|all|127.0.0.1|255.255.255.255|scram-sha-256\nlocal|all|all|||peer'
+equals 'pg_hba: scram para 127.0.0.1' scram-sha-256 "$(bms_rehearse_hba_match 127.0.0.1 p c localhost <<< "$hba_rows")"
+equals 'pg_hba: ninguna regla para ::1' none "$(bms_rehearse_hba_match ::1 p c localhost <<< "$hba_rows")"
+equals 'pg_hba: all/all con ::1/128' md5 "$(bms_rehearse_hba_match ::1 p c localhost <<< $'host|all|all|::1|ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff|md5')"
+equals 'pg_hba: la primera regla gana (reject antes de scram)' reject "$(bms_rehearse_hba_match 127.0.0.1 p c localhost <<< $'host|all|p|127.0.0.1|255.255.255.255|reject\nhost|all|all|127.0.0.1|255.255.255.255|scram-sha-256')"
+equals 'pg_hba: regla de otra base o de otro rol no cuenta' none "$(bms_rehearse_hba_match 127.0.0.1 p c localhost <<< $'host|otra|all|127.0.0.1|255.255.255.255|scram-sha-256\nhost|all|q|127.0.0.1|255.255.255.255|scram-sha-256')"
+equals 'pg_hba: una red (10.0.0.0/8) no es 127.0.0.1' none "$(bms_rehearse_hba_match 127.0.0.1 p c localhost <<< $'host|all|all|10.0.0.0|255.0.0.0|scram-sha-256')"
+equals 'pg_hba: all como direccion' scram-sha-256 "$(bms_rehearse_hba_match ::1 p c localhost <<< $'host|all|all|all||scram-sha-256')"
+equals 'se resuelve una direccion literal a si misma' 127.0.0.1 "$(bms_rehearse_resolve 127.0.0.1)"
+equals 'localhost resuelve a 127.0.0.1 o ::1 (en el orden de libpq)' 1 "$(bms_rehearse_resolve localhost | grep -cE '^(127\.0\.0\.1|::1)$' | awk '{ print ($1 >= 1) }')"
+setup
+LAYOUT_OWNER_ROLES=$(bms_server_owner_roles "$CONTROL")
+output=$(bms_rehearse_run "$CONTROL" "$RUNTIME" "$PROVISIONER" 127.0.0.1 "$PG_PORT" 2>&1)
+status=$?
+check 'pg_hba: el cluster de pruebas usa trust, se avisa' grep -q "^WARN pg_hba de $PROVISIONER — 127.0.0.1 (127.0.0.1): regla trust" <<< "$output"
+check 'login TCP real con un rol de prueba: PASS' grep -q '^PASS login TCP como el aprovisionador' <<< "$output"
+equals 'y el rol de prueba ya no existe' 0 "$(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'")"
+check 'la instantanea sigue identica' grep -q '^PASS ensayo sin cambios' <<< "$output"
+# A failed login: FAIL, the role is dropped, the transactions are not run.
+output=$(export BMS_TEST_FAIL_AT=rehearse_throwaway_fail; bms_rehearse_run "$CONTROL" "$RUNTIME" "$PROVISIONER" 127.0.0.1 "$PG_PORT" 2>&1)
+status=$?
+equals 'login que falla: el ensayo FALLA' 1 "$status"
+check 'con el motivo' grep -q '^FAIL login TCP como el aprovisionador' <<< "$output"
+check 'y no ejecuta las transacciones' grep -q 'omitido: corrige lo anterior' <<< "$output"
+equals 'el rol de prueba no queda' 0 "$(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'")"
+# Signals while the throwaway role exists: nothing is left behind.
+runner=$WORK/runner.sh
+cat > "$runner" <<RUNNER
+source "$SCRIPTS/tests/lib.sh"
+source "$SCRIPTS/db-roles.sh"
+source "$SCRIPTS/migrations.sh"
+source "$SCRIPTS/rehearse.sh"
+BMS_TEST_FAIL_AT=rehearse_throwaway_wait bms_rehearse_run "$CONTROL" "$RUNTIME" "$PROVISIONER" 127.0.0.1 "$PG_PORT"
+RUNNER
+for signal in INT TERM; do
+    setsid env --default-signal=INT,TERM bash "$runner" > "$WORK/signal.out" 2>&1 &
+    runner_pid=$!
+    for _ in $(seq 1 100); do
+        [[ $(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'") == 1 ]] && break
+        sleep 0.2
+    done
+    equals "$signal: el rol de prueba existia mientras corria" 1 "$(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'")"
+    kill "-$signal" -- "-$runner_pid" 2>/dev/null
+    wait "$runner_pid" 2>/dev/null
+    for _ in $(seq 1 50); do
+        [[ $(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'") == 0 ]] && break
+        sleep 0.2
+    done
+    equals "$signal: el rol de prueba ya no existe" 0 "$(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'")"
+done
+equals 'tras las senales el cluster no cambio (sin roles de prueba)' 0 "$(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'bms\_rh\_%'")"
 eval "$real_hook"
 finish

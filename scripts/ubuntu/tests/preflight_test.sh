@@ -75,6 +75,7 @@ case ${STUB_MODE:-ok} in
     ok) printf 'PASS ensayo control bms_x — ejecutado y revertido (ROLLBACK)\nINFO   + rol x creado\nPASS ensayo sin cambios — iguales\n\n0 FAIL, 0 WARN\n' ;;
     warn) printf 'WARN ensayo tenant bms_a — no ensayado por bloqueo: 3 intentos\nPASS ensayo control bms_x — ok\n\n0 FAIL, 1 WARN\n'; exit 0 ;;
     fail) printf 'FAIL ensayo tenant bms_a — fallo en migraciones: relation "t" does not exist\n        DETAIL: x\nPASS ensayo control bms_x — ok\n\n1 FAIL, 0 WARN\n'; exit 1 ;;
+    incomplete) printf 'WARN ensayo incompleto — 1 base(s) no ensayadas\n\n0 FAIL, 1 WARN\n'; exit 2 ;;
     crash) printf 'ERROR: no se pudo sincronizar el espejo\n' >&2; exit 3 ;;
 esac
 STUB
@@ -107,6 +108,11 @@ check 'con su detalle' grep -q '^        DETAIL: x' <<< "$out"
 out=$(run_preflight STUB_MODE=warn)
 check 'un WARN del ensayo se muestra' grep -q '^WARN ensayo tenant bms_a — no ensayado por bloqueo' <<< "$out"
 check 'y el ensayo termina bien' grep -q '^PASS ensayo de update.sh' <<< "$out"
+out=$(run_preflight STUB_MODE=incomplete)
+check 'un ensayo incompleto (codigo 2) es FAIL de preflight, nunca PASS' grep -q '^FAIL ensayo de update.sh — incompleto' <<< "$out"
+check 'y no se imprime PASS del ensayo' eval '! grep -q "^PASS ensayo de update.sh" <<< "$out"'
+STUB_MODE=incomplete BMS_PREFLIGHT_UPDATE_SH=$WORK/update-stub.sh BMS_PREFLIGHT_PG=$PG BMS_PREFLIGHT_CONFIG=$WORK/server.env BMS_PREFLIGHT_SKIP_HOST=true bash "$SCRIPTS/preflight.sh" >/dev/null 2>&1
+equals 'preflight termina con error (1)' 1 "$?"
 out=$(run_preflight STUB_MODE=crash)
 check 'si update.sh --rehearse no llega a ensayar, FAIL' grep -q '^FAIL ensayo de update.sh — termino con codigo 3 sin ejecutar el ensayo: ERROR: no se pudo sincronizar' <<< "$out"
 out=$(run_preflight BMS_PREFLIGHT_REF=v1.2.3)
