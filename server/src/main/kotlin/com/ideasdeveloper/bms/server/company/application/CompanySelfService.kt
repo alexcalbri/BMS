@@ -102,14 +102,11 @@ class CompanySelfService(
     private val tokenGenerator = SessionTokenGenerator()
     // Valida colores aceptados por la tabla central companies.
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
-    // Restringe nombres de ZIP para evitar rutas arbitrarias o archivos ajenos al tenant.
-    private val backupNamePattern = Regex("[a-z][a-z0-9_]{0,62}-backup-[0-9]{8}T[0-9]{6}Z\\.zip")
-    private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
-    // Serializador usado para manifest y metadata del ZIP.
-    private val json = Json {
-        encodeDefaults = true
-        ignoreUnknownKeys = true
-    }
+    private val backups = CompanyBackups(this, backupsRoot, storage)
+    private val catalog = CompanyPermissionCatalog(this, moduleRegistry, loginDatabases)
+    private val userAdministration = CompanyUserAdministration(
+        this, central, loginDatabases, catalog, ownerEditor, verifyOwnerPassword, passwordAttempts, twoFactorResets, tokenGenerator,
+    )
 
     // Carga el perfil editable de la empresa de la sesion business_owner. El server_owner tambien
     // administra asi la empresa del servidor, sin crear una empresa.
@@ -187,102 +184,23 @@ class CompanySelfService(
     }
 
     // Lista ZIPs ya creados para la empresa.
-    fun listBackups(companyCode: String, accessToken: String): List<CompanyBackupResponse> {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
-        val directory = backupDirectory(context.companyCode)
-        if (!directory.exists()) return emptyList()
-        return Files.list(directory).use { stream ->
-            stream
-                .filter { it.extension == "zip" && backupNamePattern.matches(it.name) }
-                .map { path ->
-                    CompanyBackupResponse(
-                        fileName = path.name,
-                        sizeBytes = path.fileSize(),
-                        createdAt = Files.getLastModifiedTime(path).toInstant().toString(),
-                        downloadUrl = "/companies/me/backups/${path.name}/download",
-                    )
-                }
-                .sorted { left, right -> right.createdAt.compareTo(left.createdAt) }
-                .toList()
-        }
-    }
+    fun listBackups(companyCode: String, accessToken: String): List<CompanyBackupResponse> = backups.listBackups(companyCode, accessToken)
 
     // Genera un ZIP no destructivo con manifest y perfil; la restauracion completa de PostgreSQL es operativa y externa a la app.
-    fun createProfileBackup(companyCode: String, accessToken: String): CompanyBackupResponse {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
-        val createdAt = OffsetDateTime.now(java.time.ZoneOffset.UTC)
-        val fileName = "${context.companyCode}-backup-${DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(createdAt)}.zip"
-        val output = backupDirectory(context.companyCode).also { it.createDirectories() }.resolve(fileName)
-
-        output.outputStream().use { file ->
-            ZipOutputStream(file).use { zip ->
-                zip.putNextEntry(ZipEntry("manifest.json"))
-                zip.write(json.encodeToString(BackupManifest(context.companyCode, createdAt.toString(), destructiveRestore = false)).toByteArray())
-                zip.closeEntry()
-
-                zip.putNextEntry(ZipEntry("company.json"))
-                zip.write(json.encodeToString(context.profile).toByteArray())
-                zip.closeEntry()
-            }
-        }
-
-        backupRow(context, output, ActivityActions.Created, "Creo la copia de seguridad ${output.name}.")
-        return CompanyBackupResponse(
-            fileName = output.name,
-            sizeBytes = output.fileSize(),
-            createdAt = Files.getLastModifiedTime(output).toInstant().toString(),
-            downloadUrl = "/companies/me/backups/${output.name}/download",
-        )
-    }
-
-    // The file exists already: without its activity row it is removed again (created or imported).
-    private fun backupRow(context: BusinessOwnerContext, file: Path, action: String, summary: String) {
-        try {
-            tenantConnection(context.tenant).use { connection ->
-                context.record(connection, "backup", file.name, file.name, action, summary, listOf(ActivityChange("size", "Tamano", null, file.fileSize().toString())))
-            }
-        } catch (failure: Throwable) {
-            runCatching { Files.deleteIfExists(file) }
-            throw failure
-        }
-    }
+    fun createProfileBackup(companyCode: String, accessToken: String): CompanyBackupResponse = backups.createProfileBackup(companyCode, accessToken)
 
     /** The backup to download, after recording the download (a bulk read, ACTIVITY_LOG.md §4). */
-    fun downloadBackup(companyCode: String, accessToken: String, fileName: String): Path {
-        val path = backupPath(companyCode, accessToken, fileName)
-        val context = authorizeBusinessOwner(companyCode, accessToken)
-        tenantConnection(context.tenant).use { connection ->
-            context.record(connection, "backup", path.name, path.name, ActivityActions.Exported, "Descargo la copia de seguridad ${path.name}.")
-        }
-        return path
-    }
+    fun downloadBackup(companyCode: String, accessToken: String, fileName: String): Path = backups.downloadBackup(companyCode, accessToken, fileName)
 
     // Resuelve el archivo ZIP solicitado dentro del directorio seguro de la empresa.
-    fun backupPath(companyCode: String, accessToken: String, fileName: String): Path {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
-        validateBackupName(fileName)
-        val directory = backupDirectory(context.companyCode)
-        val path = directory.resolve(fileName).normalize()
-        if (!path.startsWith(directory) || !path.exists()) {
-            throw CompanySelfException(tr("Backup no encontrado."))
-        }
-        return path
-    }
+    fun backupPath(companyCode: String, accessToken: String, fileName: String): Path = backups.backupPath(companyCode, accessToken, fileName)
 
     // Elimina un ZIP existente despues de validar que pertenece a la empresa.
-    fun deleteBackup(companyCode: String, accessToken: String, fileName: String) {
-        val path = backupPath(companyCode, accessToken, fileName)
-        val context = authorizeBusinessOwner(companyCode, accessToken)
-        // The row first, in a transaction committed only once the file is gone.
-        context.logged({ tenant ->
-            context.record(tenant, "backup", path.name, path.name, ActivityActions.Deleted, "Elimino la copia de seguridad ${path.name}.",
-                listOf(ActivityChange("size", "Tamano", path.fileSize().toString(), null)))
-        }) { Files.deleteIfExists(path) }
-    }
+    fun deleteBackup(companyCode: String, accessToken: String, fileName: String) = backups.deleteBackup(companyCode, accessToken, fileName)
 
     // Guarda un ZIP subido por el usuario sin ejecutar restauracion destructiva.
     fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, bytes: ByteArray): CompanyBackupResponse =
-        storeImportedBackup(companyCode, accessToken, fileName, bytes.inputStream())
+        backups.storeImportedBackup(companyCode, accessToken, fileName, bytes)
 
     /**
      * Stores an uploaded backup ZIP streaming it to disk (SECURITY_FIXES.md B4): at most
@@ -290,20 +208,8 @@ class CompanySelfService(
      * [BackupImportLimits.MaxEntries] entries and [BackupImportLimits.MaxUncompressedBytes]
      * uncompressed, so a ZIP bomb is refused without expanding it) before it takes its name.
      */
-    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, content: java.io.InputStream, expectedBytes: Long? = null): CompanyBackupResponse {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
-        validateBackupName(fileName)
-        val directory = backupDirectory(context.companyCode).also { it.createDirectories() }
-        val output = directory.resolve(fileName)
-        BackupImportLimits.importInto(directory, output, content, expectedBytes, context.companyCode, storage)
-        backupRow(context, output, ActivityActions.Imported, "Importo la copia de seguridad ${output.name}.")
-        return CompanyBackupResponse(
-            fileName = output.name,
-            sizeBytes = output.fileSize(),
-            createdAt = Files.getLastModifiedTime(output).toInstant().toString(),
-            downloadUrl = "/companies/me/backups/${output.name}/download",
-        )
-    }
+    fun storeImportedBackup(companyCode: String, accessToken: String, fileName: String, content: java.io.InputStream, expectedBytes: Long? = null): CompanyBackupResponse =
+        backups.storeImportedBackup(companyCode, accessToken, fileName, content, expectedBytes)
 
     // SMTP de la empresa para el dueno (o el dueno del servidor en su espacio). Nunca devuelve la contrasena.
     fun mailSettings(companyCode: String, accessToken: String): CompanyMailForm {
@@ -355,407 +261,34 @@ class CompanySelfService(
      * only with their own session (never one opened from the server switcher, nor in the server workspace) and
      * never for themself.
      */
-    fun disableUserTwoFactor(companyCode: String, accessToken: String, userId: UUID, currentPassword: String?): com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetResponse {
-        val resets = twoFactorResets ?: throw CompanySelfException(tr("La verificacion en dos pasos no esta disponible en este servidor."))
-        if (companyCode.trim() == ServerWorkspace.Code) throw CompanySelfException(tr("Debes iniciar sesion como business_owner."))
-        val context = authorizeBusinessOwner(companyCode, accessToken)
-        val authority = resetAuthority(context, accessToken)
-            ?: throw CompanySelfException(tr("Necesitas el permiso {0}.", ServerPermission.UsersTwoFactorReset.id))
-        val isOwnerRow = userId == context.businessOwnerUserId
-        if (!authority.mayTarget(isOwnerRow)) {
-            throw CompanySelfException(if (isOwnerRow && !authority.server) tr("No puedes desactivar asi tu propia verificacion en dos pasos.") else tr("Una empresa de este business owner no esta en tu alcance."))
-        }
-        resets.checkActor(authority.actor, accessToken, currentPassword)
-        return resets.reset(authority.actor, context.companyCode, userId)
-    }
+    fun disableUserTwoFactor(companyCode: String, accessToken: String, userId: UUID, currentPassword: String?): com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetResponse =
+        userAdministration.disableUserTwoFactor(companyCode, accessToken, userId, currentPassword)
 
-    /**
-     * Who may reset two-step verification through a company session (TWO_FACTOR.md §8.1), or null:
-     * - the business owner's own session: acts as that owner, never on the owner row;
-     * - a session of the business-owner switcher (owner of another company of the group): the switcher treats
-     *   both owners as one person, so it acts as that owner too, but with its OWN account (password, second-step
-     *   mark of this session) and never on the owner row of either company;
-     * - a session of the server switcher: acts as the server person (owner, or administrator holding
-     *   server.users.two_factor_reset with this company in scope), password of the server account; it may target
-     *   the business owner when the whole owner group is in scope.
-     */
-    private fun resetAuthority(context: BusinessOwnerContext, accessToken: String): ResetAuthority? {
-        val ownerId = context.businessOwnerUserId ?: return null
-        val role = context.businessOwnerRole.orEmpty()
-        val code = context.companyCode
-        val opener = loginDatabases.sessionOpener(code, accessToken)
-        return when (opener?.kind) {
-            null -> ResetAuthority(
-                com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(AuditActor.businessOwner(role), ownerId, role, context.activity.name, code, context.activity),
-                server = false,
-            ) { isOwnerRow -> !isOwnerRow }
-            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Company -> {
-                val origin = opener.companyCode ?: return null
-                val login = loginDatabases.loginOf(origin, opener.userId) ?: return null
-                ResetAuthority(
-                    com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(
-                        AuditActor.businessOwner(login), opener.userId, login, context.activity.name, origin, context.activity, sessionCompanyCode = code,
-                    ),
-                    server = false,
-                ) { isOwnerRow -> !isOwnerRow }
-            }
-            com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener.Server -> {
-                val actor = (ServerOwnerAuthorizer.liveActor(loginDatabases.admins, central, opener.userId) as? ServerActorLookup.Found)?.actor ?: return null
-                if (!actor.isOwner && !(actor.has(ServerPermission.UsersTwoFactorReset) && actor.mayActOn(code))) return null
-                val groupInScope = actor.isOwner || actor.companyScope == null || (loginDatabases.ownerGroupOf(code) + code).all { actor.mayActOn(it) }
-                val name = actor.displayName?.takeIf { it.isNotBlank() } ?: actor.login
-                ResetAuthority(
-                    com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor(actor.audit, actor.userId, actor.login, name, null, context.activity, sessionCompanyCode = code),
-                    server = true,
-                ) { isOwnerRow -> !isOwnerRow || groupInScope }
-            }
-            else -> null
-        }
-    }
+    fun users(companyCode: String, accessToken: String): CompanyUsersResponse = userAdministration.users(companyCode, accessToken)
 
-    private class ResetAuthority(
-        val actor: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService.Actor,
-        val server: Boolean,
-        val mayTarget: (isOwnerRow: Boolean) -> Boolean,
-    )
-
-    fun users(companyCode: String, accessToken: String): CompanyUsersResponse {
-        val context = authorizeUserAdministrator(companyCode, accessToken)
-        // What this caller may reset (TWO_FACTOR.md §8.4): the same rules as the reset itself.
-        val authority = if (context.businessOwnerUserId == null || twoFactorResets == null) null else runCatching { resetAuthority(context, accessToken) }.getOrNull()
-        tenantConnection(context.tenant).use { connection ->
-            syncPermissionCatalog(connection)
-            return CompanyUsersResponse(
-                users = loadUsers(connection).map { user ->
-                    user.copy(canResetTwoFactor = user.twoFactorEnabled?.let { enabled ->
-                        enabled && authority?.mayTarget(user.userId == context.businessOwnerUserId.toString()) == true
-                    })
-                },
-                permissions = loadPermissions(connection),
-            )
-        }
-    }
-
-    fun createUser(companyCode: String, accessToken: String, request: CreateCompanyUserRequest): CompanyUserResponse {
-        val context = authorizeUserAdministrator(companyCode, accessToken)
-        val username = request.username.trim()
-        if (!postgresRolePattern.matches(username)) {
-            throw CompanySelfException(tr("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
-        }
-        if (request.password.length < 12) {
-            throw CompanySelfException(tr("La contrasena del usuario debe tener al menos 12 caracteres."))
-        }
-        UserProfileRules.problem(request.displayName, request.email)?.let { throw CompanySelfException(tr("Usuario: {0}", it)) }
-
-        val userId = UUID.randomUUID()
-        val passwordHash = ApplicationPasswordHasher.hash(request.password)
-        val details = auditDetails("username" to username, "userId" to userId.toString(), "permissions" to request.permissions.sorted())
-        // In the workspace: audit row and who created the account (server_workspace_staff) go in the
-        // central transaction, written before the account exists and committed right after it.
-        return context.audited("server_workspace.user_created", details) { audit ->
-            audit?.let { recordStaffCredentials(it, userId, context.serverActor) }
-            tenantConnection(context.tenant).use { connection ->
-                syncPermissionCatalog(connection)
-                validatePermissions(connection, request.permissions)
-                connection.autoCommit = false
-                try {
-                    if (connection.existsUser(username)) {
-                        throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
-                    }
-                    // Sign-in also accepts a PostgreSQL role's password for the same name.
-                    if (connection.existsRole(username)) {
-                        throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
-                    }
-                    connection.prepareStatement(
-                        "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
-                    ).use { insert ->
-                        insert.setObject(1, userId)
-                        insert.setString(2, username)
-                        insert.setString(3, request.displayName.trim())
-                        insert.setString(4, request.email.trim())
-                        insert.executeUpdate()
-                    }
-                    connection.prepareStatement(
-                        """
-                        INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
-                        VALUES (?, ?, ?, ?)
-                        """.trimIndent()
-                    ).use { insert ->
-                        insert.setObject(1, userId)
-                        insert.setString(2, passwordHash.salt)
-                        insert.setString(3, passwordHash.hash)
-                        insert.setInt(4, passwordHash.iterations)
-                        insert.executeUpdate()
-                    }
-                    replaceUserPermissions(connection, userId, request.permissions)
-                    context.record(
-                        connection, "user", userId.toString(), username, ActivityActions.Created, "Creo el usuario $username.",
-                        ActivityChanges.created(
-                            mapOf("username" to username, "displayName" to request.displayName.trim(), "email" to request.email.trim(), "active" to true),
-                            UserLabels,
-                        ),
-                    )
-                    permissionRows(connection, context, userId, username, emptySet(), request.permissions.toSet())
-                    connection.commit()
-                } catch (failure: Exception) {
-                    connection.rollback()
-                    throw failure
-                } finally {
-                    connection.autoCommit = true
-                }
-                loadUser(connection, userId) ?: throw CompanySelfException(tr("No se pudo cargar el usuario creado."))
-            }
-        }
-    }
+    fun createUser(companyCode: String, accessToken: String, request: CreateCompanyUserRequest): CompanyUserResponse =
+        userAdministration.createUser(companyCode, accessToken, request)
 
     fun updateUserPermissions(
         companyCode: String,
         accessToken: String,
         userId: String,
         request: UpdateCompanyUserPermissionsRequest,
-    ): CompanyUserResponse {
-        val context = authorizeUserAdministrator(companyCode, accessToken)
-        val targetUserId = try {
-            UUID.fromString(userId)
-        } catch (_: IllegalArgumentException) {
-            throw CompanySelfException(tr("Usuario invalido."))
-        }
-        if (targetUserId == context.businessOwnerUserId) {
-            throw CompanySelfException(tr("No puedes quitar permisos del business_owner desde este flujo."))
-        }
-        val details = auditDetails("userId" to targetUserId.toString(), "permissions" to request.permissions.sorted())
-        return context.audited("server_workspace.user_permissions_updated", details) {
-            tenantConnection(context.tenant).use { connection ->
-                syncPermissionCatalog(connection)
-                validatePermissions(connection, request.permissions)
-                connection.autoCommit = false
-                try {
-                    if (!connection.userExists(targetUserId)) {
-                        throw CompanySelfException(tr("Usuario no encontrado."))
-                    }
-                    val before = loadUserPermissions(connection, targetUserId).toSet()
-                    replaceUserPermissions(connection, targetUserId, request.permissions)
-                    permissionRows(connection, context, targetUserId, connection.loginOf(targetUserId), before, request.permissions.toSet())
-                    connection.commit()
-                } catch (failure: Exception) {
-                    connection.rollback()
-                    throw failure
-                } finally {
-                    connection.autoCommit = true
-                }
-                loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
-            }
-        }
-    }
+    ): CompanyUserResponse = userAdministration.updateUserPermissions(companyCode, accessToken, userId, request)
 
     /**
      * Every field of a user: user, name, email, active, permissions and, when given, a new password.
      * The business owner edits themself here too (their user and password are a PostgreSQL role, so
      * that goes through [ownerEditor]); their permissions and active state do not change.
      */
-    fun updateUser(companyCode: String, accessToken: String, userId: String, request: UpdateCompanyUserRequest): CompanyUserResponse {
-        val context = authorizeUserAdministrator(companyCode, accessToken)
-        val targetUserId = try {
-            UUID.fromString(userId)
-        } catch (_: IllegalArgumentException) {
-            throw CompanySelfException(tr("Usuario invalido."))
-        }
-        val username = request.username.trim()
-        val displayName = request.displayName.trim()
-        val email = request.email.trim()
-        val password = request.password
-        if (!postgresRolePattern.matches(username)) {
-            throw CompanySelfException(tr("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo."))
-        }
-        UserProfileRules.problem(displayName, email)?.let { throw CompanySelfException(tr("Usuario: {0}", it)) }
-        if (password.isNotEmpty() && password.length < 12) {
-            throw CompanySelfException(tr("La contrasena del usuario debe tener al menos 12 caracteres."))
-        }
-        if (targetUserId == context.businessOwnerUserId) {
-            // The owner's user, email and password are shared by every company of that owner: a server
-            // administrator who entered this company from the switcher cannot change them from here.
-            if (loginDatabases.openedByServerAdmin(context.companyCode, accessToken)) {
-                throw CompanySelfException(tr("Un administrador del servidor no puede editar al business owner desde la empresa."))
-            }
-            val editor = ownerEditor ?: throw CompanySelfException(tr("El business owner no se puede editar en este servidor."))
-            // El business owner cambia SU PROPIO correo: exige la contrasena actual (misma regla que /auth/profile).
-            val storedEmail = tenantConnection(context.tenant).use { connection ->
-                connection.prepareStatement("SELECT email FROM application_users WHERE id = ?").use { query ->
-                    query.setObject(1, targetUserId)
-                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-                }
-            }
-            // Tambien al poner una contrasena nueva: con una sesion robada no se debe poder tomar la cuenta.
-            // Solo aqui (quien firma es el propio business owner); un administrador que edita a otro usuario no pasa por esta rama.
-            val sensitiveChange = PasswordConfirmation.ownerChangeNeedsPassword(storedEmail, email, password)
-            if (sensitiveChange) {
-                val role = context.businessOwnerRole.orEmpty()
-                PasswordConfirmation.require(
-                    request.currentPassword, passwordAttempts, "${context.companyCode}/$role",
-                    tr("Escribe tu contrasena actual para cambiar el correo o la contrasena."),
-                ) { current -> verifyOwnerPassword?.invoke(context.companyCode, role, current) ?: false }
-            }
-            if (sensitiveChange) {
-                // Se cierran las demas sesiones del business owner (la actual se conserva) ANTES de editar: el editor
-                // usa su propia transaccion, y revocar de mas si la edicion falla es seguro; no revocar, no.
-                tenantConnection(context.tenant).use { connection ->
-                    connection.prepareStatement(
-                        "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL AND token_hash <> ?"
-                    ).use { revoke ->
-                        revoke.setObject(1, targetUserId)
-                        revoke.setString(2, tokenGenerator.hash(accessToken))
-                        revoke.executeUpdate()
-                    }
-                }
-            }
-            // The owner's row is written first in an open company transaction, committed once the editor finished.
-            context.logged({ tenant ->
-                val before = tenant.prepareStatement("SELECT postgres_role, display_name, email FROM application_users WHERE id = ?").use { query ->
-                    query.setObject(1, targetUserId)
-                    query.executeQuery().use { rows -> if (rows.next()) Triple(rows.getString(1), rows.getString(2), rows.getString(3)) else null }
-                }
-                val edited = ActivityChanges.diff(
-                    mapOf("username" to before?.first, "displayName" to before?.second, "email" to before?.third),
-                    mapOf("username" to username, "displayName" to displayName, "email" to email),
-                    UserLabels,
-                )
-                if (edited.isNotEmpty()) {
-                    context.record(tenant, "user", targetUserId.toString(), username, ActivityActions.Updated, "Modifico los datos del business owner $username.", edited)
-                }
-                if (password.isNotEmpty()) {
-                    context.record(tenant, "user", targetUserId.toString(), username, ActivityActions.PasswordChanged, "Cambio la contrasena del business owner $username.",
-                        listOf(ActivityChange.secret("password", "Contrasena")))
-                }
-            }) { editor(context.companyCode, UpdateBusinessOwnerRequest(username, displayName, email, password)) }
-            return tenantConnection(context.tenant).use { connection -> loadUser(connection, targetUserId) }
-                ?: throw CompanySelfException(tr("Usuario no encontrado."))
-        }
-        // Whoever sets a password, or the email that password recovery goes to, controls the account
-        // from now on: in the workspace it follows that server user (closed with them).
-        val emailChanged = tenantConnection(context.tenant).use { connection ->
-            connection.prepareStatement("SELECT email FROM application_users WHERE id = ?").use { query ->
-                query.setObject(1, targetUserId)
-                query.executeQuery().use { rows -> rows.next() && com.ideasdeveloper.bms.server.auth.application.EmailChangeRule.isChange(rows.getString(1), email) }
-            }
-        }
-        val takesCredentials = password.isNotEmpty() || emailChanged
-        // A swept account (its creator lost the workspace or was closed) comes back only with a new
-        // password, so whoever knew the old credentials does not.
-        val reactivatingSwept = request.isActive && context.serverActor != null &&
-            isInactiveUser(context.tenant, targetUserId) && staffRowIsStale(targetUserId)
-        if (reactivatingSwept && password.isEmpty()) {
-            throw CompanySelfException(tr("Esta cuenta se desactivo porque el administrador que la creo perdio el acceso; para reactivarla escribe una contrasena nueva."))
-        }
-        val reassigning = reactivatingSwept
-        val details = auditDetails(
-            "userId" to targetUserId.toString(), "username" to username, "active" to request.isActive,
-            "passwordChanged" to password.isNotEmpty(), "emailChanged" to emailChanged, "permissions" to request.permissions.sorted(),
-        )
-        return context.audited("server_workspace.user_updated", details) { audit ->
-            if (audit != null && takesCredentials) recordStaffCredentials(audit, targetUserId, context.serverActor)
-            // The owner resetting a swept account takes it over: nobody else knows its credentials.
-            if (audit != null && reassigning && context.serverActor?.kind == AuditActor.ServerOwnerKind) {
-                audit.prepareStatement("DELETE FROM server_workspace_staff WHERE user_id = ?").use { delete ->
-                    delete.setObject(1, targetUserId)
-                    delete.executeUpdate()
-                }
-            }
-            tenantConnection(context.tenant).use { connection ->
-                syncPermissionCatalog(connection)
-                validatePermissions(connection, request.permissions)
-                connection.autoCommit = false
-                try {
-                    val current = connection.prepareStatement("SELECT postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
-                        query.setObject(1, targetUserId)
-                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
-                    } ?: throw CompanySelfException(tr("Usuario no encontrado."))
-                    val beforeProfile = connection.prepareStatement("SELECT display_name, email FROM application_users WHERE id = ?").use { query ->
-                        query.setObject(1, targetUserId)
-                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null to null }
-                    }
-                    val beforePermissions = loadUserPermissions(connection, targetUserId).toSet()
-                    if (connection.isBusinessOwner(targetUserId)) {
-                        throw CompanySelfException(tr("Solo el business owner o el dueno del servidor pueden editar al business owner."))
-                    }
-                    if (username != current.first) {
-                        if (connection.existsUser(username)) throw CompanySelfException(tr("Ya existe un usuario con ese nombre."))
-                        // Sign-in also accepts a PostgreSQL role's password for the same name.
-                        if (connection.existsRole(username)) throw CompanySelfException(tr("Ese nombre de usuario esta reservado; elige otro."))
-                    }
-                    connection.prepareStatement(
-                        "UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?, is_active = ? WHERE id = ?"
-                    ).use { update ->
-                        update.setString(1, username)
-                        update.setString(2, displayName)
-                        update.setString(3, email)
-                        update.setBoolean(4, request.isActive)
-                        update.setObject(5, targetUserId)
-                        update.executeUpdate()
-                    }
-                    replaceUserPermissions(connection, targetUserId, request.permissions)
-                    if (password.isNotEmpty()) {
-                        val hash = ApplicationPasswordHasher.hash(password)
-                        connection.prepareStatement(
-                            """
-                            INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
-                            VALUES (?, ?, ?, ?)
-                            ON CONFLICT (user_id) DO UPDATE SET password_salt = EXCLUDED.password_salt,
-                                password_hash = EXCLUDED.password_hash, iterations = EXCLUDED.iterations
-                            """.trimIndent()
-                        ).use { upsert ->
-                            upsert.setObject(1, targetUserId)
-                            upsert.setString(2, hash.salt)
-                            upsert.setString(3, hash.hash)
-                            upsert.setInt(4, hash.iterations)
-                            upsert.executeUpdate()
-                        }
-                    }
-                    val edited = ActivityChanges.diff(
-                        mapOf("username" to current.first, "displayName" to beforeProfile.first, "email" to beforeProfile.second),
-                        mapOf("username" to username, "displayName" to displayName, "email" to email),
-                        UserLabels,
-                    )
-                    if (edited.isNotEmpty()) {
-                        context.record(connection, "user", targetUserId.toString(), username, ActivityActions.Updated, "Modifico el usuario $username.", edited)
-                    }
-                    if (current.second != request.isActive) {
-                        context.record(
-                            connection, "user", targetUserId.toString(), username, ActivityActions.StatusChanged,
-                            if (request.isActive) "Activo al usuario $username." else "Desactivo al usuario $username.",
-                            listOf(ActivityChange.of("active", "Activo", current.second, request.isActive)),
-                        )
-                    }
-                    if (password.isNotEmpty()) {
-                        context.record(connection, "user", targetUserId.toString(), username, ActivityActions.PasswordChanged, "Puso una contrasena nueva al usuario $username.",
-                            listOf(ActivityChange.secret("password", "Contrasena")))
-                    }
-                    permissionRows(connection, context, targetUserId, username, beforePermissions, request.permissions.toSet())
-                    // A new password or a deactivated user closes the user's open sessions.
-                    if (password.isNotEmpty() || (current.second && !request.isActive)) {
-                        connection.prepareStatement(
-                            "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
-                        ).use { revoke ->
-                            revoke.setObject(1, targetUserId)
-                            revoke.executeUpdate()
-                        }
-                    }
-                    connection.commit()
-                } catch (failure: Exception) {
-                    connection.rollback()
-                    throw failure
-                } finally {
-                    connection.autoCommit = true
-                }
-                loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
-            }
-        }
-    }
+    fun updateUser(companyCode: String, accessToken: String, userId: String, request: UpdateCompanyUserRequest): CompanyUserResponse =
+        userAdministration.updateUser(companyCode, accessToken, userId, request)
 
     /**
      * Users and permissions are managed by the company's business_owner, or, in the server
      * workspace (which has no business owner), by any server_owner with a central session.
      */
-    private fun authorizeUserAdministrator(companyCode: String, accessToken: String): BusinessOwnerContext {
+    internal fun authorizeUserAdministrator(companyCode: String, accessToken: String): BusinessOwnerContext {
         val code = companyCode.trim()
         val workspaceActor = if (code != ServerWorkspace.Code) null else when {
             isServerOwnerSession(accessToken) -> serverActors?.resolve(accessToken).let { it as? ServerActorLookup.Found }?.actor?.audit
@@ -834,7 +367,7 @@ class CompanySelfService(
     }
 
     // Valida que el token pertenezca al business_owner de la empresa indicada.
-    private fun authorizeBusinessOwner(companyCode: String, accessToken: String): BusinessOwnerContext {
+    internal fun authorizeBusinessOwner(companyCode: String, accessToken: String): BusinessOwnerContext {
         val code = companyCode.trim()
         val company = central.connection.use { connection ->
             connection.prepareStatement(
@@ -906,191 +439,13 @@ class CompanySelfService(
         )
     }
 
-    private fun syncPermissionCatalog(connection: java.sql.Connection) {
-        val enabledModuleIds = connection.prepareStatement(
-            "SELECT module_id FROM tenant_modules WHERE status = 'enabled'"
-        ).use { query ->
-            query.executeQuery().use { rows ->
-                buildSet {
-                    add("empresa")
-                    while (rows.next()) add(rows.getString("module_id"))
-                }
-            }
-        }
-        moduleRegistry.definitions.flatMap { definition ->
-            definition.permissions.map { permission -> definition.id to permission }
-        }.filter { (moduleId, _) -> moduleId in enabledModuleIds }.forEach { (moduleId, permission) ->
-            connection.prepareStatement(
-                """
-                INSERT INTO application_permissions (permission_id, module_id, title, description)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (permission_id)
-                DO UPDATE SET module_id = EXCLUDED.module_id, title = EXCLUDED.title, description = EXCLUDED.description
-                """.trimIndent()
-            ).use { upsert ->
-                upsert.setString(1, permission.id)
-                upsert.setString(2, moduleId)
-                upsert.setString(3, permission.title)
-                upsert.setString(4, permission.description)
-                upsert.executeUpdate()
-            }
-        }
-    }
-
-    private fun loadPermissions(connection: java.sql.Connection): List<CompanyPermissionResponse> =
-        connection.prepareStatement(
-            "SELECT permission_id, module_id, title, description FROM application_permissions ORDER BY module_id, permission_id"
-        ).use { query ->
-            query.executeQuery().use { rows ->
-                buildList {
-                    while (rows.next()) {
-                        add(
-                            CompanyPermissionResponse(
-                                permissionId = rows.getString("permission_id"),
-                                moduleId = rows.getString("module_id"),
-                                // Stored in Spanish from the module definitions; shown in the user's language.
-                                title = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("title")),
-                                description = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("description")),
-                            )
-                        )
-                    }
-                }
-            }
-        }
-
-    private fun loadUsers(connection: java.sql.Connection): List<CompanyUserResponse> =
-        connection.prepareStatement("SELECT id FROM application_users ORDER BY postgres_role").use { query ->
-            query.executeQuery().use { rows ->
-                buildList {
-                    while (rows.next()) {
-                        loadUser(connection, rows.getObject("id", UUID::class.java))?.let(::add)
-                    }
-                }
-            }
-        }
-
-    private fun loadUser(connection: java.sql.Connection, userId: UUID): CompanyUserResponse? {
-        val user = connection.prepareStatement(
-            "SELECT id, postgres_role, is_active, display_name, email FROM application_users WHERE id = ?"
-        ).use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows ->
-                if (!rows.next()) return null
-                Triple(rows.getString("postgres_role"), rows.getBoolean("is_active"), rows.getString("display_name") to rows.getString("email"))
-            }
-        }
-        return CompanyUserResponse(
-            userId = userId.toString(),
-            username = user.first,
-            isActive = user.second,
-            permissions = loadUserPermissions(connection, userId),
-            displayName = user.third.first,
-            email = user.third.second,
-            userCode = ApplicationUserCodes.ensure(connection, userId),
-            isBusinessOwner = connection.isBusinessOwner(userId),
-            twoFactorEnabled = runCatching { loginDatabases.twoFactor.takeIf { it.available(connection) }?.isEnabled(connection, userId) }.getOrNull(),
-        )
-    }
-
-    private fun loadUserPermissions(connection: java.sql.Connection, userId: UUID): List<String> =
-        connection.prepareStatement("SELECT permission_id FROM application_user_permissions WHERE user_id = ? ORDER BY permission_id").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows ->
-                buildList {
-                    while (rows.next()) add(rows.getString("permission_id"))
-                }
-            }
-        }
-
-    private fun validatePermissions(connection: java.sql.Connection, permissions: List<String>) {
-        val known = loadPermissions(connection).map { it.permissionId }.toSet()
-        val unknown = permissions.toSet() - known
-        if (unknown.isNotEmpty()) {
-            throw CompanySelfException(tr("Permisos no reconocidos: {0}.", unknown.joinToString()))
-        }
-    }
-
-    private fun replaceUserPermissions(connection: java.sql.Connection, userId: UUID, permissions: List<String>) {
-        connection.prepareStatement("DELETE FROM application_user_permissions WHERE user_id = ?").use { delete ->
-            delete.setObject(1, userId)
-            delete.executeUpdate()
-        }
-        permissions.distinct().forEach { permissionId ->
-            connection.prepareStatement("INSERT INTO application_user_permissions (user_id, permission_id) VALUES (?, ?)").use { insert ->
-                insert.setObject(1, userId)
-                insert.setString(2, permissionId)
-                insert.executeUpdate()
-            }
-        }
-    }
-
-    // One row per permission granted or removed (ACTIVITY_LOG.md §3), with its title as stored (Spanish).
-    private fun permissionRows(connection: java.sql.Connection, context: BusinessOwnerContext, userId: UUID, username: String, before: Set<String>, after: Set<String>) {
-        val added = (after - before).sorted()
-        val removed = (before - after).sorted()
-        if (added.isEmpty() && removed.isEmpty()) return
-        val titles = connection.prepareStatement("SELECT permission_id, title FROM application_permissions").use { query ->
-            query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getString(1), rows.getString(2)) } }
-        }
-        added.forEach { permission ->
-            val title = titles[permission] ?: permission
-            context.record(connection, "user", userId.toString(), username, ActivityActions.PermissionChanged,
-                "Dio el permiso \"$title\" al usuario $username.", listOf(ActivityChange(permission, title, "No", "Si")))
-        }
-        removed.forEach { permission ->
-            val title = titles[permission] ?: permission
-            context.record(connection, "user", userId.toString(), username, ActivityActions.PermissionChanged,
-                "Quito el permiso \"$title\" al usuario $username.", listOf(ActivityChange(permission, title, "Si", "No")))
-        }
-    }
-
-    private fun java.sql.Connection.loginOf(userId: UUID): String =
-        prepareStatement("SELECT postgres_role FROM application_users WHERE id = ?").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else userId.toString() }
-        }
-
-    private fun java.sql.Connection.userExists(userId: UUID): Boolean =
-        prepareStatement("SELECT 1 FROM application_users WHERE id = ?").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows -> rows.next() }
-        }
-
-    private fun java.sql.Connection.isBusinessOwner(userId: UUID): Boolean =
-        prepareStatement("SELECT 1 FROM business_owner WHERE user_id = ?").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows -> rows.next() }
-        }
-
-    private fun java.sql.Connection.existsRole(name: String): Boolean =
-        prepareStatement("SELECT 1 FROM pg_roles WHERE rolname = ?").use { query ->
-            query.setString(1, name)
-            query.executeQuery().use { rows -> rows.next() }
-        }
-
-    private fun java.sql.Connection.existsUser(name: String): Boolean =
-        prepareStatement("SELECT 1 FROM application_users WHERE postgres_role = ?").use { query ->
-            query.setString(1, name)
-            query.executeQuery().use { rows -> rows.next() }
-        }
-
     // Abre una conexion runtime al tenant ya resuelto por el servidor.
-    private fun tenantConnection(tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig) =
+    internal fun tenantConnection(tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig) =
         PGSimpleDataSource().apply {
             setURL(tenant.jdbcUrl)
             setUser(tenant.user)
             setPassword(tenant.password)
         }.connection
-
-    // Agrupa los ZIPs por codigo de empresa bajo el directorio configurado.
-    private fun backupDirectory(companyCode: String): Path = backupsRoot.resolve(companyCode).normalize()
-
-    // Rechaza nombres que no sigan el formato generado por el servidor.
-    private fun validateBackupName(fileName: String) {
-        if (!backupNamePattern.matches(fileName)) {
-            throw CompanySelfException(tr("Nombre de backup invalido."))
-        }
-    }
 
     // Fila central de empresa necesaria para operaciones de autoservicio.
     private data class CompanyRow(
@@ -1100,7 +455,7 @@ class CompanySelfService(
     )
 
     // Contexto autorizado para ejecutar acciones sobre una empresa tenant.
-    private data class BusinessOwnerContext(
+    internal data class BusinessOwnerContext(
         val companyCode: String,
         val databaseName: String,
         val tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig,
@@ -1162,142 +517,27 @@ class CompanySelfService(
         changes: List<ActivityChange> = emptyList(),
     ) = CoreActivity.record(connection, activity, entityType, entityId, label, action, summary, changes)
 
-    /**
-     * Records that [by] knows the credentials of workspace staff account [userId] (it created the
-     * account or set its password), on the central transaction [connection]. A server user without
-     * a central id (cannot happen for administrators) clears the row instead.
-     */
-    private fun recordStaffCredentials(connection: java.sql.Connection, userId: UUID, by: AuditActor?) {
-        val creator = by?.userId
-        if (creator == null || by.kind !in setOf(AuditActor.ServerOwnerKind, AuditActor.ServerAdminKind)) {
-            connection.prepareStatement("DELETE FROM server_workspace_staff WHERE user_id = ?").use { delete ->
-                delete.setObject(1, userId)
-                delete.executeUpdate()
-            }
-            return
-        }
-        connection.prepareStatement(
-            """
-            INSERT INTO server_workspace_staff (user_id, created_by, created_by_kind) VALUES (?, ?, ?)
-            ON CONFLICT (user_id) DO UPDATE SET created_by = EXCLUDED.created_by, created_by_kind = EXCLUDED.created_by_kind, updated_at = CURRENT_TIMESTAMP
-            """.trimIndent()
-        ).use { upsert ->
-            upsert.setObject(1, userId)
-            upsert.setObject(2, creator)
-            upsert.setString(3, by.kind)
-            upsert.executeUpdate()
-        }
-    }
+    // Entry points of the internal collaborators (CompanyBackups, ...): the same helpers, given the context explicitly.
+    internal fun <T> auditedFor(context: BusinessOwnerContext, action: String, details: String, change: (java.sql.Connection?) -> T): T =
+        context.audited(action, details, change)
 
-    private fun isInactiveUser(tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig, userId: UUID): Boolean =
-        tenantConnection(tenant).use { connection ->
-            connection.prepareStatement("SELECT is_active FROM application_users WHERE id = ?").use { query ->
-                query.setObject(1, userId)
-                query.executeQuery().use { rows -> rows.next() && !rows.getBoolean(1) }
-            }
-        }
+    internal fun <T> loggedFor(context: BusinessOwnerContext, rows: (java.sql.Connection) -> Unit, change: (java.sql.Connection) -> T): T =
+        context.logged(rows, change)
 
-    /**
-     * Whether workspace staff account [userId] has a tracking row whose creator no longer holds the
-     * right to know its credentials: not an active server owner and not a usable administrator with
-     * server.workspace. Without the table (before control V015) there is no row.
-     */
-    private fun staffRowIsStale(userId: UUID): Boolean = try {
-        central.connection.use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT 1 FROM server_workspace_staff staff
-                WHERE staff.user_id = ?
-                  AND NOT EXISTS (
-                      SELECT 1 FROM server_owners owners JOIN application_users users ON users.id = owners.user_id
-                      WHERE owners.user_id = staff.created_by AND users.is_active)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM server_admins admins JOIN application_users users ON users.id = admins.user_id
-                      JOIN server_admin_permissions permissions ON permissions.user_id = admins.user_id
-                      WHERE admins.user_id = staff.created_by AND admins.is_active AND users.is_active
-                        AND permissions.permission = ?)
-                """.trimIndent()
-            ).use { query ->
-                query.setObject(1, userId)
-                query.setString(2, com.ideasdeveloper.bms.ServerPermissionIds.Workspace)
-                query.executeQuery().use { it.next() }
-            }
-        }
-    } catch (failure: SQLException) {
-        if (failure.sqlState == "42P01") false else throw failure
-    }
+    internal fun recordFor(
+        context: BusinessOwnerContext, connection: java.sql.Connection, entityType: String, entityId: String?, label: String, action: String,
+        summary: String, changes: List<ActivityChange> = emptyList(),
+    ) = context.record(connection, entityType, entityId, label, action, summary, changes)
 
     /**
      * An administrator was deactivated, deleted or lost server.workspace: the workspace staff
      * accounts whose credentials they know (server_workspace_staff) are deactivated and their
      * sessions revoked, audited as [by] (the owner). Returns how many accounts it closed.
      */
-    fun deactivateWorkspaceStaffOf(adminUserId: UUID, by: AuditActor, reason: String): Int {
-        val staff: List<UUID> = try {
-            central.connection.use { connection ->
-                connection.prepareStatement("SELECT user_id FROM server_workspace_staff WHERE created_by = ? ORDER BY user_id").use { query ->
-                    query.setObject(1, adminUserId)
-                    query.executeQuery().use { rows -> buildList<UUID> { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
-                }
-            }
-        } catch (failure: SQLException) {
-            // Before control V015 there is no such table: nobody to close.
-            if (failure.sqlState == "42P01") return 0 else throw failure
-        }
-        if (staff.isEmpty()) return 0
-        val workspace = central.connection.use { connection ->
-            connection.prepareStatement("SELECT code, database_name FROM companies WHERE is_server_workspace").use { query ->
-                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
-            }
-        } ?: return 0
-        val tenant = loginDatabases.tenantConfig(workspace.second)
-            ?: throw CompanySelfException(tr("El espacio del servidor no tiene conexion configurada."))
-        val context = BusinessOwnerContext(workspace.first, workspace.second, tenant, CompanyProfileResponse(workspace.first, workspace.first, null, "#000000", "#000000", "#000000"), null, null, by)
-        val details = auditDetails("adminUserId" to adminUserId.toString(), "userIds" to staff.map { it.toString() }, "reason" to reason)
-        return context.audited("server_workspace.staff_deactivated", details) {
-            tenantConnection(tenant).use { connection ->
-                connection.autoCommit = false
-                try {
-                    val ids = connection.createArrayOf("uuid", staff.toTypedArray())
-                    val closed = connection.prepareStatement("UPDATE application_users SET is_active = FALSE WHERE id = ANY (?) AND is_active RETURNING id, postgres_role").use { update ->
-                        update.setArray(1, ids)
-                        update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java) to rows.getString(2)) } }
-                    }
-                    val revoked = connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ANY (?) AND revoked_at IS NULL RETURNING user_id").use { revoke ->
-                        revoke.setArray(1, ids)
-                        revoke.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
-                    }
-                    // The workspace's own log, in the same transaction: one row per account closed, with its sessions.
-                    val actor = ActivityActor.fromAudit(by, by.userId?.let { loginDatabases.serverPerson(it)?.name })
-                    closed.forEach { (userId, username) ->
-                        val sessions = revoked.count { it == userId }
-                        CoreActivity.record(
-                            connection, actor, "user", userId.toString(), username, ActivityActions.StatusChanged,
-                            "Desactivo al usuario $username y cerro sus sesiones abiertas ($sessions): el administrador del servidor que conoce su contrasena ya no tiene acceso ($reason).",
-                            listOf(ActivityChange.of("active", "Activo", true, false)),
-                        )
-                    }
-                    connection.commit()
-                    closed.size
-                } catch (failure: Exception) {
-                    connection.rollback()
-                    throw failure
-                } finally {
-                    connection.autoCommit = true
-                }
-            }
-        }
-    }
+    fun deactivateWorkspaceStaffOf(adminUserId: UUID, by: AuditActor, reason: String): Int =
+        userAdministration.deactivateWorkspaceStaffOf(adminUserId, by, reason)
 
 }
-
-@Serializable
-// Manifest minimo incluido dentro de cada ZIP generado por Empresa.
-private data class BackupManifest(
-    val companyCode: String,
-    val createdAt: String,
-    val destructiveRestore: Boolean,
-)
 
 // Spanish labels of the activity log rows of Core (stored as written, ACTIVITY_LOG.md §1.5).
 private val CompanyProfileLabels = mapOf(
@@ -1305,96 +545,3 @@ private val CompanyProfileLabels = mapOf(
     "accentColor" to "Color de acento", "defaultLanguage" to "Idioma predeterminado",
 )
 
-private val UserLabels = mapOf("username" to "Usuario", "displayName" to "Nombre", "email" to "Correo", "active" to "Activo")
-
-/** Limits of an imported backup ZIP (SECURITY_FIXES.md B4). */
-object BackupImportLimits {
-    const val MaxBytes = 512L * 1024 * 1024
-    const val MaxEntries = 10_000
-    const val MaxUncompressedBytes = 4L * 1024 * 1024 * 1024
-
-    // Backups a company keeps (generated and imported): at most this many and this much in total.
-    const val MaxStoredBackups = 20
-    const val MaxStoredBytes = 5L * 1024 * 1024 * 1024
-
-    /**
-     * Writes [content] as [output] in the company's backup [directory] (review item 3). Every check comes before
-     * anything is written: the number and total size of the backups the company keeps, its quota, the free-disk
-     * floor and its uploads in progress ([storage]); while streaming, each chunk is charged to the quota through
-     * the same counting stream and the size limits apply; the ZIP is checked before it takes its name.
-     */
-    fun importInto(directory: Path, output: Path, content: java.io.InputStream, expectedBytes: Long?, companyCode: String, storage: com.ideasdeveloper.bms.server.modules.StorageGuard?) {
-        val stored = Files.list(directory).use { files -> files.filter { it.fileName.toString().endsWith(".zip") && it != output }.toList() }
-        val storedBytes = stored.sumOf { runCatching { Files.size(it) }.getOrDefault(0L) }
-        if (stored.size >= MaxStoredBackups) throw CompanySelfException(tr("La empresa ya guarda {0} copias de seguridad; elimina alguna antes de importar otra.", MaxStoredBackups))
-        if (expectedBytes != null && storedBytes + expectedBytes > MaxStoredBytes) throw storedTooLarge()
-        val upload = try {
-            storage?.checkRoom(companyCode, expectedBytes)
-            storage?.begin(companyCode)
-        } catch (refused: com.ideasdeveloper.bms.server.modules.StorageQuotaException) {
-            throw CompanySelfException(refused.message.orEmpty())
-        }
-        try {
-            val partial = Files.createTempFile(directory, ".import-", ".part")
-            try {
-                val written = try {
-                    Files.newOutputStream(partial).use { out ->
-                        copyLimited(content, out, maxBytes = minOf(MaxBytes, MaxStoredBytes - storedBytes)) { bytes -> upload?.charge(bytes) }
-                    }
-                } catch (refused: com.ideasdeveloper.bms.server.modules.StorageQuotaException) {
-                    throw CompanySelfException(refused.message.orEmpty())
-                }
-                validateZip(partial)
-                Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-                upload?.stored(written)
-            } finally {
-                Files.deleteIfExists(partial)
-            }
-        } finally {
-            upload?.close()
-        }
-    }
-
-    fun tooLarge() = CompanySelfException(tr("El backup supera el maximo de {0} MB.", MaxBytes / (1024 * 1024)))
-
-    fun storedTooLarge() = CompanySelfException(tr("Las copias de seguridad de la empresa superarian {0} GB; elimina alguna antes de importar otra.", MaxStoredBytes / (1024 * 1024 * 1024)))
-
-    /** Copies at most [maxBytes] (one byte more and the import is refused); each chunk goes through [charge] first. */
-    fun copyLimited(input: java.io.InputStream, output: java.io.OutputStream, maxBytes: Long = MaxBytes, charge: (Long) -> Unit = {}): Long {
-        val buffer = ByteArray(64 * 1024)
-        var total = 0L
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) return total
-            total += read
-            if (total > maxBytes) throw if (maxBytes < MaxBytes) storedTooLarge() else tooLarge()
-            charge(read.toLong())
-            output.write(buffer, 0, read)
-        }
-    }
-
-    /** A readable, non-empty ZIP within the entry and uncompressed-size limits (read as a stream, nothing is kept). */
-    fun validateZip(file: Path, maxEntries: Int = MaxEntries, maxUncompressed: Long = MaxUncompressedBytes) {
-        var entries = 0
-        var expanded = 0L
-        val buffer = ByteArray(64 * 1024)
-        try {
-            ZipInputStream(Files.newInputStream(file)).use { zip ->
-                while (true) {
-                    zip.nextEntry ?: break
-                    entries++
-                    if (entries > maxEntries) throw CompanySelfException(tr("El backup tiene demasiados archivos (maximo {0}).", maxEntries))
-                    while (true) {
-                        val read = zip.read(buffer)
-                        if (read < 0) break
-                        expanded += read
-                        if (expanded > maxUncompressed) throw CompanySelfException(tr("El backup descomprimido supera el maximo permitido."))
-                    }
-                }
-            }
-        } catch (failure: java.util.zip.ZipException) {
-            throw CompanySelfException(tr("El archivo no es un ZIP valido."))
-        }
-        if (entries == 0) throw CompanySelfException(tr("El archivo ZIP esta vacio."))
-    }
-}
