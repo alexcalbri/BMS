@@ -734,23 +734,13 @@ private fun notifyServerOwners(central: DataSource, access: ModuleAccessService,
     }
 }
 
-// Public origin for links in emails (review item 4): BMS_PUBLIC_BASE_URL when set; otherwise the request's Host only
-// when [knownHost] says it is a domain of this server (never X-Forwarded-Host). Null: build no link.
-internal fun publicBase(call: ApplicationCall, knownHost: (String) -> Boolean): String? {
-    configuredPublicBase()?.let { return it }
-    val proxied = call.request.local.remoteAddress.let { it == "127.0.0.1" || it == "::1" || it == "0:0:0:0:0:0:0:1" }
-    val scheme = (if (proxied) call.request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim() else null)
-        ?.takeIf { it == "https" || it == "http" } ?: call.request.local.scheme
-    val host = call.request.headers["Host"]?.trim()?.lowercase()
-        ?.takeIf { it.isNotEmpty() && it.length <= 255 && Regex("[a-z0-9.-]+(:[0-9]{1,5})?").matches(it) } ?: return null
-    return if (knownHost(host.substringBefore(':'))) "$scheme://$host" else null
-}
+// Public origin for links in emails (review item 4): see PublicOrigin.forLinks.
+internal fun publicBase(call: ApplicationCall, knownHost: (String) -> Boolean): String? = com.ideasdeveloper.bms.server.http.PublicOrigin.forLinks(call, knownHost)
 
 /** CORE_UPDATE_REQUIRE_APPROVED_COMMIT: on unless it says false (review item 7). */
 internal fun coreUpdateRequiresApprovedCommit(value: String?): Boolean = value?.trim()?.equals("false", ignoreCase = true) != true
 
-internal fun configuredPublicBase(): String? =
-    System.getenv("BMS_PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+internal fun configuredPublicBase(): String? = com.ideasdeveloper.bms.server.http.PublicOrigin.configured()
 
 // Valor en memoria con expiracion: evita recalcular (y repetir peticiones salientes) en cada llamada.
 // Un fallo tambien se guarda, con un TTL corto, para no reintentar la carga en cada peticion.
