@@ -34,6 +34,7 @@ import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.bms.server.http.ClientAddresses
+import com.ideasdeveloper.bms.server.http.PublicOrigin
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.server.modules.CompanyFiles
@@ -544,7 +545,7 @@ fun Application.module() {
         serverConfig = com.ideasdeveloper.bms.server.assistant.AssistantServerConfig(DatabaseFactory.getDataSource(), secretBox),
         secrets = secretBox,
         models = assistantModels,
-        serverHosts = setOfNotNull(configuredPublicBase()?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }),
+        serverHosts = setOfNotNull(PublicOrigin.configured()?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }),
     )
     val assistantJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "assistant-upkeep").apply { isDaemon = true } }
     assistantJob.scheduleWithFixedDelay({
@@ -734,13 +735,8 @@ private fun notifyServerOwners(central: DataSource, access: ModuleAccessService,
     }
 }
 
-// Public origin for links in emails (review item 4): see PublicOrigin.forLinks.
-internal fun publicBase(call: ApplicationCall, knownHost: (String) -> Boolean): String? = com.ideasdeveloper.bms.server.http.PublicOrigin.forLinks(call, knownHost)
-
 /** CORE_UPDATE_REQUIRE_APPROVED_COMMIT: on unless it says false (review item 7). */
 internal fun coreUpdateRequiresApprovedCommit(value: String?): Boolean = value?.trim()?.equals("false", ignoreCase = true) != true
-
-internal fun configuredPublicBase(): String? = com.ideasdeveloper.bms.server.http.PublicOrigin.configured()
 
 // Valor en memoria con expiracion: evita recalcular (y repetir peticiones salientes) en cada llamada.
 // Un fallo tambien se guarda, con un TTL corto, para no reintentar la carga en cada peticion.

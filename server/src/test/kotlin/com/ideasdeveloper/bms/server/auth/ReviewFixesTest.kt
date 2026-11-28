@@ -5,9 +5,9 @@ import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import com.ideasdeveloper.bms.server.app.coreUpdateRequiresApprovedCommit
-import com.ideasdeveloper.bms.server.app.publicBase
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorPolicy
 import com.ideasdeveloper.bms.server.extensions.packages.BMSPublicKeys
+import com.ideasdeveloper.bms.server.http.PublicOrigin
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -52,7 +52,7 @@ class ReviewFixesTest {
     @Test
     fun linksUseOnlyAKnownHost() = testApplication {
         application {
-            routing { get("/base") { call.respondText(publicBase(call) { it == "bms.example.com" } ?: "none") } }
+            routing { get("/base") { call.respondText(PublicOrigin.forLinks(call) { it == "bms.example.com" } ?: "none") } }
         }
         assertEquals("http://bms.example.com", client.get("/base") { header("Host", "bms.example.com") }.bodyAsText())
         assertEquals("none", client.get("/base") { header("Host", "evil.example") }.bodyAsText())
