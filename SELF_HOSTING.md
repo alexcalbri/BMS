@@ -440,8 +440,24 @@ itself and the rollback removes it: no throwaway role is needed. Before the firs
 whole cluster is snapshotted (roles with a hash of their password verifier, memberships with their options, database
 owners and ACLs, and in every connectable database the owners and ACLs of relations, columns, routines, types, schemas
 and the default ACLs); if the two differ the rehearsal prints `FAIL ensayo sin cambios` with the difference. The service
-keeps running: `lock_timeout` is 500 ms (`BMS_REHEARSE_LOCK_TIMEOUT`) and a database whose locks cannot be taken after 3
-tries is reported `WARN ... no ensayado por bloqueo` instead of waited for.
+keeps running, so every session has short limits (environment overrides): `lock_timeout` 500 ms
+(`BMS_REHEARSE_LOCK_TIMEOUT`), `statement_timeout` 10 s (`BMS_REHEARSE_STATEMENT_TIMEOUT`), `idle_in_transaction_session_timeout`
+5 s (`BMS_REHEARSE_IDLE_TIMEOUT`), `client_connection_check_interval` 1 s on 14+ (`BMS_REHEARSE_CONNECTION_CHECK`) and
+`transaction_timeout` 15 s on 17+ (`BMS_REHEARSE_TRANSACTION_TIMEOUT`). A statement or transaction that hits its limit is a
+`FAIL` naming the database (raise the limit for a heavy migration), never a pass. A database whose locks cannot be taken
+after 3 tries is reported `WARN ... no ensayado por bloqueo`, and then the whole rehearsal is **incomplete**: exit code 2,
+`preflight.sh` reports `FAIL ensayo de update.sh — incompleto` and never a PASS; repeat it at a quiet moment. Each database
+reports how long its transaction (and so its locks) lasted, and the last line says what was not rehearsed.
+The transaction cannot be ended early by the SQL it runs: it starts with a deferred foreign key violated on purpose (any
+`COMMIT`, however written, fails on it), lines with transaction control or psql meta-commands other than `\set`, `\if`, `\else`,
+`\endif` and `\echo` are refused, and at the end deferred constraints are checked (`SET CONSTRAINTS ALL IMMEDIATE`) as the
+real `COMMIT` would.
+Before any transaction it checks what the real update needs at its first login, which comes **after** the role move: the
+`pg_hba.conf` rule for the provisioning role at the DB_URL host (first address libpq tries: `localhost` may be `::1`) and a
+real TCP login, with the same host, port, passfile and `sslmode`, of a throwaway `bms_rh_*` role with a random password (the
+real password is unknown); the role is dropped at once and by traps on any exit, Ctrl-C included, and the cluster snapshots
+are taken without it. The real update repeats the login (with the new password) right after setting it and before the move
+starts; if it fails, only that role's password and its `CONNECT` grants changed, and `server.env` is restored.
 Limits: `ALTER ... OWNER` takes `ACCESS EXCLUSIVE` locks on the tables that would change owner, held until the rollback
 (well under a second for the catalog work, and only on objects of an old layout; a company already moved takes none);
 passwords, `pg_hba`/real TCP login, the new release's own startup and anything outside PostgreSQL are not rehearsed;
