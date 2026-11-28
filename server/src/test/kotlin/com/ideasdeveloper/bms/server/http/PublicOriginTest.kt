@@ -1,5 +1,12 @@
 package com.ideasdeveloper.bms.server.http
 
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.statement.bodyAsText
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
+import io.ktor.server.routing.routing
+import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -150,5 +157,32 @@ class PublicOriginTest {
     fun requestPolicyConfiguredBaseWins() {
         assertEquals("https://base.example", request(configured = "https://base.example"))
         assertEquals("https://base.example", request(configured = "https://base.example", host = null, remote = "203.0.113.5"))
+    }
+
+    @Test
+    fun theCallWrappersApplyTheSamePolicies() = testApplication {
+        // BMS_PUBLIC_BASE_URL is not set in the test environment, so the request headers decide.
+        application {
+            routing {
+                get("/links") { call.respondText(PublicOrigin.forLinks(call) { it == "bms.example.com" } ?: "none") }
+                get("/request") { call.respondText(PublicOrigin.forRequest(call)) }
+                get("/scheme") { call.respondText(PublicOrigin.scheme(call)) }
+                get("/host") { call.respondText(PublicOrigin.requestHost(call) ?: "none") }
+            }
+        }
+        assertEquals("http://bms.example.com", client.get("/links") { header("Host", "bms.example.com") }.bodyAsText())
+        assertEquals("none", client.get("/links") { header("Host", "evil.example") }.bodyAsText())
+        assertEquals("http://bms.example.com", client.get("/request") { header("Host", "Bms.Example.com") }.bodyAsText())
+        // The engine's peer is not a local proxy: X-Forwarded-* is ignored.
+        assertEquals("http://bms.example.com", client.get("/request") {
+            header("Host", "bms.example.com"); header("X-Forwarded-Proto", "https"); header("X-Forwarded-Host", "evil.example")
+        }.bodyAsText())
+        assertEquals("http", client.get("/scheme") { header("X-Forwarded-Proto", "https") }.bodyAsText())
+        assertEquals("bms.example.com", client.get("/host") { header("Host", "bms.example.com"); header("X-Forwarded-Host", "evil.example") }.bodyAsText())
+        assertEquals("none", client.get("/host") { header("Host", "bms.example.com@evil.example") }.bodyAsText())
+        // Without a usable Host the origin falls back to the address the server itself answers on.
+        val fallback = client.get("/request") { header("Host", "a b@evil.example/x") }.bodyAsText()
+        assertEquals(false, fallback.contains("evil") || fallback.contains(" "), fallback)
+        assertEquals(true, fallback.startsWith("http://localhost"), fallback)
     }
 }

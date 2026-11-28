@@ -15,7 +15,8 @@ import io.ktor.server.plugins.origin
  * - [forLinks]: an origin to put in a link that somebody else will follow (e-mail). Only the configured base or a
  *   host the server really serves is accepted; otherwise null and the caller builds no link.
  * - [forRequest]: an origin to hand back to the client that is calling right now (OAuth metadata, webhook URLs).
- *   It never returns null: the validated `Host`, or the server's own host when `Host` is missing or unusable.
+ *   It never returns null: the validated `Host`, or the address the connection arrived on when `Host` is missing or
+ *   unusable (never the raw header).
  */
 object PublicOrigin {
     private val HostPattern = Regex("[a-z0-9.-]+(:[0-9]{1,5})?")
@@ -46,6 +47,28 @@ object PublicOrigin {
         serverHost = "",
         knownHost = knownHost,
     )
+
+    /**
+     * Origin to hand back to the client that is calling: [configured], or `scheme://host` of the request, with the
+     * server's own host when `Host` is missing or unusable. Never null.
+     */
+    fun forRequest(call: ApplicationCall): String = resolve(
+        configured = configured(),
+        remoteAddress = call.request.local.remoteAddress,
+        forwardedProto = call.request.headers["X-Forwarded-Proto"],
+        localScheme = call.request.local.scheme,
+        hostHeader = call.request.headers["Host"],
+        serverHost = localAuthority(call),
+        knownHost = null,
+    )!!
+
+    // The address the connection arrived on. Not Ktor's `serverHost`: that one is taken from the Host header,
+    // so using it as the fallback for an unusable Host would put that very header back into the origin.
+    private fun localAuthority(call: ApplicationCall): String {
+        val local = call.request.local
+        val host = local.localHost.let { if (it.contains(':') && !it.startsWith("[")) "[$it]" else it }
+        return if (local.localPort == 80 || local.localPort == 443) host else "$host:${local.localPort}"
+    }
 
     internal fun configuredFrom(value: String?): String? =
         value?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
