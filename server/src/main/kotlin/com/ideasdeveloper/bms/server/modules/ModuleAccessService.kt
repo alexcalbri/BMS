@@ -80,46 +80,13 @@ class ModuleAccessService(
      * Customer references of the modules enabled in this company and of its enabled extensions, keeping only valid
      * names and tables that exist in this database (one query for all tables). Invalid ones are dropped with a log.
      */
-    fun customerReferences(tenant: Connection): List<CustomerReference> {
-        val sources = customerReferenceSources().filter { it.references.isNotEmpty() }
-        if (sources.isEmpty()) return emptyList()
-        val modules = enabledIds(tenant, "SELECT module_id FROM tenant_modules WHERE status = 'enabled'")
-        val extensions = if (tableExists(tenant, "tenant_extensions")) {
-            enabledIds(tenant, "SELECT extension_id FROM tenant_extensions WHERE status = 'enabled'")
-        } else {
-            emptySet()
-        }
-        val active = sources.filter { source ->
-            source.moduleId in modules && (source.extensionId == null || source.extensionId in extensions)
-        }
-        val valid = active.flatMap { source ->
-            source.references.filter { reference ->
-                val problem = CustomerReference.problemFor(reference, source.moduleId, source.extensionId)
-                if (problem != null) {
-                    log.warn("Referencia a clientes ignorada en {}/{}: {}", source.moduleId, source.extensionId ?: "-", problem)
-                }
-                problem == null
-            }
-        }.distinct()
-        if (valid.isEmpty()) return emptyList()
-        val tables = valid.map { it.table }.distinct()
-        val existing = tenant.prepareStatement("SELECT t FROM unnest(?::text[]) AS t WHERE to_regclass('public.' || t) IS NOT NULL").use { query ->
-            query.setArray(1, tenant.createArrayOf("text", tables.toTypedArray()))
-            query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
-        }
-        return valid.filter { it.table in existing }
-    }
-
-    private fun enabledIds(tenant: Connection, sql: String): Set<String> = tenant.prepareStatement(sql).use { query ->
-        query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
-    }
-
-    private fun tableExists(tenant: Connection, table: String): Boolean =
-        tenant.prepareStatement("SELECT to_regclass('public.' || ?) IS NOT NULL").use { query ->
-            query.setString(1, table)
-            query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
-        }
+    fun customerReferences(tenant: Connection): List<CustomerReference> = customerAccess.customerReferences(tenant)
     private val tokenGenerator = SessionTokenGenerator()
+    private val agentSignIn = ModuleAgentSignIn(this, central, loginDatabases, login, moduleMcp, tokenGenerator)
+    private val customerAccess = ModuleCustomerAccess(
+        this, central, moduleInstalled, customerReferenceSources, customerTimelines, customerHistoryWriter, customerChangeListener,
+        customerNotesReader, extensionModules,
+    )
 
     /**
      * The notifier of [moduleId]: creates notifications that always carry that module as their origin.
@@ -272,14 +239,11 @@ class ModuleAccessService(
      * is recorded with the sign-in and keys the per-login throttle (clientAddress(call) of the page).
      */
     fun verifyCredentials(companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false, clientAddress: String = ""): VerifiedUser? =
-        when (val result = signInForAgent(companyCode, username, password, null, clientAddress, allowAuditAdmin)) {
-            is AgentSignIn.Verified -> result.user
-            else -> null
-        }
+        agentSignIn.verifyCredentials(companyCode, username, password, allowAuditAdmin, clientAddress)
 
     /** [verifyCredentials] for the request [call] (its client address is recorded). */
     fun verifyCredentials(call: ApplicationCall, companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false): VerifiedUser? =
-        verifyCredentials(companyCode, username, password, allowAuditAdmin, com.ideasdeveloper.bms.server.http.ClientAddresses.of(call))
+        agentSignIn.verifyCredentials(call, companyCode, username, password, allowAuditAdmin)
 
     /**
      * The sign-in of an AI agent's OAuth page with the second step (TWO_FACTOR.md §2): password and,
@@ -294,26 +258,7 @@ class ModuleAccessService(
         twoFactorCode: String?,
         clientAddress: String,
         allowAuditAdmin: Boolean = false,
-    ): AgentSignIn {
-        val session = try {
-            login(LoginCredentials(username, password, companyCode, clientAddress))
-        } catch (required: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorRequiredException) {
-            val code = twoFactorCode?.trim()?.takeIf { it.isNotEmpty() }
-            if (code == null) {
-                loginDatabases.finishTwoFactor(required.token)
-                return AgentSignIn.SecondFactorRequired
-            }
-            try {
-                loginDatabases.completeTwoFactor(required.token, code, clientAddress)
-            } catch (_: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorSignInException) {
-                loginDatabases.finishTwoFactor(required.token)
-                return AgentSignIn.InvalidCode
-            } catch (refused: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException) {
-                return if (refused.code == com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException.TooManyAttempts) AgentSignIn.TooManyAttempts else AgentSignIn.Rejected
-            }
-        } ?: return AgentSignIn.Rejected
-        return verifiedFrom(session, companyCode, allowAuditAdmin)?.let { AgentSignIn.Verified(it) } ?: AgentSignIn.Rejected
-    }
+    ): AgentSignIn = agentSignIn.signInForAgent(companyCode, username, password, twoFactorCode, clientAddress, allowAuditAdmin)
 
     /**
      * [signInForAgent] for the request [call]: its client address (X-Real-IP behind the local Nginx, the same rule
@@ -326,37 +271,7 @@ class ModuleAccessService(
         password: String,
         twoFactorCode: String?,
         allowAuditAdmin: Boolean = false,
-    ): AgentSignIn = signInForAgent(companyCode, username, password, twoFactorCode, com.ideasdeveloper.bms.server.http.ClientAddresses.of(call), allowAuditAdmin)
-
-    private fun verifiedFrom(session: LoginSuccessResponse, companyCode: String?, allowAuditAdmin: Boolean): VerifiedUser? {
-        val serverOwner = session.scope == "server"
-        // Server administrators never act here with server rights: no agent or module does. The one
-        // exception (ACTIVITY_LOG.md §7): with [allowAuditAdmin], an administrator holding
-        // server.audit.view may connect an agent that gets ONLY the two audit read tools
-        // (serverAuditAgent); the session is closed either way.
-        if (serverOwner && session.role != com.ideasdeveloper.bms.ServerRoles.Owner) {
-            central.connection.use { connection ->
-                connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?").use {
-                    it.setString(1, tokenGenerator.hash(session.accessToken))
-                    it.executeUpdate()
-                }
-            }
-            if (!allowAuditAdmin || session.mustChangePassword || session.twoFactorSetupRequired) return null
-            val adminId = UUID.fromString(session.userId)
-            serverAuditAgent(adminId) ?: return null
-            val workspace = activeServerWorkspace() ?: return null
-            return VerifiedUser(adminId, session.username, workspace, serverOwner = false, serverAdmin = true)
-        }
-        val tokenHash = tokenGenerator.hash(session.accessToken)
-        val revoke = "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?"
-        if (serverOwner) {
-            central.connection.use { connection -> connection.prepareStatement(revoke).use { it.setString(1, tokenHash); it.executeUpdate() } }
-        } else {
-            tenantConnectionForCompany(companyCode!!)?.use { connection -> connection.prepareStatement(revoke).use { it.setString(1, tokenHash); it.executeUpdate() } }
-        }
-        val workspace = if (serverOwner) session.workspaceCompanyCode ?: return null else companyCode!!
-        return VerifiedUser(UUID.fromString(session.userId), session.username, workspace, serverOwner)
-    }
+    ): AgentSignIn = agentSignIn.signInForAgent(call, companyCode, username, password, twoFactorCode, allowAuditAdmin)
 
     /**
      * What the AI agent of server administrator [userId] may use now (ACTIVITY_LOG.md §7): only the
@@ -365,38 +280,11 @@ class ModuleAccessService(
      * administrator (not the owner) holding server.audit.view without a pending password change.
      * Read live: call it on every request and every tool call.
      */
-    fun serverAuditAgent(userId: UUID): ServerAuditAgent? {
-        val admin = loginDatabases.admins.find(userId)
-            ?.takeIf { it.usable && !it.mustChangePassword && com.ideasdeveloper.bms.server.admins.ServerPermission.AuditView in it.permissions }
-            ?: return null
-        if (isActiveServerOwner(userId)) return null
-        // The owner requires two-step verification and this administrator has not turned it on yet.
-        if (loginDatabases.adminTwoFactorPending(userId)) return null
-        val tools = moduleMcp().filter { it.moduleId == ServerMcpModuleId }.flatMap { it.tools }
-            .filter { it.qualifiedName in com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools.AdminAgentToolNames }
-        val name = admin.displayName?.takeIf { it.isNotBlank() } ?: admin.login
-        val permissions = ModulePermissions(
-            ServerWorkspace.Code, accessToken = "", businessOwner = false, granted = emptySet(), userId = userId, serverOwner = false,
-            activityActor = ActivityActor.serverAdmin(userId, name),
-        )
-        return ServerAuditAgent(userId, admin.login, name, tools, permissions)
-    }
+    fun serverAuditAgent(userId: UUID): ServerAuditAgent? = agentSignIn.serverAuditAgent(userId)
 
     /** Audits an event of a server administrator's agent (connected, revoked, refused) in provisioning_audit_log. */
-    fun auditServerAdminAgent(userId: UUID, login: String, action: String, details: Map<String, Any?>) {
-        central.connection.use { connection ->
-            com.ideasdeveloper.bms.server.company.application.ProvisioningAudit.insert(
-                connection, com.ideasdeveloper.bms.server.admins.AuditActor(login, userId, com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind),
-                action, null, null, com.ideasdeveloper.bms.server.company.application.auditDetails(*details.toList().toTypedArray()),
-            )
-        }
-    }
-
-    private fun activeServerWorkspace(): String? = central.connection.use { connection ->
-        connection.prepareStatement("SELECT code FROM companies WHERE is_server_workspace AND is_active").use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-        }
-    }
+    fun auditServerAdminAgent(userId: UUID, login: String, action: String, details: Map<String, Any?>) =
+        agentSignIn.auditServerAdminAgent(userId, login, action, details)
 
     /**
      * Module access of a user for requests authenticated without a session, such as an AI agent token
@@ -484,7 +372,7 @@ class ModuleAccessService(
         return tenant to granted
     }
 
-    private fun enabledModules(tenant: Connection): Set<String> =
+    internal fun enabledModules(tenant: Connection): Set<String> =
         tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
         }
@@ -517,24 +405,8 @@ class ModuleAccessService(
      * permission the user holds, newest first. A module that fails is left out (and logged), so one
      * module never hides the others' history.
      */
-    fun customerHistory(tenant: Connection, permissions: ModulePermissions, customerId: UUID, limit: Int = 100): List<CustomerHistoryEntry> {
-        val enabled = enabledModules(tenant)
-        return customerTimelines()
-            .filter { it.moduleId in enabled && isInstalled(it.moduleId) && permissions.has(it.timeline.permission) }
-            .flatMap { registered ->
-                try {
-                    registered.timeline.entries(CustomerTimelineQuery(customerId, tenant, permissions, this, limit)).take(limit).map { registered to it }
-                } catch (failure: Exception) {
-                    log.warn("Customer history of module {} failed: {}", registered.moduleId, failure.message)
-                    emptyList()
-                }
-            }
-            .sortedByDescending { it.second.at }
-            .take(limit)
-            .map { (registered, entry) ->
-                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, trIn(I18n.moduleNamespace(registered.moduleId), registered.moduleName), entry.kind, entry.title, entry.detail, entry.author, entry.link)
-            }
-    }
+    fun customerHistory(tenant: Connection, permissions: ModulePermissions, customerId: UUID, limit: Int = 100): List<CustomerHistoryEntry> =
+        customerAccess.customerHistory(tenant, permissions, customerId, limit)
 
     /**
      * Writes [event] in the customer's history of the company of [tenant] (the company's tab of the
@@ -542,78 +414,34 @@ class ModuleAccessService(
      * history or the company does not use it. Never breaks the caller: inside a transaction the write
      * runs in a savepoint, and a failure is logged and rolled back to it.
      */
-    fun recordCustomerEvent(tenant: Connection, event: CustomerHistoryEvent): Boolean {
-        val writer = customerHistoryWriter() ?: return false
-        val savepoint = if (tenant.autoCommit) null else tenant.setSavepoint()
-        return try {
-            writer.write(tenant, event)
-            savepoint?.let { tenant.releaseSavepoint(it) }
-            true
-        } catch (failure: Exception) {
-            savepoint?.let { runCatching { tenant.rollback(it) } }
-            log.warn("Customer history event of module {} not written: {}", event.moduleId, failure.message)
-            false
-        }
-    }
+    fun recordCustomerEvent(tenant: Connection, event: CustomerHistoryEvent): Boolean = customerAccess.recordCustomerEvent(tenant, event)
 
     /**
      * The customer's notes (tastes, preferences, general information), newest first, to show them
      * where the customer is attended (the CRM lead). Null when no installed module keeps customer
      * notes or they cannot be read; hide the notes then.
      */
-    fun customerNotes(tenant: Connection, customerId: UUID, limit: Int = 5): List<CustomerNote>? {
-        val reader = customerNotesReader() ?: return null
-        return try {
-            reader.notes(this, tenant, customerId, limit)
-        } catch (failure: Exception) {
-            log.warn("Notes of customer {} not read: {}", customerId, failure.message)
-            null
-        }
-    }
+    fun customerNotes(tenant: Connection, customerId: UUID, limit: Int = 5): List<CustomerNote>? = customerAccess.customerNotes(tenant, customerId, limit)
 
     /**
      * Call after changing a customer's data (name, email, phone, custom fields) in [tenant]: the
      * customer is one record for the companies it is shared with, so the change is copied to them now.
      * Call it once the change is committed. Never throws; a failure is logged.
      */
-    fun customerChanged(tenant: Connection, customerId: UUID) {
-        val listener = customerChangeListener() ?: return
-        try {
-            listener.changed(this, tenant, customerId)
-        } catch (failure: Exception) {
-            log.warn("Customer {} not copied to the companies it is shared with: {}", customerId, failure.message)
-        }
-    }
+    fun customerChanged(tenant: Connection, customerId: UUID) = customerAccess.customerChanged(tenant, customerId)
 
     /**
      * The active companies of the business owner of [companyCode] (its owner group), itself included,
      * by name. Only the company itself for the server workspace or a company in no group.
      */
-    fun groupCompanies(companyCode: String): List<GroupCompany> = central.connection.use { connection ->
-        connection.prepareStatement(
-            """
-            SELECT target.code, target.name
-            FROM companies origin
-            JOIN companies target ON target.code = origin.code OR (origin.owner_group IS NOT NULL AND target.owner_group = origin.owner_group)
-            WHERE origin.code = ? AND target.is_active AND NOT target.is_server_workspace
-            ORDER BY CASE WHEN target.code = origin.code THEN 0 ELSE 1 END, lower(target.name)
-            """.trimIndent()
-        ).use { query ->
-            query.setString(1, companyCode)
-            query.executeQuery().use { rows ->
-                buildList { while (rows.next()) add(GroupCompany(rows.getString(1), rows.getString(2))) }
-            }
-        }
-    }
+    fun groupCompanies(companyCode: String): List<GroupCompany> = customerAccess.groupCompanies(companyCode)
 
     /**
      * Companies linked with [companyCode] for [purpose], it first and then by name: active, of the same
      * owner group as it (checked on every read), in the same link group, never the server workspace.
      * Only it when it is not linked.
      */
-    fun linkedCompanies(companyCode: String, purpose: String): List<GroupCompany> = central.connection.use { connection ->
-        CompanyLinks.linked(connection, companyCode, purpose)
-    }
+    fun linkedCompanies(companyCode: String, purpose: String): List<GroupCompany> = customerAccess.linkedCompanies(companyCode, purpose)
 
     /**
      * Links [targetCode] to the group of [companyCode] (and [companyCode] too when it was not). One
@@ -621,7 +449,7 @@ class ModuleAccessService(
      * workspace and the same owner group, else [CompanyLinkException]. The caller checks the business owner.
      */
     fun linkCompany(companyCode: String, targetCode: String, purpose: String, linkedBy: String): List<GroupCompany> =
-        noNewConnection().let { central.connection }.use { connection -> CompanyLinks.link(connection, companyCode, targetCode, purpose, linkedBy) }
+        customerAccess.linkCompany(companyCode, targetCode, purpose, linkedBy)
 
     /**
      * Removes [targetCode] (it may be [companyCode]) from the group of [companyCode]; the same owner
@@ -629,14 +457,14 @@ class ModuleAccessService(
      * [companyCode] (only it when it no longer is).
      */
     fun unlinkCompany(companyCode: String, targetCode: String, purpose: String): List<GroupCompany> =
-        noNewConnection().let { central.connection }.use { connection -> CompanyLinks.unlink(connection, companyCode, targetCode, purpose) }
+        customerAccess.unlinkCompany(companyCode, targetCode, purpose)
 
     /**
      * Whether the user of [permissions] may see in the customer's file the history rows written by
      * [moduleId]. See [visibleCustomerEventModules]; this opens a query per call, so for many rows use that.
      */
     fun customerEventsVisible(tenant: Connection, permissions: ModulePermissions, moduleId: String): Boolean =
-        moduleId in visibleCustomerEventModules(tenant, permissions, setOf(moduleId))
+        customerAccess.customerEventsVisible(tenant, permissions, moduleId)
 
     /**
      * Of [moduleIds], the modules whose customer history rows the user may see: Clientes always; an
@@ -646,37 +474,11 @@ class ModuleAccessService(
      * [tenant]; any other id (an uninstalled or unknown module) only to business owner or server owner.
      * Reads the enabled modules once for the whole set.
      */
-    fun visibleCustomerEventModules(tenant: Connection, permissions: ModulePermissions, moduleIds: Set<String>): Set<String> {
-        if (moduleIds.isEmpty()) return emptySet()
-        val timelines = customerTimelines().associateBy { it.moduleId }
-        val extensions = extensionModules()
-        val candidates = moduleIds.filter { it != CustomersModuleId && (moduleInstalled(it) || it in extensions) }
-        val enabled = if (candidates.isEmpty()) emptySet() else enabledModules(tenant)
-        val admin = permissions.businessOwner || permissions.serverOwner
-        return moduleIds.filterTo(mutableSetOf()) { id ->
-            customerEventVisibility(
-                id = id,
-                installed = moduleInstalled(id),
-                extensionModule = extensions[id],
-                enabledModules = enabled,
-                admin = admin,
-                hasModulePermission = { moduleId -> timelines[moduleId]?.let { permissions.has(it.timeline.permission) } ?: permissions.hasAnyWithPrefix("$moduleId.") },
-            )
-        }
-    }
+    fun visibleCustomerEventModules(tenant: Connection, permissions: ModulePermissions, moduleIds: Set<String>): Set<String> =
+        customerAccess.visibleCustomerEventModules(tenant, permissions, moduleIds)
 
     /** The company whose database [tenant] is connected to, or null for one the server does not know. */
-    fun companyOf(tenant: Connection): GroupCompany? {
-        val database = tenant.createStatement().use { statement ->
-            statement.executeQuery("SELECT current_database()").use { rows -> if (rows.next()) rows.getString(1) else null }
-        } ?: return null
-        return central.connection.use { connection ->
-            connection.prepareStatement("SELECT code, name FROM companies WHERE database_name = ?").use { query ->
-                query.setString(1, database)
-                query.executeQuery().use { rows -> if (rows.next()) GroupCompany(rows.getString(1), rows.getString(2)) else null }
-            }
-        }
-    }
+    fun companyOf(tenant: Connection): GroupCompany? = customerAccess.companyOf(tenant)
 
     // Central control-plane connection for module-owned central tables such as public_domains.
     fun centralConnection(): Connection {
@@ -699,7 +501,7 @@ class ModuleAccessService(
         }
     }
 
-    private fun noNewConnection() {
+    internal fun noNewConnection() {
         check(readOnlyScope.get() != true) { "Una vista previa no puede abrir otra conexion ni escribir." }
     }
 
@@ -1030,7 +832,7 @@ class ModuleAccessService(
         false
     }
 
-    private fun isActiveServerOwner(userId: UUID): Boolean = central.connection.use { connection ->
+    internal fun isActiveServerOwner(userId: UUID): Boolean = central.connection.use { connection ->
         connection.prepareStatement(
             """
             SELECT 1
@@ -1082,155 +884,8 @@ class ModuleAccessService(
     }
 }
 
-// Permissions of the current user in one module. business_owner holds every permission.
-class ModulePermissions(
-    val companyCode: String,
-    internal val accessToken: String,
-    val businessOwner: Boolean,
-    private val granted: Set<String>,
-    // Signed-in user: a tenant user, or for server owners their central user id.
-    val userId: UUID? = null,
-    // A server owner (a central user, not in the tenant's users): in the server workspace, or in any
-    // company through their AI agent (ModuleAccessService.serverOwnerAccess).
-    val serverOwner: Boolean = false,
-    // Who acts, for the activity log; tests pass one, Core passes [actorResolver] (read on first use).
-    activityActor: ActivityActor? = null,
-    private val actorResolver: (() -> ActivityActor)? = null,
-) {
-    /**
-     * The real person behind this request for the activity log (ACTIVITY_LOG.md §1.4): the user, the
-     * server person of a switcher session, "Agente de <usuario>" for an AI agent... Resolved by Core
-     * on first use; pass it to ActivityLog.record / access.activity.record unchanged.
-     */
-    val activityActor: ActivityActor by lazy {
-        activityActor ?: actorResolver?.invoke() ?: fallbackActor(businessOwner, serverOwner, userId)
-    }
-
-    /** The same permissions acting as [actor] (the agent bridge uses it; modules never need it). */
-    fun withActivityActor(actor: ActivityActor): ModulePermissions =
-        ModulePermissions(companyCode, accessToken, businessOwner, granted, userId, serverOwner, actor)
-
-    fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
-
-    /** Whether the user holds any permission whose id starts with [prefix] (e.g. "crm."). */
-    fun hasAnyWithPrefix(prefix: String): Boolean = businessOwner || granted.any { it.startsWith(prefix) }
-}
-
-/**
- * Which companies the AI agent of a business owner may act in besides its own: the ones the server
- * owner put in the same owner group (control V008). Plain SQL over a connection so the rule can be
- * tested against a real database.
- */
-object OwnerGroupScope {
-    /**
-     * [companyCode] first and then the other companies of its owner group by name: all active, not
-     * suspended in the group and never the server workspace. Empty when [companyCode] itself is not
-     * active, is suspended in its group, is the server workspace or does not exist.
-     */
-    fun companies(central: Connection, companyCode: String): List<GroupCompany> =
-        central.prepareStatement(
-            """
-            SELECT target.code, target.name
-            FROM companies origin
-            JOIN companies target ON target.owner_group = origin.owner_group
-            WHERE origin.code = ?
-              AND origin.is_active AND NOT origin.is_server_workspace AND NOT origin.group_suspended
-              AND target.is_active AND NOT target.is_server_workspace AND NOT target.group_suspended
-            ORDER BY CASE WHEN target.code = origin.code THEN 0 ELSE 1 END, lower(target.name), target.code
-            """.trimIndent()
-        ).use { query ->
-            query.setString(1, companyCode)
-            query.executeQuery().use { rows ->
-                buildList { while (rows.next()) add(GroupCompany(rows.getString(1), rows.getString(2))) }
-            }
-        }
-
-    /** The active business owner of a company: its user and its email as stored. */
-    data class Owner(val id: UUID, val email: String?)
-
-    /** The active business owner of the company behind [tenant], or null when it has none. */
-    fun activeBusinessOwner(tenant: Connection): Owner? =
-        tenant.prepareStatement(
-            """
-            SELECT users.id, users.email
-            FROM business_owner owner
-            JOIN application_users users ON users.id = owner.user_id
-            WHERE users.is_active = TRUE
-            ORDER BY users.id
-            LIMIT 1
-            """.trimIndent()
-        ).use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) Owner(rows.getObject(1, UUID::class.java), rows.getString(2)) else null }
-        }
-
-    /** Whether two business owners are the same person: the same email, and neither without one. */
-    fun sameOwner(one: Owner, other: Owner): Boolean {
-        val email = one.email?.trim().orEmpty()
-        return email.isNotEmpty() && email.equals(other.email?.trim().orEmpty(), ignoreCase = true)
-    }
-}
-
-/** A company link rule was broken (different owner, inactive, server workspace...); the message is for people. */
-class CompanyLinkException(message: String) : Exception(message)
-
 // Clientes owns the customers table and always shows its own history rows.
-private const val CustomersModuleId = "clientes"
-
-// Who a user is, for activity logs: [name] is the display name (or the username when missing).
-data class UserIdentity(val userId: UUID, val name: String, val email: String?, val username: String)
-
-// A user whose password was checked: a tenant user, or a server owner acting in the server workspace.
-// [serverAdmin]: a server administrator connecting an audit-only agent (see serverAuditAgent); never serverOwner.
-/** Outcome of [ModuleAccessService.signInForAgent]. */
-sealed interface AgentSignIn {
-    data class Verified(val user: VerifiedUser) : AgentSignIn
-    /** Right password; the account uses two-step verification: ask for the code and send both again. */
-    data object SecondFactorRequired : AgentSignIn
-    data object InvalidCode : AgentSignIn
-    data object TooManyAttempts : AgentSignIn
-    /** Wrong user, password or company, or the account may not connect agents. */
-    data object Rejected : AgentSignIn
-}
-
-data class VerifiedUser(val userId: UUID, val username: String, val companyCode: String, val serverOwner: Boolean, val serverAdmin: Boolean = false)
-
-/**
- * What a server administrator's AI agent may use (ModuleAccessService.serverAuditAgent): exactly the
- * audit read tools, with [permissions] that hold nothing (no module permission, no business owner,
- * no server owner) in the server workspace.
- */
-class ServerAuditAgent(val userId: UUID, val login: String, val name: String, val tools: List<RegisteredMcpTool>, val permissions: ModulePermissions)
-
-/** What a user may do in every module of a company, loaded once per request (see ModuleAccessService.userAccess). */
-class UserModuleAccess internal constructor(
-    val companyCode: String,
-    val userId: UUID,
-    val businessOwner: Boolean,
-    val serverOwner: Boolean,
-    private val granted: Set<String>,
-    private val enabledModules: Set<String>,
-    // Who this user is for the activity log, resolved once on first use.
-    private val actorResolver: (() -> ActivityActor)? = null,
-    private val installed: (String) -> Boolean,
-) {
-    private val actor: ActivityActor by lazy { actorResolver?.invoke() ?: fallbackActor(businessOwner, serverOwner, userId) }
-
-    /** This user as the activity log names them (without any agent). */
-    val activityActor: ActivityActor get() = actor
-
-    // The user's permissions in the module, or null when the module is not installed or not enabled.
-    // The server's own tools (ServerMcpModuleId) belong to server owners only.
-    fun permissions(moduleId: String): ModulePermissions? {
-        val usable = if (moduleId == ServerMcpModuleId) serverOwner else (moduleId in enabledModules || moduleId in AlwaysEnabledModules) && installed(moduleId)
-        return if (usable) ModulePermissions(companyCode, accessToken = "", businessOwner, granted, userId, serverOwner, actorResolver = { actor }) else null
-    }
-    // Whether the user can use the tool somewhere: a server owner in every company of the server
-    // (ModuleAccessService.serverOwnerAccess), anyone else where the module is enabled and permitted.
-    // Modules enabled and installed in the company.
-    fun enabledModuleIds(): Set<String> = enabledModules.filter(installed).toSet()
-
-    fun mayUse(tool: RegisteredMcpTool): Boolean = serverOwner || permissions(tool.moduleId)?.has(tool.tool.permission) == true
-}
+internal const val CustomersModuleId = "clientes"
 
 // Base modules that every company has without a tenant_modules row (company administration; its agent tools).
 internal val AlwaysEnabledModules = setOf("empresa")
@@ -1241,36 +896,6 @@ internal fun fallbackActor(businessOwner: Boolean, serverOwner: Boolean, userId:
     businessOwner -> ActivityActor.businessOwner(userId ?: UUID(0, 0), "Business owner")
     else -> ActivityActor.user(userId ?: UUID(0, 0), "Usuario")
 }
-
-// Who may read a company's activity log (see ModuleAccessService.activityReader).
-sealed class ActivityReaderLookup {
-    class Granted(val companyCode: String, val userId: UUID, private val resolve: () -> ActivityActor) : ActivityReaderLookup() {
-        val actor: ActivityActor by lazy(resolve)
-    }
-    data class Denied(val decision: ModuleAccessDecision) : ActivityReaderLookup()
-}
-
-// Who a Core request belongs to (see ModuleAccessService.userSession).
-sealed class UserSessionLookup {
-    data class Granted(val companyCode: String, val userId: UUID) : UserSessionLookup()
-    data class Denied(val decision: ModuleAccessDecision) : UserSessionLookup()
-}
-
-sealed class ModulePermissionLookup {
-    data class Granted(val permissions: ModulePermissions) : ModulePermissionLookup()
-    data class Denied(val decision: ModuleAccessDecision) : ModulePermissionLookup()
-}
-
-sealed class ModuleAccessDecision {
-    data object Allowed : ModuleAccessDecision()
-    data class Unauthorized(val code: String, val message: String) : ModuleAccessDecision()
-    data class Forbidden(val code: String, val message: String) : ModuleAccessDecision()
-}
-
-@Serializable
-data class ModuleAccessErrorResponse(val code: String, val message: String)
-
-private data class ModuleUser(val id: UUID, val businessOwner: Boolean)
 
 /**
  * Like [requireModulePermission] but returns all the user's permissions in the module, or
