@@ -34,7 +34,15 @@ import kotlinx.coroutines.launch
  * o si la sesion no es la del business owner.
  */
 @Composable
-fun AssistantCompanySettingsSection(serverUrl: String?, session: LoginResponse?, primaryColor: Color) {
+fun AssistantCompanySettingsSection(
+    serverUrl: String?,
+    session: LoginResponse?,
+    primaryColor: Color,
+    // false: el contenido va suelto (dialogo del boton flotante), sin la seccion plegable y con avisos en lugar de ocultarse.
+    framed: Boolean = true,
+    // Se llama despues de guardar un cambio (activar, clave...) para que quien la muestra vuelva a pedir el estado.
+    onChanged: () -> Unit = {},
+) {
     val token = session?.accessToken
     val companyCode = session?.companyCode
     var settings by remember { mutableStateOf<AssistantCompanySettingsResponse?>(null) }
@@ -62,6 +70,24 @@ fun AssistantCompanySettingsSection(serverUrl: String?, session: LoginResponse?,
         }
     }
 
+    if (!framed) {
+        val current = settings
+        when {
+            hidden -> Text(tr("Tu usuario no puede cambiar los ajustes del asistente en esta empresa."), color = AppTheme.colors.text)
+            current != null -> AssistantCompanySettingsContent(
+                serverUrl = serverUrl,
+                token = token,
+                companyCode = companyCode,
+                settings = current,
+                usage = usage,
+                onSettings = { settings = it },
+                onChanged = onChanged,
+            )
+            loadError != null -> Text(loadError.orEmpty(), color = AppTheme.colors.danger)
+            else -> Text(tr("Cargando..."), color = AppTheme.colors.muted)
+        }
+        return
+    }
     if (hidden || (settings == null && loadError == null)) return
     CollapsibleSection(tr("Asistente"), primaryColor, subtitle = tr("Activacion, clave propia y uso")) {
         val current = settings
@@ -75,6 +101,7 @@ fun AssistantCompanySettingsSection(serverUrl: String?, session: LoginResponse?,
                 settings = current,
                 usage = usage,
                 onSettings = { settings = it },
+                onChanged = onChanged,
             )
         }
     }
@@ -88,6 +115,7 @@ private fun AssistantCompanySettingsContent(
     settings: AssistantCompanySettingsResponse,
     usage: AssistantCompanyUsageResponse?,
     onSettings: (AssistantCompanySettingsResponse) -> Unit,
+    onChanged: () -> Unit,
 ) {
     val colors = AppTheme.colors
     val scope = rememberCoroutineScope()
@@ -109,6 +137,7 @@ private fun AssistantCompanySettingsContent(
             try {
                 onSettings(AssistantApi(url).use { api -> api.updateSettings(accessToken, company, request) })
                 message = success
+                onChanged()
             } catch (exception: CompanyException) {
                 error = exception.message
             } finally {

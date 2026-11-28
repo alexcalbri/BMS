@@ -1,6 +1,5 @@
 package com.ideasdeveloper.bms.app.features.assistant.data
 
-import com.ideasdeveloper.bms.AssistantCompanyAllowanceRequest
 import com.ideasdeveloper.bms.AssistantCompanySettingsRequest
 import com.ideasdeveloper.bms.AssistantCompanySettingsResponse
 import com.ideasdeveloper.bms.AssistantCompanyUsageResponse
@@ -11,8 +10,6 @@ import com.ideasdeveloper.bms.AssistantCreateConversationRequest
 import com.ideasdeveloper.bms.AssistantDecisionRequest
 import com.ideasdeveloper.bms.AssistantKeyRequest
 import com.ideasdeveloper.bms.AssistantSendMessageRequest
-import com.ideasdeveloper.bms.AssistantServerCompaniesResponse
-import com.ideasdeveloper.bms.AssistantServerCompany
 import com.ideasdeveloper.bms.AssistantServerSettingsRequest
 import com.ideasdeveloper.bms.AssistantServerSettingsResponse
 import com.ideasdeveloper.bms.AssistantServerUsageResponse
@@ -268,17 +265,24 @@ class AssistantApi(serverUrl: String) {
         client.delete("$baseUrl/server/assistant/key") { bearerAuth(token) }
     }
 
-    suspend fun serverCompanies(token: String): List<AssistantServerCompany> = call<AssistantServerCompaniesResponse>(tr("No se pudieron cargar las empresas.")) {
+    suspend fun serverCompanies(token: String): List<AssistantServerCompanyRow> = call<AssistantServerCompanyRowsResponse>(tr("No se pudieron cargar las empresas.")) {
         client.get("$baseUrl/server/assistant/companies") { bearerAuth(token) }
     }.companies
 
-    // monthlyTokens null = el limite por defecto del servidor.
-    suspend fun updateServerCompany(token: String, code: String, allowed: Boolean, monthlyTokens: Long?): AssistantServerCompany =
+    // monthlyTokens null = el limite por defecto del servidor. companyEnabled y acceptDisclosure null = no se envian (no cambian).
+    suspend fun updateServerCompany(
+        token: String,
+        code: String,
+        allowed: Boolean,
+        monthlyTokens: Long?,
+        companyEnabled: Boolean? = null,
+        acceptDisclosure: Boolean? = null,
+    ): AssistantServerCompanyRow =
         call(tr("No se pudo guardar la empresa.")) {
             client.put("$baseUrl/server/assistant/companies/${code.encodeURLPathPart()}") {
                 bearerAuth(token)
                 contentType(ContentType.Application.Json)
-                setBody(AssistantCompanyAllowanceRequest(allowed, monthlyTokens))
+                setBody(AssistantServerCompanyUpdateRequest(allowed, monthlyTokens, companyEnabled, acceptDisclosure))
             }
         }
 
