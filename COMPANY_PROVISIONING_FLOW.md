@@ -285,7 +285,7 @@ Defines company administration HTTP routes.
 
 All routes use `Authorization: Bearer <token>`.
 
-### `server/src/main/kotlin/com/ideasdeveloper/bms/server/company/application/ServerOwnerAuthorizer.kt`
+### `server/src/main/kotlin/com/ideasdeveloper/bms/server/admins/ServerOwnerAuthorizer.kt`
 
 Validates server-owner authorization.
 
