@@ -168,7 +168,7 @@ session trailers, no push. User-visible screen text goes through `tr` with catal
 
 - Code: `server/.../server/activity/` (`ActivityLog`, `ActivityActor`, `ActivityChanges`, `ActivityNames`, `ActivityDisplay`,
   `ActivityLogReader`, `ServerActivity`, `ServerAuditMcpTools`, `CoreActivity`, `ActivityRoutes`, `ActivityIntegrity`);
-  contract `core/.../bms/ActivityLog.kt`. Module adoption: `ACTIVITY_LOG_MODULE_GUIDE.md`; test kit `ActivityLogTesting`.
+  contract `core/.../bms/ActivityLogContracts.kt`. Module adoption: `ACTIVITY_LOG_MODULE_GUIDE.md`; test kit `ActivityLogTesting`.
 - Routes: `GET /companies/me/activity` and `GET /server/activity?company=` (+ `/export`, CSV), query `user` (id or
   text: name, display or username), `module`, `entityType`, `entityId`, `action`, `q`, `from`, `to` (YYYY-MM-DD),
   `page` (0–1000; deeper pages need narrower dates), `pageSize` (≤ 200) → `{items, page, pageSize, hasMore,
