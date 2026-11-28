@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.server.company.api
 
 import com.ideasdeveloper.bms.server.i18n.tr
+import com.ideasdeveloper.bms.server.platform.serverInfoRoutes
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CoreUpdateOutcome
 import com.ideasdeveloper.bms.server.company.application.CoreUpdateService
@@ -54,11 +55,7 @@ fun Route.companyRoutes(
 
     companyListRoute(authorizer, provisioning)
 
-    get("/server/logs") {
-        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner para consultar los errores.")) ?: return@get
-        call.respond(HttpStatusCode.OK, ServerLogsResponse(RecentServerErrors.snapshot().asReversed()))
-    }
+    serverInfoRoutes(authorizer, provisioning)
 
     get("/server/modules") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
@@ -598,22 +595,6 @@ fun Route.companyRoutes(
             CoreUpdateOutcome.CommitUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_COMMIT_UNAVAILABLE", tr("No se pudo leer en GitHub el commit de la ultima version.")))
             CoreUpdateOutcome.InvalidCommit -> call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("CORE_COMMIT_INVALID", tr("Indica el commit (40 hex) que revisaste.")))
             is CoreUpdateOutcome.CommitChanged -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_COMMIT_CHANGED", tr("La version publicada cambio (ahora: commit {0}). Revisala otra vez.", outcome.latestCommit)))
-        }
-    }
-
-    // Nombre del servidor que ven los server owners en el panel y el selector de empresas.
-    put("/server/name") {
-        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val actor = call.serverActor(authorizer, tr("Debes iniciar sesion como server_owner.")) ?: return@put
-        val serverOwnerRole = actor.executorRole
-        val service = provisioning
-            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", tr("El servidor no tiene configuracion de provisioning disponible.")))
-        val request = runCatching { call.receive<ServerNameRequest>() }.getOrNull()
-            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
-        try {
-            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerName(request.name, serverOwnerRole, actor.audit) })
-        } catch (exception: CompanyProvisioningException) {
-            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("SERVER_NAME_INVALID", exception.message ?: tr("Nombre invalido.")))
         }
     }
 
