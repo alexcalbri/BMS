@@ -658,25 +658,3 @@ fun Application.module() {
         }
     }
 }
-
-/**
- * A notification to every active server owner, in the server workspace (where their bell reads them); nothing when the
- * workspace does not exist yet. Used for integrity failures of the activity logs.
- */
-private fun notifyServerOwners(central: DataSource, access: ModuleAccessService, title: String, text: String) {
-    val (workspace, owners) = central.connection.use { connection ->
-        val database = connection.prepareStatement("SELECT database_name FROM companies WHERE is_server_workspace").use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-        }
-        val ids = connection.prepareStatement(
-            "SELECT owners.user_id FROM server_owners owners JOIN application_users users ON users.id = owners.user_id WHERE users.is_active"
-        ).use { query -> query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, java.util.UUID::class.java)) } } }
-        database to ids
-    }
-    if (workspace == null || owners.isEmpty()) return
-    access.tenantConnectionForDatabase(workspace)?.use { tenant ->
-        owners.forEach { owner ->
-            access.notifications.notify(tenant, com.ideasdeveloper.bms.server.modules.NewNotification(owner, com.ideasdeveloper.bms.server.activity.CoreModuleId, title, text))
-        }
-    }
-}

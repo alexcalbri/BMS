@@ -17,7 +17,6 @@ file 1155 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/c
 file 1110 server/src/main/kotlin/com/ideasdeveloper/bms/server/company/api/CompanyRoutes.kt   # A2.8
 file 1102 server/src/main/kotlin/com/ideasdeveloper/bms/server/extensions/ExtensionService.kt   # A2.5
 file 1098 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmRepository.kt   # C1/C2
-file 1033 server/src/main/kotlin/com/ideasdeveloper/bms/server/app/Application.kt   # A2.7
 file 974 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmIntegrationMcpTools.kt   # C2
 file 951 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/company/data/CompanyApi.kt   # APP-3
 file 931 modules/hotspot/server/src/main/kotlin/com/ideasdeveloper/bms/modules/hotspot/HotspotPortal.kt   # module owner
