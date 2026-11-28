@@ -252,10 +252,18 @@ class ServerRouteMatrixTest {
             setOf(
                 "server.companies.owner_password", "server.companies.enter", "server.modules.authorize_unsigned",
                 "server.extensions.authorize_unsigned", "server.workspace", "server.core.update", "server.users.two_factor_reset",
-                "server.assistant.manage",
+                "server.assistant.manage", "server.assistant.use",
             ),
             infos.filter { it.risk == "high" }.map { it.id }.toSet(),
         )
+        // server.assistant.use (Core 0.14.1): HIGH RISK (the audit and the activity of the companies in scope go to the AI provider), scoped, in the Servidor group, right after manage.
+        val use = ServerPermission.AssistantUse.info()
+        assertEquals(listOf("server.assistant.use", "high", "true"), listOf(use.id, use.risk, use.scoped.toString()))
+        assertTrue("proveedor de IA" in use.description, use.description)
+        assertEquals(ServerPermission.AssistantManage.info().group, use.group)
+        assertEquals(com.ideasdeveloper.bms.AssistantIds.ServerUsePermission, use.id)
+        // No server route needs it: it only decides who may use the assistant (company routes check it live).
+        assertTrue(ServerRoutePolicies.all.values.none { it is RoutePolicy.Requires && it.permission == ServerPermission.AssistantUse })
         // No permission is about administrators or server owners.
         assertTrue(ServerPermission.entries.none { "admin" in it.id || "owner." in it.id })
     }

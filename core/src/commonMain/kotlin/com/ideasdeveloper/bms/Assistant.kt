@@ -11,6 +11,9 @@ object AssistantIds {
     const val UsePermission = "empresa.assistant.use"
     // Server administrator permission: the server's assistant settings, key, allowance and usage.
     const val ManagePermission = "server.assistant.manage"
+    // Server administrator permission: use the assistant in the server workspace (audit tools) and in the companies the
+    // administrator may enter. The server owner always may. Not high risk.
+    const val ServerUsePermission = "server.assistant.use"
 
     // Why the assistant is not available (AssistantStatusResponse.reason), in the order they are checked.
     const val ReasonServerWorkspace = "SERVER_WORKSPACE"
@@ -48,7 +51,15 @@ data class AssistantStatusResponse(
     val available: Boolean,
     val reason: String? = null,
     val message: String? = null,
+    // This session may change the assistant switch of this place (business owner, server person behind a switcher session
+    // with the right, server owner / administrator with server.assistant.manage in the workspace).
     val canManage: Boolean = false,
+    // The server workspace (its switch is the server's).
+    val workspace: Boolean = false,
+    // The person behind the session is the server owner or an administrator.
+    val serverPerson: Boolean = false,
+    // Who can turn it on, when canManage is false and someone else can fix the reason.
+    val manageHint: String? = null,
     val model: String? = null,
     // "company" | "server" | null
     val keySource: String? = null,
@@ -70,6 +81,17 @@ data class AssistantConversationResponse(
     // idle | running | awaiting_confirmation
     val state: String,
     val pendingConfirmations: Int = 0,
+)
+
+/**
+ * GET /companies/me/assistant/attention: what waits for the caller (own conversations only), cheap enough to poll every
+ * 15-30 s. [conversationIds]: up to 20, the ones with a pending confirmation first.
+ */
+@Serializable
+data class AssistantAttentionResponse(
+    val pendingConfirmations: Int = 0,
+    val unseenFinished: Int = 0,
+    val conversationIds: List<String> = emptyList(),
 )
 
 @Serializable
@@ -232,16 +254,29 @@ data class AssistantServerCompany(
     val allowed: Boolean,
     val monthlyTokens: Long? = null,
     val effectiveMonthlyTokens: Long? = null,
+    // The company's own switch; [enabled] is the same value under its older name (0.14.0 apps), [companyEnabled] the current one.
     val enabled: Boolean,
+    val companyEnabled: Boolean = enabled,
     val ownKeySet: Boolean,
     val monthUsedTokens: Long,
+    // The server workspace's own row (code "servidor"; server owner only): its switch is the server one.
+    val serverWorkspace: Boolean = false,
 )
 
 @Serializable
 data class AssistantServerCompaniesResponse(val companies: List<AssistantServerCompany>)
 
 @Serializable
-data class AssistantCompanyAllowanceRequest(val allowed: Boolean, val monthlyTokens: Long? = null)
+data class AssistantCompanyAllowanceRequest(
+    // With allowed present the allowance is replaced (monthlyTokens null clears the override); without it, untouched.
+    val allowed: Boolean? = null,
+    val monthlyTokens: Long? = null,
+    // The company's own assistant switch, set by the server person; turning it on needs acceptDisclosure.
+    // [companyEnabled] is the current name; [enabled] is accepted as the same thing when companyEnabled is absent.
+    val companyEnabled: Boolean? = null,
+    val enabled: Boolean? = null,
+    val acceptDisclosure: Boolean? = null,
+)
 
 @Serializable
 data class AssistantServerCompanyUsage(

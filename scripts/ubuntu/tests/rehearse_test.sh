@@ -80,13 +80,15 @@ check 'dice las tablas nuevas que crean las migraciones' grep -q '^INFO   + obje
 check 'y cuenta lo que crean las migraciones' grep -q 'objetos, columnas o funciones creados por las migraciones' <<< "$output"
 check 'los roles y pertenencias se dicen una vez, con la primera base' bash -c '[[ $(grep -c "^INFO   + pertenencia .*>$2:" <<< "$1") == 1 ]]' _ "$output" "$OWNER"
 check 'dice los permisos que se dan al runtime' grep -q "$RUNTIME=" <<< "$output"
-# The in-app assistant (tenant V018-V020, GLOBAL_AGENT.md): its migrations are part of what is replayed and its grants
+# The in-app assistant (tenant V018-V022, GLOBAL_AGENT.md): its migrations are part of what is replayed and its grants
 # come out of the same grant block as the real update, inside the rolled back transaction.
 for db in "$TA" "$TB"; do
     steps=$(bms_rehearse_steps_sql tenant "$db")
     check "$db: el ensayo repite V018 (tablas del asistente)" grep -q 'CREATE TABLE.*assistant_messages' <<< "$steps"
     check "$db: el ensayo repite V019 (lease_token)" grep -q 'lease_token' <<< "$steps"
     check "$db: el ensayo repite V020 (preview_hash)" grep -q 'preview_hash' <<< "$steps"
+    check "$db: el ensayo repite V021 (conversaciones de personas del servidor)" grep -q 'assistant_conversations_user_id_fkey' <<< "$steps"
+    check "$db: el ensayo repite V022 (marcas de lectura y notificacion viva)" grep -q 'assistant_conversations_attention_idx' <<< "$steps"
 done
 check 'asistente: assistant_messages termina con solo SELECT e INSERT (ar) para el runtime, en las dos empresas' bash -c '[[ $(grep -cE "objeto public\.assistant_messages: r .*\{[^}]*,$2=ar/[^,}]*\}" <<< "$1") == 2 ]]' _ "$output" "$RUNTIME"
 check 'asistente: su secuencia solo se usa y se lee' grep -qE "objeto public\.assistant_messages_id_seq: S .*,$RUNTIME=rU/" <<< "$output"
@@ -116,6 +118,8 @@ equals 'las migraciones y permisos de la base central (los mismos que se ensayar
 equals 'las migraciones y permisos de las empresas (los mismos que se ensayaron) terminan bien' 0 "$?"
 equals 'TA: ahora si hay registro de actividad' 'activity_log' "$(sql "$TA" "SELECT to_regclass('public.activity_log')")"
 equals 'TA: V019 y V020 aplicadas de verdad (lease_token y preview_hash)' '1 1' "$(sql "$TA" "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'assistant_conversations' AND column_name = 'lease_token'), (SELECT count(*) FROM information_schema.columns WHERE table_name = 'assistant_pending_calls' AND column_name = 'preview_hash')" | tr '|' ' ')"
+equals 'TA: V022 aplicada de verdad (columnas de atencion e indice)' '3 1' "$(sql "$TA" "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'assistant_conversations' AND column_name IN ('last_read_at', 'finished_at', 'notification_id')), (SELECT count(*) FROM pg_indexes WHERE indexname = 'assistant_conversations_attention_idx')" | tr '|' ' ')"
+equals 'TA: el runtime actualiza las marcas de atencion' 't' "$(sql "$TA" "SELECT has_column_privilege('$RUNTIME', 'assistant_conversations', 'last_read_at', 'UPDATE')")"
 equals 'TA: el runtime solo lee y agrega mensajes del asistente (lo mismo que dijo el ensayo)' 't f f' "$(sql "$TA" "SELECT has_table_privilege('$RUNTIME', 'assistant_messages', 'SELECT') AND has_table_privilege('$RUNTIME', 'assistant_messages', 'INSERT'), has_table_privilege('$RUNTIME', 'assistant_messages', 'UPDATE'), has_table_privilege('$RUNTIME', 'assistant_messages', 'DELETE')" | tr '|' ' ')"
 equals 'TA: todo del dueno' 0 "$(sql "$TA" "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relowner <> '$OWNER'::regrole")"
 output=$(rehearse)

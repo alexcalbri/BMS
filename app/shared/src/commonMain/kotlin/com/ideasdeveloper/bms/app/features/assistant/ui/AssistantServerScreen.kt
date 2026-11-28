@@ -31,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.bms.AssistantIds
-import com.ideasdeveloper.bms.AssistantServerCompany
 import com.ideasdeveloper.bms.AssistantServerSettingsRequest
 import com.ideasdeveloper.bms.AssistantServerSettingsResponse
 import com.ideasdeveloper.bms.AssistantServerUsageResponse
@@ -43,6 +42,7 @@ import com.ideasdeveloper.bms.app.core.theme.AppTheme
 import com.ideasdeveloper.bms.app.core.theme.accentButtonColors
 import com.ideasdeveloper.bms.app.core.theme.appFieldColors
 import com.ideasdeveloper.bms.app.features.assistant.data.AssistantApi
+import com.ideasdeveloper.bms.app.features.assistant.data.AssistantServerCompanyRow
 import com.ideasdeveloper.bms.app.features.assistant.data.use
 import com.ideasdeveloper.bms.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.bms.app.features.company.data.CompanyException
@@ -68,7 +68,7 @@ fun AssistantServerScreen(
     val token = session?.accessToken
 
     var settings by remember { mutableStateOf<AssistantServerSettingsResponse?>(null) }
-    var companies by remember { mutableStateOf<List<AssistantServerCompany>>(emptyList()) }
+    var companies by remember { mutableStateOf<List<AssistantServerCompanyRow>>(emptyList()) }
     var usage by remember { mutableStateOf<AssistantServerUsageResponse?>(null) }
     var loading by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -84,6 +84,8 @@ fun AssistantServerScreen(
     var keyInput by remember { mutableStateOf("") }
     var confirmingEnable by remember { mutableStateOf(false) }
     var confirmingKeyRemoval by remember { mutableStateOf(false) }
+    // Empresa cuyo asistente se va a activar desde aqui: antes se muestra el aviso de privacidad.
+    var enablingCompany by remember { mutableStateOf<AssistantServerCompanyRow?>(null) }
 
     fun show(loaded: AssistantServerSettingsResponse) {
         settings = loaded
@@ -162,6 +164,45 @@ fun AssistantServerScreen(
         change(tr("Ajustes guardados.")) { api, accessToken -> api.updateServerSettings(accessToken, request) }
     }
 
+    // Guarda una empresa (permiso, limite y, si se pide, su activacion) y reemplaza su fila con la respuesta.
+    fun saveCompany(
+        company: AssistantServerCompanyRow,
+        allowed: Boolean,
+        monthlyTokens: Long?,
+        companyEnabled: Boolean?,
+        acceptDisclosure: Boolean?,
+        success: String,
+    ) {
+        val url = serverUrl ?: return
+        val accessToken = token ?: return
+        busy = true
+        error = null
+        message = null
+        scope.launch {
+            try {
+                val saved = AssistantApi(url).use { api ->
+                    api.updateServerCompany(accessToken, company.code, allowed, monthlyTokens, companyEnabled, acceptDisclosure)
+                }
+                companies = companies.map { if (it.code == saved.code) saved else it }
+                message = success
+            } catch (exception: CompanyException) {
+                error = exception.message
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    enablingCompany?.let { target ->
+        AssistantDisclosureDialog(
+            disclosure = settings?.disclosure.orEmpty(),
+            onAccept = {
+                enablingCompany = null
+                saveCompany(target, target.allowed, target.monthlyTokens, true, true, tr("Asistente activado."))
+            },
+            onDismiss = { enablingCompany = null },
+        )
+    }
     if (confirmingEnable) {
         AssistantDisclosureDialog(
             disclosure = settings?.disclosure.orEmpty(),
@@ -333,23 +374,13 @@ fun AssistantServerScreen(
                                     company = company,
                                     enabled = !busy,
                                     onSave = { allowed, monthlyTokens ->
-                                        val url = serverUrl
-                                        val accessToken = token
-                                        if (url != null && accessToken != null) {
-                                            busy = true
-                                            error = null
-                                            message = null
-                                            scope.launch {
-                                                try {
-                                                    val saved = AssistantApi(url).use { api -> api.updateServerCompany(accessToken, company.code, allowed, monthlyTokens) }
-                                                    companies = companies.map { if (it.code == saved.code) saved else it }
-                                                    message = tr("Empresa guardada.")
-                                                } catch (exception: CompanyException) {
-                                                    error = exception.message
-                                                } finally {
-                                                    busy = false
-                                                }
-                                            }
+                                        saveCompany(company, allowed, monthlyTokens, null, null, tr("Empresa guardada."))
+                                    },
+                                    onCompanyEnabled = { value ->
+                                        if (value) {
+                                            enablingCompany = company
+                                        } else {
+                                            saveCompany(company, company.allowed, company.monthlyTokens, false, null, tr("Asistente desactivado."))
                                         }
                                     },
                                 )
@@ -413,7 +444,12 @@ private fun OptionPicker(label: String, value: String, options: List<String>, en
 
 @Composable
 // Una empresa: si puede usar el asistente y su limite mensual propio (vacio = el del servidor, 0 = sin limite).
-private fun CompanyAllowanceRow(company: AssistantServerCompany, enabled: Boolean, onSave: (Boolean, Long?) -> Unit) {
+private fun CompanyAllowanceRow(
+    company: AssistantServerCompanyRow,
+    enabled: Boolean,
+    onSave: (Boolean, Long?) -> Unit,
+    onCompanyEnabled: (Boolean) -> Unit,
+) {
     val colors = AppTheme.colors
     var allowed by remember(company) { mutableStateOf(company.allowed) }
     var tokens by remember(company) { mutableStateOf(company.monthlyTokens?.toString().orEmpty()) }
@@ -425,10 +461,14 @@ private fun CompanyAllowanceRow(company: AssistantServerCompany, enabled: Boolea
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text("${company.name.ifBlank { company.code }} (${company.code})", style = MaterialTheme.typography.titleSmall, color = colors.accentText)
+        Text(
+            if (company.isServerWorkspace) tr("Espacio del servidor") else "${company.name.ifBlank { company.code }} (${company.code})",
+            style = MaterialTheme.typography.titleSmall,
+            color = colors.accentText,
+        )
         Text(
             listOf(
-                if (company.enabled) tr("Activado por la empresa") else tr("Sin activar por la empresa"),
+                if (company.activeInCompany) tr("Activado en la empresa") else tr("Sin activar en la empresa"),
                 if (company.ownKeySet) tr("clave propia") else tr("clave del servidor"),
                 tr("uso del mes: {0} tokens", tokensText(company.monthUsedTokens)),
                 company.effectiveMonthlyTokens?.let { tr("limite efectivo: {0} tokens", tokensText(it)) } ?: tr("sin limite"),
@@ -442,6 +482,14 @@ private fun CompanyAllowanceRow(company: AssistantServerCompany, enabled: Boolea
             checked = allowed,
             enabled = enabled,
             onChange = { allowed = it },
+        )
+        // Activar o desactivar el asistente de la empresa lo hace el gestor del servidor en el momento (con el aviso de privacidad).
+        AssistantSwitchRow(
+            title = tr("Activado en la empresa"),
+            description = if (company.allowed) null else tr("Guarda primero el permiso para poder activarlo."),
+            checked = company.activeInCompany,
+            enabled = enabled && company.allowed,
+            onChange = onCompanyEnabled,
         )
         OutlinedTextField(
             value = tokens,

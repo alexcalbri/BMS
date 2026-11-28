@@ -89,14 +89,9 @@ internal fun AssistantChatPanel(
                 Button(onClick = onNewConversation, colors = accentButtonColors()) { Text(tr("Nueva conversacion")) }
             }
             !status.available -> {
-                // El historial sigue legible; en lugar del campo de texto se explica por que no se puede escribir.
-                Text(
-                    status.message?.takeIf { it.isNotBlank() } ?: tr("El asistente no esta disponible ahora."),
-                    color = colors.text,
-                )
-                if (status.canManage && status.reason == "COMPANY_DISABLED") {
-                    Text(tr("Puedes activarlo en Empresa, en la seccion Asistente."), style = MaterialTheme.typography.bodySmall, color = colors.muted)
-                }
+                // El historial sigue legible; en lugar del campo de texto se explica por que no se puede escribir
+                // (el aviso completo y la accion para activarlo estan arriba, en el panel).
+                Text(tr("El asistente no esta disponible ahora."), color = colors.text)
             }
             running -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(tr("Hay una respuesta en curso en esta conversacion."), color = colors.muted, modifier = Modifier.weight(1f, fill = false))

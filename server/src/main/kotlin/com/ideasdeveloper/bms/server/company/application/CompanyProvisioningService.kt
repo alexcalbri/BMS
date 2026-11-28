@@ -206,6 +206,34 @@ class CompanyProvisioningService(
         )
     }
 
+    /** What a confirmation card needs to name a company: a plain read of the control database, never its tenant database. */
+    data class CompanyBrief(val code: String, val name: String, val databaseName: String, val isActive: Boolean, val isServerWorkspace: Boolean = false)
+
+    /** The company [code] as [CompanyBrief], or null when there is none. The server workspace only with [withWorkspace] (it is no company for most tools). */
+    fun companyBrief(code: String, withWorkspace: Boolean = false): CompanyBrief? = central.connection.use { connection ->
+        connection.prepareStatement(
+            "SELECT code, name, database_name, is_active, is_server_workspace FROM companies WHERE code = ?" + if (withWorkspace) "" else " AND NOT is_server_workspace",
+        ).use { query ->
+            query.setString(1, code.trim())
+            query.executeQuery().use { rows -> if (rows.next()) CompanyBrief(rows.getString(1), rows.getString(2), rows.getString(3), rows.getBoolean(4), rows.getBoolean(5)) else null }
+        }
+    }
+
+    /**
+     * What a confirmation card needs to name a module. A card never counts the companies that use it: that would open the
+     * database of every company (the tool itself refuses a module still in use).
+     */
+    data class ModuleBrief(val moduleId: String, val displayName: String, val version: String, val locked: Boolean, val installed: Boolean)
+
+    /** The module [moduleId] known to the server, or null. Reads no catalog and makes no request. */
+    fun moduleBrief(moduleId: String): ModuleBrief? {
+        val definition = moduleRegistry.availableDefinition(moduleId.trim()) ?: return null
+        return ModuleBrief(
+            definition.id, trIn(I18n.moduleNamespace(definition.id), definition.displayName), definition.version, definition.locked,
+            moduleRegistry.isInstalled(definition.id),
+        )
+    }
+
     // [scope] null: every company; otherwise only those (a scoped server administrator), and linked
     // companies outside it are not named.
     fun listCompanies(scope: Set<String>? = null): List<CompanySummaryResponse> {
@@ -257,7 +285,6 @@ class CompanyProvisioningService(
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         val companyName = request.name.trim()
-        val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (companyName.isBlank()) {
             throw CompanyProvisioningException(tr("El nombre de la empresa es obligatorio."))
         }
@@ -275,6 +302,8 @@ class CompanyProvisioningService(
             findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
+        // Only a CHANGED logo is checked: the one already stored is never refused (and so never blocks another edit).
+        val logoUrl = CompanyLogoUrl.checked(request.logoUrl, company.logoUrl)
 
         val oldLogo = central.connection.use { previousLogo(it, normalizedCompanyCode, null) }
         // The company's own log row goes first, uncommitted, on its database; it commits only after the central
@@ -1930,6 +1959,7 @@ class CompanyProvisioningService(
         ) {
             throw CompanyProvisioningException(tr("Los colores deben usar formato hexadecimal #RRGGBB."))
         }
+        CompanyLogoUrl.checked(request.logoUrl)
     }
 
     private fun tenantConfig(databaseName: String): TenantDatabaseConfig = TenantDatabaseConfig(
@@ -2006,6 +2036,12 @@ class CompanyProvisioningService(
         // The fingerprint of the confirmation card an approved call is checked against (tenant V020); no new grants.
         val previewHash = "database/tenant/migrations/V020__assistant_preview_hash.sql"
         applyMigration(connection, "tenant", previewHash, Files.readString(Path.of(config.migrationsRoot).resolve(previewHash)))
+        // Conversations of server people, whose accounts are central (tenant V021); no new grants.
+        val serverPeople = "database/tenant/migrations/V021__assistant_server_people.sql"
+        applyMigration(connection, "tenant", serverPeople, Files.readString(Path.of(config.migrationsRoot).resolve(serverPeople)))
+        // What needs attention on another device: read marks and the live notification (tenant V022); no new grants.
+        val attention = "database/tenant/migrations/V022__assistant_attention.sql"
+        applyMigration(connection, "tenant", attention, Files.readString(Path.of(config.migrationsRoot).resolve(attention)))
         grantIfMissing(connection, config.runtimeUser, "assistant_messages", listOf("SELECT", "INSERT"))
         grantSequenceIfMissing(connection, config.runtimeUser, "assistant_messages", "assistant_messages_id_seq", listOf("USAGE", "SELECT"))
         try {

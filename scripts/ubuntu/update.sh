@@ -650,6 +650,8 @@ require_release_files() {
         database/tenant/migrations/V018__create_assistant.sql \
         database/tenant/migrations/V019__assistant_turn_safety.sql \
         database/tenant/migrations/V020__assistant_preview_hash.sql \
+        database/tenant/migrations/V021__assistant_server_people.sql \
+        database/tenant/migrations/V022__assistant_attention.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do
