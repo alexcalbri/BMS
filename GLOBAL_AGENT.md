@@ -167,7 +167,7 @@ owner, and vice versa.
 | Id | Level | Default | Allows |
 |---|---|---|---|
 | `server.assistant.manage` | server administrator permission (group Servidor, high risk, scoped) | owner only | Server assistant settings, key, per-company allowance and usage (companies of the administrator's scope). |
-| `server.assistant.use` | server administrator permission (group Servidor, not high risk, scoped) | owner only | Use the assistant in the workspace (audit tools) and in the companies the administrator enters. |
+| `server.assistant.use` | server administrator permission (group Servidor, HIGH RISK since the review of Core 0.14.1, scoped) | owner only | Use the assistant in the workspace (audit and activity tools) and in the companies the administrator enters. The audit (with names and emails of who acted) and the activity of the companies in scope are sent to the AI provider. |
 | `empresa.assistant.use` | company permission (module empresa) | business owner only | See and use the assistant. Assignable in the normal permissions screen. |
 
 ### Company routes (company session: `Authorization: Bearer` + `X-Company-Code`)
@@ -552,8 +552,9 @@ workspace), `AssistantServerRoutes.kt` / `AssistantSettings.kt` (`setCompanyEnab
   override, default limit otherwise), usage counted in its own database on the server key, `LIMIT_REACHED` as for a company.
   Per-user rate and stream limits key on `servidor/<central user id>/self`.
 - **Owner's tools in the workspace** = the owner's MCP agent's tools in its own workspace: every module tool of the modules
-  enabled there (`UserModuleAccess.permissions`, owner holds all) + every `servidor_*` tool. The `acting_company` argument is
-  NOT offered (the assistant never acts in another company from the workspace; use a switcher session). Administrator's tools
+  enabled there (`UserModuleAccess.permissions`, owner holds all) + every `servidor_*` tool except the deny list below. The
+  `acting_company` argument is NOT offered and is refused (the assistant never acts in another company from the workspace; use
+  a switcher session). Administrator's tools
   = `ModuleAccessService.serverAuditAgent` (the same call as the administrator's agent) filtered to
   `ServerAuditMcpTools.AdminAgentToolNames`, and only while she holds `server.assistant.use`.
 - **Execution** (company sessions and workspace): tools run with the same `ModulePermissions` as the person's agent, acting as
@@ -566,29 +567,79 @@ workspace), `AssistantServerRoutes.kt` / `AssistantSettings.kt` (`setCompanyEnab
   its switch comes from the person's live server rights (owner: always; administrator: `server.assistant.use` /
   `server.assistant.manage`, the company in scope), never from the business owner session they act as. Tools are the business
   owner session's company tools (`CompanyGrants`: no `servidor_*`). Conversations keep the owner key `server:<person id>`.
-  Settings changes by a server person are one central transaction (`auditedCompanyChange`): `company.assistant_changed` is
-  written first and rolled back with the company change when that fails.
+  Settings changes by a server person go through `auditedCompanyChange`: the central row `company.assistant_changed` is
+  COMMITTED FIRST (own transaction) and the company's own change runs after it, so a change is never left without its audit
+  row (two databases cannot share a transaction; auditing first was chosen over compensating a tenant commit). When the change
+  fails, `company.assistant_change_failed` (same details plus `error`) says it did not happen and the failure goes on. What can
+  be refused without writing (`AssistantCompanyConfig.check`: bad key, no master key, disclosure not accepted) is checked
+  before and leaves no row.
+- **Live rights in switcher sessions (review S4).** The request decides once (`mayUse`); the toolbox of a session a server
+  person opened is `SwitcherGrants` over `CompanyGrants`, which on EVERY `grants()` call (so on every `tools()`, `preview()`
+  and `execute()`) re-reads the person: active owner, or active administrator holding `server.assistant.use` with the company
+  in scope and `openerMayEnter` (active, `server.companies.enter`, scope). Losing any of them (or being deactivated) refuses the
+  next tool of a turn already running (`Herramienta desconocida o sin permiso.`).
+- **Server workspace policy (review S1-S4, assistant only, never the MCP agents).** The toolbox asks a hook
+  (`AssistantToolbox.policy(name, arguments)` -> `AssistantCallPolicy`, `ServerCallPolicy` in `AssistantCallPolicy.kt`) before
+  the engine runs a read by itself; the policy may hold a call for the card (`confirm`), flag that call `outbound` or
+  `destructive` (OR-ed with the tool's own flags) and put rows first in the card:
+  - **`acting_company` is refused** by `execute` and `preview` of every assistant toolbox (message "El asistente no actua en
+    otra empresa desde el espacio del servidor; entra a esa empresa y usalo alli."), and the model is never told about it: the
+    server module's guidance is rewritten for the assistant (`ServerMcpTools.forAssistant`: the acting_company sentence out, a
+    note in), sentences of any guidance or tool description that mention `acting_company` or `list_group_companies` are
+    dropped, and `agentes_list_group_companies` is not offered (`AssistantTools.OnlyForMcpAgents`). MCP agents keep all of it.
+  - **Reads of companies that never opted in wait for a card.** `servidor_list_company_activity` (argument `company`) and
+    `servidor_list_extensions` (argument `code`) run by themselves only for a company where the server allowance is `allowed`
+    AND the company's own switch is on (`AssistantService.companyOptedIn`; the workspace itself: allowance only). For any other
+    company, and for "all companies" (empty or missing company argument of the activity tool), the call becomes a normal
+    pending confirmation with `outbound: true` and a first preview row (label "Que pasa"): "Lee la actividad de <empresa>
+    (no ha activado el asistente) y la envia al proveedor de IA." / "Lee la actividad de todas las empresas a tu alcance y la
+    envia al proveedor de IA." (extensions: "Lee las extensiones y los ajustes de ..."). Approving runs the tool; the preview hash
+    binds it as for writes (if the company opts in meanwhile the card changed and the call does not run). `servidor_list_server_audit`
+    still runs by itself (its protection is the high-risk permission and the disclosure).
+  - **Writes that open an outbound channel are flagged for that call:** `servidor_update_company` and `servidor_create_company`
+    with a `logo_url` argument (every client of the company loads it), `servidor_apply_extension_to_group` with
+    `confirm=true` and operation apply (or none). `servidor_set_company_active` with `active=false` (or missing/unreadable,
+    which the tool reads as false) is flagged `destructive`.
+  - **Logo URL rule** (`CompanyLogoUrl`, in `createCompany` and `updateCompany`, for everyone): https only, at most 300
+    characters, a host, no whitespace/control characters, no user or password in the URL; refused with a translated message.
+    Only a NEW or CHANGED logo is checked: a stored value that breaks the rule is kept and does not block other edits.
+  - **Deny list (`AssistantTools.ServerDenyList`)**: `servidor_delete_company` and `servidor_remove_module` are irreversible
+    and are never offered to the assistant nor executable by it (not in `tools()`, `execute` -> unknown tool, no card); the
+    model's guidance says they are done from the app. They stay in the app and for the MCP agents.
+- **Attention poll (review N5).** `GET /companies/me/assistant/attention` no longer runs `resolve()`/`context()`: `leanAttention`
+  authenticates the session (`userSession` / the central session), reads the opener, decides the right to use in ONE read on
+  the same connection as the query (or from the live server rights), and runs the one indexed query. No tool or grant
+  resolution, no company or domain lookups. Measured with `log_statement=all`: company 9 statements (full resolve: 14),
+  workspace 5 (9). `AssistantServerPeopleTest.theAttentionPollTakesTheLeanPath...` counts the control-database statements
+  through the access service with a counting DataSource (the project has no other counter) and fails if the poll resolves tools.
+- **Previews of the server tools** (review N2/N3): `servidor_set_company_module` names the server workspace when that is the code
+  ("Empresa del servidor (servidor, espacio del servidor)"); update/set_active/delete say "El espacio del servidor no se administra
+  como una empresa."; `remove_module` no longer counts the companies using the module (it opened every company database; the tool
+  itself refuses a module still in use); `apply_extension_to_group` names at most 20 targets. Any other preview cannot open a
+  connection (`withoutNewConnections`).
 - **Previews and flags of the server tools** (`ServerMcpTools`, `ExtensionMcpTools`; previews are plain reads of the control
   database, no request and no write, run in the preview sandbox; `companyBrief`/`moduleBrief` of the provisioning service):
 
   | Tool | readOnly | destructive | outbound | preview |
   |---|---|---|---|---|
-  | `list_companies`, `list_modules`, `get_module_catalog`, `list_extensions`, `preview_extension_uninstall`, `list_extension_packages`, `list_server_audit`, `list_company_activity` | yes | - | - | - |
+  | `list_companies`, `list_modules`, `get_module_catalog`, `preview_extension_uninstall`, `list_extension_packages`, `list_server_audit` | yes | - | - | - |
+  | `list_extensions`, `list_company_activity` | yes | - | per call (assistant): outbound + card for companies that did not opt in or "all companies" | no preview of their own (the policy row) |
   | `create_company` | - | - | - | yes (company, business owner and email, what happens: nobody knows the password, whoever controls the email controls the company) |
-  | `update_company` | - | - | - | yes (company and the fields that change) |
-  | `set_company_active` | - | - | - | yes (nobody can enter while off) |
-  | `delete_company` | - | yes | - | yes (names the company and its database, "cannot be undone") |
+  | `update_company` | - | - | per call with `logo_url` | yes (company and the fields that change) |
+  | `set_company_active` | - | per call with `active=false` | - | yes (nobody can enter while off) |
+  | `delete_company` (deny list: not offered to the assistant) | - | yes | - | yes (names the company and its database, "cannot be undone") |
   | `set_company_module`, `set_workspace_module` | - | - | - | yes |
-  | `remove_module` | - | yes | - | yes (module, version, in how many companies it is active) |
+  | `remove_module` (deny list: not offered to the assistant) | - | yes | - | yes (module, version; does not count companies) |
   | `install_extension` | - | - | - | yes |
   | `configure_extension`, `set_extension_enabled` | - | - | yes | yes (settings that change; starts or stops talking to an outside service) |
   | `uninstall_extension` | - | yes | - | yes |
-  | `apply_extension_to_group` | - | yes | - | yes (origin, targets by name, operation, whether confirm=true) |
+  | `apply_extension_to_group` | - | yes | per call: apply with `confirm=true` | yes (origin, targets by name, operation, whether confirm=true) |
 
   Not exposed by MCP, so not available to the assistant either: installing or authorising module and extension packages,
   changing the catalog, the Core update, owner passwords, server administrators (these stay in the app, as for the agents).
   `ToolRegistryContractTest` now covers the server tools: every non-read-only one has a preview, and the destructive and
-  outbound sets are exactly the ones above.
+  outbound sets (tool-level) are exactly the ones above; the per-call classification (deny list, held reads, flagged writes) is
+  checked against the registry and in `ServerCallPolicyTest`.
 - **Not verified**: a real server owner session through Nginx, and the app side. The model is scripted in every test.
 
 ## App contract changes (Core 0.14.1: the assistant in the server workspace and for server people)
@@ -616,7 +667,7 @@ Staff accounts of the workspace (company users that sign in with the code `servi
 
 | Id | Level | Default | Allows |
 |---|---|---|---|
-| `server.assistant.use` (NEW) | server administrator permission (group Servidor, NOT high risk, scoped) | owner only (the owner always may) | Use the assistant in the server workspace (audit tools) and inside the companies the administrator may enter. Listed in `GET /server/admin-permissions` with `risk: "normal"`, `scoped: true`. |
+| `server.assistant.use` (NEW) | server administrator permission (group Servidor, HIGH RISK, scoped) | owner only (the owner always may) | Use the assistant in the server workspace (audit and activity tools) and inside the companies the administrator may enter. Listed in `GET /server/admin-permissions` with `risk: "high"`, `scoped: true` (the description says the audit and the activity of the companies in scope go to the AI provider). |
 | `server.assistant.manage` | unchanged (high risk) | owner only | Now also: turn the assistant ON/OFF for a company of the administrator's scope (server routes and, inside a switcher session, the company settings routes). |
 
 `ServerPermissionIds.AssistantUse = "server.assistant.use"` and `AssistantIds.ServerUsePermission` are added to `core`.
@@ -702,6 +753,34 @@ Unchanged shape. In the workspace the owner's non-read-only `servidor_*` tools a
 in full; the ones that delete or destroy (`destructive`) or change what leaves the server (`outbound`) carry a `preview`
 written in plain words (company name instead of code, what is deleted, which owner/email is created). The classification is
 listed in "Implementation, Core 0.14.1" below. The preview hash binding and the 24 h expiry are unchanged.
+
+### Review additions to the card and the permission (Core 0.14.1, review round 2)
+
+Nothing new on the wire: no new endpoint, field, event, status or error code. What changes is WHEN existing shapes appear:
+- **A read can now be a confirmation card.** In the server workspace, `servidor_list_company_activity` and `servidor_list_extensions`
+  for a company that did not opt in (or "all companies") arrive as an ordinary `confirmation_required` event: `name` is the read
+  tool, `outbound: true`, `destructive: false`, `preview` has one row "Que pasa" / "Lee la actividad de <empresa> (no ha activado
+  el asistente) y la envia al proveedor de IA." (or "...de todas las empresas a tu alcance y la envia al proveedor de IA."), and
+  `summary` lists the arguments as always. Approve/reject through the usual `POST /companies/me/assistant/confirmations/{id}`.
+  After approval the stream starts `tool_started` with `readOnly: false` (the card was approved, so it is shown as a confirmed
+  call). The app must not assume that a read-only tool never pauses: always render by the event, not by the tool name.
+- **`outbound` and `destructive` are per call.** The same tool can come with the flag on one call and without on the next
+  (`servidor_update_company` with a `logo_url`, `servidor_apply_extension_to_group` with `confirm=true`: `outbound`;
+  `servidor_set_company_active` with `active=false`: `destructive`). Always read the flags of each card, never cache them per tool.
+- **`server.assistant.use` is high risk**: `GET /server/admin-permissions` returns `risk: "high"` for it (the permissions editor
+  should show the high-risk marker/confirmation it already shows for the others) and a new description text.
+- **Server-level disclosure** (`disclosure` of `GET /server/assistant/settings`, and of the status in the workspace) has one more
+  sentence: "El asistente del espacio del servidor puede leer la auditoria y la actividad de las empresas que la persona puede
+  ver." Show it as it comes. The business owner's company disclosure is unchanged.
+- **Tools that are gone from the workspace assistant:** `servidor_delete_company`, `servidor_remove_module` (the model says they
+  are done from the app: the app already has those screens), and any call naming `acting_company` ends as a tool error
+  ("El asistente no actua en otra empresa desde el espacio del servidor; entra a esa empresa y usalo alli."); the model is told to
+  say the same. A turn of a switcher session can now end earlier with the usual tool error when the server person lost the
+  right mid-turn (the next request answers `403 PERMISSION_REQUIRED` / `401` as before).
+- `PUT /companies/me/assistant/settings` and `PUT /server/assistant/companies/{code}`: refusals (`DISCLOSURE_REQUIRED`, bad key)
+  are unchanged and now leave no server audit row; a failed company change leaves `company.assistant_change_failed` in the server audit.
+- Company logo URL (`POST`/`PUT` of the server companies routes and the tools): `400` with a message when it is not https, is over
+  300 characters or carries credentials; an unchanged stored value is never refused.
 
 ### Cross-device awareness (Core 0.14.1)
 
