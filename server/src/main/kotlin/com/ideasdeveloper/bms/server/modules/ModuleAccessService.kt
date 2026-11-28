@@ -120,6 +120,7 @@ class ModuleAccessService(
             query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
         }
     private val tokenGenerator = SessionTokenGenerator()
+    private val agentSignIn = ModuleAgentSignIn(this, central, loginDatabases, login, moduleMcp, tokenGenerator)
 
     /**
      * The notifier of [moduleId]: creates notifications that always carry that module as their origin.
@@ -272,14 +273,11 @@ class ModuleAccessService(
      * is recorded with the sign-in and keys the per-login throttle (clientAddress(call) of the page).
      */
     fun verifyCredentials(companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false, clientAddress: String = ""): VerifiedUser? =
-        when (val result = signInForAgent(companyCode, username, password, null, clientAddress, allowAuditAdmin)) {
-            is AgentSignIn.Verified -> result.user
-            else -> null
-        }
+        agentSignIn.verifyCredentials(companyCode, username, password, allowAuditAdmin, clientAddress)
 
     /** [verifyCredentials] for the request [call] (its client address is recorded). */
     fun verifyCredentials(call: ApplicationCall, companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false): VerifiedUser? =
-        verifyCredentials(companyCode, username, password, allowAuditAdmin, com.ideasdeveloper.bms.server.http.ClientAddresses.of(call))
+        agentSignIn.verifyCredentials(call, companyCode, username, password, allowAuditAdmin)
 
     /**
      * The sign-in of an AI agent's OAuth page with the second step (TWO_FACTOR.md §2): password and,
@@ -294,26 +292,7 @@ class ModuleAccessService(
         twoFactorCode: String?,
         clientAddress: String,
         allowAuditAdmin: Boolean = false,
-    ): AgentSignIn {
-        val session = try {
-            login(LoginCredentials(username, password, companyCode, clientAddress))
-        } catch (required: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorRequiredException) {
-            val code = twoFactorCode?.trim()?.takeIf { it.isNotEmpty() }
-            if (code == null) {
-                loginDatabases.finishTwoFactor(required.token)
-                return AgentSignIn.SecondFactorRequired
-            }
-            try {
-                loginDatabases.completeTwoFactor(required.token, code, clientAddress)
-            } catch (_: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorSignInException) {
-                loginDatabases.finishTwoFactor(required.token)
-                return AgentSignIn.InvalidCode
-            } catch (refused: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException) {
-                return if (refused.code == com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException.TooManyAttempts) AgentSignIn.TooManyAttempts else AgentSignIn.Rejected
-            }
-        } ?: return AgentSignIn.Rejected
-        return verifiedFrom(session, companyCode, allowAuditAdmin)?.let { AgentSignIn.Verified(it) } ?: AgentSignIn.Rejected
-    }
+    ): AgentSignIn = agentSignIn.signInForAgent(companyCode, username, password, twoFactorCode, clientAddress, allowAuditAdmin)
 
     /**
      * [signInForAgent] for the request [call]: its client address (X-Real-IP behind the local Nginx, the same rule
@@ -326,37 +305,7 @@ class ModuleAccessService(
         password: String,
         twoFactorCode: String?,
         allowAuditAdmin: Boolean = false,
-    ): AgentSignIn = signInForAgent(companyCode, username, password, twoFactorCode, com.ideasdeveloper.bms.server.http.ClientAddresses.of(call), allowAuditAdmin)
-
-    private fun verifiedFrom(session: LoginSuccessResponse, companyCode: String?, allowAuditAdmin: Boolean): VerifiedUser? {
-        val serverOwner = session.scope == "server"
-        // Server administrators never act here with server rights: no agent or module does. The one
-        // exception (ACTIVITY_LOG.md §7): with [allowAuditAdmin], an administrator holding
-        // server.audit.view may connect an agent that gets ONLY the two audit read tools
-        // (serverAuditAgent); the session is closed either way.
-        if (serverOwner && session.role != com.ideasdeveloper.bms.ServerRoles.Owner) {
-            central.connection.use { connection ->
-                connection.prepareStatement("UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?").use {
-                    it.setString(1, tokenGenerator.hash(session.accessToken))
-                    it.executeUpdate()
-                }
-            }
-            if (!allowAuditAdmin || session.mustChangePassword || session.twoFactorSetupRequired) return null
-            val adminId = UUID.fromString(session.userId)
-            serverAuditAgent(adminId) ?: return null
-            val workspace = activeServerWorkspace() ?: return null
-            return VerifiedUser(adminId, session.username, workspace, serverOwner = false, serverAdmin = true)
-        }
-        val tokenHash = tokenGenerator.hash(session.accessToken)
-        val revoke = "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?"
-        if (serverOwner) {
-            central.connection.use { connection -> connection.prepareStatement(revoke).use { it.setString(1, tokenHash); it.executeUpdate() } }
-        } else {
-            tenantConnectionForCompany(companyCode!!)?.use { connection -> connection.prepareStatement(revoke).use { it.setString(1, tokenHash); it.executeUpdate() } }
-        }
-        val workspace = if (serverOwner) session.workspaceCompanyCode ?: return null else companyCode!!
-        return VerifiedUser(UUID.fromString(session.userId), session.username, workspace, serverOwner)
-    }
+    ): AgentSignIn = agentSignIn.signInForAgent(call, companyCode, username, password, twoFactorCode, allowAuditAdmin)
 
     /**
      * What the AI agent of server administrator [userId] may use now (ACTIVITY_LOG.md §7): only the
@@ -365,38 +314,11 @@ class ModuleAccessService(
      * administrator (not the owner) holding server.audit.view without a pending password change.
      * Read live: call it on every request and every tool call.
      */
-    fun serverAuditAgent(userId: UUID): ServerAuditAgent? {
-        val admin = loginDatabases.admins.find(userId)
-            ?.takeIf { it.usable && !it.mustChangePassword && com.ideasdeveloper.bms.server.admins.ServerPermission.AuditView in it.permissions }
-            ?: return null
-        if (isActiveServerOwner(userId)) return null
-        // The owner requires two-step verification and this administrator has not turned it on yet.
-        if (loginDatabases.adminTwoFactorPending(userId)) return null
-        val tools = moduleMcp().filter { it.moduleId == ServerMcpModuleId }.flatMap { it.tools }
-            .filter { it.qualifiedName in com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools.AdminAgentToolNames }
-        val name = admin.displayName?.takeIf { it.isNotBlank() } ?: admin.login
-        val permissions = ModulePermissions(
-            ServerWorkspace.Code, accessToken = "", businessOwner = false, granted = emptySet(), userId = userId, serverOwner = false,
-            activityActor = ActivityActor.serverAdmin(userId, name),
-        )
-        return ServerAuditAgent(userId, admin.login, name, tools, permissions)
-    }
+    fun serverAuditAgent(userId: UUID): ServerAuditAgent? = agentSignIn.serverAuditAgent(userId)
 
     /** Audits an event of a server administrator's agent (connected, revoked, refused) in provisioning_audit_log. */
-    fun auditServerAdminAgent(userId: UUID, login: String, action: String, details: Map<String, Any?>) {
-        central.connection.use { connection ->
-            com.ideasdeveloper.bms.server.company.application.ProvisioningAudit.insert(
-                connection, com.ideasdeveloper.bms.server.admins.AuditActor(login, userId, com.ideasdeveloper.bms.server.admins.AuditActor.ServerAdminKind),
-                action, null, null, com.ideasdeveloper.bms.server.company.application.auditDetails(*details.toList().toTypedArray()),
-            )
-        }
-    }
-
-    private fun activeServerWorkspace(): String? = central.connection.use { connection ->
-        connection.prepareStatement("SELECT code FROM companies WHERE is_server_workspace AND is_active").use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-        }
-    }
+    fun auditServerAdminAgent(userId: UUID, login: String, action: String, details: Map<String, Any?>) =
+        agentSignIn.auditServerAdminAgent(userId, login, action, details)
 
     /**
      * Module access of a user for requests authenticated without a session, such as an AI agent token
@@ -1030,7 +952,7 @@ class ModuleAccessService(
         false
     }
 
-    private fun isActiveServerOwner(userId: UUID): Boolean = central.connection.use { connection ->
+    internal fun isActiveServerOwner(userId: UUID): Boolean = central.connection.use { connection ->
         connection.prepareStatement(
             """
             SELECT 1
