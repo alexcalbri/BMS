@@ -97,7 +97,10 @@ class AssistantServerAdmin(val central: DataSource, val service: AssistantServic
             val details = if (before.enabled == enabled) emptyList() else listOf<Pair<String, Any?>>(
                 "enabled.from" to before.enabled, "enabled.to" to enabled, "disclosureAccepted" to (acceptDisclosure == true), "via" to "server",
             )
-            config.auditedCompanyChange(actor.audit, code, details) {
+            config.auditedCompanyChange(
+                actor.audit, code, details,
+                precheck = { AssistantCompanyConfig.check(tenant, service.access.secrets, enabled, acceptDisclosure, null) },
+            ) {
                 AssistantCompanyConfig.update(tenant, service.access.secrets, service.access.serverPersonActor(actor.userId, code), enabled, acceptDisclosure, null, null)
             }
         }

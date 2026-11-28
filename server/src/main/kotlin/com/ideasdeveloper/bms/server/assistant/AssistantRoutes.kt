@@ -14,6 +14,7 @@ import com.ideasdeveloper.bms.AssistantSendMessageRequest
 import com.ideasdeveloper.bms.AssistantStatusResponse
 import com.ideasdeveloper.bms.AssistantUpdateConversationRequest
 import com.ideasdeveloper.bms.AssistantUserUsage
+import com.ideasdeveloper.bms.server.admins.ServerPermission
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.i18n.I18n
@@ -97,12 +98,20 @@ fun Route.assistantRoutes(service: AssistantService?) {
         call.company(statusRoute = true) { assistant, context, tenant -> Answer.Ok(HttpStatusCode.OK, assistant.status(assistant.availability(tenant, context), context)) }
     }
 
-    // Polled by every open app every 15-30 s: one indexed query on the caller's own conversations, no model call, and not
-    // part of the chat rate limit (only the general per-address limits apply).
+    // Polled by every open app every 15-30 s: the session is authenticated and the owner key worked out with the fewest reads (no
+    // tool or grant resolution, no company or domain lookups: [leanAttention]), then one indexed query on the caller's own
+    // conversations. No model call, and not part of the chat rate limit (only the general per-address limits apply).
     get("/companies/me/assistant/attention") {
-        call.company { _, context, _ ->
-            val found = if (context.mayUse) context.store.attention(context.caller.userId, context.caller.ownerKey, Instant.now()) else AssistantAttention(0, 0, emptyList())
-            Answer.Ok(HttpStatusCode.OK, AssistantAttentionResponse(found.pending, found.unseen, found.conversationIds.map { it.toString() }))
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val assistant = service ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("ASSISTANT_UNAVAILABLE", tr("El asistente no esta disponible en este servidor.")))
+        val answer = try {
+            withContext(Dispatchers.IO) { leanAttention(assistant, call) }
+        } catch (_: SQLException) {
+            refused(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
+        }
+        when (answer) {
+            is Answer.Ok -> call.respond(answer.status, answer.body!!)
+            is Answer.Refused -> call.respond(answer.status, CompanyErrorResponse(answer.code, answer.message))
         }
     }
 
@@ -269,7 +278,7 @@ fun Route.assistantRoutes(service: AssistantService?) {
                     if (isNotEmpty()) add("via" to "switcher")
                 }
                 val apply = { AssistantCompanyConfig.update(tenant, assistant.access.secrets, context.actor, request.enabled, request.acceptDisclosure, request.apiKey, request.removeApiKey) }
-                if (server == null) apply() else assistant.serverConfig.auditedCompanyChange(server.audit, context.caller.companyCode, audited, apply)
+                if (server == null) apply() else assistant.serverConfig.auditedCompanyChange(server.audit, context.caller.companyCode, audited, precheck = { AssistantCompanyConfig.check(tenant, assistant.access.secrets, request.enabled, request.acceptDisclosure, request.apiKey) }, apply = apply)
             } catch (invalid: AssistantSettingsException) {
                 return@company refused(invalid.status, invalid.code, invalid.message.orEmpty())
             }
@@ -375,6 +384,38 @@ private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRo
             ?: return@use unsupportedWorkspace(statusRoute)
         block(assistant, context, connection)
     }
+}
+
+/**
+ * The attention poll without [resolve]: what it needs is who the caller is (the validated session), whether they may use the
+ * assistant, and their owner key. The workspace's server people, and the sessions of a company, take the same decisions as
+ * [AssistantService.serverContext] and [AssistantService.context] but read nothing else ([AssistantService.attention]).
+ */
+private fun leanAttention(assistant: AssistantService, call: ApplicationCall): Answer {
+    val token = call.sessionToken()
+    fun found(attention: AssistantAttention) =
+        Answer.Ok(HttpStatusCode.OK, AssistantAttentionResponse(attention.pending, attention.unseen, attention.conversationIds.map { it.toString() }))
+    if (assistant.access.companyCode(call)?.equals(ServerWorkspace.Code, ignoreCase = true) == true) {
+        assistant.serverPerson(token)?.let { person ->
+            return found(assistant.attention(ServerWorkspace.Code, person.userId, assistant.ownerKey(null), null, serverMayUse = person.isOwner || person.has(ServerPermission.AssistantUse)))
+        }
+    }
+    val (companyCode, userId) = when (val lookup = assistant.access.userSession(call)) {
+        is UserSessionLookup.Denied -> return when (val decision = lookup.decision) {
+            is ModuleAccessDecision.Unauthorized -> Answer.Refused(HttpStatusCode.Unauthorized, decision.code, decision.message)
+            is ModuleAccessDecision.Forbidden -> Answer.Refused(HttpStatusCode.Forbidden, decision.code, decision.message)
+            ModuleAccessDecision.Allowed -> Answer.Refused(HttpStatusCode.Forbidden, "forbidden", "")
+        }
+        is UserSessionLookup.Granted -> lookup.companyCode to lookup.userId
+    }
+    // The workspace's staff accounts are out, as in [AssistantService.context].
+    if (companyCode.equals(ServerWorkspace.Code, ignoreCase = true)) return unsupportedWorkspace(statusRoute = false)
+    val opener = try {
+        assistant.openerOf(companyCode, token)
+    } catch (refusal: AssistantRefusal) {
+        return refused(refusal.status, refusal.code, refusal.message.orEmpty())
+    }
+    return found(assistant.attention(companyCode, userId, assistant.ownerKey(opener), opener))
 }
 
 /** What is left out: the workspace's staff accounts (company users that sign in with its code). */

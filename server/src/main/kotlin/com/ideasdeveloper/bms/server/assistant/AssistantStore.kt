@@ -164,6 +164,47 @@ interface AssistantStore {
 /** [pending]: open confirmations not expired; [unseen]: conversations finished after the owner last read them. */
 data class AssistantAttention(val pending: Int, val unseen: Int, val conversationIds: List<UUID>)
 
+/**
+ * The attention of one person on [connection] (a company database): one indexed query over their own conversations (the partial
+ * index of V022), at most 200 rows read. [JdbcAssistantStore.attention] and the lean poll (which reads the user's right on the
+ * same connection) share it.
+ */
+fun attentionOn(connection: Connection, userId: UUID, ownerKey: String, now: Instant): AssistantAttention {
+    // One indexed query over the person's own conversations (the partial index of V022); at most 200 rows are read.
+    return connection.prepareStatement(
+        """
+        SELECT c.id,
+               (SELECT count(*) FROM public.assistant_pending_calls p
+                 WHERE p.conversation_id = c.id AND p.status = 'pending' AND p.expires_at > ?) AS pending,
+               (c.state IN ('idle', 'closed') AND c.finished_at IS NOT NULL
+                 AND (c.last_read_at IS NULL OR c.finished_at > c.last_read_at)) AS unseen
+        FROM public.assistant_conversations c
+        WHERE c.user_id = ? AND c.owner_key = ? AND c.archived_at IS NULL
+          AND (c.state = 'awaiting_confirmation' OR c.finished_at IS NOT NULL)
+        ORDER BY c.updated_at DESC
+        LIMIT 200
+        """.trimIndent(),
+    ).use { query ->
+        query.setTimestamp(1, Timestamp.from(now))
+        query.setObject(2, userId)
+        query.setString(3, ownerKey)
+        query.executeQuery().use { rows ->
+            var pending = 0
+            var unseen = 0
+            val withPending = mutableListOf<UUID>()
+            val withUnseen = mutableListOf<UUID>()
+            while (rows.next()) {
+                val id = rows.getObject(1, UUID::class.java)
+                val count = rows.getInt(2)
+                pending += count
+                if (count > 0) withPending += id
+                if (rows.getBoolean(3)) { unseen++; withUnseen += id }
+            }
+            AssistantAttention(pending, unseen, (withPending + withUnseen).distinct().take(20))
+        }
+    }
+}
+
 /** [AssistantStore] on a company database; every call takes a pooled connection for itself. */
 class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore {
     private fun <T> use(block: (Connection) -> T): T = connect().use(block)
@@ -243,41 +284,7 @@ class JdbcAssistantStore(private val connect: () -> Connection) : AssistantStore
         Unit
     }
 
-    override fun attention(userId: UUID, ownerKey: String, now: Instant): AssistantAttention = use { connection ->
-        // One indexed query over the person's own conversations (the partial index of V022); at most 200 rows are read.
-        connection.prepareStatement(
-            """
-            SELECT c.id,
-                   (SELECT count(*) FROM public.assistant_pending_calls p
-                     WHERE p.conversation_id = c.id AND p.status = 'pending' AND p.expires_at > ?) AS pending,
-                   (c.state IN ('idle', 'closed') AND c.finished_at IS NOT NULL
-                     AND (c.last_read_at IS NULL OR c.finished_at > c.last_read_at)) AS unseen
-            FROM public.assistant_conversations c
-            WHERE c.user_id = ? AND c.owner_key = ? AND c.archived_at IS NULL
-              AND (c.state = 'awaiting_confirmation' OR c.finished_at IS NOT NULL)
-            ORDER BY c.updated_at DESC
-            LIMIT 200
-            """.trimIndent(),
-        ).use { query ->
-            query.setTimestamp(1, Timestamp.from(now))
-            query.setObject(2, userId)
-            query.setString(3, ownerKey)
-            query.executeQuery().use { rows ->
-                var pending = 0
-                var unseen = 0
-                val withPending = mutableListOf<UUID>()
-                val withUnseen = mutableListOf<UUID>()
-                while (rows.next()) {
-                    val id = rows.getObject(1, UUID::class.java)
-                    val count = rows.getInt(2)
-                    pending += count
-                    if (count > 0) withPending += id
-                    if (rows.getBoolean(3)) { unseen++; withUnseen += id }
-                }
-                AssistantAttention(pending, unseen, (withPending + withUnseen).distinct().take(20))
-            }
-        }
-    }
+    override fun attention(userId: UUID, ownerKey: String, now: Instant): AssistantAttention = use { attentionOn(it, userId, ownerKey, now) }
 
     private fun ResultSet.instant(column: String): Instant? = getTimestamp(column)?.toInstant()
 

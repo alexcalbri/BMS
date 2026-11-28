@@ -187,14 +187,7 @@ class AssistantService(
         if (companyCode.equals(ServerWorkspace.Code, ignoreCase = true)) return null
         // Who is behind the session decides whose conversations it sees: when that cannot be read, nothing is shown
         // (never the account's own conversations by default).
-        val opener = token.takeIf { it.isNotEmpty() }?.let {
-            try {
-                access.sessionOpener(companyCode, it)
-            } catch (failure: Exception) {
-                log.warn("Assistant could not read the opener of a session in company {}: {}", companyCode, failure.javaClass.name)
-                throw AssistantRefusal(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
-            }
-        }
+        val opener = openerOf(companyCode, token)
         val user = access.userAccess(tenant, companyCode, userId, serverOwner = false) ?: return null
         val person = access.tenantUserActor(tenant, userId, user.businessOwner)
         val company = access.companyOf(tenant)
@@ -219,6 +212,48 @@ class AssistantService(
         val mayUse = server != null && (server.isOwner || (server.has(ServerPermission.AssistantUse) && server.mayActOn(companyCode)))
         val mayManage = server != null && (server.isOwner || (server.has(ServerPermission.AssistantManage) && server.mayActOn(companyCode)))
         return AssistantContext(caller, permitted, resolver, store, mayUse = mayUse, mayManage = mayManage, serverPerson = server, opener = opener)
+    }
+
+    /**
+     * The lean path of the attention poll (every open app asks every 15-30 s): what waits for the person, with the fewest reads.
+     * Not [context]: no module or tool resolution, no company or domain lookups, no activity actor. A server person's switcher
+     * session is decided by their live rights (one read of the central rights) and the workspace by the rights the caller
+     * already holds in [serverMayUse]; any other session by ONE read of the user in the company's database (business owner, or
+     * holding empresa.assistant.use) on the same connection as the query itself. [opener] is the session's opener, already read.
+     */
+    fun attention(companyCode: String, userId: UUID, ownerKey: String, opener: SessionOpener?, serverMayUse: Boolean? = null): AssistantAttention {
+        val none = AssistantAttention(0, 0, emptyList())
+        val now = java.time.Instant.now()
+        val liveServer = if (opener?.kind == SessionOpener.Server) {
+            val server = (liveServerActor?.invoke(opener.userId) as? ServerActorLookup.Found)?.actor
+            server != null && (server.isOwner || (server.has(ServerPermission.AssistantUse) && server.mayActOn(companyCode)))
+        } else null
+        val decided = serverMayUse ?: liveServer
+        if (decided == false) return none
+        return access.tenantConnectionForCompany(companyCode)?.use { tenant ->
+            if (decided == null && !tenant.prepareStatement(
+                    """
+                    SELECT EXISTS (SELECT 1 FROM business_owner o WHERE o.user_id = u.id)
+                        OR EXISTS (SELECT 1 FROM application_user_permissions p WHERE p.user_id = u.id AND p.permission_id = ?)
+                    FROM application_users u WHERE u.id = ? AND u.is_active
+                    """.trimIndent(),
+                ).use { query ->
+                    query.setString(1, AssistantIds.UsePermission)
+                    query.setObject(2, userId)
+                    query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+                }
+            ) none else attentionOn(tenant, userId, ownerKey, now)
+        } ?: none
+    }
+
+    /** The opener of the session [token] in [companyCode] as [context] reads it; a failed read is the same 503. */
+    fun openerOf(companyCode: String, token: String): SessionOpener? = token.takeIf { it.isNotEmpty() }?.let {
+        try {
+            access.sessionOpener(companyCode, it)
+        } catch (failure: Exception) {
+            log.warn("Assistant could not read the opener of a session in company {}: {}", companyCode, failure.javaClass.name)
+            throw AssistantRefusal(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
+        }
     }
 
     /**

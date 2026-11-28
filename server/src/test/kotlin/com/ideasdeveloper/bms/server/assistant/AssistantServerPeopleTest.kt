@@ -24,6 +24,10 @@ import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
 import com.ideasdeveloper.bms.server.modules.McpPreviewRow
+import com.ideasdeveloper.bms.server.modules.McpToolCall
+import com.ideasdeveloper.bms.server.modules.McpToolException
+import com.ideasdeveloper.bms.server.modules.ModuleDefinition
+import com.ideasdeveloper.bms.server.modules.ServerModule
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -70,6 +74,7 @@ import java.util.UUID
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -173,11 +178,11 @@ class AssistantServerPeopleTest {
         return LoginDatabases(data, Database.connect(data), urlOf(central), "[]", pgUser, "", prefix, 3600).also { opened += it }
     }
 
-    private fun provisioning(databases: LoginDatabases) = CompanyProvisioningService(
+    private fun provisioning(databases: LoginDatabases, registry: ModuleRegistry = ModuleRegistry(emptyList())) = CompanyProvisioningService(
         central = source(central),
         config = CompanyProvisioningConfig(urlOf("postgres").substringBefore("?"), "bms_asp_runtime", "runtime-pass", prefix, root.path, provisioningUser = pgUser, provisioningPassword = ""),
         loginDatabases = databases,
-        moduleRegistry = ModuleRegistry(emptyList()),
+        moduleRegistry = registry,
         remoteModuleCatalog = RemoteModuleCatalog(),
         defaultCatalogUrl = "",
         modulePackagesRoot = java.nio.file.Files.createTempDirectory("asp-modules"),
@@ -506,6 +511,8 @@ class AssistantServerPeopleTest {
             // 2. From the server list: the disclosure is required; an administrator out of scope (or without the permission) is refused.
             assertEquals(HttpStatusCode.BadRequest, server("PUT", "/server/assistant/companies/acme", ownerToken, """{"enabled":true}""").status)
             assertEquals(HttpStatusCode.BadRequest, server("PUT", "/server/assistant/companies/acme", ownerToken, "{}").status)
+            // A refused request (no disclosure) is refused before anything is audited: no row, not even a failed one.
+            assertEquals("0", scalar(central, "SELECT count(*) FROM provisioning_audit_log WHERE action IN ('company.assistant_changed', 'company.assistant_change_failed')"))
             env.grant(ServerPermission.AssistantManage, scope = emptyList())
             val outOfScope = server("PUT", "/server/assistant/companies/acme", anaToken, """{"enabled":true,"acceptDisclosure":true}""")
             assertEquals(HttpStatusCode.Forbidden, outOfScope.status)
@@ -847,6 +854,122 @@ class AssistantServerPeopleTest {
         assertTrue(business.serverPerson == null && usable(env.service.toolbox(business)))
         env.grant(ServerPermission.AuditView) // the administrator's rights do not touch the business owner's own toolbox
         assertTrue(usable(env.service.toolbox(business)))
+    }
+
+    /** A DataSource that counts every statement run through the connections it gives (the project has no other way to count them). */
+    private fun counting(source: javax.sql.DataSource, counter: java.util.concurrent.atomic.AtomicInteger): javax.sql.DataSource {
+        val loader = javaClass.classLoader
+        val executes = setOf("executeQuery", "executeUpdate", "execute", "executeBatch", "executeLargeUpdate")
+        fun statement(real: Any, type: Class<*>) = java.lang.reflect.Proxy.newProxyInstance(loader, arrayOf(type)) { _, method, args ->
+            if (method.name in executes) counter.incrementAndGet()
+            try { method.invoke(real, *(args ?: emptyArray())) } catch (failure: java.lang.reflect.InvocationTargetException) { throw failure.targetException }
+        }
+        fun connection(real: java.sql.Connection) = java.lang.reflect.Proxy.newProxyInstance(loader, arrayOf(java.sql.Connection::class.java)) { _, method, args ->
+            val result = try { method.invoke(real, *(args ?: emptyArray())) } catch (failure: java.lang.reflect.InvocationTargetException) { throw failure.targetException }
+            when {
+                method.name == "prepareStatement" -> statement(result!!, java.sql.PreparedStatement::class.java)
+                method.name == "createStatement" -> statement(result!!, java.sql.Statement::class.java)
+                else -> result
+            }
+        } as java.sql.Connection
+        return java.lang.reflect.Proxy.newProxyInstance(loader, arrayOf(javax.sql.DataSource::class.java)) { _, method, args ->
+            val result = try { method.invoke(source, *(args ?: emptyArray())) } catch (failure: java.lang.reflect.InvocationTargetException) { throw failure.targetException }
+            if (method.name == "getConnection") connection(result as java.sql.Connection) else result
+        } as javax.sql.DataSource
+    }
+
+    @Test
+    fun theAttentionPollTakesTheLeanPathAndStaysWithinItsStatementBudget() {
+        if (url == null) return
+        val env = Env()
+        val central = java.util.concurrent.atomic.AtomicInteger()
+        val countedData = counting(env.data, central)
+        // The poll's access service cannot resolve a tool at all: the lean path never asks for the module registry.
+        fun service(moduleMcp: () -> List<RegisteredModuleMcp>) = AssistantService(
+            ModuleAccessService(countedData, env.logins, moduleInstalled = { true }, moduleMcp = moduleMcp, secrets = env.box),
+            AssistantServerConfig(env.data, env.box), env.box, env.models,
+            serverActors = env.actors, liveServerActor = { ServerOwnerAuthorizer.liveActor(env.logins.admins, env.data, it) },
+        )
+        val lean = service { error("the attention poll resolved the tools") }
+        val full = service { env.access.moduleMcp() }
+        val due = env.dueno.accessToken
+        fun polls(service: AssistantService, path: String, token: String, company: String, block: (HttpStatusCode, Int) -> Unit) = testApplication {
+            application { install(ContentNegotiation) { json() }; routing { assistantRoutes(service) } }
+            val request: suspend () -> HttpResponse = {
+                client.get(path) { header(HttpHeaders.Authorization, "Bearer $token"); header("X-Company-Code", company) }
+            }
+            request() // warm: pools, caches
+            val before = central.get()
+            val response = request()
+            block(response.status, central.get() - before)
+        }
+        // The same session, the same company: the poll against the full resolve of the list route (which resolves the person, the company and its domains).
+        var attention = -1
+        var list = -1
+        polls(lean, "/companies/me/assistant/attention", due, "acme") { status, count -> assertEquals(HttpStatusCode.OK, status); attention = count }
+        polls(full, "/companies/me/assistant/conversations", due, "acme") { status, count -> assertEquals(HttpStatusCode.OK, status); list = count }
+        assertTrue(attention in 1..3 && attention + 2 <= list, "control-database statements through the access service: poll $attention, full resolve $list")
+        // A switcher session of the owner and the workspace owner take the same path and answer as before.
+        polls(lean, "/companies/me/assistant/attention", env.ownerInAcme()!!.accessToken, "acme") { status, _ -> assertEquals(HttpStatusCode.OK, status) }
+        polls(lean, "/companies/me/assistant/attention", env.ownerToken, "servidor") { status, count -> assertEquals(HttpStatusCode.OK, status); assertTrue(count <= 2, "workspace poll: $count") }
+        // A bad token is still refused by the lean path.
+        polls(lean, "/companies/me/assistant/attention", "x".repeat(43), "acme") { status, _ -> assertEquals(HttpStatusCode.Unauthorized, status) }
+    }
+
+    @Test
+    fun aCompanyChangeIsAuditedFirstSoItIsNeverLeftWithoutItsRowAndAFailedOneSaysSo() {
+        if (url == null) return
+        val env = Env()
+        val config = env.service.serverConfig
+        fun rows(action: String) = scalar(central, "SELECT count(*) FROM provisioning_audit_log WHERE action = '$action' AND company_code = 'acme'")
+        // The row is already committed (visible to another connection) when the company's own change runs.
+        var seenWhileApplying: String? = null
+        assertEquals("hecho", config.auditedCompanyChange(env.owner.audit, "acme", listOf("enabled.to" to true)) { seenWhileApplying = rows("company.assistant_changed"); "hecho" })
+        assertEquals("1", seenWhileApplying)
+        assertEquals("0", rows("company.assistant_change_failed"))
+        // The change fails after the row: the failure goes on to the caller and a second row says it did not happen.
+        assertFailsWith<IllegalStateException> { config.auditedCompanyChange(env.owner.audit, "acme", listOf("enabled.to" to false)) { error("la empresa no responde") } }
+        assertEquals("2", rows("company.assistant_changed"))
+        assertEquals("1", rows("company.assistant_change_failed"))
+        assertEquals("false|IllegalStateException", scalar(central, "SELECT ((details::jsonb)->>'enabled.to') || '|' || ((details::jsonb)->>'error') FROM provisioning_audit_log WHERE action = 'company.assistant_change_failed'"))
+        // Refused before anything is written (a missing disclosure, a bad key): no row of any kind. Nothing to audit: none either.
+        assertFailsWith<AssistantSettingsException> {
+            config.auditedCompanyChange(env.owner.audit, "acme", listOf("enabled.to" to true), precheck = { throw AssistantSettingsException("DISCLOSURE_REQUIRED", "falta") }) { "no" }
+        }
+        assertEquals("hecho", config.auditedCompanyChange(env.owner.audit, "acme", emptyList()) { "hecho" })
+        assertEquals(listOf("2", "1"), listOf(rows("company.assistant_changed"), rows("company.assistant_change_failed")))
+    }
+
+    @Test
+    fun theWorkspaceIsNamedInTheCardsOfToolsThatMayActOnItAndRefusedWhereTheyDoNot() {
+        if (url == null) return
+        val env = Env()
+        val registry = ModuleRegistry(
+            listOf(object : ServerModule { override val definition = ModuleDefinition("demo", "Demo", "Modulo de prueba") }),
+            installedModuleIds = setOf("demo"),
+        )
+        val tools = ServerMcpTools.tools { provisioning(env.logins, registry) }.associateBy { it.name }
+        fun preview(tool: String, vararg pairs: Pair<String, String>): List<McpPreviewRow> = env.access.tenantConnectionForCompany("servidor")!!.use { tenant ->
+            val permissions = env.access.userAccess(tenant, "servidor", ownerId, serverOwner = true)!!.permissions("demo")!!
+            val call = McpToolCall(JsonObject(pairs.associate { it.first to JsonPrimitive(it.second) }), permissions, tenant, env.access, "Asistente", "servidor")
+            tools.getValue(tool).preview!!(call)
+        }
+        // set_company_module does act on the workspace: the card names it (it used to say "Empresa no encontrada").
+        val workspace = preview("set_company_module", "code" to "servidor", "module_id" to "demo", "enabled" to "true")
+        assertEquals("Empresa del servidor (servidor, espacio del servidor)", workspace[0].value)
+        assertEquals("Demo (demo, version 0.1.0)", workspace[1].value)
+        assertEquals("Acme SA (acme)", preview("set_company_module", "code" to "acme", "module_id" to "demo", "enabled" to "true")[0].value)
+        // The tools that refuse the workspace say so in the card, the same as the tool itself; an unknown code is still not found.
+        listOf("update_company", "set_company_active", "delete_company").forEach { tool ->
+            val failure = assertFailsWith<McpToolException>(tool) { preview(tool, "code" to "servidor", "active" to "false") }
+            assertEquals("El espacio del servidor no se administra como una empresa.", failure.message)
+            assertEquals("Empresa no encontrada: nadie.", assertFailsWith<McpToolException>(tool) { preview(tool, "code" to "nadie", "active" to "false") }.message)
+        }
+        assertEquals("Acme SA (acme)", preview("set_company_active", "code" to "acme", "active" to "false")[0].value)
+        // remove_module's card is made from the control database alone: it names the module and counts no company (that opened every tenant).
+        val removal = preview("remove_module", "module_id" to "demo")
+        assertEquals(listOf("Modulo que se quita del servidor", "Antes de quitarlo", "Que pasa"), removal.map { it.label })
+        assertEquals(0, removal.count { it.label == "Activo en" })
     }
 
     private fun unread(database: String, userId: Any) = scalar(database, "SELECT count(*) FROM notifications WHERE user_id = '$userId' AND read_at IS NULL")!!.toInt()

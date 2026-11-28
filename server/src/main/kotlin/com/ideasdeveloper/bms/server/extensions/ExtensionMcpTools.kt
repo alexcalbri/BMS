@@ -29,6 +29,8 @@ import kotlinx.serialization.json.put
  */
 object ExtensionMcpTools {
     private const val Permission = "server_owner"
+    // The card of a group operation names at most this many target companies (each name is a read of the control database).
+    private const val MaxNamedTargets = 20
     private val json = Json { encodeDefaults = true }
 
     const val Instructions =
@@ -231,7 +233,13 @@ object ExtensionMcpTools {
                     listOf(
                         row("Empresa de origen", company(call)), row("Extension", call.requiredString("extension_id", 63)),
                         row("Operacion", operation),
-                        row("Empresas de destino", if (targets.isEmpty()) "(ninguna)" else targets.joinToString("\n") { target -> companyName(target)?.let { "$it ($target)" } ?: "$target (no existe)" }),
+                        // One control-database read per name shown, so only the first ones are looked up and named; the rest is only counted.
+                        row(
+                            "Empresas de destino",
+                            if (targets.isEmpty()) "(ninguna)"
+                            else targets.take(MaxNamedTargets).joinToString("\n") { target -> companyName(target)?.let { "$it ($target)" } ?: "$target (no existe)" } +
+                                if (targets.size > MaxNamedTargets) "\n... y ${targets.size - MaxNamedTargets} mas" else "",
+                        ),
                         row(
                             "Que pasa",
                             if (!call.boolean("confirm")) "Sin confirm=true solo devuelve la vista previa por empresa y no cambia nada."

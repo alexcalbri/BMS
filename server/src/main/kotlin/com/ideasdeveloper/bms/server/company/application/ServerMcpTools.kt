@@ -104,11 +104,15 @@ object ServerMcpTools {
         }
 
         // What a confirmation card says about a company or a module (plain reads of the control data; no request, no write).
-        fun brief(call: McpToolCall, key: String = "code"): CompanyProvisioningService.CompanyBrief {
+        // The server workspace is no company for most tools (they refuse it: say so); [allowWorkspace] for the ones that do act on it (set_company_module).
+        fun brief(call: McpToolCall, key: String = "code", allowWorkspace: Boolean = false): CompanyProvisioningService.CompanyBrief {
             val target = call.requiredString(key, 63)
-            return provisioning().companyBrief(target) ?: throw McpToolException("Empresa no encontrada: $target.")
+            val found = provisioning().companyBrief(target, withWorkspace = true) ?: throw McpToolException("Empresa no encontrada: $target.")
+            if (found.isServerWorkspace && !allowWorkspace) throw McpToolException("El espacio del servidor no se administra como una empresa.")
+            return found
         }
-        fun companyLabel(company: CompanyProvisioningService.CompanyBrief) = "${company.name} (${company.code})"
+        fun companyLabel(company: CompanyProvisioningService.CompanyBrief) =
+            if (company.isServerWorkspace) "${company.name} (${company.code}, espacio del servidor)" else "${company.name} (${company.code})"
         fun moduleLabel(call: McpToolCall): String {
             val target = call.requiredString("module_id", 63)
             return provisioning().moduleBrief(target)?.let { "${it.displayName} (${it.moduleId}, version ${it.version})" } ?: throw McpToolException("Modulo no reconocido: $target.")
@@ -295,7 +299,7 @@ object ServerMcpTools {
                     required = listOf("code", "module_id", "enabled"),
                 ),
                 preview = { call ->
-                    val company = brief(call)
+                    val company = brief(call, allowWorkspace = true)
                     val enable = call.boolean("enabled")
                     listOf(
                         row("Empresa", companyLabel(company)),
@@ -333,10 +337,11 @@ object ServerMcpTools {
                 destructive = true,
                 preview = { call ->
                     val target = call.requiredString("module_id", 63)
-                    val module = provisioning().moduleBrief(target, withUsage = true) ?: throw McpToolException("Modulo no reconocido: $target.")
+                    val module = provisioning().moduleBrief(target) ?: throw McpToolException("Modulo no reconocido: $target.")
                     listOf(
                         row("Modulo que se quita del servidor", "${module.displayName} (${module.moduleId}, version ${module.version})"),
-                        row("Activo en", "${module.activeCompanyCount ?: 0} empresa(s) o en el espacio del servidor" + if ((module.activeCompanyCount ?: 0) > 0) ": la herramienta se negara hasta desactivarlo en todas." else ""),
+                        // Not counted here: that would open the database of every company. The tool refuses a module that is still active somewhere.
+                        row("Antes de quitarlo", "La herramienta se negara si el modulo esta activo en alguna empresa o en el espacio del servidor."),
                         row("Que pasa", if (module.locked) "Es un modulo base: no se puede quitar." else "Se quita su codigo del servidor; para usarlo otra vez hay que instalarlo de nuevo desde el catalogo."),
                     )
                 },
