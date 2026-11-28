@@ -309,6 +309,18 @@ connection is closed physically: nothing it did to its session can reach another
 previa." Not enforceable: raw SQL that turns the read-only mode off by itself (`SET default_transaction_read_only = off`) and
 HTTP requests (rule of the module, tested per tool with a transport that fails when called).
 
+### Tests that guard this contract
+
+- `ToolRegistryContractTest` (the real registry, extensions linked): outbound or destructive tool without preview, an `outbound` tool
+  nobody reviewed, and a flag lost when a module wraps a tool (the extension guard of the CRM did) all fail.
+- `ReadOnlyToolsPostgresTest` (100 read-only tools of modules and extensions, seeded): no read-only tool writes; the only reads that
+  leave an activity-log row are listed (`loggedReads`); the read-only tools that ask a provider are listed with why
+  (`externalReads`); a tool that still refuses under the seed is listed with why (`refuses`). Network use is detected through the
+  JDK's default `ProxySelector` and networking exceptions, which sees a tool only when it reaches the call under the seed (no
+  provider credentials are seeded) and not HTTP clients built earlier with a selector of their own; a source tripwire
+  (`knownHttpFiles`) fails when a NEW file uses an HTTP client, so a new external read is reviewed by hand.
+- `AssistantStreamTest`: a client that closes its socket cancels a waiting turn and frees its slot (real Netty).
+
 ### Limits
 
 - Monthly tokens per company (calendar month, UTC). Counted per model response as
