@@ -104,6 +104,7 @@ class CompanySelfService(
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val backups = CompanyBackups(this, backupsRoot, storage)
+    private val catalog = CompanyPermissionCatalog(this, moduleRegistry, loginDatabases)
 
     // Carga el perfil editable de la empresa de la sesion business_owner. El server_owner tambien
     // administra asi la empresa del servidor, sin crear una empresa.
@@ -327,14 +328,14 @@ class CompanySelfService(
         // What this caller may reset (TWO_FACTOR.md §8.4): the same rules as the reset itself.
         val authority = if (context.businessOwnerUserId == null || twoFactorResets == null) null else runCatching { resetAuthority(context, accessToken) }.getOrNull()
         tenantConnection(context.tenant).use { connection ->
-            syncPermissionCatalog(connection)
+            catalog.syncPermissionCatalog(connection)
             return CompanyUsersResponse(
-                users = loadUsers(connection).map { user ->
+                users = catalog.loadUsers(connection).map { user ->
                     user.copy(canResetTwoFactor = user.twoFactorEnabled?.let { enabled ->
                         enabled && authority?.mayTarget(user.userId == context.businessOwnerUserId.toString()) == true
                     })
                 },
-                permissions = loadPermissions(connection),
+                permissions = catalog.loadPermissions(connection),
             )
         }
     }
@@ -358,8 +359,8 @@ class CompanySelfService(
         return context.audited("server_workspace.user_created", details) { audit ->
             audit?.let { recordStaffCredentials(it, userId, context.serverActor) }
             tenantConnection(context.tenant).use { connection ->
-                syncPermissionCatalog(connection)
-                validatePermissions(connection, request.permissions)
+                catalog.syncPermissionCatalog(connection)
+                catalog.validatePermissions(connection, request.permissions)
                 connection.autoCommit = false
                 try {
                     if (connection.existsUser(username)) {
@@ -390,7 +391,7 @@ class CompanySelfService(
                         insert.setInt(4, passwordHash.iterations)
                         insert.executeUpdate()
                     }
-                    replaceUserPermissions(connection, userId, request.permissions)
+                    catalog.replaceUserPermissions(connection, userId, request.permissions)
                     context.record(
                         connection, "user", userId.toString(), username, ActivityActions.Created, "Creo el usuario $username.",
                         ActivityChanges.created(
@@ -398,7 +399,7 @@ class CompanySelfService(
                             UserLabels,
                         ),
                     )
-                    permissionRows(connection, context, userId, username, emptySet(), request.permissions.toSet())
+                    catalog.permissionRows(connection, context, userId, username, emptySet(), request.permissions.toSet())
                     connection.commit()
                 } catch (failure: Exception) {
                     connection.rollback()
@@ -406,7 +407,7 @@ class CompanySelfService(
                 } finally {
                     connection.autoCommit = true
                 }
-                loadUser(connection, userId) ?: throw CompanySelfException(tr("No se pudo cargar el usuario creado."))
+                catalog.loadUser(connection, userId) ?: throw CompanySelfException(tr("No se pudo cargar el usuario creado."))
             }
         }
     }
@@ -429,16 +430,16 @@ class CompanySelfService(
         val details = auditDetails("userId" to targetUserId.toString(), "permissions" to request.permissions.sorted())
         return context.audited("server_workspace.user_permissions_updated", details) {
             tenantConnection(context.tenant).use { connection ->
-                syncPermissionCatalog(connection)
-                validatePermissions(connection, request.permissions)
+                catalog.syncPermissionCatalog(connection)
+                catalog.validatePermissions(connection, request.permissions)
                 connection.autoCommit = false
                 try {
                     if (!connection.userExists(targetUserId)) {
                         throw CompanySelfException(tr("Usuario no encontrado."))
                     }
-                    val before = loadUserPermissions(connection, targetUserId).toSet()
-                    replaceUserPermissions(connection, targetUserId, request.permissions)
-                    permissionRows(connection, context, targetUserId, connection.loginOf(targetUserId), before, request.permissions.toSet())
+                    val before = catalog.loadUserPermissions(connection, targetUserId).toSet()
+                    catalog.replaceUserPermissions(connection, targetUserId, request.permissions)
+                    catalog.permissionRows(connection, context, targetUserId, connection.loginOf(targetUserId), before, request.permissions.toSet())
                     connection.commit()
                 } catch (failure: Exception) {
                     connection.rollback()
@@ -446,7 +447,7 @@ class CompanySelfService(
                 } finally {
                     connection.autoCommit = true
                 }
-                loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
+                catalog.loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
             }
         }
     }
@@ -530,7 +531,7 @@ class CompanySelfService(
                         listOf(ActivityChange.secret("password", "Contrasena")))
                 }
             }) { editor(context.companyCode, UpdateBusinessOwnerRequest(username, displayName, email, password)) }
-            return tenantConnection(context.tenant).use { connection -> loadUser(connection, targetUserId) }
+            return tenantConnection(context.tenant).use { connection -> catalog.loadUser(connection, targetUserId) }
                 ?: throw CompanySelfException(tr("Usuario no encontrado."))
         }
         // Whoever sets a password, or the email that password recovery goes to, controls the account
@@ -564,8 +565,8 @@ class CompanySelfService(
                 }
             }
             tenantConnection(context.tenant).use { connection ->
-                syncPermissionCatalog(connection)
-                validatePermissions(connection, request.permissions)
+                catalog.syncPermissionCatalog(connection)
+                catalog.validatePermissions(connection, request.permissions)
                 connection.autoCommit = false
                 try {
                     val current = connection.prepareStatement("SELECT postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
@@ -576,7 +577,7 @@ class CompanySelfService(
                         query.setObject(1, targetUserId)
                         query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null to null }
                     }
-                    val beforePermissions = loadUserPermissions(connection, targetUserId).toSet()
+                    val beforePermissions = catalog.loadUserPermissions(connection, targetUserId).toSet()
                     if (connection.isBusinessOwner(targetUserId)) {
                         throw CompanySelfException(tr("Solo el business owner o el dueno del servidor pueden editar al business owner."))
                     }
@@ -595,7 +596,7 @@ class CompanySelfService(
                         update.setObject(5, targetUserId)
                         update.executeUpdate()
                     }
-                    replaceUserPermissions(connection, targetUserId, request.permissions)
+                    catalog.replaceUserPermissions(connection, targetUserId, request.permissions)
                     if (password.isNotEmpty()) {
                         val hash = ApplicationPasswordHasher.hash(password)
                         connection.prepareStatement(
@@ -632,7 +633,7 @@ class CompanySelfService(
                         context.record(connection, "user", targetUserId.toString(), username, ActivityActions.PasswordChanged, "Puso una contrasena nueva al usuario $username.",
                             listOf(ActivityChange.secret("password", "Contrasena")))
                     }
-                    permissionRows(connection, context, targetUserId, username, beforePermissions, request.permissions.toSet())
+                    catalog.permissionRows(connection, context, targetUserId, username, beforePermissions, request.permissions.toSet())
                     // A new password or a deactivated user closes the user's open sessions.
                     if (password.isNotEmpty() || (current.second && !request.isActive)) {
                         connection.prepareStatement(
@@ -649,7 +650,7 @@ class CompanySelfService(
                 } finally {
                     connection.autoCommit = true
                 }
-                loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
+                catalog.loadUser(connection, targetUserId) ?: throw CompanySelfException(tr("Usuario no encontrado."))
             }
         }
     }
@@ -808,174 +809,6 @@ class CompanySelfService(
             },
         )
     }
-
-    private fun syncPermissionCatalog(connection: java.sql.Connection) {
-        val enabledModuleIds = connection.prepareStatement(
-            "SELECT module_id FROM tenant_modules WHERE status = 'enabled'"
-        ).use { query ->
-            query.executeQuery().use { rows ->
-                buildSet {
-                    add("empresa")
-                    while (rows.next()) add(rows.getString("module_id"))
-                }
-            }
-        }
-        moduleRegistry.definitions.flatMap { definition ->
-            definition.permissions.map { permission -> definition.id to permission }
-        }.filter { (moduleId, _) -> moduleId in enabledModuleIds }.forEach { (moduleId, permission) ->
-            connection.prepareStatement(
-                """
-                INSERT INTO application_permissions (permission_id, module_id, title, description)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (permission_id)
-                DO UPDATE SET module_id = EXCLUDED.module_id, title = EXCLUDED.title, description = EXCLUDED.description
-                """.trimIndent()
-            ).use { upsert ->
-                upsert.setString(1, permission.id)
-                upsert.setString(2, moduleId)
-                upsert.setString(3, permission.title)
-                upsert.setString(4, permission.description)
-                upsert.executeUpdate()
-            }
-        }
-    }
-
-    private fun loadPermissions(connection: java.sql.Connection): List<CompanyPermissionResponse> =
-        connection.prepareStatement(
-            "SELECT permission_id, module_id, title, description FROM application_permissions ORDER BY module_id, permission_id"
-        ).use { query ->
-            query.executeQuery().use { rows ->
-                buildList {
-                    while (rows.next()) {
-                        add(
-                            CompanyPermissionResponse(
-                                permissionId = rows.getString("permission_id"),
-                                moduleId = rows.getString("module_id"),
-                                // Stored in Spanish from the module definitions; shown in the user's language.
-                                title = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("title")),
-                                description = trIn(I18n.moduleNamespace(rows.getString("module_id")), rows.getString("description")),
-                            )
-                        )
-                    }
-                }
-            }
-        }
-
-    private fun loadUsers(connection: java.sql.Connection): List<CompanyUserResponse> =
-        connection.prepareStatement("SELECT id FROM application_users ORDER BY postgres_role").use { query ->
-            query.executeQuery().use { rows ->
-                buildList {
-                    while (rows.next()) {
-                        loadUser(connection, rows.getObject("id", UUID::class.java))?.let(::add)
-                    }
-                }
-            }
-        }
-
-    private fun loadUser(connection: java.sql.Connection, userId: UUID): CompanyUserResponse? {
-        val user = connection.prepareStatement(
-            "SELECT id, postgres_role, is_active, display_name, email FROM application_users WHERE id = ?"
-        ).use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows ->
-                if (!rows.next()) return null
-                Triple(rows.getString("postgres_role"), rows.getBoolean("is_active"), rows.getString("display_name") to rows.getString("email"))
-            }
-        }
-        return CompanyUserResponse(
-            userId = userId.toString(),
-            username = user.first,
-            isActive = user.second,
-            permissions = loadUserPermissions(connection, userId),
-            displayName = user.third.first,
-            email = user.third.second,
-            userCode = ApplicationUserCodes.ensure(connection, userId),
-            isBusinessOwner = connection.isBusinessOwner(userId),
-            twoFactorEnabled = runCatching { loginDatabases.twoFactor.takeIf { it.available(connection) }?.isEnabled(connection, userId) }.getOrNull(),
-        )
-    }
-
-    private fun loadUserPermissions(connection: java.sql.Connection, userId: UUID): List<String> =
-        connection.prepareStatement("SELECT permission_id FROM application_user_permissions WHERE user_id = ? ORDER BY permission_id").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows ->
-                buildList {
-                    while (rows.next()) add(rows.getString("permission_id"))
-                }
-            }
-        }
-
-    private fun validatePermissions(connection: java.sql.Connection, permissions: List<String>) {
-        val known = loadPermissions(connection).map { it.permissionId }.toSet()
-        val unknown = permissions.toSet() - known
-        if (unknown.isNotEmpty()) {
-            throw CompanySelfException(tr("Permisos no reconocidos: {0}.", unknown.joinToString()))
-        }
-    }
-
-    private fun replaceUserPermissions(connection: java.sql.Connection, userId: UUID, permissions: List<String>) {
-        connection.prepareStatement("DELETE FROM application_user_permissions WHERE user_id = ?").use { delete ->
-            delete.setObject(1, userId)
-            delete.executeUpdate()
-        }
-        permissions.distinct().forEach { permissionId ->
-            connection.prepareStatement("INSERT INTO application_user_permissions (user_id, permission_id) VALUES (?, ?)").use { insert ->
-                insert.setObject(1, userId)
-                insert.setString(2, permissionId)
-                insert.executeUpdate()
-            }
-        }
-    }
-
-    // One row per permission granted or removed (ACTIVITY_LOG.md §3), with its title as stored (Spanish).
-    private fun permissionRows(connection: java.sql.Connection, context: BusinessOwnerContext, userId: UUID, username: String, before: Set<String>, after: Set<String>) {
-        val added = (after - before).sorted()
-        val removed = (before - after).sorted()
-        if (added.isEmpty() && removed.isEmpty()) return
-        val titles = connection.prepareStatement("SELECT permission_id, title FROM application_permissions").use { query ->
-            query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getString(1), rows.getString(2)) } }
-        }
-        added.forEach { permission ->
-            val title = titles[permission] ?: permission
-            context.record(connection, "user", userId.toString(), username, ActivityActions.PermissionChanged,
-                "Dio el permiso \"$title\" al usuario $username.", listOf(ActivityChange(permission, title, "No", "Si")))
-        }
-        removed.forEach { permission ->
-            val title = titles[permission] ?: permission
-            context.record(connection, "user", userId.toString(), username, ActivityActions.PermissionChanged,
-                "Quito el permiso \"$title\" al usuario $username.", listOf(ActivityChange(permission, title, "Si", "No")))
-        }
-    }
-
-    private fun java.sql.Connection.loginOf(userId: UUID): String =
-        prepareStatement("SELECT postgres_role FROM application_users WHERE id = ?").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else userId.toString() }
-        }
-
-    private fun java.sql.Connection.userExists(userId: UUID): Boolean =
-        prepareStatement("SELECT 1 FROM application_users WHERE id = ?").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows -> rows.next() }
-        }
-
-    private fun java.sql.Connection.isBusinessOwner(userId: UUID): Boolean =
-        prepareStatement("SELECT 1 FROM business_owner WHERE user_id = ?").use { query ->
-            query.setObject(1, userId)
-            query.executeQuery().use { rows -> rows.next() }
-        }
-
-    private fun java.sql.Connection.existsRole(name: String): Boolean =
-        prepareStatement("SELECT 1 FROM pg_roles WHERE rolname = ?").use { query ->
-            query.setString(1, name)
-            query.executeQuery().use { rows -> rows.next() }
-        }
-
-    private fun java.sql.Connection.existsUser(name: String): Boolean =
-        prepareStatement("SELECT 1 FROM application_users WHERE postgres_role = ?").use { query ->
-            query.setString(1, name)
-            query.executeQuery().use { rows -> rows.next() }
-        }
 
     // Abre una conexion runtime al tenant ya resuelto por el servidor.
     internal fun tenantConnection(tenant: com.ideasdeveloper.bms.server.auth.infrastructure.database.TenantDatabaseConfig) =
