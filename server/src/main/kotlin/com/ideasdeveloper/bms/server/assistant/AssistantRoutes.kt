@@ -14,6 +14,7 @@ import com.ideasdeveloper.bms.AssistantStatusResponse
 import com.ideasdeveloper.bms.AssistantUpdateConversationRequest
 import com.ideasdeveloper.bms.AssistantUserUsage
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
+import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.i18n.I18n
 import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModuleAccessDecision
@@ -119,7 +120,7 @@ fun Route.assistantRoutes(service: AssistantService?) {
         val request = call.bodyAs<AssistantCreateConversationRequest>() ?: AssistantCreateConversationRequest()
         call.company { assistant, context, tenant ->
             val availability = assistant.availability(tenant, context)
-            if (!context.caller.businessOwner && !context.hasUsePermission) return@company refused(403, AssistantIds.ReasonPermissionRequired, tr("No tienes permiso para usar el asistente."))
+            if (!context.mayUse) return@company refused(403, AssistantIds.ReasonPermissionRequired, availability.unavailable?.takeIf { it.reason == AssistantIds.ReasonPermissionRequired }?.message ?: tr("No tienes permiso para usar el asistente."))
             if (!availability.visible) return@company refused(403, availability.unavailable?.reason ?: AssistantIds.ReasonCompanyDisabled, availability.unavailable?.message.orEmpty())
             val key = "${context.caller.companyCode}/${context.caller.userId}/${context.caller.ownerKey}"
             if (!assistant.limits.allowNewConversation(key)) return@company refused(429, "ASSISTANT_RATE_LIMITED", tr("Demasiadas conversaciones nuevas; espera un minuto."))
@@ -217,7 +218,7 @@ fun Route.assistantRoutes(service: AssistantService?) {
 
     get("/companies/me/assistant/settings") {
         call.company { assistant, context, tenant ->
-            if (!context.caller.businessOwner) return@company refused(403, "BUSINESS_OWNER_REQUIRED", tr("Solo el dueno de la empresa configura el asistente."))
+            if (!context.mayManage) return@company manageRefusal(context, tr("Solo el dueno de la empresa configura el asistente."))
             Answer.Ok(HttpStatusCode.OK, companySettings(assistant.availability(tenant, context)))
         }
     }
@@ -226,9 +227,26 @@ fun Route.assistantRoutes(service: AssistantService?) {
         val request = call.bodyAs<AssistantCompanySettingsRequest>()
             ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
         call.company { assistant, context, tenant ->
-            if (!context.caller.businessOwner) return@company refused(403, "BUSINESS_OWNER_REQUIRED", tr("Solo el dueno de la empresa configura el asistente."))
+            if (!context.mayManage) return@company manageRefusal(context, tr("Solo el dueno de la empresa configura el asistente."))
+            // The workspace has no switch and no key of its own: they are the server's.
+            if (context.workspace) return@company refused(409, "USE_SERVER_SETTINGS", tr("En el espacio del servidor el asistente se configura en los ajustes del servidor."))
             try {
-                AssistantCompanyConfig.update(tenant, assistant.access.secrets, context.actor, request.enabled, request.acceptDisclosure, request.apiKey, request.removeApiKey)
+                val before = AssistantCompanyConfig.read(tenant)
+                // A server person (owner, or administrator with server.assistant.manage) is audited in the server audit too,
+                // in the same transaction as the change; a business owner's own change only goes to the company's log.
+                val server = context.serverPerson
+                val audited = if (server == null) emptyList() else buildList<Pair<String, Any?>> {
+                    if (request.enabled != null && request.enabled != before.enabled) {
+                        add("enabled.from" to before.enabled)
+                        add("enabled.to" to request.enabled)
+                        add("disclosureAccepted" to (request.acceptDisclosure == true))
+                    }
+                    if (!request.apiKey.isNullOrBlank()) add("key" to "(cambiada)")
+                    else if (request.removeApiKey == true && before.ownKeySet) add("key" to "(quitada)")
+                    if (isNotEmpty()) add("via" to "switcher")
+                }
+                val apply = { AssistantCompanyConfig.update(tenant, assistant.access.secrets, context.actor, request.enabled, request.acceptDisclosure, request.apiKey, request.removeApiKey) }
+                if (server == null) apply() else assistant.serverConfig.auditedCompanyChange(server.audit, context.caller.companyCode, audited, apply)
             } catch (invalid: AssistantSettingsException) {
                 return@company refused(invalid.status, invalid.code, invalid.message.orEmpty())
             }
@@ -239,11 +257,12 @@ fun Route.assistantRoutes(service: AssistantService?) {
     get("/companies/me/assistant/usage") {
         val month = call.request.queryParameters["month"]
         call.company { assistant, context, tenant ->
-            if (!context.caller.businessOwner) return@company refused(403, "BUSINESS_OWNER_REQUIRED", tr("Solo el dueno de la empresa ve el consumo del asistente."))
+            if (!context.mayManage) return@company manageRefusal(context, tr("Solo el dueno de la empresa ve el consumo del asistente."))
             val period = month(month) ?: return@company refused(400, "MONTH_INVALID", tr("El mes debe tener el formato AAAA-MM."))
             val availability = assistant.availability(tenant, context)
             val rows = context.store.usage(period)
-            val names = names(tenant, rows.map { it.userId }.toSet())
+            val names = if (context.workspace) rows.map { it.userId }.toSet().associateWith { assistant.access.serverPersonActor(it, context.caller.companyCode).name }
+            else names(tenant, rows.map { it.userId }.toSet())
             val users = rows.groupBy { it.userId to it.keySource }.map { (key, list) ->
                 AssistantUserUsage(
                     userId = key.first.toString(), name = names[key.first] ?: "Usuario", requests = list.sumOf { it.requests },
@@ -260,6 +279,11 @@ fun Route.assistantRoutes(service: AssistantService?) {
         }
     }
 }
+
+/** Why this session may not change or read the assistant's settings here (the person's own right, not the empresa permission). */
+private fun manageRefusal(context: AssistantContext, plain: String): Answer =
+    if (context.serverPerson != null) refused(403, "SERVER_PERMISSION_REQUIRED", tr("Necesitas el permiso {0}.", AssistantIds.ManagePermission))
+    else refused(403, "BUSINESS_OWNER_REQUIRED", plain)
 
 private fun companySettings(availability: AssistantAvailability) = AssistantCompanySettingsResponse(
     enabled = availability.company.enabled,
@@ -297,6 +321,18 @@ private suspend inline fun <reified T> ApplicationCall.bodyAs(): T? {
 }
 
 private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRoute: Boolean, block: (AssistantService, AssistantContext, Connection) -> Answer): Answer {
+    // The server workspace: its people (the server owner and the administrators) have a central session, not a company one.
+    if (assistant.access.companyCode(call)?.equals(ServerWorkspace.Code, ignoreCase = true) == true) {
+        val person = assistant.serverPerson(call.sessionToken())
+        if (person != null) {
+            val tenant = assistant.access.tenantConnectionForCompany(ServerWorkspace.Code)
+                ?: return refused(403, "company_not_found", tr("La empresa no esta activa."))
+            return tenant.use { connection ->
+                val context = assistant.serverContext(connection, person) ?: return@use unsupportedWorkspace(statusRoute)
+                block(assistant, context, connection)
+            }
+        }
+    }
     val (companyCode, userId) = when (val lookup = assistant.access.userSession(call)) {
         is UserSessionLookup.Denied -> return when (val decision = lookup.decision) {
             is ModuleAccessDecision.Unauthorized -> Answer.Refused(HttpStatusCode.Unauthorized, decision.code, decision.message)
@@ -313,20 +349,24 @@ private fun resolve(assistant: AssistantService, call: ApplicationCall, statusRo
         } catch (refusal: AssistantRefusal) {
             return@use refused(refusal.status, refusal.code, refusal.message.orEmpty())
         }
-            ?: return@use if (statusRoute) {
-                Answer.Ok(
-                    HttpStatusCode.OK,
-                    AssistantStatusResponse(
-                        visible = false, available = false, reason = AssistantIds.ReasonServerWorkspace,
-                        message = tr("El asistente no esta disponible en el espacio del servidor."), disclosure = assistantDisclosure(),
-                    ),
-                )
-            } else {
-                refused(403, AssistantIds.ReasonServerWorkspace, tr("El asistente no esta disponible en el espacio del servidor."))
-            }
+            ?: return@use unsupportedWorkspace(statusRoute)
         block(assistant, context, connection)
     }
 }
+
+/** What is left out: the workspace's staff accounts (company users that sign in with its code). */
+private fun unsupportedWorkspace(statusRoute: Boolean): Answer =
+    if (statusRoute) {
+        Answer.Ok(
+            HttpStatusCode.OK,
+            AssistantStatusResponse(
+                visible = false, available = false, reason = AssistantIds.ReasonServerWorkspace,
+                message = tr("El asistente no esta disponible en el espacio del servidor."), workspace = true, disclosure = assistantDisclosure(),
+            ),
+        )
+    } else {
+        refused(403, AssistantIds.ReasonServerWorkspace, tr("El asistente no esta disponible en el espacio del servidor."))
+    }
 
 /** A turn taken but not started: what runs it and how to give the conversation back when it never runs. */
 internal class PreparedTurn(val run: (AssistantSink) -> Unit, val abandon: () -> Unit)

@@ -125,7 +125,7 @@ in a new Core class `AssistantTools`, without going through MCP/JSON-RPC and wit
 
 - Offered tools = every registered tool whose module is enabled in the company and whose `permission` the user holds now
   (`UserModuleAccess.permissions(moduleId)?.has(tool.permission)`), excluding the server's own `servidor_*` tools
-  (only server owners have them; the server workspace is out, see below). Computed again for every model request and
+  (only the server owner has them, in the server workspace: see "Server workspace" below). Computed again for every model request and
   again right before executing each call; a name the model sends that is not in the current list is answered with
   `tool_result is_error "Herramienta desconocida o sin permiso"` and never executed. No `acting_company`: the assistant
   acts only in the company of the session.
@@ -141,19 +141,21 @@ in a new Core class `AssistantTools`, without going through MCP/JSON-RPC and wit
   arguments) and `eager_input_streaming` is not set (inputs are small; a write is shown to the user before it runs).
 - Read-only = `McpTool.readOnly`. Anything else (including `destructive`) needs the user's confirmation.
 
-**Server workspace: out of this version.** The status answers `available=false, reason=SERVER_WORKSPACE` there. The only
-server tools agents get today are the owner's `servidor_*` tools (whole-server blast radius, used with `acting_company`
-rechecks that live in the Agentes bridge) and an administrator's two audit read tools through a dedicated agent path;
-neither maps onto "a user in a company with their permissions", so the assistant does not expose them.
+**Server workspace (Core 0.14.1): in, for the server owner and the administrators.** See "App contract changes" at the end
+and "Implementation, Core 0.14.1". The toolbox is built from the same registry and the same checks as the person's own MCP
+agent (`ServerOwnerGrants`, `ServerAdminGrants`), re-read on every request and before every execution; a company session
+never gets a `servidor_*` tool (`CompanyGrants` excludes the module, whoever opened the session).
 
 ### Who may use it (all must hold, checked on every request)
 
-1. Not the server workspace (`SERVER_WORKSPACE`).
+1. Not a staff account of the server workspace (`SERVER_WORKSPACE`; the server owner and the administrators use it, see
+   "App contract changes").
 2. Server switch on (`SERVER_DISABLED`) and the company allowed by the server (`COMPANY_NOT_ALLOWED`; default allowed).
 3. Company switch on (`COMPANY_DISABLED`; default off, only the business owner turns it on).
 4. An API key: the company's own key, else the server key (`NO_API_KEY`); BMS_MASTER_KEY present to open it
    (`SECRETS_UNAVAILABLE`).
-5. The user is the business owner or holds `empresa.assistant.use` (`PERMISSION_REQUIRED`).
+5. The user is the business owner or holds `empresa.assistant.use` (`PERMISSION_REQUIRED`); in a session opened from the
+   server, the server person instead: the owner, or an administrator holding `server.assistant.use`.
 6. Monthly limit not reached (`LIMIT_REACHED`; history stays readable).
 
 A business owner session opened through a switcher (server owner/administrator or another company's owner) is a
@@ -165,6 +167,7 @@ owner, and vice versa.
 | Id | Level | Default | Allows |
 |---|---|---|---|
 | `server.assistant.manage` | server administrator permission (group Servidor, high risk, scoped) | owner only | Server assistant settings, key, per-company allowance and usage (companies of the administrator's scope). |
+| `server.assistant.use` | server administrator permission (group Servidor, not high risk, scoped) | owner only | Use the assistant in the workspace (audit tools) and in the companies the administrator enters. |
 | `empresa.assistant.use` | company permission (module empresa) | business owner only | See and use the assistant. Assignable in the normal permissions screen. |
 
 ### Company routes (company session: `Authorization: Bearer` + `X-Company-Code`)
@@ -525,6 +528,67 @@ model (block binding and compaction on Sonnet/Haiku 5.5, `fallbacks: "default"` 
 fallback/compaction blocks, prompt-cache hit rates (`cache_read_input_tokens` is recorded per response and in the usage
 screens, to be checked on a real server), and SSE through a real Nginx (the generated config is checked by `nginx -t`
 in `scripts/ubuntu/tests`).
+
+## Implementation, Core 0.14.1 (server workspace and server people)
+
+Where it lives: `AssistantTools.kt` (`AssistantGrants` / `AssistantGrantSource`: `CompanyGrants`, `ServerOwnerGrants`,
+`ServerAdminGrants`; `ModuleAssistantToolbox` takes one and re-reads it on every `tools()`, `preview()` and `execute()`),
+`AssistantService.kt` (`context()` for company sessions incl. switcher sessions, `serverContext()` for the workspace,
+`availability()`/`status()`), `AssistantRoutes.kt` (`resolve()` tries the central session first when `X-Company-Code` is the
+workspace), `AssistantServerRoutes.kt` / `AssistantSettings.kt` (`setCompanyEnabled`, `auditedCompanyChange`,
+`auditAssistantTool`).
+
+- **Where server people's conversations live.** In the server workspace's own database (`bms_servidor`, a company database
+  like the others: the tenant migrations V018-V021 are applied to it by the same startup catch-up and by `update.sh`), table
+  `assistant_conversations` with `user_id` = their CENTRAL user id and owner key `self`. Tenant `V021__assistant_server_people.sql`
+  drops the foreign key from `assistant_conversations.user_id` to the tenant's `application_users` (the workspace has no row for
+  the owner or an administrator). Registered where V020 is (`update.sh` required files, `applyAssistantMigration` at startup);
+  no new grants. A conversation is read and written only by (id, user id, owner key), so it is private to the person: the owner
+  and every administrator have their own, and neither reads the other's. Usage rows (`assistant_usage`, key source `server`)
+  are in the same database, which is the workspace's own entry in the usage and per-company lists.
+- **Retention.** The daily job (`Application.kt`) now runs on every company INCLUDING the workspace (it used to skip it).
+- **Limits.** The workspace is a company for the monthly limit: `serverConfig.allowance("servidor")` (allowed, own monthly
+  override, default limit otherwise), usage counted in its own database on the server key, `LIMIT_REACHED` as for a company.
+  Per-user rate and stream limits key on `servidor/<central user id>/self`.
+- **Owner's tools in the workspace** = the owner's MCP agent's tools in its own workspace: every module tool of the modules
+  enabled there (`UserModuleAccess.permissions`, owner holds all) + every `servidor_*` tool. The `acting_company` argument is
+  NOT offered (the assistant never acts in another company from the workspace; use a switcher session). Administrator's tools
+  = `ModuleAccessService.serverAuditAgent` (the same call as the administrator's agent) filtered to
+  `ServerAuditMcpTools.AdminAgentToolNames`, and only while she holds `server.assistant.use`.
+- **Execution** (company sessions and workspace): tools run with the same `ModulePermissions` as the person's agent, acting as
+  `Asistente de <persona>` (origin `assistant`, agent name `Asistente`). Server tools write their own audit row as the person
+  (as before); the assistant adds `provisioning_audit_log` `assistant.server_tool` for every non-read-only server tool it runs:
+  actor kind `server_owner`, details `{via: "assistant", actor: "Asistente de <name>", tool, result, arguments: [names only]}`
+  and the company code when the tool has one. The administrator's two read tools already audit each read
+  (`server_audit.agent_read`, `agent: "Asistente"`).
+- **Switcher sessions.** `context()` reads the session opener; for a server opener the right to use the assistant and to change
+  its switch comes from the person's live server rights (owner: always; administrator: `server.assistant.use` /
+  `server.assistant.manage`, the company in scope), never from the business owner session they act as. Tools are the business
+  owner session's company tools (`CompanyGrants`: no `servidor_*`). Conversations keep the owner key `server:<person id>`.
+  Settings changes by a server person are one central transaction (`auditedCompanyChange`): `company.assistant_changed` is
+  written first and rolled back with the company change when that fails.
+- **Previews and flags of the server tools** (`ServerMcpTools`, `ExtensionMcpTools`; previews are plain reads of the control
+  database, no request and no write, run in the preview sandbox; `companyBrief`/`moduleBrief` of the provisioning service):
+
+  | Tool | readOnly | destructive | outbound | preview |
+  |---|---|---|---|---|
+  | `list_companies`, `list_modules`, `get_module_catalog`, `list_extensions`, `preview_extension_uninstall`, `list_extension_packages`, `list_server_audit`, `list_company_activity` | yes | - | - | - |
+  | `create_company` | - | - | - | yes (company, business owner and email, what happens: nobody knows the password, whoever controls the email controls the company) |
+  | `update_company` | - | - | - | yes (company and the fields that change) |
+  | `set_company_active` | - | - | - | yes (nobody can enter while off) |
+  | `delete_company` | - | yes | - | yes (names the company and its database, "cannot be undone") |
+  | `set_company_module`, `set_workspace_module` | - | - | - | yes |
+  | `remove_module` | - | yes | - | yes (module, version, in how many companies it is active) |
+  | `install_extension` | - | - | - | yes |
+  | `configure_extension`, `set_extension_enabled` | - | - | yes | yes (settings that change; starts or stops talking to an outside service) |
+  | `uninstall_extension` | - | yes | - | yes |
+  | `apply_extension_to_group` | - | yes | - | yes (origin, targets by name, operation, whether confirm=true) |
+
+  Not exposed by MCP, so not available to the assistant either: installing or authorising module and extension packages,
+  changing the catalog, the Core update, owner passwords, server administrators (these stay in the app, as for the agents).
+  `ToolRegistryContractTest` now covers the server tools: every non-read-only one has a preview, and the destructive and
+  outbound sets are exactly the ones above.
+- **Not verified**: a real server owner session through Nginx, and the app side. The model is scripted in every test.
 
 ## App contract changes (Core 0.14.1: the assistant in the server workspace and for server people)
 

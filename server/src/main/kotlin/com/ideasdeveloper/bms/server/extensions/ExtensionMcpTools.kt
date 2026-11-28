@@ -5,6 +5,7 @@ import com.ideasdeveloper.bms.server.extensions.packages.ExtensionPackageService
 import com.ideasdeveloper.bms.server.extensions.packages.ExtensionPackageServiceException
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
 import java.sql.SQLException
@@ -43,7 +44,13 @@ object ExtensionMcpTools {
      * [service] and [packages] are only called when a tool runs. [role] gives the PostgreSQL role of
      * the server owner of the call (it throws when the user is no longer one).
      */
-    fun tools(service: () -> ExtensionService, packages: () -> ExtensionPackageService?, role: (McpToolCall) -> String): List<McpTool> {
+    fun tools(
+        service: () -> ExtensionService,
+        packages: () -> ExtensionPackageService?,
+        role: (McpToolCall) -> String,
+        // The name of a company by its code, for the confirmation cards of the assistant (a plain read, null when unknown).
+        companyName: (String) -> String? = { null },
+    ): List<McpTool> {
         fun actor(call: McpToolCall) = role(call).let { ExtensionActor(it, serverOwner = true, audit = com.ideasdeveloper.bms.server.admins.AuditActor.owner(it, call.permissions.userId), activity = call.activityActor) }
 
         fun <T> run(block: () -> T): T = try {
@@ -55,6 +62,12 @@ object ExtensionMcpTools {
         } catch (_: SQLException) {
             throw McpToolException("No se pudo completar la operacion con la base de datos.")
         }
+
+        fun company(call: McpToolCall, key: String = "code"): String {
+            val target = call.requiredString(key, 63)
+            return companyName(target)?.let { "$it ($target)" } ?: throw McpToolException("Empresa no encontrada: $target.")
+        }
+        fun row(label: String, value: String) = McpPreviewRow(label, value)
 
         val code = "code" to McpSchema.string("Codigo de la empresa (servidor_list_companies).")
         val extensionId = "extension_id" to McpSchema.string("Id de la extension (servidor_list_extensions).")
@@ -76,6 +89,12 @@ object ExtensionMcpTools {
                 description = "Instala una extension en la empresa (queda instalada, sin activar). El modulo debe estar activo en la empresa.",
                 permission = Permission,
                 inputSchema = McpSchema.obj(mapOf(code, extensionId), required = listOf("code", "extension_id")),
+                preview = { call ->
+                    listOf(
+                        row("Empresa", company(call)), row("Extension", call.requiredString("extension_id", 63)),
+                        row("Que pasa", "Se instala la extension en la empresa (sus tablas y sus ajustes vacios). Queda sin activar: no se conecta a nada hasta que se configure y se active."),
+                    )
+                },
             ) { call ->
                 encode(
                     ExtensionSummary.serializer(),
@@ -92,6 +111,16 @@ object ExtensionMcpTools {
                     mapOf(code, extensionId, "settings" to stringMap("Ajustes a cambiar: clave -> valor.")),
                     required = listOf("code", "extension_id", "settings"),
                 ),
+                // A setting can change where the company's data is sent (a service URL, an account, a recipient).
+                outbound = true,
+                preview = { call ->
+                    val settings = call.stringMap("settings")
+                    listOf(
+                        row("Empresa", company(call)), row("Extension", call.requiredString("extension_id", 63)),
+                        row("Ajustes que cambian", if (settings.isEmpty()) "(ninguno)" else settings.entries.joinToString("\n") { (key, value) -> "$key = ${value.ifEmpty { "(vacio: se borra)" }}" }),
+                        row("Que pasa", "Cambia la configuracion de la extension, incluidos los destinos a donde envia datos de la empresa (servicios externos). Los ajustes secretos no se escriben por aqui."),
+                    )
+                },
             ) { call ->
                 val company = call.requiredString("code", 63)
                 val id = call.requiredString("extension_id", 63)
@@ -113,6 +142,19 @@ object ExtensionMcpTools {
                     mapOf(code, extensionId, "enabled" to McpSchema.boolean("true para activar, false para desactivar.")),
                     required = listOf("code", "extension_id", "enabled"),
                 ),
+                // Turning an extension on starts its connection with an outside service and its jobs.
+                outbound = true,
+                preview = { call ->
+                    val enable = call.boolean("enabled")
+                    listOf(
+                        row("Empresa", company(call)), row("Extension", call.requiredString("extension_id", 63)),
+                        row(
+                            "Que pasa",
+                            if (enable) "Se activa: la extension empieza a conectarse con su servicio externo y a enviar y recibir datos de la empresa segun su configuracion."
+                            else "Se desactiva: deja de conectarse y de sincronizar. No borra datos.",
+                        ),
+                    )
+                },
             ) { call ->
                 val company = call.requiredString("code", 63)
                 val id = call.requiredString("extension_id", 63)
@@ -142,6 +184,14 @@ object ExtensionMcpTools {
                 permission = Permission,
                 inputSchema = McpSchema.obj(mapOf(code, extensionId, choices), required = listOf("code", "extension_id")),
                 destructive = true,
+                preview = { call ->
+                    val chosen = call.stringMap("choices")
+                    listOf(
+                        row("Empresa", company(call)), row("Extension que se desinstala", call.requiredString("extension_id", 63)),
+                        row("Opciones elegidas", if (chosen.isEmpty()) "(ninguna: las opciones sin valor por defecto haran fallar la herramienta)" else chosen.entries.joinToString("\n") { (key, value) -> "$key = $value" }),
+                        row("Que pasa", "Se borran los ajustes de la extension y lo que las opciones elijan borrar; nunca se borran leads ni clientes. Usa servidor_preview_extension_uninstall para ver las cantidades. No se puede deshacer."),
+                    )
+                },
             ) { call ->
                 val company = call.requiredString("code", 63)
                 val id = call.requiredString("extension_id", 63)
@@ -175,6 +225,21 @@ object ExtensionMcpTools {
                     required = listOf("code", "extension_id", "targets"),
                 ),
                 destructive = true,
+                preview = { call ->
+                    val targets = (call.arguments["targets"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.take(63)?.ifEmpty { null } }.orEmpty()
+                    val operation = call.string("operation", 16).ifEmpty { GroupOperationType.Apply }
+                    listOf(
+                        row("Empresa de origen", company(call)), row("Extension", call.requiredString("extension_id", 63)),
+                        row("Operacion", operation),
+                        row("Empresas de destino", if (targets.isEmpty()) "(ninguna)" else targets.joinToString("\n") { target -> companyName(target)?.let { "$it ($target)" } ?: "$target (no existe)" }),
+                        row(
+                            "Que pasa",
+                            if (!call.boolean("confirm")) "Sin confirm=true solo devuelve la vista previa por empresa y no cambia nada."
+                            else if (operation == GroupOperationType.Uninstall) "Se desinstala la extension en cada empresa de destino: se borran sus ajustes y lo que elijan las opciones. No se puede deshacer."
+                            else "Se instala si falta, se copian los ajustes de la aplicacion (los de conexion no) y se activa en cada empresa de destino.",
+                        ),
+                    )
+                },
             ) { call ->
                 val company = call.requiredString("code", 63)
                 val id = call.requiredString("extension_id", 63)

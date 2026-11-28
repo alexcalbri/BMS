@@ -31,12 +31,14 @@ object ServerPermissionIds {
     const val UsersTwoFactorReset = "server.users.two_factor_reset"
     // The in-app assistant (GLOBAL_AGENT.md): settings, API key, per-company allowance and usage. High risk.
     const val AssistantManage = AssistantIds.ManagePermission
+    // Use the assistant in the server workspace and inside the companies the administrator may enter. Not high risk.
+    const val AssistantUse = AssistantIds.ServerUsePermission
 
     val All: List<String> = listOf(
         CompaniesView, CompaniesCreate, CompaniesEdit, CompaniesStatus, CompaniesModules, CompaniesExtensions,
         CompaniesOwnerPassword, CompaniesEnter, ModulesView, ModulesInstall, ModulesRemove, ModulesAuthorizeUnsigned,
         ExtensionsInstall, ExtensionsAuthorizeUnsigned, CoreUpdate, LogsView, AuditView, Settings, Workspace, UsersTwoFactorReset,
-        AssistantManage,
+        AssistantManage, AssistantUse,
     )
 }
 

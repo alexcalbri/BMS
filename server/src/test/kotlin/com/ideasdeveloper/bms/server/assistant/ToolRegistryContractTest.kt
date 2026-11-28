@@ -1,5 +1,8 @@
 package com.ideasdeveloper.bms.server.assistant
 
+import com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools
+import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
+import com.ideasdeveloper.bms.server.extensions.ExtensionMcpTools
 import com.ideasdeveloper.bms.server.modules.RegisteredMcpTool
 import com.ideasdeveloper.bms.server.modules.ServerMcpModuleId
 import kotlin.test.Test
@@ -98,5 +101,45 @@ class ToolRegistryContractTest {
             assertTrue(!tool.tool.readOnly, "$name is read only: it does not belong in the audit of writers")
             assertTrue(reason.length > 10, "$name needs a reason")
         }
+    }
+
+    // ---- The server's own tools (the server owner's assistant in the server workspace, Core 0.14.1) ----
+
+    // Built as the server builds them (nothing runs at construction: every service is only reached when a tool runs).
+    private val noDatabase = java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(javax.sql.DataSource::class.java)) { _, _, _ ->
+        throw java.sql.SQLException("no database", "08001")
+    } as javax.sql.DataSource
+    private val serverTools: Map<String, RegisteredMcpTool> = (
+        ServerMcpTools.toolsWith({ error("not used") }) { role -> ExtensionMcpTools.tools({ error("not used") }, { null }, role) } +
+            ServerAuditMcpTools(noDatabase, { error("not used") }, { error("not used") }, { error("not used") }).tools
+        ).map { RegisteredMcpTool(ServerMcpModuleId, "Servidor", it) }.associateBy { it.qualifiedName }
+
+    private val serverReadOnly = setOf(
+        "servidor_list_companies", "servidor_list_modules", "servidor_get_module_catalog", "servidor_list_extensions",
+        "servidor_preview_extension_uninstall", "servidor_list_extension_packages", "servidor_list_server_audit", "servidor_list_company_activity",
+    )
+    private val serverDestructive = setOf("servidor_delete_company", "servidor_remove_module", "servidor_uninstall_extension", "servidor_apply_extension_to_group")
+    // Changing a setting of an extension, or turning it on, changes what the company sends to an outside service.
+    private val serverOutbound = setOf("servidor_configure_extension", "servidor_set_extension_enabled")
+
+    @Test
+    fun everyNonReadOnlyServerToolHasAPreviewAndTheClassificationIsTheReviewedOne() {
+        assertTrue(serverTools.size >= 20, "server tools: ${serverTools.keys}")
+        assertEquals(serverReadOnly, serverTools.values.filter { it.tool.readOnly }.map { it.qualifiedName }.toSet())
+        // A tool that changes the server shows what it will do (the company's name, what is deleted, which owner is created).
+        val noPreview = serverTools.values.filter { !it.tool.readOnly && it.tool.preview == null }.map { it.qualifiedName }
+        assertEquals(emptyList(), noPreview, "server tools that change something and show no preview")
+        assertEquals(serverDestructive, serverTools.values.filter { it.tool.destructive }.map { it.qualifiedName }.toSet())
+        assertEquals(serverOutbound, serverTools.values.filter { it.tool.outbound }.map { it.qualifiedName }.toSet())
+        // None of them is both read only and flagged.
+        assertTrue(serverTools.values.none { it.tool.readOnly && (it.tool.destructive || it.tool.outbound || it.tool.preview != null) })
+        // Creating a company is not destructive nor outbound (it sends nothing and deletes nothing) but its preview says who gets control.
+        assertTrue(!serverTools.getValue("servidor_create_company").tool.destructive && serverTools.getValue("servidor_create_company").tool.preview != null)
+    }
+
+    @Test
+    fun theServerToolsAreNotPartOfWhatACompanyAssistantCanOffer() {
+        assertTrue(tools.keys.none { it.startsWith("servidor_") })
+        assertTrue(serverTools.keys.all { it.startsWith("servidor_") })
     }
 }

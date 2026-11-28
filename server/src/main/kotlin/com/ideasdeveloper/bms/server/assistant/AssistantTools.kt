@@ -1,6 +1,12 @@
 package com.ideasdeveloper.bms.server.assistant
 
 import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools
+import com.ideasdeveloper.bms.server.admins.ServerActorKind
+import com.ideasdeveloper.bms.server.admins.ServerActorLookup
+import com.ideasdeveloper.bms.server.admins.ServerPermission
+import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
+import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
@@ -70,10 +76,16 @@ object AssistantTools {
      * Sorted by name, so the request prefix stays byte-identical.
      */
     fun visible(modules: List<RegisteredModuleMcp>, user: UserModuleAccess): List<AssistantTool> =
-        modules.filter { it.moduleId != ServerMcpModuleId }.flatMap { it.tools }
+        registered(modules, user, includeServer = false).map(::of).sortedBy { it.name }
+
+    /**
+     * The registered tools [user] may use now. The server's own tools ("servidor_*") only with [includeServer], which only
+     * the server workspace asks for, and then [UserModuleAccess.permissions] still gives them to a server owner alone.
+     */
+    fun registered(modules: List<RegisteredModuleMcp>, user: UserModuleAccess, includeServer: Boolean): List<RegisteredMcpTool> =
+        modules.filter { includeServer || it.moduleId != ServerMcpModuleId }.flatMap { it.tools }
             .filter { registered -> user.permissions(registered.moduleId)?.has(registered.tool.permission) == true }
-            .map(::of)
-            .sortedBy { it.name }
+            .sortedBy { it.qualifiedName }
 
     fun of(registered: RegisteredMcpTool) = AssistantTool(
         name = registered.qualifiedName,
@@ -227,40 +239,113 @@ object AssistantTools {
 }
 
 /**
- * The real toolbox: the module registry of [access] and the user's live access in [companyCode]. Each call opens its
- * own tenant connection; a tool runs with the same ModulePermissions a screen gets for that user, acting as
- * "Asistente de <usuario>" ([actor] is the session's actor, switcher-aware).
+ * What a person may use now, read from the database on every call: the registered tools they are offered, the permissions
+ * each one runs with and the guidance of the modules behind them. Never cached between calls.
+ */
+class AssistantGrants(
+    val tools: List<RegisteredMcpTool>,
+    val permissions: (RegisteredMcpTool) -> ModulePermissions?,
+    val guidance: List<Pair<String, String>>,
+)
+
+/** Where a toolbox gets its [AssistantGrants] from: a company user, the server owner or an administrator in the workspace. */
+fun interface AssistantGrantSource {
+    /** The grants now on [tenant] (the connection of the place), or null when the person has no access any more. */
+    fun grants(tenant: Connection): AssistantGrants?
+}
+
+/** Guidance of the modules that have a tool in [tools]. */
+private fun guidanceOf(modules: List<RegisteredModuleMcp>, tools: List<RegisteredMcpTool>): List<Pair<String, String>> {
+    val usable = tools.map { it.moduleId }.toSet()
+    return modules.filter { it.moduleId in usable && it.instructions.isNotBlank() }.sortedBy { it.moduleId }.map { it.moduleName to it.instructions }
+}
+
+/**
+ * A user of a company: the tools of the modules enabled there that the user's permissions allow (the same rule as the MCP
+ * bridge). The server's own tools are never part of it, whoever the user is: a business owner (also in a switcher session
+ * opened by a server person) never gets a "servidor_*" tool.
+ */
+class CompanyGrants(private val access: ModuleAccessService, private val companyCode: String, private val userId: UUID) : AssistantGrantSource {
+    override fun grants(tenant: Connection): AssistantGrants? {
+        val user = access.userAccess(tenant, companyCode, userId, serverOwner = false) ?: return null
+        val modules = access.moduleMcp()
+        val tools = AssistantTools.registered(modules, user, includeServer = false)
+        return AssistantGrants(tools, { registered -> user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) } }, guidanceOf(modules, tools))
+    }
+}
+
+/**
+ * The server owner in the server workspace: exactly what the owner's own MCP agent gets there. The tools of the modules
+ * enabled in the workspace and the server's own tools (companies, modules, extensions, audit); [ModuleAccessService.userAccess]
+ * re-checks that the user is still an active server owner.
+ */
+class ServerOwnerGrants(private val access: ModuleAccessService, private val userId: UUID) : AssistantGrantSource {
+    override fun grants(tenant: Connection): AssistantGrants? {
+        val user = access.userAccess(tenant, ServerWorkspace.Code, userId, serverOwner = true)?.takeIf { it.serverOwner } ?: return null
+        val modules = access.moduleMcp()
+        val tools = AssistantTools.registered(modules, user, includeServer = true)
+        return AssistantGrants(tools, { registered -> user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) } }, guidanceOf(modules, tools))
+    }
+}
+
+/**
+ * A server administrator in the server workspace: exactly what an administrator's MCP agent gets
+ * ([ModuleAccessService.serverAuditAgent]: the two audit read tools, only with server.audit.view), and only while the
+ * administrator holds server.assistant.use ([live] reads their rights now).
+ */
+class ServerAdminGrants(
+    private val access: ModuleAccessService,
+    private val userId: UUID,
+    private val live: (UUID) -> ServerActorLookup,
+) : AssistantGrantSource {
+    override fun grants(tenant: Connection): AssistantGrants? {
+        val actor = (live(userId) as? ServerActorLookup.Found)?.actor?.takeIf { it.kind == ServerActorKind.Admin && it.has(ServerPermission.AssistantUse) } ?: return null
+        val agent = access.serverAuditAgent(userId) ?: return null
+        val tools = agent.tools.filter { it.qualifiedName in ServerAuditMcpTools.AdminAgentToolNames }.sortedBy { it.qualifiedName }
+        if (tools.isEmpty() || actor.userId != agent.userId) return null
+        return AssistantGrants(tools, { agent.permissions }, listOf("Servidor" to AdminInstructions))
+    }
+
+    companion object {
+        const val AdminInstructions =
+            "Eres el asistente de un administrador del servidor. Solo puedes leer la auditoria del servidor (servidor_list_server_audit) " +
+                "y el registro de actividad de las empresas a su alcance (servidor_list_company_activity). No puedes cambiar nada ni entrar " +
+                "a ninguna empresa. Cada consulta queda registrada a nombre del administrador."
+    }
+}
+
+/**
+ * The real toolbox: the module registry of [access] and the person's live grants ([grants], on the connection of the place
+ * [companyCode]). Each call opens its own tenant connection; a tool runs with the same ModulePermissions a screen (or the
+ * person's own MCP agent) gets, acting as "Asistente de <persona>" ([actor] is the session's actor, switcher-aware).
+ * [executed] is told after a tool of the server ran (and changed something), for the server audit.
  */
 class ModuleAssistantToolbox(
     private val access: ModuleAccessService,
     private val companyCode: String,
     private val userId: UUID,
+    private val grants: AssistantGrantSource = CompanyGrants(access, companyCode, userId),
+    private val executed: (RegisteredMcpTool, JsonObject, Boolean) -> Unit = { _, _, _ -> },
     private val actor: () -> ActivityActor,
 ) : AssistantToolbox {
     private val log = LoggerFactory.getLogger(ModuleAssistantToolbox::class.java)
 
     private fun <T> tenant(block: (Connection) -> T): T? = access.tenantConnectionForCompany(companyCode)?.use(block)
 
-    private fun user(tenant: Connection): UserModuleAccess? = access.userAccess(tenant, companyCode, userId, serverOwner = false)
-
     override fun tools(): List<AssistantTool> = tenant { connection ->
-        user(connection)?.let { AssistantTools.visible(access.moduleMcp(), it) }
+        grants.grants(connection)?.tools?.map(AssistantTools::of)?.sortedBy { it.name }
     }.orEmpty()
 
-    override fun instructions(): List<Pair<String, String>> {
-        val modules = access.moduleMcp()
-        val usable = tools().map { it.moduleId }.toSet()
-        return modules.filter { it.moduleId in usable && it.instructions.isNotBlank() }.sortedBy { it.moduleId }.map { it.moduleName to it.instructions }
-    }
+    override fun instructions(): List<Pair<String, String>> = tenant { connection -> grants.grants(connection)?.guidance }.orEmpty()
 
     override fun execute(name: String, arguments: JsonObject): AssistantToolResult = tenant { connection ->
-        val user = user(connection) ?: return@tenant AssistantToolResult(false, AssistantTools.UnknownTool)
         // Read again now: a permission removed since the model saw the list stops the call here.
-        val registered = access.moduleMcp().filter { it.moduleId != ServerMcpModuleId }.flatMap { it.tools }.firstOrNull { it.qualifiedName == name }
-        val permissions = registered?.let { user.permissions(it.moduleId) }?.takeIf { it.has(registered.tool.permission) }
+        val now = grants.grants(connection) ?: return@tenant AssistantToolResult(false, AssistantTools.UnknownTool)
+        val registered = now.tools.firstOrNull { it.qualifiedName == name }
+        val permissions = registered?.let(now.permissions)
         if (registered == null || permissions == null) return@tenant AssistantToolResult(false, AssistantTools.UnknownTool)
         val call = McpToolCall(arguments, permissions.withActivityActor(actor().viaAssistant()), connection, access, ActivityActor.AssistantAgentName, registered.moduleId)
-        try {
+        val result = try {
             AssistantToolResult(true, AssistantTools.resultText(registered.tool.handler(call)))
         } catch (failure: McpToolException) {
             AssistantToolResult(false, failure.message.orEmpty())
@@ -269,6 +354,10 @@ class ModuleAssistantToolbox(
             log.error("Assistant tool {} failed in company {}: {}", name, companyCode, failure.javaClass.name)
             AssistantToolResult(false, "No se pudo completar la operacion.")
         }
+        if (registered.moduleId == ServerMcpModuleId && !registered.tool.readOnly) {
+            runCatching { executed(registered, arguments, result.ok) }.onFailure { log.error("Server audit of assistant tool {} failed: {}", name, it.javaClass.name) }
+        }
+        result
     } ?: AssistantToolResult(false, "No se pudo abrir la empresa.")
 
     /**
@@ -283,11 +372,10 @@ class ModuleAssistantToolbox(
     override fun preview(name: String, arguments: JsonObject): AssistantPreview {
         val connection = access.dedicatedTenantConnectionForCompany(companyCode) ?: return AssistantPreview(JsonArray(emptyList()), "No se pudo abrir la empresa.")
         try {
-            val user = user(connection) ?: return AssistantPreview(JsonArray(emptyList()))
-            val registered = access.moduleMcp().filter { it.moduleId != ServerMcpModuleId }.flatMap { it.tools }.firstOrNull { it.qualifiedName == name }
+            val now = grants.grants(connection) ?: return AssistantPreview(JsonArray(emptyList()))
+            val registered = now.tools.firstOrNull { it.qualifiedName == name }
             val preview = registered?.tool?.preview ?: return AssistantPreview(JsonArray(emptyList()))
-            val permissions = user.permissions(registered.moduleId)?.takeIf { it.has(registered.tool.permission) }
-                ?: return AssistantPreview(JsonArray(emptyList()))
+            val permissions = now.permissions(registered) ?: return AssistantPreview(JsonArray(emptyList()))
             // Resolved before the sandbox closes: it may open a connection of its own.
             val activity = actor().viaAssistant()
             connection.autoCommit = true

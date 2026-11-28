@@ -256,6 +256,13 @@ class ServerRouteMatrixTest {
             ),
             infos.filter { it.risk == "high" }.map { it.id }.toSet(),
         )
+        // server.assistant.use (Core 0.14.1): an ordinary permission, scoped, in the Servidor group, right after manage.
+        val use = ServerPermission.AssistantUse.info()
+        assertEquals(listOf("server.assistant.use", "normal", "true"), listOf(use.id, use.risk, use.scoped.toString()))
+        assertEquals(ServerPermission.AssistantManage.info().group, use.group)
+        assertEquals(com.ideasdeveloper.bms.AssistantIds.ServerUsePermission, use.id)
+        // No server route needs it: it only decides who may use the assistant (company routes check it live).
+        assertTrue(ServerRoutePolicies.all.values.none { it is RoutePolicy.Requires && it.permission == ServerPermission.AssistantUse })
         // No permission is about administrators or server owners.
         assertTrue(ServerPermission.entries.none { "admin" in it.id || "owner." in it.id })
     }

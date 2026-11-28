@@ -10,6 +10,7 @@ import com.ideasdeveloper.bms.AssistantServerSettingsResponse
 import com.ideasdeveloper.bms.AssistantServerUsageResponse
 import com.ideasdeveloper.bms.server.admins.ServerActor
 import com.ideasdeveloper.bms.server.admins.ServerActorResolver
+import com.ideasdeveloper.bms.server.admins.isServerWorkspace
 import com.ideasdeveloper.bms.server.admins.serverActor
 import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
 import com.ideasdeveloper.bms.server.i18n.tr
@@ -36,12 +37,24 @@ private val ServerJson = Json { ignoreUnknownKeys = true }
 class AssistantServerAdmin(val central: DataSource, val service: AssistantService) {
     val config: AssistantServerConfig get() = service.serverConfig
 
-    /** Companies (not the server workspace) the actor may act on, by name. */
+    /**
+     * Companies the actor may act on, by name. The server workspace comes first and only for the server owner: it is not a
+     * company of any administrator's scope, but it has its own entry for the allowance and the monthly limit.
+     */
     fun companies(actor: ServerActor): List<Pair<String, String>> = central.connection.use { connection ->
         connection.prepareStatement("SELECT code, name FROM companies WHERE NOT is_server_workspace ORDER BY lower(name), code").use { query ->
             query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
         }
-    }.filter { (code, _) -> actor.mayActOn(code) }
+    }.filter { (code, _) -> actor.mayActOn(code) }.let { companies ->
+        if (actor.isOwner) listOfNotNull(workspace()) + companies else companies
+    }
+
+    /** The server workspace's code and name, when it exists. */
+    fun workspace(): Pair<String, String>? = central.connection.use { connection ->
+        connection.prepareStatement("SELECT code, name FROM companies WHERE is_server_workspace").use { query ->
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+        }
+    }
 
     fun settings(): AssistantServerSettingsResponse {
         val settings = config.read()
@@ -54,19 +67,40 @@ class AssistantServerAdmin(val central: DataSource, val service: AssistantServic
 
     fun company(code: String, name: String, settings: AssistantServerSettings, allowance: AssistantAllowance): AssistantServerCompany {
         val month = YearMonth.now(ZoneOffset.UTC)
-        val limited = if (settings.limitOwnKeyCompanies) setOf("server", "company") else setOf("server")
+        val workspace = isServerWorkspace(code)
+        // The workspace has no company switch or key: its switch is the server's and it only ever uses the server key.
+        val limited = if (settings.limitOwnKeyCompanies && !workspace) setOf("server", "company") else setOf("server")
         val (company, used) = try {
             service.access.tenantConnectionForCompany(code)?.use { tenant ->
-                AssistantCompanyConfig.read(tenant) to service.store(code).monthUsage(month, limited)
+                (if (workspace) AssistantCompanySettings(enabled = settings.enabled) else AssistantCompanyConfig.read(tenant)) to service.store(code).monthUsage(month, limited)
             }
         } catch (_: SQLException) {
             null
-        } ?: (AssistantCompanySettings() to 0L)
+        } ?: ((if (workspace) AssistantCompanySettings(enabled = settings.enabled) else AssistantCompanySettings()) to 0L)
         return AssistantServerCompany(
             code = code, name = name, allowed = allowance.allowed, monthlyTokens = allowance.monthlyTokens,
             effectiveMonthlyTokens = config.monthlyLimit(settings, allowance), enabled = company.enabled, ownKeySet = company.ownKeySet,
-            monthUsedTokens = used,
+            monthUsedTokens = used, workspace = workspace,
         )
+    }
+
+    /**
+     * Turns the assistant of company [code] on or off as the server person [actor] (the same change the business owner makes:
+     * the company's activity row names the person "(desde el servidor)", the disclosure acceptance is recorded as given by
+     * them, and `company.assistant_changed` goes to the server audit in the same transaction).
+     */
+    fun setCompanyEnabled(code: String, enabled: Boolean, acceptDisclosure: Boolean?, actor: ServerActor) {
+        val tenant = service.access.tenantConnectionForCompany(code)
+            ?: throw AssistantSettingsException("COMPANY_NOT_FOUND", tr("Empresa no encontrada."), 404)
+        tenant.use {
+            val before = AssistantCompanyConfig.read(tenant)
+            val details = if (before.enabled == enabled) emptyList() else listOf<Pair<String, Any?>>(
+                "enabled.from" to before.enabled, "enabled.to" to enabled, "disclosureAccepted" to (acceptDisclosure == true), "via" to "server",
+            )
+            config.auditedCompanyChange(actor.audit, code, details) {
+                AssistantCompanyConfig.update(tenant, service.access.secrets, service.access.serverPersonActor(actor.userId, code), enabled, acceptDisclosure, null, null)
+            }
+        }
     }
 
     fun usage(actor: ServerActor, month: YearMonth): AssistantServerUsageResponse = AssistantServerUsageResponse(
@@ -166,16 +200,25 @@ fun Route.assistantServerRoutes(authorizer: ServerActorResolver, admin: Assistan
         val assistant = admin ?: return@put call.unavailable()
         val code = call.parameters["code"].orEmpty().trim()
         val request = call.json<AssistantCompanyAllowanceRequest>()
-            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar allowed.")))
+            ?.takeIf { it.allowed != null || it.enabled != null }
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", tr("Debes enviar allowed o enabled.")))
         val name = withContext(Dispatchers.IO) { assistant.companies(actor).firstOrNull { it.first == code }?.second }
             ?: return@put call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("COMPANY_NOT_FOUND", tr("Empresa no encontrada.")))
+        // The workspace has no switch of its own: it is the server's.
+        if (request.enabled != null && isServerWorkspace(code)) {
+            return@put call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("USE_SERVER_SETTINGS", tr("En el espacio del servidor el asistente se configura en los ajustes del servidor.")))
+        }
         val answer = try {
             withContext(Dispatchers.IO) {
-                val allowance = assistant.config.setAllowance(code, request.allowed, request.monthlyTokens, actor.audit)
+                // The switch first: without the disclosure nothing else changes.
+                request.enabled?.let { assistant.setCompanyEnabled(code, it, request.acceptDisclosure, actor) }
+                val allowance = request.allowed?.let { assistant.config.setAllowance(code, it, request.monthlyTokens, actor.audit) } ?: assistant.config.allowance(code)
                 assistant.company(code, name, assistant.config.read(), allowance)
             }
         } catch (failure: AssistantSettingsException) {
             return@put call.settingsFailure(failure)
+        } catch (_: SQLException) {
+            return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa.")))
         }
         call.respond(HttpStatusCode.OK, answer)
     }
