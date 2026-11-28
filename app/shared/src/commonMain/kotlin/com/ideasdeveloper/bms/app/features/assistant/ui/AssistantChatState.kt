@@ -357,6 +357,11 @@ internal class AssistantChatState(
                 index--
             }
         }
+        if (event.code == "CONFIRMATION_CHANGED") {
+            // Va justo despues del tool_finished con error de esa herramienta: pasa a "no ejecutada porque los datos cambiaron".
+            val at = entries.indexOfLast { it is ToolLine && (it.status == "error" || it.status == "running") }
+            if (at >= 0) entries[at] = (entries[at] as ToolLine).copy(status = "changed", message = null)
+        }
         textOpen = false
         val text = event.message.ifBlank { noticeText(event.code) }
         if (text.isNotBlank()) entries.add(NoticeLine(key(), event.code, text))
@@ -369,6 +374,8 @@ internal fun noticeText(code: String): String = when (code) {
     "MAX_TOKENS" -> tr("La respuesta se corto porque alcanzo su longitud maxima.")
     "FALLBACK" -> tr("Se uso un modelo alternativo para responder.")
     "COMPACTED" -> tr("La conversacion se resumio para seguir.")
+    "CONFIRMATION_CHANGED" -> tr("Los datos cambiaron desde que se mostro la confirmacion; hay que confirmar de nuevo.")
+    "EXTERNAL_LINK" -> tr("La respuesta tiene enlaces a sitios externos. Revisalos antes de abrirlos.")
     "CLOSED" -> tr("Esta conversacion no puede continuar. Empieza una conversacion nueva.")
     else -> ""
 }

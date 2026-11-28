@@ -164,4 +164,7 @@ internal fun englishAssistantPart(): Map<String, String> = mapOf(
     "Despliega los valores largos para poder aprobar." to "Expand the long values to be able to approve.",
     "Ver todo ({0} caracteres)" to "View all ({0} characters)",
     "Contiene caracteres ocultos o que cambian el orden del texto; se muestran como [U+XXXX]." to "Contains hidden characters or characters that reorder the text; they are shown as [U+XXXX].",
+    "Los datos cambiaron desde que se mostro la confirmacion; hay que confirmar de nuevo." to "The data changed since the confirmation was shown; it must be confirmed again.",
+    "La respuesta tiene enlaces a sitios externos. Revisalos antes de abrirlos." to "The answer has links to external sites. Check them before opening them.",
+    "{0}: No ejecutada: los datos cambiaron" to "{0}: Not run: the data changed",
 )

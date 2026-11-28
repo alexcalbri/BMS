@@ -214,7 +214,7 @@ private fun ChatEntryView(entry: ChatEntry, chat: AssistantChatState) {
                 Text(
                     "• " + toolLineText(entry),
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (failed) colors.danger else colors.muted,
+                    color = if (failed) colors.danger else if (entry.status == "changed") colors.warning else colors.muted,
                 )
                 entry.message?.takeIf { failed }?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = colors.danger, modifier = Modifier.padding(start = 12.dp))
@@ -225,7 +225,7 @@ private fun ChatEntryView(entry: ChatEntry, chat: AssistantChatState) {
             entry.text,
             style = MaterialTheme.typography.bodySmall,
             fontStyle = FontStyle.Italic,
-            color = if (entry.code == "REFUSAL" || entry.code == "EXTERNAL_LINK") colors.warning else colors.muted,
+            color = if (entry.code == "REFUSAL" || entry.code == "EXTERNAL_LINK" || entry.code == "CONFIRMATION_CHANGED") colors.warning else colors.muted,
             modifier = Modifier.fillMaxWidth().background(colors.surfaceAlt, MaterialTheme.shapes.small).padding(8.dp),
         )
         is ConfirmationCard -> ConfirmationCardView(entry, chat)
@@ -241,6 +241,7 @@ private fun toolLineText(entry: ToolLine): String = when (entry.status) {
     "pending" -> tr("{0}: espera tu aprobacion", entry.label)
     "not_run" -> tr("{0}: no se ejecuto", entry.label)
     "unknown" -> tr("{0}: resultado desconocido", entry.label)
+    "changed" -> tr("{0}: No ejecutada: los datos cambiaron", entry.label)
     else -> entry.label
 }
 
