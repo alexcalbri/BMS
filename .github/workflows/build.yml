@@ -65,6 +65,35 @@ jobs:
           path: server/build/reports/tests
           retention-days: 7
 
+  # Igual que `server`, pero con el codigo de las extensiones (extensions/*/server) en el classpath de pruebas:
+  # el modulo :server no las compila por si solo, asi que sin este job un cambio en Core podia romperlas con CI en verde.
+  server-extensions:
+    name: Pruebas del servidor con extensiones
+    needs: wrapper-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: liberica
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: ${{ github.ref_name != 'develop' && github.ref_name != 'main' && github.ref_name != 'master' }}
+      - run: ./gradlew -I gradle/ci/with-extensions.init.gradle.kts :server:test --continue
+      - name: Reporte de pruebas
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: reporte-pruebas-servidor-extensiones
+          path: server/build/reports/tests
+          retention-days: 7
+
   app:
     name: Compilacion de la app (JVM, JS, Android)
     runs-on: ubuntu-latest
