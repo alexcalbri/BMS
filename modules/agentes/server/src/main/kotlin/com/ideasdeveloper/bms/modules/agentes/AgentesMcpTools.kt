@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.agentes
 
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
@@ -55,6 +56,15 @@ object AgentesMcpTools {
                 "agentes. Confirma con el usuario antes; si es tu propia conexion, perderas el acceso.",
             permission = AgentesScreens.Connect,
             destructive = true,
+            preview = { call ->
+                val token = visible(call)
+                listOf(
+                    McpPreviewRow("Conexion que se revoca", token.name),
+                    McpPreviewRow("Usuario", token.userName),
+                    McpPreviewRow("Acceso", if (token.oauthClient != null) "OAuth" else "token ...${token.hint}"),
+                    McpPreviewRow("Efecto", "El agente deja de poder usar BMS de inmediato; no se puede deshacer."),
+                )
+            },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la conexion (list_agents).")), required = listOf("id")),
         ) { call -> revoke(call) },
         McpTool(

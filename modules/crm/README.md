@@ -1043,3 +1043,24 @@ block log, the queue of outbound notices, the one-time Meta connection links and
   `POST /modules/crm/ui/import` the same limit; the other screens keep the 2 MB of Nginx). The agent tool `import_csv`
   takes up to 1,000,000 characters, because the MCP endpoint reads at most 1 MB per request; a larger CSV goes through
   `import_from_url` or the import screen.
+
+## 0.33.0 (needs Core 0.14.0)
+
+Confirmation card of the Core's in-app assistant (GLOBAL_AGENT.md): send_message, run_automation, press_lead_button, import_from_url and the integration tests are marked `outbound`; send_message, delete_lead, delete_interest, delete_stage, delete_message_template and delete_automation have a `preview` (recipient, address and final text; the names of what is deleted).
+
+## 0.33.1 (needs Core 0.14.0)
+
+Review fixes of the Core's in-app assistant (GLOBAL_AGENT.md, "Approval is bound to what runs"):
+
+- `send_message` (assistant and MCP agents alike) sends exactly what its card shows. The text the caller wrote goes out as PLAIN
+  TEXT (`CrmMail.render(plain = true)`: every `<` is escaped, so an `<img src>`, a link or an invisible element cannot travel as
+  HTML); a template is translated only from translations already saved (a database read), never by a request to the translation
+  service, and without one the base language is sent and the card says so (`composeReply(fromAgent = true)`,
+  `CrmTemplateMailer.renderFor/compose(remote = false)`). The card has a "Formato" row and, when it applies, a "Traduccion" row.
+  The screens (reply form, buttons, automations) keep their behavior.
+- Marked `outbound` with a `preview` in plain words (what goes where): `save_automation` (trigger, templates, how many leads match
+  today), `save_message_template` (raw HTML source and which automations use it), `update_mail_settings`, `update_user_notifications`,
+  `update_meta`, `meta_connect_page`, `meta_connect_whatsapp`, `update_wordpress`, `encuentra24_sync`, `update_cloudbeds`,
+  `close_property_sale`, `create_reservation`; and `preview` added to the ones already marked: `run_automation`,
+  `press_lead_button`, `import_from_url`, `meta_fill_names`, `wordpress_test`, `wordpress_sync_agents`, `cloudbeds_test`.
+  Destructive `bulk_update_leads` and `apply_pipeline_template` have a preview too. No preview makes a request of any kind.

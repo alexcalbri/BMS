@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -91,6 +92,7 @@ object CrmSettingsMcpTools {
             title = "Eliminar interes",
             description = "Elimina un interes; sus leads pasan a Recepcion (sin interes).$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> interestPreview(call) },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del interes.")), required = listOf("id")),
         ) { call -> deleteInterest(call) },
         McpTool(
@@ -118,6 +120,7 @@ object CrmSettingsMcpTools {
             title = "Eliminar etapa",
             description = "Elimina una etapa sin leads (mueve antes sus leads a otra). El embudo necesita al menos una etapa.$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> stagePreview(call) },
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la etapa.")), required = listOf("id")),
         ) { call -> deleteStage(call) },
         McpTool(
@@ -126,6 +129,7 @@ object CrmSettingsMcpTools {
             description = "Reemplaza todas las etapas por las de una plantilla (ids en get_settings). Solo mientras la empresa no tiene leads.$Confirm",
             permission = CrmScreens.Settings,
             destructive = true,
+            preview = { call -> pipelinePreview(call) },
             inputSchema = McpSchema.obj(mapOf("template" to McpSchema.string("Id de la plantilla.", CrmTemplates.all.map { it.id })), required = listOf("template")),
         ) { call -> applyTemplate(call) },
         McpTool(
@@ -133,6 +137,9 @@ object CrmSettingsMcpTools {
             title = "Cambiar lectura de correo del CRM",
             description = "Cambia como lee (IMAP) los correos el CRM. Solo cambia lo enviado. La contrasena IMAP se escribe en la app. El envio (SMTP) es el de la empresa y no se cambia desde aqui.$Confirm",
             permission = CrmScreens.Settings,
+            // The server connects to the mailbox host with the saved password: another host is where that password goes.
+            outbound = true,
+            preview = { call -> mailPreview(call) },
             inputSchema = McpSchema.obj(mailArguments),
         ) { call -> updateMail(call) },
         McpTool(
@@ -140,6 +147,9 @@ object CrmSettingsMcpTools {
             title = "Crear o editar plantilla de mensaje",
             description = "Crea una plantilla de mensaje (sin id) o edita una (con id; solo cambia lo enviado). Admite las variables {nombre} de get_settings.",
             permission = CrmScreens.Settings,
+            // The text of a template is what automations, buttons and the welcome mail send to leads.
+            outbound = true,
+            preview = { call -> saveTemplatePreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "id" to McpSchema.uuid("Id de la plantilla a editar (get_settings)."),
@@ -154,6 +164,7 @@ object CrmSettingsMcpTools {
             title = "Eliminar plantilla de mensaje",
             description = "Elimina una plantilla de mensaje.$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> templatePreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la plantilla.")), required = listOf("id")),
         ) { call -> deleteMessageTemplate(call) },
@@ -169,6 +180,9 @@ object CrmSettingsMcpTools {
             title = "Avisos de un usuario",
             description = "Cambia los avisos por correo de un usuario del CRM. Solo cambia lo enviado.",
             permission = CrmScreens.Settings,
+            // The address that receives lead data (new leads, messages, digests) by mail.
+            outbound = true,
+            preview = { call -> notificationsPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "user" to McpSchema.string("Nombre o id del usuario (get_settings)."),
@@ -356,6 +370,90 @@ object CrmSettingsMcpTools {
         if (context.interests.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw McpToolException("Ya existe el interes $name.")
         CrmRepository.saveInterest(call.tenant, id, name, call.activityActor)
         return result("Interes $name guardado.")
+    }
+
+    private fun interestPreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val interest = context(call).interests.firstOrNull { it.id == id } ?: throw McpToolException("Ese interes no existe.")
+        return listOf(McpPreviewRow("Interes que se elimina", interest.name), McpPreviewRow("Sus leads", "pasan a Recepcion"))
+    }
+
+    private fun stagePreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val stage = context(call).stages.firstOrNull { it.id == id } ?: throw McpToolException("Esa etapa no existe.")
+        return listOf(McpPreviewRow("Etapa que se elimina", stage.name))
+    }
+
+    private fun shown(value: String?) = value?.takeIf { it.isNotBlank() } ?: "(vacio)"
+
+    private fun change(label: String, before: String?, after: String?) = McpPreviewRow(label, "${shown(before)} -> ${shown(after)}")
+
+    private fun yesNo(value: Boolean) = if (value) "Si" else "No"
+
+    private fun pipelinePreview(call: McpToolCall): List<McpPreviewRow> {
+        val template = CrmTemplates.find(call.requiredString("template", 40))
+            ?: throw McpToolException("Plantilla desconocida. Plantillas: ${CrmTemplates.all.joinToString { it.id }}.")
+        val current = context(call).stages
+        return listOf(
+            McpPreviewRow("Etapas que se reemplazan", current.joinToString { it.name }.ifEmpty { "(ninguna)" }),
+            McpPreviewRow("Etapas nuevas (${template.label})", template.stages.joinToString { it.name }),
+        )
+    }
+
+    private fun mailPreview(call: McpToolCall): List<McpPreviewRow> {
+        if (call.arguments.keys.none { it in mailArguments }) throw McpToolException("Envia al menos un campo a cambiar.")
+        val current = CrmMail.load(call.tenant)
+        val rows = mutableListOf<McpPreviewRow>()
+        if (call.has("imapEnabled")) rows += change("Lectura de correo (IMAP) activa", yesNo(current.imapEnabled), yesNo(call.boolean("imapEnabled")))
+        if (call.has("imapHost")) rows += change("Servidor IMAP", current.imapHost, call.string("imapHost", 300))
+        if (call.has("imapPort")) rows += change("Puerto", current.imapPort.toString(), call.int("imapPort", current.imapPort, 1..65535).toString())
+        if (call.has("imapUsername")) rows += change("Usuario", current.imapUsername, call.string("imapUsername", 300))
+        if (call.has("imapFolder")) rows += change("Carpeta", current.imapFolder, call.string("imapFolder", 300))
+        if (call.has("imapSsl")) rows += change("Conexion segura (SSL)", yesNo(current.imapSsl), yesNo(call.boolean("imapSsl")))
+        val host = if (call.has("imapHost")) call.string("imapHost", 300) else current.imapHost.orEmpty()
+        rows += McpPreviewRow("Que se envia y a donde", "Cada 5 minutos el servidor se conecta a ${shown(host)} con el usuario y la contrasena guardados para leer los correos nuevos. Si el servidor no es el de la empresa, la contrasena se entrega a un tercero.")
+        return rows
+    }
+
+    private fun saveTemplatePreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.uuid("id")
+        val existing = id?.let { templateId -> CrmMail.templates(call.tenant).firstOrNull { it.id == templateId } ?: throw McpToolException("Esa plantilla no existe; revisa get_settings.") }
+        val name = if (call.has("name")) call.string("name", 200) else existing?.name.orEmpty()
+        val subject = if (call.has("subject")) call.string("subject", 400) else existing?.subject.orEmpty()
+        val body = if (call.has("body")) call.string("body", 50_001) else existing?.body.orEmpty()
+        val users = CrmAutomationStore.all(call.tenant).filter { automation -> automation.actions.any { it.kind == CrmActionKind.SendTemplate && it.templateId == id } }
+        return listOf(
+            McpPreviewRow("Plantilla", "$name (${if (existing == null) "se crea" else "se edita"})"),
+            McpPreviewRow("Asunto", subject),
+            // The raw source, not its text: an image, a link or a hidden element is visible here.
+            McpPreviewRow("Contenido (tal como se enviara, con su HTML)", body),
+            McpPreviewRow("La usan", users.joinToString { "${it.name}${if (it.enabled) "" else " (apagada)"}" }.ifEmpty { "Ninguna automatizacion todavia (tambien se puede enviar a mano y desde botones)" }),
+            McpPreviewRow("Que se envia y a donde", "Este texto lo reciben por correo los leads a los que se envie la plantilla, desde hoy."),
+        )
+    }
+
+    private fun notificationsPreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = context(call)
+        val user = user(call, context)
+        val saved = CrmNotify.userSettings(call.tenant)[user.id]
+        val rows = mutableListOf(McpPreviewRow("Usuario", user.name))
+        if (call.has("email")) rows += change("Correo para los avisos", saved?.email, call.string("email", 300))
+        fun flag(key: String, label: String, before: Boolean) { if (call.has(key)) rows += change(label, yesNo(before), yesNo(call.boolean(key))) }
+        flag("notifyNewLeads", "Aviso de cada lead nuevo", saved?.notifyNewLeads ?: false)
+        flag("notifyAssigned", "Aviso al asignarle un lead", saved?.notifyAssigned ?: true)
+        flag("dailyDigest", "Resumen diario", saved?.dailyDigest ?: false)
+        flag("notifyMentioned", "Aviso al mencionarlo", saved?.notifyMentioned ?: true)
+        flag("notifyNewMessage", "Correo con cada mensaje nuevo", saved?.notifyNewMessage ?: true)
+        flag("notifyFollowUp", "Correo al vencer un seguimiento", saved?.notifyFollowUp ?: true)
+        val address = if (call.has("email")) call.string("email", 300) else saved?.email.orEmpty()
+        rows += McpPreviewRow("Que se envia y a donde", "Los avisos activos (con nombres de leads, mensajes y resumenes) llegan por correo a ${shown(address)}.")
+        return rows
+    }
+
+    private fun templatePreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("id")
+        val template = CrmMail.templates(call.tenant).firstOrNull { it.id == id } ?: throw McpToolException("Esa plantilla no existe.")
+        return listOf(McpPreviewRow("Plantilla que se elimina", template.name), McpPreviewRow("Asunto", template.subject.ifBlank { "-" }))
     }
 
     private fun deleteInterest(call: McpToolCall): JsonElement {

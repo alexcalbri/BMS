@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
 import com.ideasdeveloper.bms.server.outbound.OutboundOrigin
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
@@ -57,6 +58,9 @@ object CrmImportMcpTools {
             title = "Importar desde una direccion",
             description = "Descarga un CSV o XLSX publico (https://, por ejemplo un Google Sheets publicado) y crea una importacion en mapeo.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> McpPreviewRow("Direccion que se descarga", call.requiredString("url", 2_000)).let { row -> listOf(row, McpPreviewRow("Que se envia y a donde", "El servidor hace una solicitud GET a esa direccion (sin datos de la empresa) y crea una importacion con lo que devuelva; no importa nada hasta que se inicie.")) } },
             inputSchema = McpSchema.obj(mapOf("url" to McpSchema.string("Direccion https:// del archivo.")), required = listOf("url")),
         ) { call ->
             read(call) {
@@ -122,6 +126,7 @@ object CrmImportMcpTools {
             description = "Mueve de etapa, cambia los usuarios asignados o elimina varios leads visibles a la vez (hasta 500). Asignar: owners (lista de nombres) con ownersMode add (anade), remove (quita) o replace (reemplaza; vacio deja sin asignar); owner (uno solo) reemplaza. Eliminar necesita el permiso de eliminar leads.$Confirm",
             permission = CrmScreens.Manage,
             destructive = true,
+            preview = { call -> bulkPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "leads" to buildJsonObject {
@@ -298,6 +303,29 @@ object CrmImportMcpTools {
         val job = job(call)
         CrmImport.setStatus(call.tenant, job, "canceled", call.activityActor)
         return buildJsonObject { put("result", "Importacion ${job.name} cancelada.") }
+    }
+
+    private fun bulkPreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = context(call)
+        val ids = strings(call, "leads")
+        if (ids.size > 500) throw McpToolException("Envia hasta 500 leads por llamada.")
+        val leads = ids.map { runCatching { UUID.fromString(it) }.getOrNull() ?: throw McpToolException("'$it' no es un id de lead.") }
+            .mapNotNull { CrmRepository.lead(call.tenant, it) }
+            .filter { context.scope.canSee(it.interestId, it.ownerUserIds) }
+        val rows = mutableListOf(
+            McpPreviewRow("Accion", when (call.requiredString("action", 20)) { "move" -> "Mover de etapa"; "assign" -> "Cambiar los asignados"; "delete" -> "ELIMINAR los leads"; else -> throw McpToolException("'action' debe ser move, assign o delete.") }),
+            McpPreviewRow("Leads afectados (${leads.size})", leads.take(30).joinToString { it.name } + if (leads.size > 30) ", y ${leads.size - 30} mas" else ""),
+        )
+        if (leads.size < ids.size) rows += McpPreviewRow("Omitidos", "${ids.size - leads.size} id(s) no existen o no son visibles para el usuario")
+        when (call.requiredString("action", 20)) {
+            "move" -> rows += McpPreviewRow("Etapa destino", call.requiredString("stage", 100).let { wanted -> context.stages.firstOrNull { it.name.equals(wanted, ignoreCase = true) }?.name ?: wanted })
+            "assign" -> {
+                val change = CrmMcpTools.ownersRequiredForBulk(call.arguments, context.canAssign, context.users, CrmBulkActions.legacyOf(context, leads))
+                rows += McpPreviewRow("Modo", change.mode.toString())
+                rows += McpPreviewRow("Usuarios", change.ids.joinToString { context.names.user(it) }.ifEmpty { "(nadie)" })
+            }
+        }
+        return rows
     }
 
     private fun bulk(call: McpToolCall): JsonElement {

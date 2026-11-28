@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.empleados
 
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -156,6 +157,7 @@ object EmpleadosMcpTools {
             title = "Borrar turno",
             description = "Borra un turno concreto (o un dia libre): ese dia vuelve a regir el horario habitual. El empleado recibe el aviso si afecta a hoy o al futuro.",
             permission = EmpleadosModule.Shifts,
+            preview = { call -> shiftPreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("shift_id" to McpSchema.uuid("Id del turno.")), required = listOf("shift_id")),
         ) { call -> guarded { deleteShift(call) } },
@@ -440,6 +442,23 @@ object EmpleadosMcpTools {
             ),
         )
         return buildJsonObject { put("shift_id", id.toString()); put("updated", true) }
+    }
+
+    private fun shiftPreview(call: McpToolCall): List<McpPreviewRow> {
+        val id = call.requiredUuid("shift_id")
+        return call.tenant.prepareStatement(
+            """
+            SELECT employees.full_name, shifts.shift_date, shifts.kind, shifts.start_time, shifts.end_time
+            FROM empleados_shifts shifts JOIN empleados_employees employees ON employees.id = shifts.employee_id WHERE shifts.id = ?
+            """.trimIndent(),
+        ).use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { rows ->
+                if (!rows.next()) throw McpToolException("Ese turno no existe.")
+                val hours = if (rows.getString(3) == "off") "Dia libre" else "${rows.getString(4)?.take(5) ?: "-"} a ${rows.getString(5)?.take(5) ?: "-"}"
+                listOf(McpPreviewRow("Empleado", rows.getString(1)), McpPreviewRow("Fecha", rows.getString(2)), McpPreviewRow("Turno", hours))
+            }
+        }
     }
 
     private fun deleteShift(call: McpToolCall): JsonElement {

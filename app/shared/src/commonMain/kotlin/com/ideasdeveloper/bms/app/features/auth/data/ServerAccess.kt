@@ -57,6 +57,8 @@ object ServerPermission {
     const val AuditView = "server.audit.view"
     const val Settings = "server.settings"
     const val Workspace = "server.workspace"
+    // Asistente global (GLOBAL_AGENT.md): activarlo, su clave, modelo, limites y uso por empresa.
+    const val AssistantManage = "server.assistant.manage"
     // Alto riesgo: desactiva la verificacion en dos pasos de usuarios de las empresas de su alcance. Titulo y riesgo vienen del catalogo del servidor.
     const val UsersTwoFactorReset = "server.users.two_factor_reset"
 }

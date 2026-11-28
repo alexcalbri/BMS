@@ -80,6 +80,17 @@ check 'dice las tablas nuevas que crean las migraciones' grep -q '^INFO   + obje
 check 'y cuenta lo que crean las migraciones' grep -q 'objetos, columnas o funciones creados por las migraciones' <<< "$output"
 check 'los roles y pertenencias se dicen una vez, con la primera base' bash -c '[[ $(grep -c "^INFO   + pertenencia .*>$2:" <<< "$1") == 1 ]]' _ "$output" "$OWNER"
 check 'dice los permisos que se dan al runtime' grep -q "$RUNTIME=" <<< "$output"
+# The in-app assistant (tenant V018-V020, GLOBAL_AGENT.md): its migrations are part of what is replayed and its grants
+# come out of the same grant block as the real update, inside the rolled back transaction.
+for db in "$TA" "$TB"; do
+    steps=$(bms_rehearse_steps_sql tenant "$db")
+    check "$db: el ensayo repite V018 (tablas del asistente)" grep -q 'CREATE TABLE.*assistant_messages' <<< "$steps"
+    check "$db: el ensayo repite V019 (lease_token)" grep -q 'lease_token' <<< "$steps"
+    check "$db: el ensayo repite V020 (preview_hash)" grep -q 'preview_hash' <<< "$steps"
+done
+check 'asistente: assistant_messages termina con solo SELECT e INSERT (ar) para el runtime, en las dos empresas' bash -c '[[ $(grep -cE "objeto public\.assistant_messages: r .*\{[^}]*,$2=ar/[^,}]*\}" <<< "$1") == 2 ]]' _ "$output" "$RUNTIME"
+check 'asistente: su secuencia solo se usa y se lee' grep -qE "objeto public\.assistant_messages_id_seq: S .*,$RUNTIME=rU/" <<< "$output"
+check 'asistente: el resto de sus tablas son normales (arwd)' bash -c '[[ $(grep -cE "objeto public\.assistant_(conversations|pending_calls|settings|usage): r .*,$2=arwd/" <<< "$1") == 8 ]]' _ "$output" "$RUNTIME"
 equals 'despues: nada cambio (TA sigue de postgres)' 'postgres' "$(sql "$TA" "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'public.business_owner'::regclass")"
 equals 'despues: el runtime sigue siendo miembro' 't t' "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER'), pg_has_role('$RUNTIME', '$OWNER2', 'MEMBER')" | tr '|' ' ')"
 equals 'despues: el rol de aprovisionamiento sigue sin pertenencias' 0 "$(sql postgres "SELECT count(*) FROM pg_auth_members WHERE member = '$PROVISIONER'::regrole")"
@@ -104,6 +115,8 @@ equals 'las migraciones y permisos de la base central (los mismos que se ensayar
 ( apply_tenant_migrations ) > "$WORK/tenant.out" 2>&1
 equals 'las migraciones y permisos de las empresas (los mismos que se ensayaron) terminan bien' 0 "$?"
 equals 'TA: ahora si hay registro de actividad' 'activity_log' "$(sql "$TA" "SELECT to_regclass('public.activity_log')")"
+equals 'TA: V019 y V020 aplicadas de verdad (lease_token y preview_hash)' '1 1' "$(sql "$TA" "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'assistant_conversations' AND column_name = 'lease_token'), (SELECT count(*) FROM information_schema.columns WHERE table_name = 'assistant_pending_calls' AND column_name = 'preview_hash')" | tr '|' ' ')"
+equals 'TA: el runtime solo lee y agrega mensajes del asistente (lo mismo que dijo el ensayo)' 't f f' "$(sql "$TA" "SELECT has_table_privilege('$RUNTIME', 'assistant_messages', 'SELECT') AND has_table_privilege('$RUNTIME', 'assistant_messages', 'INSERT'), has_table_privilege('$RUNTIME', 'assistant_messages', 'UPDATE'), has_table_privilege('$RUNTIME', 'assistant_messages', 'DELETE')" | tr '|' ' ')"
 equals 'TA: todo del dueno' 0 "$(sql "$TA" "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relowner <> '$OWNER'::regrole")"
 output=$(rehearse)
 status=$?

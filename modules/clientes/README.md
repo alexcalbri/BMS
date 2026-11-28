@@ -193,3 +193,7 @@ Changing the email (staff, import, agent) goes back to unknown (trigger `custome
 "Correo verificado" / "Correo sin verificar"; `GET /modules/clientes/customers?emailState=verified|unverified|unknown` and the `emailState` argument
 of `search_customers` filter the list, and every customer carries `emailStatus`. Modules set the state with the columns (the hotspot does).
 Shared copies in linked companies start with no state.
+
+## 0.15.0 (needs Core 0.14.0)
+
+Confirmation card of the Core's in-app assistant (GLOBAL_AGENT.md): delete_customer_field has a `preview` (the field's label and key).

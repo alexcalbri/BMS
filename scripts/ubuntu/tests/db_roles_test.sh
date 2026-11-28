@@ -223,6 +223,10 @@ for database in $CONTROL $FULL; do
         ! run "$@" "DELETE FROM application_user_2fa_email_recovery" &&
         ! run "$@" "UPDATE tenant_data_keys SET key_version = 2"' _ "$PG_HOST" "$PG_PORT" "$RUNTIME" "$database"
 done
+# The assistant's messages (tenant V018) are only read and appended; the rest of its tables are ordinary.
+equals 'asistente: mensajes solo se leen y se agregan' 'INSERT,SELECT' "$(grants "$FULL" assistant_messages)"
+equals 'asistente: conversaciones, confirmaciones y consumo' 'DELETE,INSERT,SELECT,UPDATE|DELETE,INSERT,SELECT,UPDATE|DELETE,INSERT,SELECT,UPDATE' \
+    "$(grants "$FULL" assistant_conversations)|$(grants "$FULL" assistant_pending_calls)|$(grants "$FULL" assistant_usage)"
 equals 'empresa completa: todo es del dueno' 0 "$(sql "$FULL" "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relowner <> '$OWNER'::regrole")"
 MIGRATION_ROLE=''
 rm -rf -- "$MIGRATION_DIR"

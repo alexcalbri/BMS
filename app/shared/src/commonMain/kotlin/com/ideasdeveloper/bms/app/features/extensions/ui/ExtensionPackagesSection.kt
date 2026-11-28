@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.app.features.extensions.ui
 
+import com.ideasdeveloper.bms.ModuleVersion
 import com.ideasdeveloper.bms.app.core.i18n.tr
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -61,6 +62,12 @@ private sealed interface PackageDialog {
     data class Install(val entry: ExtensionPackageEntry) : PackageDialog
     data class Remove(val entry: ExtensionPackageEntry) : PackageDialog
     data class AuthorizeUnsigned(val entry: ExtensionPackageEntry) : PackageDialog
+}
+
+// Un paquete instalado cuya version del catalogo es estrictamente mas nueva que la instalada.
+private fun ExtensionPackageEntry.updateAvailable(): Boolean {
+    val current = installedVersion?.takeIf { it.isNotBlank() } ?: return false
+    return (status == "installed" || status == "pending_restart") && version.isNotBlank() && ModuleVersion.isNewer(version, current)
 }
 
 // Estado de un paquete en palabras para el usuario.
@@ -219,13 +226,15 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
     when (val current = dialog) {
         is PackageDialog.Install -> AlertDialog(
             onDismissRequest = { dialog = null },
-            title = { Text(tr("Instalar {0}", current.entry.displayName)) },
+            title = {
+                Text(if (current.entry.updateAvailable()) tr("Actualizar {0} a {1}", current.entry.displayName, current.entry.version) else tr("Instalar {0}", current.entry.displayName))
+            },
             text = { Text(tr("El servidor se reiniciara para cargar el paquete. Durante unos segundos nadie podra usar la app."), color = colors.text) },
             confirmButton = {
                 TextButton(onClick = {
                     dialog = null
                     act(current.entry.id, tr("Instalando {0}: el servidor descarga y compila el paquete y luego se reinicia.", current.entry.displayName)) { installPackage(it, current.entry.id) }
-                }) { Text(tr("Instalar")) }
+                }) { Text(if (current.entry.updateAvailable()) tr("Actualizar a {0}", current.entry.version) else tr("Instalar")) }
             },
             dismissButton = { TextButton(onClick = { dialog = null }) { Text(tr("Cancelar")) } },
         )
@@ -273,6 +282,8 @@ private fun PackageCard(
 ) {
     val colors = AppTheme.colors
     val installed = entry.status == "installed" || entry.status == "pending_restart"
+    // Version nueva en el catalogo sobre un paquete ya instalado: se ofrece autorizar (si no esta firmado) y actualizar.
+    val updatable = entry.updateAvailable()
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -301,6 +312,13 @@ private fun PackageCard(
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted,
         )
+        if (updatable) {
+            Text(
+                tr("Actualizacion disponible: {0} → {1}", entry.installedVersion.orEmpty(), entry.version),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.warning,
+            )
+        }
         if (entry.permissions.isNotEmpty()) {
             Text(tr("Permisos: {0}", entry.permissions.joinToString()), style = MaterialTheme.typography.bodySmall, color = colors.muted)
         }
@@ -316,7 +334,8 @@ private fun PackageCard(
             Text(tr("Reinicia el servidor para cargar el paquete."), style = MaterialTheme.typography.bodySmall, color = colors.warning)
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            if (canAuthorize && !entry.signed && !installed) {
+            // El catalogo no dice si el hash de esta version ya esta autorizado: se ofrece siempre y el servidor responde.
+            if (canAuthorize && !entry.signed && (!installed || updatable)) {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onAuthorizeUnsigned() },
@@ -324,13 +343,23 @@ private fun PackageCard(
                     border = BorderStroke(1.dp, colors.warning),
                 ) { Text(tr("Autorizar paquete sin firma")) }
             }
-            if (canManage && !installed) {
+            if (canManage && (!installed || updatable)) {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onInstall() },
                     colors = accentButtonColors(),
-                ) { Text(if (entry.status == "installing") tr("Instalando...") else if (entry.status == "error") tr("Reintentar") else tr("Instalar")) }
-            } else if (canManage) {
+                ) {
+                    Text(
+                        when {
+                            entry.status == "installing" -> tr("Instalando...")
+                            updatable -> tr("Actualizar a {0}", entry.version)
+                            entry.status == "error" -> tr("Reintentar")
+                            else -> tr("Instalar")
+                        },
+                    )
+                }
+            }
+            if (canManage && installed) {
                 Button(
                     enabled = canWork && !busy,
                     onClick = { onRemove() },
@@ -400,6 +429,12 @@ private fun AuthorizeUnsignedDialog(
                 if (loading) Text(tr("Descargando y revisando el paquete..."), color = colors.muted)
                 if (current != null) {
                     Text(tr("Esto es lo que se descargo ahora:"), color = colors.text, style = MaterialTheme.typography.titleSmall)
+                    (current.version ?: entry.version).takeIf { it.isNotBlank() }?.let { version ->
+                        Text(
+                            tr("Version {0}", version) + (current.installedVersion?.let { tr(" · Instalada: {0}", it) } ?: ""),
+                            color = colors.text,
+                        )
+                    }
                     Text(tr("Commit {0}", current.commit.take(8)), color = colors.text)
                     if (current.commitUrl.isNotBlank()) {
                         TextButton(onClick = { runCatching { uriHandler.openUri(current.commitUrl) } }) {

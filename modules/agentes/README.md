@@ -249,3 +249,8 @@ permission checks do not change with the language.
   time would blame the business owner for what the server person did, or the other way round), so the business owner
   or the server owner should review them and revoke the ones nobody recognises.
 - Needs Core with tenant migration V015 (switch origin of sessions).
+
+## 0.7.3 (needs Core 0.14.0)
+
+`revoke_agent` has a `preview` for the Core's in-app assistant confirmation card (the connection, its user and access). Needs Core 0.14.0
+(`McpTool.preview`), so `minCoreVersion` is now 0.14.0.

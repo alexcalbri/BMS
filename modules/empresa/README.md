@@ -50,3 +50,9 @@ server module administration for `server_owner`.
 ## Languages
 
 Bilingual Spanish/English since 0.2.0 (needs Core 0.10.0). Its only texts are the module name and description; the English catalog is `server/src/main/resources/modules/empresa/i18n/en.json`.
+
+## AI assistant permission (0.4.0, needs Core 0.14.0)
+
+Declares `empresa.assistant.use` ("Usar el asistente de IA"): which users of the company see and use the Core's in-app
+assistant (GLOBAL_AGENT.md). The business owner always has it; it is granted in the normal permissions screen. The
+assistant itself (settings, conversations, tools) belongs to Core.

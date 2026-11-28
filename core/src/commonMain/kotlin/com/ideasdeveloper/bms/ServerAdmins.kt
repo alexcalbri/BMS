@@ -29,11 +29,14 @@ object ServerPermissionIds {
     const val Workspace = "server.workspace"
     // Turn two-step verification off for a user of a company in scope (TWO_FACTOR.md §8). High risk.
     const val UsersTwoFactorReset = "server.users.two_factor_reset"
+    // The in-app assistant (GLOBAL_AGENT.md): settings, API key, per-company allowance and usage. High risk.
+    const val AssistantManage = AssistantIds.ManagePermission
 
     val All: List<String> = listOf(
         CompaniesView, CompaniesCreate, CompaniesEdit, CompaniesStatus, CompaniesModules, CompaniesExtensions,
         CompaniesOwnerPassword, CompaniesEnter, ModulesView, ModulesInstall, ModulesRemove, ModulesAuthorizeUnsigned,
         ExtensionsInstall, ExtensionsAuthorizeUnsigned, CoreUpdate, LogsView, AuditView, Settings, Workspace, UsersTwoFactorReset,
+        AssistantManage,
     )
 }
 

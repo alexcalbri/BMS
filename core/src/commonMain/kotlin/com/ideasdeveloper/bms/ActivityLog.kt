@@ -51,6 +51,8 @@ data class ActivityLogRow(
     val origin: String? = null,
     // The action came through an AI agent or OAuth connection (agentName is set).
     val viaAgent: Boolean = false,
+    // The in-app assistant did it for the person ("Asistente de <usuario>", Core 0.14.0).
+    val viaAssistant: Boolean = false,
     // A server owner or administrator did it (directly, or inside the company through a switcher session).
     val fromServer: Boolean = false,
     // Spanish labels of the actor's kind for CSV and agents: "Agente IA", "Desde el servidor", "Importacion"...

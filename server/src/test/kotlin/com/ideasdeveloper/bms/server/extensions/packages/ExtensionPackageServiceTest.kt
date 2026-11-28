@@ -544,6 +544,18 @@ class ExtensionPackageServiceTest {
         assertEquals(false, inspection.signed)
     }
 
+    @Test
+    fun `inspect exposes the catalog version and the installed version when there is one`() {
+        val h = harness(FakeBuilder(inspectedSha = "e".repeat(64)), signed = false)
+        val before = h.service.inspect("monday_import")
+        assertEquals("0.1.0", before.version)
+        assertEquals(null, before.installedVersion)
+        h.store.rows["monday_import"] = StoredExtensionPackage("monday_import", "crm", "0.0.9", "github", "installed", "/x.jar", "a".repeat(64), true, "d".repeat(64))
+        assertEquals("0.0.9", h.service.inspect("monday_import").installedVersion)
+        h.store.rows["monday_import"] = StoredExtensionPackage("monday_import", "crm", "0.0.9", "github", "removed", "/x.jar", "a".repeat(64), true, "d".repeat(64))
+        assertEquals(null, h.service.inspect("monday_import").installedVersion)
+    }
+
     // --- Paquetes desde un ZIP subido o una URL ---
 
     private val zipBytes = "zip".toByteArray()

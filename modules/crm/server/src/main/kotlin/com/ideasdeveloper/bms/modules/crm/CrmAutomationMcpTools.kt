@@ -1,6 +1,7 @@
 package com.ideasdeveloper.bms.modules.crm
 
 import com.ideasdeveloper.bms.server.modules.McpSchema
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -92,6 +93,9 @@ object CrmAutomationMcpTools {
                 "Una de fecha corre una sola vez por lead y por valor de la fecha, a la hora elegida; las de evento corren al guardar el lead o al llegar el mensaje. " +
                 "Los ids y nombres de etapas, plantillas, campos y usuarios salen de list_automations.$Confirm",
             permission = CrmScreens.Settings,
+            // An automation sends mail to leads on its own, for as long as it is on: the card says what, to whom and how many.
+            outbound = true,
+            preview = { call -> savePreview(call) },
             inputSchema = McpSchema.obj(definitionArguments + ("id" to McpSchema.uuid("Id de la automatizacion a editar."))),
         ) { call -> save(call) },
         McpTool(
@@ -99,6 +103,7 @@ object CrmAutomationMcpTools {
             title = "Eliminar automatizacion",
             description = "Elimina una automatizacion y su registro de ejecuciones. Los botones que la usaban dejan de encontrarla.$Confirm",
             permission = CrmScreens.Settings,
+            preview = { call -> automationPreview(call) },
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la automatizacion.")), required = listOf("id")),
         ) { call -> delete(call) },
@@ -121,6 +126,9 @@ object CrmAutomationMcpTools {
             description = "Ejecuta una automatizacion con disparador manual (y activa) en un lead que el usuario puede editar, como lo haria un boton: " +
                 "comprueba las condiciones y los datos que necesitan las acciones, y devuelve el resultado o lo que falta. Puede enviar correos o crear reservas: muestra lo que hara y confirma con el usuario antes.",
             permission = CrmScreens.Manage,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> runPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf("id" to McpSchema.uuid("Id de la automatizacion manual."), "lead" to McpSchema.uuid("Id del lead.")),
                 required = listOf("id", "lead"),
@@ -132,12 +140,17 @@ object CrmAutomationMcpTools {
             description = "Pulsa un campo de tipo boton de la ficha del lead (envia su plantilla o ejecuta sus automatizaciones manuales en orden). " +
                 "Los botones salen de list_pipeline (customFields de tipo Boton). Puede enviar correos o crear reservas: confirma con el usuario antes.",
             permission = CrmScreens.Manage,
+            // Sends something out of the company (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> pressPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf("lead" to McpSchema.uuid("Id del lead."), "button" to McpSchema.string("Clave o nombre del boton.")),
                 required = listOf("lead", "button"),
             ),
         ) { call -> press(call) },
     )
+
+    private const val CountLimit = 2000
 
     private fun context(call: McpToolCall) = CrmScreens.Context.load(call.tenant, call.permissions)
 
@@ -153,6 +166,11 @@ object CrmAutomationMcpTools {
     private fun actor(call: McpToolCall): CrmActor {
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
         return actor.copy(name = "${actor.name} (agente ${call.agentName})", activity = call.activityActor)
+    }
+
+    private fun automationPreview(call: McpToolCall): List<McpPreviewRow> {
+        val automation = automation(call)
+        return listOf(McpPreviewRow("Automatizacion que se elimina", automation.name), McpPreviewRow("Activa", if (automation.enabled) "Si" else "No"))
     }
 
     private fun automation(call: McpToolCall, key: String = "id"): CrmAutomation =
@@ -287,12 +305,15 @@ object CrmAutomationMcpTools {
         }
     }
 
-    private fun save(call: McpToolCall): JsonElement {
+    /** An automation as the call would save it, parsed and validated, nothing written. */
+    private class Draft(val automation: CrmAutomation, val exists: Boolean, val refs: CrmAutomationRefs, val context: CrmScreens.Context, val existing: List<CrmAutomation>)
+
+    private fun draft(call: McpToolCall): Draft {
         val context = context(call)
         val refs = refs(call, context)
         val existing = CrmAutomationStore.all(call.tenant)
         val current = call.uuid("id")?.let { id -> existing.firstOrNull { it.id == id } ?: throw McpToolException("No existe esa automatizacion (ver list_automations).") }
-        val saved = validated {
+        val automation = validated {
             val type = if (call.has("trigger")) {
                 CrmTriggerType.byId(call.string("trigger", 40)) ?: throw McpToolException("'trigger' debe ser uno de: ${triggerTypes.joinToString()}.")
             } else current?.trigger?.type ?: throw McpToolException("El argumento 'trigger' es obligatorio.")
@@ -306,7 +327,7 @@ object CrmAutomationMcpTools {
             val notify = if (call.has("notifyUsers")) {
                 strings(call, "notifyUsers").map { refs.user(it) ?: throw McpToolException("No es un usuario con acceso al CRM: $it. Usuarios: ${refs.users.joinToString { u -> u.name }}.") }
             } else current?.notifyUserIds.orEmpty()
-            val automation = CrmAutomation(
+            CrmAutomation(
                 id = current?.id ?: UUID.randomUUID(),
                 name = name,
                 enabled = if (call.has("enabled")) call.boolean("enabled") else current?.enabled ?: false,
@@ -316,10 +337,96 @@ object CrmAutomationMcpTools {
                 warnBeforeMinutes = if (call.has("warnBeforeMinutes")) call.int("warnBeforeMinutes", 0, 0..CrmAutomationRules.MaxWarnMinutes) else current?.warnBeforeMinutes ?: 0,
                 notifyUserIds = notify,
                 position = current?.position ?: CrmAutomationStore.nextPosition(call.tenant),
-            ).normalized()
-            CrmAutomationRules.validate(automation, refs, existing)
-            CrmAutomationStore.save(call.tenant, automation, exists = current != null, actor = call.activityActor)
-            automation
+            ).normalized().also { CrmAutomationRules.validate(it, refs, existing) }
+        }
+        return Draft(automation, current != null, refs, context, existing)
+    }
+
+    // What the automation would do, in plain words: when, to which leads (how many today), which mail goes to whom.
+    private fun savePreview(call: McpToolCall): List<McpPreviewRow> {
+        val draft = draft(call)
+        val automation = draft.automation
+        val refs = draft.refs
+        val tenant = call.tenant
+        val rows = mutableListOf(
+            McpPreviewRow("Automatizacion", "${automation.name} (${if (draft.exists) "se edita" else "se crea"})"),
+            McpPreviewRow("Estado", if (automation.enabled) "Activa: se ejecuta sola" else "Apagada: no se ejecuta hasta que se active"),
+            McpPreviewRow("Cuando", CrmAutomationSummary.trigger(automation.trigger, refs)),
+            McpPreviewRow("Condiciones", automation.conditions.takeIf { it.isNotEmpty() }?.joinToString("; ") { CrmAutomationConditions.label(it, refs) } ?: "Ninguna: cualquier lead"),
+        )
+        automation.actions.forEachIndexed { index, action -> rows += McpPreviewRow("Accion ${index + 1}", CrmAutomationSummary.action(action, refs)) }
+        automation.actions.filter { it.kind == CrmActionKind.SendTemplate }.mapNotNull { action -> refs.templates.firstOrNull { it.id == action.templateId } }.distinct().forEach { template ->
+            rows += McpPreviewRow("Correo que recibe cada lead", "Plantilla ${template.name}, asunto: ${template.subject}${if (template.translate) " (se traduce al idioma del huesped)" else ""}")
+        }
+        val sends = automation.actions.any { it.kind == CrmActionKind.SendTemplate || it.kind == CrmActionKind.CloudbedsReserve }
+        val leads = CrmRepository.leads(tenant, draft.context.scope, CrmLeadFilter(), CountLimit, 0)
+            .filter { lead -> CrmAutomationConditions.failing(automation.conditions, lead) == null }
+            .filter { lead -> automation.trigger.type != CrmTriggerType.Date || CrmAutomationSchedule.dateValue(lead, automation.trigger.field) != null }
+        val matching = if (leads.size >= CountLimit) "$CountLimit o mas" else leads.size.toString()
+        rows += McpPreviewRow(
+            if (automation.trigger.type == CrmTriggerType.Date) "Leads de hoy con esa fecha y que cumplen las condiciones" else "Leads de hoy que cumplen las condiciones",
+            "$matching (los que este usuario ve)" + if (sends && automation.enabled) ". Los eventos nuevos tambien ejecutaran la automatizacion y enviaran el correo a cada lead que cumpla." else "",
+        )
+        return rows
+    }
+
+    private fun runPreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = context(call)
+        val lead = editableLead(call, context)
+        val automation = automation(call)
+        if (lead.archivedAt != null) throw McpToolException("El lead esta archivado: restauralo antes de ejecutar automatizaciones.")
+        if (automation.trigger.type != CrmTriggerType.Manual) throw McpToolException("${automation.name} no es manual: solo las de disparador manual se ejecutan a pedido.")
+        if (!automation.enabled) throw McpToolException("${automation.name} esta apagada.")
+        return listOf(McpPreviewRow("Automatizacion", automation.name), McpPreviewRow("Lead", lead.name)) + automationEffects(automation, refs(call, context), lead)
+    }
+
+    private fun pressPreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = context(call)
+        val lead = editableLead(call, context)
+        val wanted = call.requiredString("button", 200)
+        val field = context.fields.firstOrNull { it.type == CrmFieldType.Button && (it.key == wanted || it.label.equals(wanted, ignoreCase = true)) }
+            ?: throw McpToolException("No existe el boton '$wanted'. Botones: ${context.fields.filter { it.type == CrmFieldType.Button }.joinToString { it.label }}.")
+        val refs = refs(call, context)
+        val config = CrmButtons.read(field.config)
+        val effects = when {
+            config.templateId != null -> refs.templates.firstOrNull { it.id == config.templateId }?.let { template ->
+                listOf(McpPreviewRow("Correo al lead", "Plantilla ${template.name} a ${shownEmail(lead)}, asunto: ${template.subject}"))
+            } ?: listOf(McpPreviewRow("Accion", "La plantilla del boton ya no existe: no se envia nada"))
+            config.automationIds.isNotEmpty() -> {
+                val all = CrmAutomationStore.all(call.tenant)
+                config.automationIds.flatMap { id ->
+                    all.firstOrNull { it.id == id && it.trigger.type == CrmTriggerType.Manual }?.let { automationEffects(it, refs, lead) }
+                        ?: listOf(McpPreviewRow("Automatizacion", "Una automatizacion del boton ya no existe o dejo de ser manual"))
+                }
+            }
+            else -> listOf(McpPreviewRow("Accion", "El boton no tiene accion"))
+        }
+        return listOf(McpPreviewRow("Boton", field.label), McpPreviewRow("Lead", lead.name)) + effects
+    }
+
+    private fun shownEmail(lead: CrmLead) = lead.email.ifBlank { "(sin correo)" }
+
+    // Each action of an automation on one lead, with who gets the mail.
+    private fun automationEffects(automation: CrmAutomation, refs: CrmAutomationRefs, lead: CrmLead): List<McpPreviewRow> =
+        listOf(McpPreviewRow("Automatizacion ${automation.name}", automation.actions.size.toString() + " accion(es), en orden")) +
+            automation.actions.map { action ->
+                val text = CrmAutomationSummary.action(action, refs)
+                McpPreviewRow(
+                    "Accion",
+                    when (action.kind) {
+                        CrmActionKind.SendTemplate -> "$text a ${shownEmail(lead)}" + (refs.templates.firstOrNull { it.id == action.templateId }?.let { ", asunto: ${it.subject}" } ?: "")
+                        CrmActionKind.CloudbedsReserve -> "$text: crea una reserva real en Cloudbeds con los datos de ${lead.name} (${shownEmail(lead)})"
+                        else -> text
+                    },
+                )
+            }
+
+    private fun save(call: McpToolCall): JsonElement {
+        val draft = draft(call)
+        val context = draft.context
+        val saved = validated {
+            CrmAutomationStore.save(call.tenant, draft.automation, exists = draft.exists, actor = call.activityActor)
+            draft.automation
         }
         val duplicate = CrmAutomationRules.duplicatesCloudbedsWelcome(
             saved,

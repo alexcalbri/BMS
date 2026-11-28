@@ -153,7 +153,7 @@ class ProvisioningRolesPostgresTest {
                 scalar(db, """
                     SELECT count(*) FROM pg_class c, (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) p (privilege)
                     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
-                      AND c.relname NOT IN ('activity_log', 'activity_log_chain', 'schema_migrations', 'tenant_data_keys', 'application_user_2fa_email_recovery')
+                      AND c.relname NOT IN ('activity_log', 'activity_log_chain', 'schema_migrations', 'tenant_data_keys', 'application_user_2fa_email_recovery', 'assistant_messages')
                       AND NOT has_table_privilege(c.oid, p.privilege)
                 """.trimIndent()),
             )
@@ -167,6 +167,10 @@ class ProvisioningRolesPostgresTest {
             // Delayed recovery by email (tenant V013): started, updated, never deleted by the runtime.
             assertEquals("INSERT,SELECT,UPDATE", scalar(db, "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = current_user AND table_name = 'application_user_2fa_email_recovery'"))
             assertFailsWith<SQLException> { db.run("DELETE FROM application_user_2fa_email_recovery") }
+            // The assistant's messages (tenant V018) are only read and appended; they go with their conversation.
+            assertEquals("INSERT,SELECT", scalar(db, "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = current_user AND table_name = 'assistant_messages'"))
+            listOf("UPDATE assistant_messages SET role = role", "DELETE FROM assistant_messages").forEach { sql -> assertFailsWith<SQLException>(sql) { db.run(sql) } }
+            db.run("DELETE FROM assistant_conversations WHERE FALSE")
             assertEquals("0", scalar(db, "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'S' AND NOT CASE WHEN relkind = 'S' THEN has_sequence_privilege(oid, 'USAGE') ELSE TRUE END"))
             assertTrue(scalar(db, "SELECT count(*) FROM schema_migrations")!!.toInt() > 5)
         }

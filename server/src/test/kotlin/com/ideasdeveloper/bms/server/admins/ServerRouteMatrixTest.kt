@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.admins
 
+import com.ideasdeveloper.bms.server.assistant.assistantServerRoutes
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
 import com.ideasdeveloper.bms.server.company.api.storageRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
@@ -76,6 +77,10 @@ class ServerRouteMatrixTest {
             token == "none" -> ServerActorLookup.Found(admin(emptySet()))
             token == "must" -> ServerActorLookup.PasswordChangeRequired(admin(ServerPermission.entries.toSet(), mustChange = true))
             token.startsWith("p:") -> ServerActorLookup.Found(admin(setOfNotNull(ServerPermission.of(token.removePrefix("p:")))))
+            // Only the permission, with every company in scope.
+            token.startsWith("allp:") -> ServerActorLookup.Found(
+                ServerActor(UUID.randomUUID(), "ana", ServerActorKind.Admin, setOfNotNull(ServerPermission.of(token.removePrefix("allp:"))), true, emptySet(), "owner_role"),
+            )
             else -> ServerActorLookup.None
         }
     }
@@ -152,6 +157,7 @@ class ServerRouteMatrixTest {
                 storageRoutes(resolver, storage = null)
                 twoFactorPolicyRoutes(resolver, central = null)
                 twoFactorResetRoutes(resolver, resets = null)
+                assistantServerRoutes(resolver, admin = null)
             }
         }
         startApplication()
@@ -202,9 +208,15 @@ class ServerRouteMatrixTest {
                     // (a) without the permission
                     val without = call(key, "none")
                     assertTrue(without.blocked(), "$key: an administrator without ${policy.permission.id} got ${without.status} ${without.code}")
-                    // (b) with it (and only it)
+                    // (b) with it (and only it); a route that affects every company also needs every company in scope.
                     val with = call(key, "p:${policy.permission.id}")
-                    assertTrue(with.through(), "$key: an administrator with ${policy.permission.id} was refused (${with.status} ${with.code})")
+                    if (policy.allCompanies) {
+                        assertTrue(with.blocked(), "$key: a scoped administrator must not reach a server-wide route (${with.status} ${with.code})")
+                        val everywhere = call(key, "allp:${policy.permission.id}")
+                        assertTrue(everywhere.through(), "$key: an all-company administrator with ${policy.permission.id} was refused (${everywhere.status} ${everywhere.code})")
+                    } else {
+                        assertTrue(with.through(), "$key: an administrator with ${policy.permission.id} was refused (${with.status} ${with.code})")
+                    }
                     assertTrue(must.blocked() && must.code == "PASSWORD_CHANGE_REQUIRED", "$key: must change the password first, got ${must.status} ${must.code}")
                     if (policy.company != CompanyFrom.None) {
                         // (c) out-of-scope company, even with every permission
@@ -240,6 +252,7 @@ class ServerRouteMatrixTest {
             setOf(
                 "server.companies.owner_password", "server.companies.enter", "server.modules.authorize_unsigned",
                 "server.extensions.authorize_unsigned", "server.workspace", "server.core.update", "server.users.two_factor_reset",
+                "server.assistant.manage",
             ),
             infos.filter { it.risk == "high" }.map { it.id }.toSet(),
         )
@@ -292,6 +305,14 @@ class ServerRouteMatrixTest {
         assertTrue(refusal.companyCode == null && "otra" !in refusal.message.orEmpty())
         // server.workspace allows creating staff accounts: it is high risk and says so.
         assertEquals("high", ServerPermission.Workspace.info().risk)
+    }
+
+    @Test
+    fun theAssistantsServerWideRoutesNeedEveryCompany() {
+        listOf("GET /server/assistant/settings", "PUT /server/assistant/settings", "PUT /server/assistant/key", "DELETE /server/assistant/key").forEach { key ->
+            assertTrue((ServerRoutePolicies.all[key] as RoutePolicy.Requires).allCompanies, key)
+        }
+        assertEquals(CompanyFrom.Path, (ServerRoutePolicies.all["PUT /server/assistant/companies/{code}"] as RoutePolicy.Requires).company)
     }
 
     @Test

@@ -647,6 +647,9 @@ require_release_files() {
         database/tenant/migrations/V015__session_switch_origin.sql \
         database/tenant/migrations/V016__two_factor_replace.sql \
         database/tenant/migrations/V017__extension_schema_state.sql \
+        database/tenant/migrations/V018__create_assistant.sql \
+        database/tenant/migrations/V019__assistant_turn_safety.sql \
+        database/tenant/migrations/V020__assistant_preview_hash.sql \
         modules/clientes/migrations/V002__require_customer_contact_fields.sql \
         modules/clientes/migrations/V003__add_customer_type.sql \
         modules/clientes/migrations/V004__add_customer_code.sql; do
@@ -848,6 +851,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON text_translations TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application_user_recovery_codes TO :"db_user";
 REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON application_user_2fa_email_recovery FROM :"db_user";
 GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user";
+-- In-app assistant (tenant V018, GLOBAL_AGENT.md): its messages are only read and appended by the runtime user.
+GRANT SELECT, INSERT, UPDATE, DELETE ON assistant_settings, assistant_conversations, assistant_pending_calls, assistant_usage TO :"db_user";
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON assistant_messages FROM :"db_user";
+GRANT SELECT, INSERT ON assistant_messages TO :"db_user";
+GRANT USAGE, SELECT ON SEQUENCE assistant_messages_id_seq TO :"db_user";
 -- Activity log (tenant V011, ACTIVITY_LOG.md): append-only, the runtime user only reads and appends.
 GRANT SELECT, INSERT ON activity_log, activity_log_chain TO :"db_user";
 GRANT USAGE ON SEQUENCE activity_log_id_seq TO :"db_user";

@@ -293,10 +293,14 @@ object CrmMail {
      * Fills a template. [body] is HTML written by the company; a body without tags is treated as
      * plain text (escaped, line breaks kept). Values are always HTML-escaped in the body; unknown
      * or missing values become empty.
+     *
+     * [plain] is for text that a company user did not write as a template: what an agent or the in-app assistant
+     * typed. It is ALWAYS sent as plain text (every `<` is escaped, so an `<img src>`, a link or an invisible element
+     * in it is shown as text, never sent as HTML), so the confirmation shows exactly what the recipient reads.
      */
-    fun render(subject: String, body: String, values: Map<String, String>): CrmEmail {
+    fun render(subject: String, body: String, values: Map<String, String>, plain: Boolean = false): CrmEmail {
         val filledSubject = placeholder.replace(subject) { values[it.groupValues[1]].orEmpty() }.replace(Regex("[\\r\\n]+"), " ").trim()
-        val isHtml = Regex("<[a-zA-Z][^>]*>").containsMatchIn(body)
+        val isHtml = !plain && Regex("<[a-zA-Z][^>]*>").containsMatchIn(body)
         val htmlBody = if (isHtml) {
             placeholder.replace(body) { escape(values[it.groupValues[1]].orEmpty()) }
         } else {

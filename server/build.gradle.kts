@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.ideasdeveloper.bms"
-version = "0.13.1"
+version = "0.14.0"
 application {
     mainClass = "com.ideasdeveloper.bms.server.app.ApplicationKt"
 }
@@ -39,6 +39,8 @@ dependencies {
     implementation(libs.ktor.clientEngineDefaults)
     /* === End DB === */
     implementation(libs.angus.mail)
+    // In-app assistant (GLOBAL_AGENT.md): the official Anthropic SDK, one client per API key, never from the environment.
+    implementation(libs.anthropic.java)
 
     moduleCompiler("org.jetbrains.kotlin:kotlin-compiler-embeddable:${libs.versions.kotlin.asProvider().get()}")
     moduleCompiler("org.jetbrains.kotlin:kotlin-serialization-compiler-plugin-embeddable:${libs.versions.kotlin.asProvider().get()}")

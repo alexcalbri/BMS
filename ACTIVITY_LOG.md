@@ -34,6 +34,9 @@ Rules:
    something else:
    - through an **AI agent**: the row keeps the user as actor plus the agent's name, and every
      display says **"Agente de <usuario>"** (stored in `actor_display`);
+   - through the **in-app assistant** (Core 0.14.0, GLOBAL_AGENT.md): the same, with the fixed agent name
+     "Asistente" and origin `assistant`; the display says **"Asistente de <usuario>"** and rows read back with
+     `viaAssistant` true (`viaAgent` false). Only Core sets it; an entry cannot claim that origin for another actor;
    - a **server owner or server administrator inside a company** (switcher session): the row keeps
      the business-owner user the session belongs to *and* the real person (`real_actor_*`), and the
      display is "<nombre real> (desde el servidor)";
@@ -64,7 +67,7 @@ activity_log(
   action TEXT NOT NULL,              -- created | updated | deleted | archived | restored | status_changed | assigned | commented | attachment_added | attachment_removed | settings_changed | imported | signed_in | sign_in_failed | signed_out | permission_changed | …
   summary TEXT NOT NULL,             -- one Spanish sentence
   changes JSONB NOT NULL DEFAULT '[]', -- [{"field":"email","label":"Correo","old":"a@x","new":"b@x"}]
-  origin TEXT NULL                   -- app | agent | api | automation | import | webhook
+  origin TEXT NULL                   -- app | agent | api | automation | import | webhook | assistant
 )
 activity_log_chain(chain_seq BIGINT PK, id BIGINT UNIQUE, prev_hash, row_hash)   -- hash chain, one row per sealed row, written at commit (§9); its last row is the head
 ```
