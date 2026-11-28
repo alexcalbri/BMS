@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.modules.crm
 
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
 import com.ideasdeveloper.bms.server.modules.McpToolCall
@@ -48,6 +49,9 @@ object CrmIntegrationMcpTools {
             description = "Activa o desactiva Meta y cambia la pagina, si Messenger e Instagram comparten el token de Meta Business, la cuenta de WhatsApp Business, el numero y si se guardan los mensajes enviados desde la app de WhatsApp. " +
                 "Solo cambia lo enviado. Al guardar con Meta activo conecta la pagina e Instagram y suscribe la cuenta de WhatsApp.$NoCredentials$Confirm",
             permission = CrmScreens.Settings,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> updateMetaPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "enabled" to McpSchema.boolean("Activar Meta."),
@@ -65,6 +69,9 @@ object CrmIntegrationMcpTools {
             description = "Conecta la pagina de Facebook configurada y su cuenta de Instagram con el token guardado y suscribe Instagram a los mensajes " +
                 "(con tokens propios, lee la cuenta de Instagram de la pagina del token de Instagram), para recibir y enviar mensajes.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> metaPagePreview(call) },
         ) { call -> gated(call, CrmExtensionIds.Meta) { metaConnectPage(call) } },
         McpTool(
             name = "meta_fill_names",
@@ -72,6 +79,7 @@ object CrmIntegrationMcpTools {
             description = "Pide a Meta el nombre de los contactos de Messenger e Instagram que llegaron sin nombre (hasta 100 por canal) y lo guarda. " +
                 "Nunca cambia un nombre existente.",
             permission = CrmScreens.Settings,
+            preview = { call -> metaNamesPreview(call) },
             // Sends something out of the company (the assistant's confirmation card says so).
             outbound = true,
         ) { call -> gated(call, CrmExtensionIds.Meta) { metaFillNames(call) } },
@@ -80,6 +88,9 @@ object CrmIntegrationMcpTools {
             title = "Conectar WhatsApp",
             description = "Suscribe la app a la cuenta de WhatsApp Business y lista sus numeros. Con un solo numero y ninguno elegido, lo elige.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> metaWhatsAppPreview(call) },
         ) { call -> gated(call, CrmExtensionIds.Meta) { metaConnectWhatsApp(call) } },
         McpTool(
             name = "update_wordpress",
@@ -87,6 +98,9 @@ object CrmIntegrationMcpTools {
             description = "Activa o desactiva el sitio WordPress (plugin BMS Connector) y cambia su direccion. Solo cambia lo enviado. El secreto del plugin " +
                 "se genera en la app.$Confirm",
             permission = CrmScreens.Settings,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> updateWordPressPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "enabled" to McpSchema.boolean("Activar WordPress."),
@@ -99,6 +113,7 @@ object CrmIntegrationMcpTools {
             title = "Probar conexion con WordPress",
             description = "Comprueba la conexion con el plugin del sitio y devuelve su nombre y versiones.",
             permission = CrmScreens.Settings,
+            preview = { call -> wordPressTestPreview(call) },
             // Sends something out of the company (the assistant's confirmation card says so).
             outbound = true,
         ) { call -> gated(call, CrmExtensionIds.WordPress) { wordPressTest(call) } },
@@ -107,6 +122,7 @@ object CrmIntegrationMcpTools {
             title = "Sincronizar agentes del sitio",
             description = "Lee los agentes del sitio WordPress; los nuevos se vinculan al usuario del CRM con el mismo correo de avisos.",
             permission = CrmScreens.Settings,
+            preview = { call -> wordPressSyncPreview(call) },
             // Sends something out of the company (the assistant's confirmation card says so).
             outbound = true,
         ) { call -> gated(call, CrmExtensionIds.WordPress) { wordPressSyncAgents(call) } },
@@ -140,6 +156,9 @@ object CrmIntegrationMcpTools {
             title = "Importar contactos de Encuentra24",
             description = "Importa ahora los contactos de los anuncios de Encuentra24 como leads, desde una fecha o desde la ultima importacion.",
             permission = CrmScreens.Settings,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> encuentra24SyncPreview(call) },
             inputSchema = McpSchema.obj(mapOf("fromDate" to McpSchema.date("Importar desde este dia (opcional)."))),
         ) { call -> gated(call, CrmExtensionIds.Encuentra24) { encuentra24Sync(call) } },
         McpTool(
@@ -148,6 +167,9 @@ object CrmIntegrationMcpTools {
             description = "Activa o desactiva Cloudbeds y cambia la propiedad, el metodo de pago de las reservas, el correo de bienvenida y si se archivan " +
                 "los leads al salir del hotel. Solo cambia lo enviado.$NoCredentials$Confirm",
             permission = CrmScreens.Settings,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> updateCloudbedsPreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     "enabled" to McpSchema.boolean("Activar Cloudbeds."),
@@ -167,6 +189,7 @@ object CrmIntegrationMcpTools {
             title = "Probar conexion con Cloudbeds",
             description = "Comprueba la conexion con Cloudbeds con la API key guardada.",
             permission = CrmScreens.Settings,
+            preview = { call -> cloudbedsTestPreview(call) },
             // Sends something out of the company (the assistant's confirmation card says so).
             outbound = true,
         ) { call -> gated(call, CrmExtensionIds.Cloudbeds) { cloudbedsTest(call) } },
@@ -234,6 +257,9 @@ object CrmIntegrationMcpTools {
             title = "Cerrar venta de propiedad",
             description = "Cierra la venta de una propiedad del sitio vinculada a un lead: la marca vendida en el sitio web y en el lead, y gana el lead.$Confirm",
             permission = CrmScreens.Manage,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> closeSalePreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(leadId, itemId, "price" to McpSchema.number("Precio de venta (opcional)."), "date" to McpSchema.date("Fecha de venta; por defecto hoy.")),
                 required = listOf("lead", "item"),
@@ -260,6 +286,9 @@ object CrmIntegrationMcpTools {
             description = "Crea en Cloudbeds la reserva de las habitaciones elegidas del lead, con los datos de contacto del lead, y gana el lead. " +
                 "Es una reserva real en el hotel: muestra el resumen al usuario y espera su confirmacion.",
             permission = CrmScreens.Manage,
+            // Sends something out of the company or changes where it goes (the assistant's confirmation card says so).
+            outbound = true,
+            preview = { call -> reservePreview(call) },
             inputSchema = McpSchema.obj(
                 mapOf(
                     leadId,
@@ -341,6 +370,168 @@ object CrmIntegrationMcpTools {
     private fun user(context: CrmScreens.Context, wanted: String): CrmUser =
         context.users.firstOrNull { it.id.toString() == wanted || it.name.equals(wanted, ignoreCase = true) }
             ?: throw McpToolException("'$wanted' no es un usuario con acceso al CRM. Usuarios: ${context.users.joinToString { it.name }}.")
+
+
+    // ---- Previews: what each call would send out or change, in plain words (read only, no request of any kind) ----
+
+    private fun shown(value: String?) = value?.takeIf { it.isNotBlank() } ?: "(vacio)"
+
+    private fun change(label: String, before: String?, after: String?) = McpPreviewRow(label, "${shown(before)} -> ${shown(after)}")
+
+    private fun yesNo(value: Boolean) = if (value) "Si" else "No"
+
+    private fun hostOf(url: String?): String = url?.takeIf { it.isNotBlank() }?.let { runCatching { java.net.URI(it).host }.getOrNull() ?: it } ?: "(sin direccion)"
+
+    private fun updateMetaPreview(call: McpToolCall): List<McpPreviewRow> {
+        val keys = listOf("enabled", "pageId", "wabaId", "phoneNumberId", "recordEchoes", "sharedPageAccess")
+        if (keys.none(call::has)) throw McpToolException("Envia al menos un campo a cambiar.")
+        val current = CrmHost.metaSettings(call.tenant)
+        if (current.serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
+        val rows = mutableListOf<McpPreviewRow>()
+        if (call.has("enabled")) rows += change("Meta activo", yesNo(current.enabled), yesNo(call.boolean("enabled")))
+        if (call.has("pageId")) rows += change("Pagina de Facebook (id)", current.pageId, call.string("pageId", 64))
+        if (call.has("wabaId")) rows += change("Cuenta de WhatsApp Business (id)", current.wabaId, call.string("wabaId", 64))
+        if (call.has("phoneNumberId")) rows += change("Numero de WhatsApp (id)", current.phoneNumberId, call.string("phoneNumberId", 64))
+        if (call.has("sharedPageAccess")) rows += change("Messenger e Instagram comparten el token", yesNo(current.sharedTokens), yesNo(call.boolean("sharedPageAccess")))
+        if (call.has("recordEchoes")) rows += change("Guardar mensajes enviados desde la app de WhatsApp", yesNo(current.recordEchoes), yesNo(call.boolean("recordEchoes")))
+        rows += McpPreviewRow(
+            "Que se envia y a donde",
+            "Al guardar con Meta activo, el servidor envia solicitudes a Meta (graph.facebook.com) con el token guardado para conectar la pagina, su Instagram y la cuenta de WhatsApp. " +
+                "Desde entonces los mensajes a los leads salen por esa pagina y ese numero.",
+        )
+        return rows
+    }
+
+    private fun metaPagePreview(call: McpToolCall): List<McpPreviewRow> {
+        val meta = CrmHost.metaSettings(call.tenant)
+        if (meta.serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
+        return listOf(
+            McpPreviewRow("Pagina de Facebook", "${shown(meta.pageName)} (id ${shown(meta.pageId)})"),
+            McpPreviewRow("Que se envia y a donde", "Solicitudes a Meta (graph.facebook.com) con el token guardado: conecta la pagina y su Instagram y suscribe Instagram a los mensajes. No envia datos de leads."),
+        )
+    }
+
+    private fun metaNamesPreview(call: McpToolCall): List<McpPreviewRow> {
+        val meta = CrmHost.metaSettings(call.tenant)
+        if (!meta.ready("messenger") && !meta.ready("instagram")) throw McpToolException("Conecta Messenger o Instagram antes de completar los nombres.")
+        return listOf(
+            McpPreviewRow("Canales", listOfNotNull("Messenger".takeIf { meta.ready("messenger") }, "Instagram".takeIf { meta.ready("instagram") }).joinToString()),
+            McpPreviewRow("Que se envia y a donde", "Pide a Meta (graph.facebook.com) con el token guardado el nombre de hasta 100 contactos por canal que llegaron sin nombre, enviando el id de cada contacto. Solo completa nombres vacios."),
+        )
+    }
+
+    private fun metaWhatsAppPreview(call: McpToolCall): List<McpPreviewRow> {
+        val meta = CrmHost.metaSettings(call.tenant)
+        if (meta.wabaId == null) throw McpToolException("Guarda primero el WhatsApp Business Account ID con update_meta (wabaId).")
+        return listOf(
+            McpPreviewRow("Cuenta de WhatsApp Business (id)", meta.wabaId.orEmpty()),
+            McpPreviewRow("Numero elegido (id)", shown(meta.phoneNumberId)),
+            McpPreviewRow("Que se envia y a donde", "Solicitudes a Meta (graph.facebook.com) con el token guardado: suscribe esta aplicacion a la cuenta de WhatsApp y lista sus numeros. No envia datos de leads."),
+        )
+    }
+
+    private fun updateWordPressPreview(call: McpToolCall): List<McpPreviewRow> {
+        if (!call.has("enabled") && !call.has("siteUrl")) throw McpToolException("Envia al menos un campo a cambiar.")
+        val current = CrmHost.wordpressSettings(call.tenant)
+        val rows = mutableListOf<McpPreviewRow>()
+        if (call.has("enabled")) rows += change("WordPress activo", yesNo(current.enabled), yesNo(call.boolean("enabled")))
+        val site = if (call.has("siteUrl")) call.string("siteUrl", 500) else current.siteUrl
+        if (call.has("siteUrl")) rows += change("Direccion del sitio", current.siteUrl, site)
+        rows += McpPreviewRow(
+            "Que se envia y a donde",
+            "El CRM envia a ${hostOf(site)} solicitudes firmadas con el secreto guardado (busqueda de propiedades, agentes, cierre de ventas) y acepta sus avisos. " +
+                "Una direccion que no sea el sitio de la empresa le entrega esas solicitudes a un tercero.",
+        )
+        return rows
+    }
+
+    private fun wordPressTestPreview(call: McpToolCall): List<McpPreviewRow> = listOf(
+        McpPreviewRow("Sitio", hostOf(CrmHost.wordpressSettings(call.tenant).siteUrl)),
+        McpPreviewRow("Que se envia y a donde", "Una solicitud de prueba firmada con el secreto guardado a ese sitio. No envia datos de leads."),
+    )
+
+    private fun wordPressSyncPreview(call: McpToolCall): List<McpPreviewRow> = listOf(
+        McpPreviewRow("Sitio", hostOf(CrmHost.wordpressSettings(call.tenant).siteUrl)),
+        McpPreviewRow("Que se envia y a donde", "Pide al sitio la lista de sus agentes (solicitud firmada con el secreto guardado) y vincula los nuevos al usuario del CRM con el mismo correo de avisos. No envia datos de leads."),
+    )
+
+    private fun encuentra24SyncPreview(call: McpToolCall): List<McpPreviewRow> {
+        val settings = CrmHost.encuentra24Settings(call.tenant)
+        return listOf(
+            McpPreviewRow("Empresa en Encuentra24 (slug)", shown(settings.slug)),
+            McpPreviewRow("Desde", call.date("fromDate")?.toString() ?: settings.lastSync?.toString() ?: "la ultima importacion"),
+            McpPreviewRow("Que se envia y a donde", "Solicitudes a Encuentra24 con la API key guardada y el slug de arriba; los contactos que devuelve se crean como leads (y avisan a los usuarios del CRM)."),
+        )
+    }
+
+    private fun updateCloudbedsPreview(call: McpToolCall): List<McpPreviewRow> {
+        val keys = listOf("enabled", "propertyId", "paymentMethod", "welcomeEnabled", "welcomeTemplate", "welcomeDaysBefore", "welcomeHour", "archiveOnCheckout", "defaultCountry")
+        if (keys.none(call::has)) throw McpToolException("Envia al menos un campo a cambiar.")
+        val current = CrmHost.cloudbedsSettings(call.tenant)
+        val templates = CrmMail.templates(call.tenant)
+        val rows = mutableListOf<McpPreviewRow>()
+        if (call.has("enabled")) rows += change("Cloudbeds activo", yesNo(current.enabled), yesNo(call.boolean("enabled")))
+        if (call.has("propertyId")) rows += change("Propiedad (id)", current.propertyId, call.string("propertyId", 30))
+        if (call.has("paymentMethod")) rows += change("Metodo de pago de las reservas", CrmCloudbedsStore.paymentLabels[current.paymentMethod] ?: current.paymentMethod, call.string("paymentMethod", 40))
+        if (call.has("welcomeEnabled")) rows += change("Correo de bienvenida", yesNo(current.welcomeEnabled), yesNo(call.boolean("welcomeEnabled")))
+        if (call.has("welcomeTemplate")) rows += change("Plantilla de bienvenida", templates.firstOrNull { it.id == current.welcomeTemplateId }?.name, call.string("welcomeTemplate", 200))
+        if (call.has("welcomeDaysBefore")) rows += change("Dias antes del check-in", current.welcomeDaysBefore.toString(), call.int("welcomeDaysBefore", 1, 0..60).toString())
+        if (call.has("welcomeHour")) rows += change("Hora de envio", current.welcomeHour.toString(), call.int("welcomeHour", 9, 0..23).toString())
+        if (call.has("archiveOnCheckout")) rows += change("Archivar al salir del hotel", yesNo(current.archiveOnCheckout), yesNo(call.boolean("archiveOnCheckout")))
+        if (call.has("defaultCountry")) rows += change("Pais por defecto del huesped", current.defaultCountry, call.string("defaultCountry", 2))
+        val welcomeOn = if (call.has("welcomeEnabled")) call.boolean("welcomeEnabled") else current.welcomeEnabled
+        rows += McpPreviewRow(
+            "Que se envia y a donde",
+            "Las reservas se crean en la propiedad de Cloudbeds de arriba con los datos de contacto de cada lead." +
+                if (welcomeOn) " Con el correo de bienvenida activo, cada huesped recibe la plantilla elegida en su correo antes del check-in." else "",
+        )
+        return rows
+    }
+
+    private fun cloudbedsTestPreview(call: McpToolCall): List<McpPreviewRow> = listOf(
+        McpPreviewRow("Propiedad (id)", shown(CrmHost.cloudbedsSettings(call.tenant).propertyId)),
+        McpPreviewRow("Que se envia y a donde", "Una solicitud de prueba a Cloudbeds con la API key guardada. No envia datos de leads."),
+    )
+
+    private fun closeSalePreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        val item = item(call, lead)
+        val site = hostOf(CrmHost.wordpressSettings(call.tenant).siteUrl)
+        return listOf(
+            McpPreviewRow("Lead que gana", lead.name),
+            McpPreviewRow("Propiedad que se marca vendida", item.title),
+            McpPreviewRow("Precio de venta", call.decimal("price")?.toPlainString() ?: "(sin precio)"),
+            McpPreviewRow("Fecha de venta", call.date("date")?.toString() ?: "hoy"),
+            McpPreviewRow("Que se envia y a donde", "El sitio $site recibe una solicitud firmada que marca la propiedad como vendida (se ve en la pagina publica)."),
+        )
+    }
+
+    private fun reservePreview(call: McpToolCall): List<McpPreviewRow> {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        val rooms = (call.arguments["rooms"] as? JsonArray) ?: throw McpToolException("'rooms' debe ser una lista.")
+        val settings = CrmHost.cloudbedsSettings(call.tenant)
+        val rows = mutableListOf(
+            McpPreviewRow("Huesped (lead)", lead.name),
+            McpPreviewRow("Correo del huesped (se envia a Cloudbeds)", shown(lead.email)),
+            McpPreviewRow("Telefono del huesped (se envia a Cloudbeds)", shown(lead.phone)),
+        )
+        rooms.forEach { element ->
+            val room = element as? JsonObject ?: throw McpToolException("Cada habitacion de 'rooms' debe ser un objeto.")
+            fun field(key: String) = (room[key] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+            val id = runCatching { UUID.fromString(field("item")) }.getOrNull() ?: throw McpToolException("Cada habitacion necesita el id 'item'.")
+            val item = CrmItems.find(call.tenant, lead.id, id) ?: throw McpToolException("Ese elemento no existe en el lead; revisa get_lead_items.")
+            rows += McpPreviewRow(
+                "Habitacion", "${item.title}, del ${item.startsOn ?: "?"} al ${item.endsOn ?: "?"}: ${field("adults").ifEmpty { "?" }} adulto(s), ${field("children").ifEmpty { "0" }} nino(s)" +
+                    (item.price?.let { ", total $it" } ?: ""),
+            )
+        }
+        rows += McpPreviewRow("Pais", call.string("country", 2).ifEmpty { "por defecto (${shown(settings.defaultCountry)})" })
+        rows += McpPreviewRow("Metodo de pago", call.string("payment", 40).ifEmpty { CrmCloudbedsStore.paymentLabels[settings.paymentMethod] ?: settings.paymentMethod })
+        rows += McpPreviewRow("Que se envia y a donde", "Se crea una reserva real en Cloudbeds (propiedad ${shown(settings.propertyId)}) con esos datos del huesped, y el lead pasa a ganado.")
+        return rows
+    }
 
     // ---- Settings ----
 

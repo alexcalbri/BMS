@@ -66,7 +66,7 @@ class CrmExtensionsTest {
 
     @Test
     fun manifestsRequireTheModuleVersionThatShipsThem() {
-        assertEquals("0.33.0", CrmServerModule.definition.version)
+        assertEquals("0.33.1", CrmServerModule.definition.version)
         // Las extensiones piden la primera version bilingue del CRM; el modulo puede ir por delante.
         assertEquals("0.31.0", CrmExtensions.MinModuleVersion)
         assertEquals("0.14.0", CrmServerModule.definition.minCoreVersion)

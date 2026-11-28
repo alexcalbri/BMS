@@ -260,7 +260,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.33.0",
+        version = "0.33.1",
         minCoreVersion = "0.14.0",
         minAppVersion = "0.7.0",
         supportsExtensions = true,

@@ -41,12 +41,16 @@ object CrmTemplateMailer {
     }
 
     /** Same as [render] with the template and the lead already loaded. */
-    fun renderFor(tenant: Connection, template: CrmTemplate, lead: CrmLead, extra: Map<String, String> = emptyMap(), http: CrmHttp = CrmJavaHttp): RenderedMail {
+    fun renderFor(
+        tenant: Connection, template: CrmTemplate, lead: CrmLead, extra: Map<String, String> = emptyMap(), http: CrmHttp = CrmJavaHttp,
+        // false: only a translation already saved is used and nothing is requested from the translator (a preview, an agent).
+        remote: Boolean = true,
+    ): RenderedMail {
         val names = CrmNames(CrmRepository.users(tenant), CrmRepository.interests(tenant))
         val values = CrmInbox.templateValues(tenant, lead, names, CrmRepository.stages(tenant)) + dynamicValues(tenant, lead) + extra
         val settings = CrmTranslate.load(tenant)
         val guestLanguage = settings.languageField.takeIf { it.isNotEmpty() }?.let { guestValue(lead.customFields[it]) }
-        return compose(template, values, guestLanguage, settings, CrmTranslate.translator(settings, http), CrmTranslate.cache(tenant, template.id))
+        return compose(template, values, guestLanguage, settings, if (remote) CrmTranslate.translator(settings, http) else null, CrmTranslate.cache(tenant, template.id), remote)
     }
 
     fun send(
@@ -80,6 +84,8 @@ object CrmTemplateMailer {
         settings: CrmTranslationSettings,
         translator: CrmTranslator?,
         cache: CrmTranslationCache?,
+        // false: never call the translator; without a saved translation the base language goes out and [RenderedMail.note] says so.
+        remote: Boolean = true,
     ): RenderedMail {
         val target = CrmTranslate.resolveLanguage(guestLanguage, settings.languageMap)
         var subject = template.subject
@@ -93,6 +99,8 @@ object CrmTemplateMailer {
                 subject = hit.first
                 body = hit.second
                 translated = true
+            } else if (!remote) {
+                note = "Sin traduccion guardada al idioma $target: se envia en el idioma base (${template.baseLanguage})."
             } else if (translator == null) {
                 note = "No se pudo traducir: configura el traductor en Integraciones > Traduccion."
             } else if (CrmTranslate.coolingDown(settings)) {

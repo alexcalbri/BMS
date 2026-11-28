@@ -654,26 +654,42 @@ object CrmMcpTools {
         }
     }
 
-    // Same composition and channel checks as the reply form of the lead.
+    // Same composition and channel checks as the reply form of the lead, with the rules of an agent's message: what it types
+    // goes out as plain text and a template is translated only from the translations already saved. The preview and the
+    // send call the same code, and the preview makes no request of any kind (it runs before the user decided).
+    private fun compose(call: McpToolCall, context: CrmScreens.Context, lead: CrmLead, notes: MutableList<String>): Triple<CrmChannel, CrmEmail, Map<String, String>> {
+        val wanted = call.requiredString("channel", 40)
+        val channel = CrmChannels.all.firstOrNull { it.id.equals(wanted, ignoreCase = true) || it.label.equals(wanted, ignoreCase = true) }
+            ?: throw McpToolException("No existe el canal '$wanted'. Canales: ${CrmChannels.all.joinToString { it.label }}.")
+        val values = mapOf(
+            "channel" to channel.label,
+            "template" to call.string("template", 200),
+            "text" to call.string("text", 20_001),
+            "subject" to call.string("subject", 500),
+        )
+        val (_, email) = try {
+            CrmAdminScreens.composeReply(context, lead, values, notes, fromAgent = true)
+        } catch (failure: CrmValidationException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        return Triple(channel, email, values)
+    }
+
     // What the confirmation shows: who gets it, by which channel and address, and the final text (template filled in).
     private fun sendPreview(call: McpToolCall): List<McpPreviewRow> {
         val context = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
         val lead = visibleLead(call, context)
-        val wanted = call.requiredString("channel", 40)
-        val channel = CrmChannels.all.firstOrNull { it.id.equals(wanted, ignoreCase = true) || it.label.equals(wanted, ignoreCase = true) }
-            ?: throw McpToolException("No existe el canal '$wanted'.")
-        val values = mapOf("channel" to channel.label, "template" to call.string("template", 200), "text" to call.string("text", 20_001), "subject" to call.string("subject", 500))
-        val (_, email) = try {
-            CrmAdminScreens.composeReply(context, lead, values)
-        } catch (failure: CrmValidationException) {
-            throw McpToolException(failure.message.orEmpty())
-        }
+        val notes = mutableListOf<String>()
+        val (channel, email, values) = compose(call, context, lead, notes)
+        val templateHtml = values["text"].isNullOrBlank() && CrmMail.templates(call.tenant).firstOrNull { it.name == values["template"] }?.body?.let { Regex("<[a-zA-Z][^>]*>").containsMatchIn(it) } == true
         return listOfNotNull(
             McpPreviewRow("Destinatario (lead)", lead.name),
             McpPreviewRow("Canal", channel.label),
             McpPreviewRow("Se envia a", if (channel.id == "email") lead.email else lead.phone.ifBlank { lead.email }),
             email.subject.takeIf { it.isNotBlank() }?.let { McpPreviewRow("Asunto", it) },
             McpPreviewRow("Mensaje (completo)", email.text),
+            McpPreviewRow("Formato", if (templateHtml) "Plantilla de la empresa con formato HTML: aqui se ve solo su texto" else "Texto sin formato: se envia tal cual, sin HTML"),
+            notes.takeIf { it.isNotEmpty() }?.let { McpPreviewRow("Traduccion", it.joinToString("\n")) },
         )
     }
 
@@ -691,20 +707,7 @@ object CrmMcpTools {
     private fun send(call: McpToolCall): JsonElement {
         val context = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
         val lead = visibleLead(call, context)
-        val wanted = call.requiredString("channel", 40)
-        val channel = CrmChannels.all.firstOrNull { it.id.equals(wanted, ignoreCase = true) || it.label.equals(wanted, ignoreCase = true) }
-            ?: throw McpToolException("No existe el canal '$wanted'. Canales: ${CrmChannels.all.joinToString { it.label }}.")
-        val values = mapOf(
-            "channel" to channel.label,
-            "template" to call.string("template", 200),
-            "text" to call.string("text", 20_001),
-            "subject" to call.string("subject", 500),
-        )
-        val (_, email) = try {
-            CrmAdminScreens.composeReply(context, lead, values)
-        } catch (failure: CrmValidationException) {
-            throw McpToolException(failure.message.orEmpty())
-        }
+        val (channel, email, values) = compose(call, context, lead, mutableListOf())
         val actor = actor(call)
         try {
             val externalId = channel.send(CrmChannelContext(call.tenant, call.access.serverMail), lead, email)
