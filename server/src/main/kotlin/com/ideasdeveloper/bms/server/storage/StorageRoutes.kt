@@ -1,10 +1,9 @@
-package com.ideasdeveloper.bms.server.company.api
+package com.ideasdeveloper.bms.server.storage
 
 import com.ideasdeveloper.bms.server.admins.ServerActorResolver
 import com.ideasdeveloper.bms.server.admins.serverActor
+import com.ideasdeveloper.bms.server.company.api.CompanyErrorResponse
 import com.ideasdeveloper.bms.server.i18n.tr
-import com.ideasdeveloper.bms.server.storage.StorageGuard
-import com.ideasdeveloper.bms.server.storage.StorageQuotas
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive

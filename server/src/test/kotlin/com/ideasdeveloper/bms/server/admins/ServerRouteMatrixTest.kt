@@ -2,7 +2,7 @@ package com.ideasdeveloper.bms.server.admins
 
 import com.ideasdeveloper.bms.server.assistant.assistantServerRoutes
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
-import com.ideasdeveloper.bms.server.company.api.storageRoutes
+import com.ideasdeveloper.bms.server.storage.storageRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorPolicyRoutes
 import com.ideasdeveloper.bms.server.auth.api.twoFactorResetRoutes
 import com.ideasdeveloper.bms.server.extensions.ExtensionActors

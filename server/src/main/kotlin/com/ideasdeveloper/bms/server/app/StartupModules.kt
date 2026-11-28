@@ -22,8 +22,8 @@ import com.ideasdeveloper.bms.server.auth.application.AccountException
 import com.ideasdeveloper.bms.server.auth.application.AccountPasswords
 import com.ideasdeveloper.bms.server.auth.application.AccountService
 import com.ideasdeveloper.bms.server.company.api.companyRoutes
-import com.ideasdeveloper.bms.server.company.api.StorageAdmin
-import com.ideasdeveloper.bms.server.company.api.storageRoutes
+import com.ideasdeveloper.bms.server.storage.StorageAdmin
+import com.ideasdeveloper.bms.server.storage.storageRoutes
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
