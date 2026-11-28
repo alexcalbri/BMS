@@ -33,6 +33,7 @@ import com.ideasdeveloper.bms.server.company.application.JdbcCoreUpdateStore
 import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.infrastructure.database.DatabaseFactory
+import com.ideasdeveloper.bms.server.http.ClientAddresses
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
 import com.ideasdeveloper.bms.server.modules.CompanyFiles
@@ -112,7 +113,7 @@ fun Application.module() {
                 refillPeriod = 60.seconds,
             )
 
-            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
         }
         register(RateLimitName("admin")) {
             rateLimiter(
@@ -122,7 +123,7 @@ fun Application.module() {
 
             // Siempre por IP: una clave derivada de la cabecera Authorization se evade rotando el
             // token (basta con enviar uno distinto en cada peticion) y haria crecer el mapa sin tope.
-            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
         }
         // Lecturas del Core (/version, /modules, /notifications): por IP, holgado para el uso normal
         // de la app pero evita inundaciones que abririan una conexion a la base de datos cada una.
@@ -131,7 +132,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
         }
         // Reads of the activity logs (/companies/me/activity*, /server/activity*): each one reads one or
         // every company database, so per client IP and tighter than the other admin routes.
@@ -140,7 +141,7 @@ fun Application.module() {
                 limit = 30,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
         }
         // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
         // enough for webhook bursts, but it stops floods that would open a database connection each.
@@ -149,7 +150,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call -> com.ideasdeveloper.bms.server.http.ClientAddresses.group(clientAddress(call)) }
+            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
         }
     }
     DatabaseFactory.init(environment.config)
@@ -750,10 +751,6 @@ internal fun coreUpdateRequiresApprovedCommit(value: String?): Boolean = value?.
 
 internal fun configuredPublicBase(): String? =
     System.getenv("BMS_PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
-
-// IP del cliente; detras del proxy local se toma X-Real-IP.
-internal fun clientAddress(call: ApplicationCall): String =
-    com.ideasdeveloper.bms.server.http.ClientAddresses.resolve(call.request.local.remoteAddress, call.request.headers["X-Real-IP"])
 
 // Valor en memoria con expiracion: evita recalcular (y repetir peticiones salientes) en cada llamada.
 // Un fallo tambien se guarda, con un TTL corto, para no reintentar la carga en cada peticion.

@@ -279,7 +279,7 @@ class ModuleAccessService(
 
     /** [verifyCredentials] for the request [call] (its client address is recorded). */
     fun verifyCredentials(call: ApplicationCall, companyCode: String?, username: String, password: String, allowAuditAdmin: Boolean = false): VerifiedUser? =
-        verifyCredentials(companyCode, username, password, allowAuditAdmin, com.ideasdeveloper.bms.server.app.clientAddress(call))
+        verifyCredentials(companyCode, username, password, allowAuditAdmin, com.ideasdeveloper.bms.server.http.ClientAddresses.of(call))
 
     /**
      * The sign-in of an AI agent's OAuth page with the second step (TWO_FACTOR.md §2): password and,
@@ -326,7 +326,7 @@ class ModuleAccessService(
         password: String,
         twoFactorCode: String?,
         allowAuditAdmin: Boolean = false,
-    ): AgentSignIn = signInForAgent(companyCode, username, password, twoFactorCode, com.ideasdeveloper.bms.server.app.clientAddress(call), allowAuditAdmin)
+    ): AgentSignIn = signInForAgent(companyCode, username, password, twoFactorCode, com.ideasdeveloper.bms.server.http.ClientAddresses.of(call), allowAuditAdmin)
 
     private fun verifiedFrom(session: LoginSuccessResponse, companyCode: String?, allowAuditAdmin: Boolean): VerifiedUser? {
         val serverOwner = session.scope == "server"

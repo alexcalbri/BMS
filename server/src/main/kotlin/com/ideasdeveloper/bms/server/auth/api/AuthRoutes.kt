@@ -1,12 +1,12 @@
 package com.ideasdeveloper.bms.server.auth.api
 
-import com.ideasdeveloper.bms.server.app.clientAddress
 import com.ideasdeveloper.bms.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.bms.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.bms.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.bms.server.auth.domain.SwitchTargetsResponse
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorException
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorRequiredException
+import com.ideasdeveloper.bms.server.http.ClientAddresses
 import com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorSignInException
 import com.ideasdeveloper.bms.server.i18n.tr
 import io.ktor.server.routing.get
@@ -135,7 +135,7 @@ fun Route.authRoutes(
             )
 
             val credentials = try {
-                call.receive<LoginCredentials>().withClientAddress(clientAddress(call))
+                call.receive<LoginCredentials>().withClientAddress(ClientAddresses.of(call))
             } catch (_: BadRequestException) {
                 call.respond(
                     HttpStatusCode.BadRequest,
@@ -206,7 +206,7 @@ fun Route.authRoutes(
             val request = runCatching { call.receive<EmailRecoveryStartRequest>() }.getOrNull()
                 ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             try {
-                withContext(Dispatchers.IO) { start(request.challengeToken.trim(), clientAddress(call), com.ideasdeveloper.bms.server.app.publicBase(call, knownPublicHost)) }
+                withContext(Dispatchers.IO) { start(request.challengeToken.trim(), ClientAddresses.of(call), com.ideasdeveloper.bms.server.app.publicBase(call, knownPublicHost)) }
             } catch (refused: TwoFactorSignInException) {
                 return@post call.respond(HttpStatusCode.Unauthorized, TwoFactorErrorResponse(refused.code, refused.message.orEmpty()))
             } catch (refused: TwoFactorException) {
@@ -224,7 +224,7 @@ fun Route.authRoutes(
             val request = runCatching { call.receive<TwoFactorLoginRequest>() }.getOrNull()
                 ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             val response = try {
-                withContext(Dispatchers.IO) { complete(request.challengeToken.trim(), request.code.take(64), clientAddress(call)) }
+                withContext(Dispatchers.IO) { complete(request.challengeToken.trim(), request.code.take(64), ClientAddresses.of(call)) }
             } catch (refused: TwoFactorSignInException) {
                 return@post call.respond(HttpStatusCode.Unauthorized, TwoFactorErrorResponse(refused.code, refused.message.orEmpty(), refused.attemptsLeft))
             } catch (refused: TwoFactorException) {
@@ -242,7 +242,7 @@ fun Route.authRoutes(
             val request = runCatching { call.receive<TwoFactorLoginRequest>() }.getOrNull()
                 ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", tr("Debes enviar un JSON valido.")))
             val response = try {
-                withContext(Dispatchers.IO) { complete(request.challengeToken.trim(), request.code.take(64), clientAddress(call)) }
+                withContext(Dispatchers.IO) { complete(request.challengeToken.trim(), request.code.take(64), ClientAddresses.of(call)) }
             } catch (refused: TwoFactorSignInException) {
                 return@post call.respond(HttpStatusCode.Unauthorized, TwoFactorErrorResponse(refused.code, refused.message.orEmpty(), refused.attemptsLeft))
             } catch (refused: TwoFactorException) {

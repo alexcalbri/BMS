@@ -1,6 +1,5 @@
 package com.ideasdeveloper.bms.server.http
 
-import com.ideasdeveloper.bms.server.app.clientAddress
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -66,14 +65,12 @@ class ClientAddressesTest {
         // Ktor's engine reports a non-loopback peer, so the header must be ignored end to end.
         application {
             routing {
-                get("/ip") { call.respondText(clientAddress(call)) }
-                get("/ip2") { call.respondText(ClientAddresses.of(call)) }
+                get("/ip") { call.respondText(ClientAddresses.of(call)) }
             }
         }
         val direct = client.get("/ip").bodyAsText()
         assertEquals(false, direct.isBlank())
         assertEquals(direct, client.get("/ip") { header("X-Real-IP", "198.51.100.1") }.bodyAsText())
-        assertEquals(direct, client.get("/ip2") { header("X-Real-IP", "198.51.100.1") }.bodyAsText())
     }
 
     @Test
