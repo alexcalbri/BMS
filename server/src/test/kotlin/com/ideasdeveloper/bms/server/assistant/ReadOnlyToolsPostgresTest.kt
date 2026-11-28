@@ -300,7 +300,6 @@ class ReadOnlyToolsPostgresTest {
         val loggedWriters = mutableSetOf<String>()
         val networkers = mutableSetOf<String>()
         val refusing = mutableSetOf<String>()
-        val outcomes = mutableListOf<String>()
         try {
             tools.forEach { registered ->
                 val arguments = fixed[registered.qualifiedName]?.let { JsonObject(arguments(registered.tool.inputSchema) + it) } ?: arguments(registered.tool.inputSchema)
@@ -310,7 +309,6 @@ class ReadOnlyToolsPostgresTest {
                     tenant.run("SET TRANSACTION READ ONLY")
                     val failure = runCatching { registered.tool.handler(McpToolCall(arguments, permissions, tenant, access, "prueba", registered.moduleId)) }.exceptionOrNull()
                     runCatching { tenant.rollback() }
-                    outcomes += "${registered.qualifiedName} | ${failure?.javaClass?.simpleName ?: "ok"} | ${generateSequence(failure) { it.cause }.mapNotNull { it.message }.firstOrNull()?.take(100)}"
                     if (requests.size > before || networking(failure)) networkers += registered.qualifiedName
                     if (failure != null && failure !is SQLException) refusing += registered.qualifiedName
                     if (writes(failure)) {
@@ -334,7 +332,6 @@ class ReadOnlyToolsPostgresTest {
         } finally {
             java.net.ProxySelector.setDefault(previousSelector)
         }
-        File("/tmp/ro-outcomes.txt").writeText(outcomes.joinToString("\n"))
         assertTrue(writers.isEmpty(), "read-only tools that write or fail in SQL: $writers")
         // The intentional writes are exactly the listed ones: no other read leaves a row, and the listed ones do.
         assertEquals(loggedReads, loggedWriters, "reads that leave an activity-log row")
