@@ -94,7 +94,7 @@ class CompanySelfService(
     // Server administrators with server.workspace also manage the server workspace (SERVER_ADMINS.md §3).
     private val serverActors: ServerActorResolver? = null,
     // Quota, free-disk floor and uploads in progress of the company (STORAGE_QUOTA.md); imported backups count too.
-    private val storage: com.ideasdeveloper.bms.server.modules.StorageGuard? = null,
+    private val storage: com.ideasdeveloper.bms.server.storage.StorageGuard? = null,
     // Turning a user's two-step verification off (TWO_FACTOR.md §8).
     private val twoFactorResets: com.ideasdeveloper.bms.server.auth.twofactor.TwoFactorResetService? = null,
 ) {
@@ -544,4 +544,3 @@ private val CompanyProfileLabels = mapOf(
     "name" to "Nombre", "logoUrl" to "Logo", "primaryColor" to "Color primario", "secondaryColor" to "Color secundario",
     "accentColor" to "Color de acento", "defaultLanguage" to "Idioma predeterminado",
 )
-

@@ -70,7 +70,7 @@ internal class CompanyBackups(
     private val owner: CompanySelfService,
     private val backupsRoot: Path,
     // Quota, free-disk floor and uploads in progress of the company (STORAGE_QUOTA.md); imported backups count too.
-    private val storage: com.ideasdeveloper.bms.server.modules.StorageGuard?,
+    private val storage: com.ideasdeveloper.bms.server.storage.StorageGuard?,
 ) {
     // Restringe nombres de ZIP para evitar rutas arbitrarias o archivos ajenos al tenant.
     private val backupNamePattern = Regex("[a-z][a-z0-9_]{0,62}-backup-[0-9]{8}T[0-9]{6}Z\\.zip")
@@ -246,7 +246,7 @@ object BackupImportLimits {
      * floor and its uploads in progress ([storage]); while streaming, each chunk is charged to the quota through
      * the same counting stream and the size limits apply; the ZIP is checked before it takes its name.
      */
-    fun importInto(directory: Path, output: Path, content: java.io.InputStream, expectedBytes: Long?, companyCode: String, storage: com.ideasdeveloper.bms.server.modules.StorageGuard?) {
+    fun importInto(directory: Path, output: Path, content: java.io.InputStream, expectedBytes: Long?, companyCode: String, storage: com.ideasdeveloper.bms.server.storage.StorageGuard?) {
         val stored = Files.list(directory).use { files -> files.filter { it.fileName.toString().endsWith(".zip") && it != output }.toList() }
         val storedBytes = stored.sumOf { runCatching { Files.size(it) }.getOrDefault(0L) }
         if (stored.size >= MaxStoredBackups) throw CompanySelfException(tr("La empresa ya guarda {0} copias de seguridad; elimina alguna antes de importar otra.", MaxStoredBackups))

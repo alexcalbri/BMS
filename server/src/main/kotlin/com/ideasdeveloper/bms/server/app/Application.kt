@@ -37,7 +37,7 @@ import com.ideasdeveloper.bms.server.http.ClientAddresses
 import com.ideasdeveloper.bms.server.http.PublicOrigin
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
-import com.ideasdeveloper.bms.server.modules.CompanyFiles
+import com.ideasdeveloper.bms.server.storage.CompanyFiles
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
 import com.ideasdeveloper.bms.server.modules.CustomerReferenceSource
 import com.ideasdeveloper.bms.server.modules.ModuleJobScheduler
@@ -111,14 +111,14 @@ fun Application.module() {
     // Every write is limited by the company's quota, a free-disk floor and a cap on uploads in progress (STORAGE_QUOTA.md).
     val companyFilesRoot = Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
     val companyBackupsRoot = Path.of(environment.config.propertyOrNull("company.backupsRoot")?.getString() ?: "build/company-backups")
-    val storageQuotas = com.ideasdeveloper.bms.server.modules.StorageQuotas(DatabaseFactory.getDataSource())
-    val storageGuard = com.ideasdeveloper.bms.server.modules.StorageGuard(
+    val storageQuotas = com.ideasdeveloper.bms.server.storage.StorageQuotas(DatabaseFactory.getDataSource())
+    val storageGuard = com.ideasdeveloper.bms.server.storage.StorageGuard(
         root = companyFilesRoot,
         quotaFor = storageQuotas::effectiveQuotaBytes,
         minFreeBytes = environment.config.propertyOrNull("company.minFreeDiskBytes")?.getString()?.trim()?.toLongOrNull()
-            ?.coerceAtLeast(0) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMinFreeBytes,
+            ?.coerceAtLeast(0) ?: com.ideasdeveloper.bms.server.storage.StorageGuard.DefaultMinFreeBytes,
         maxConcurrentUploads = environment.config.propertyOrNull("company.maxConcurrentUploads")?.getString()?.trim()?.toIntOrNull()
-            ?.coerceAtLeast(1) ?: com.ideasdeveloper.bms.server.modules.StorageGuard.DefaultMaxConcurrentUploads,
+            ?.coerceAtLeast(1) ?: com.ideasdeveloper.bms.server.storage.StorageGuard.DefaultMaxConcurrentUploads,
         // The company's backups count in its quota too.
         extraRoots = listOf(companyBackupsRoot),
     )

@@ -3,6 +3,8 @@ package com.ideasdeveloper.bms.server.modules
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
+import com.ideasdeveloper.bms.server.storage.CompanyFiles
+import com.ideasdeveloper.bms.server.storage.StorageGuard
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody

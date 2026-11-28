@@ -59,7 +59,7 @@ class BackupImportLimitsTest {
         val directory = Files.createDirectories(root.resolve("acme"))
         val zip = zipBytes(4_000)
         var quota: Long? = zip.size + 100L
-        val guard = com.ideasdeveloper.bms.server.modules.StorageGuard(null, { quota }, minFreeBytes = 0, freeSpace = { 10_000_000_000 }, extraRoots = listOf(root))
+        val guard = com.ideasdeveloper.bms.server.storage.StorageGuard(null, { quota }, minFreeBytes = 0, freeSpace = { 10_000_000_000 }, extraRoots = listOf(root))
         BackupImportLimits.importInto(directory, directory.resolve("acme-backup-20260101T000000Z.zip"), zip.inputStream(), zip.size.toLong(), "acme", guard)
         assertEquals(zip.size.toLong(), guard.usage("acme").usedBytes)
         // Over the quota: refused, and no file (not even the .part) is left.
@@ -69,7 +69,7 @@ class BackupImportLimitsTest {
         assertEquals(listOf("acme-backup-20260101T000000Z.zip"), Files.list(directory).use { it.map { p -> p.fileName.toString() }.toList() })
         // Declared too large: refused before anything is written.
         quota = null
-        val floor = com.ideasdeveloper.bms.server.modules.StorageGuard(null, { null }, minFreeBytes = 1_000, freeSpace = { 500 }, extraRoots = listOf(root))
+        val floor = com.ideasdeveloper.bms.server.storage.StorageGuard(null, { null }, minFreeBytes = 1_000, freeSpace = { 500 }, extraRoots = listOf(root))
         assertFailsWith<CompanySelfException> {
             BackupImportLimits.importInto(directory, directory.resolve("acme-backup-20260103T000000Z.zip"), object : java.io.InputStream() {
                 override fun read(): Int = error("nothing may be read before the checks")

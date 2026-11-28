@@ -5,7 +5,7 @@ import com.ideasdeveloper.bms.server.modules.install.ServerModuleInstaller
 import com.ideasdeveloper.bms.server.admins.AuditActor
 import com.ideasdeveloper.bms.server.auth.application.EmailChangeRule
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
-import com.ideasdeveloper.bms.server.modules.CompanyFiles
+import com.ideasdeveloper.bms.server.storage.CompanyFiles
 import com.ideasdeveloper.bms.server.security.ScramSha256
 import com.ideasdeveloper.bms.server.company.api.ServerNameResponse
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.ServerNameSetting

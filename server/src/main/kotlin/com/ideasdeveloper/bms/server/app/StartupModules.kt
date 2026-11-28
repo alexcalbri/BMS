@@ -37,7 +37,7 @@ import com.ideasdeveloper.bms.server.http.ClientAddresses
 import com.ideasdeveloper.bms.server.http.PublicOrigin
 import com.ideasdeveloper.bms.server.modules.ModuleAccessService
 import com.ideasdeveloper.bms.server.modules.PackageInstallQueue
-import com.ideasdeveloper.bms.server.modules.CompanyFiles
+import com.ideasdeveloper.bms.server.storage.CompanyFiles
 import com.ideasdeveloper.bms.server.modules.ModuleDefinition
 import com.ideasdeveloper.bms.server.modules.CustomerReferenceSource
 import com.ideasdeveloper.bms.server.modules.ModuleJobScheduler

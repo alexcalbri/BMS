@@ -1,5 +1,6 @@
 package com.ideasdeveloper.bms.server.modules
 
+import com.ideasdeveloper.bms.server.storage.CompanyFiles
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertContentEquals

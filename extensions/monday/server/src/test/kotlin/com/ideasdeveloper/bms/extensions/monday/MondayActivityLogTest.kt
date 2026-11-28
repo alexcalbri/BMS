@@ -10,8 +10,8 @@ import com.ideasdeveloper.bms.server.activity.ActivityActions
 import com.ideasdeveloper.bms.server.activity.ActivityActor
 import com.ideasdeveloper.bms.server.activity.ActivityLogTesting
 import com.ideasdeveloper.bms.server.activity.ActivityLogTesting.throughAgent
-import com.ideasdeveloper.bms.server.modules.CompanyFiles
-import com.ideasdeveloper.bms.server.modules.LocalFileBackend
+import com.ideasdeveloper.bms.server.storage.CompanyFiles
+import com.ideasdeveloper.bms.server.storage.LocalFileBackend
 import java.util.UUID
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
