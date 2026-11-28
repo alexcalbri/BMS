@@ -593,3 +593,13 @@ Tests: lifecycle table, a fake extension under a baseline, and a jar with a miss
 - /home/user/wt/restructure/modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmHost.kt
 - /home/user/wt/restructure/server/src/main/kotlin/com/ideasdeveloper/bms/server/extensions/packages/ExtensionPackageLoader.kt
 - /home/user/tools/ext.init.gradle.kts (source for `gradle/ci/with-extensions.init.gradle.kts`)
+
+---
+
+## 9. Owner decisions (2026-11-28)
+
+- **Question 1:** live servers install from `master` only. Assumption confirmed.
+- **Question 2:** do the **complete** CRM change (C2: CRM 0.40.0 + the 7 CRM extensions at 2.0.0), after C0 and C1, as its own coordinated release, rehearsed first.
+- **Question 3:** **relocate** the wrongly placed frozen symbols in that same coordinated release, not before: `ServerWorkspace` → `platform/`, `SessionOpener` → `auth/application/`, and the storage / mail / notification SDK types out of `server.modules` into `storage/`, `mail/`, `notifications/`. This breaks binary compatibility for every installed module and extension, so it ships together with C2 (one outage, all modules and extensions rebuilt, minCoreVersion bumped, the SDK snapshot `released-surface.txt` updated deliberately in that release). Until then they stay frozen and Parts A/B proceed exactly as planned.
+- The frozen-surface count is 115 (optional modules + extensions, including the 8 `server.i18n` symbols), not 123.
+- Known follow-up outside this plan: the "estado parcial" detector in `scripts/ubuntu/rehearse.sh` (~439) and `update.sh` (~724) reports the finished role layout as "huellas de un intento anterior"; it must only warn for a genuinely mixed state.
