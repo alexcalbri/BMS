@@ -17,6 +17,7 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
 import java.util.UUID
+import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningException
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -193,6 +194,21 @@ class ProvisioningRolesPostgresTest {
         // A change from the server writes its row as the runtime role on the provisioning connection.
         provisioning.updateCompany("${tag}_acme", UpdateCompanyRequest("Acme SA", null, "#112233", "#445566", "#778899"), owner, actor)
         assertEquals("1", scalar("bms_${tag}_acme", "SELECT count(*) FROM activity_log WHERE summary = 'Cambio desde el servidor los datos de la empresa.'"))
+        // The logo URL is an outbound channel (every client loads it): https only, no credentials, and only a CHANGED value is checked.
+        fun withLogo(logo: String?, name: String = "Acme SA") = UpdateCompanyRequest(name, logo, "#112233", "#445566", "#778899")
+        listOf("http://cdn.example.com/l.png", "https://u:p@cdn.example.com/l.png", "https://cdn.example.com/" + "a".repeat(300)).forEach { bad ->
+            assertFailsWith<CompanyProvisioningException>(bad.take(40)) { provisioning.updateCompany("${tag}_acme", withLogo(bad), owner, actor) }
+        }
+        assertEquals(null, scalar(central, "SELECT logo_url FROM companies WHERE code = '${tag}_acme'"))
+        provisioning.updateCompany("${tag}_acme", withLogo("https://cdn.example.com/l.png"), owner, actor)
+        assertEquals("https://cdn.example.com/l.png", scalar(central, "SELECT logo_url FROM companies WHERE code = '${tag}_acme'"))
+        // A value stored before the rule keeps working: other edits with the same logo pass, a different bad one does not.
+        superuser(central).use { it.run("UPDATE companies SET logo_url = 'http://legacy.example.com/l.png' WHERE code = '${tag}_acme'") }
+        provisioning.updateCompany("${tag}_acme", withLogo("http://legacy.example.com/l.png", "Acme SA 2"), owner, actor)
+        assertEquals("Acme SA 2|http://legacy.example.com/l.png", scalar(central, "SELECT name || '|' || logo_url FROM companies WHERE code = '${tag}_acme'"))
+        assertFailsWith<CompanyProvisioningException> { provisioning.updateCompany("${tag}_acme", withLogo("http://legacy.example.com/other.png", "Acme SA 2"), owner, actor) }
+        provisioning.updateCompany("${tag}_acme", withLogo(null, "Acme SA"), owner, actor)
+        assertEquals(null, scalar(central, "SELECT logo_url FROM companies WHERE code = '${tag}_acme'"))
         provisioning.resetBusinessOwnerPassword("${tag}_acme", "otra-clave-del-dueno-456", owner, actor)
         // The startup catch-up and a duplicate.
         provisioning.applyPendingModuleMigrations()

@@ -280,7 +280,6 @@ class CompanyProvisioningService(
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         val companyName = request.name.trim()
-        val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (companyName.isBlank()) {
             throw CompanyProvisioningException(tr("El nombre de la empresa es obligatorio."))
         }
@@ -298,6 +297,8 @@ class CompanyProvisioningService(
             findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException(tr("Empresa no encontrada."))
         }
+        // Only a CHANGED logo is checked: the one already stored is never refused (and so never blocks another edit).
+        val logoUrl = CompanyLogoUrl.checked(request.logoUrl, company.logoUrl)
 
         val oldLogo = central.connection.use { previousLogo(it, normalizedCompanyCode, null) }
         // The company's own log row goes first, uncommitted, on its database; it commits only after the central
@@ -1953,6 +1954,7 @@ class CompanyProvisioningService(
         ) {
             throw CompanyProvisioningException(tr("Los colores deben usar formato hexadecimal #RRGGBB."))
         }
+        CompanyLogoUrl.checked(request.logoUrl)
     }
 
     private fun tenantConfig(databaseName: String): TenantDatabaseConfig = TenantDatabaseConfig(
