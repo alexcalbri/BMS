@@ -277,6 +277,8 @@ PROVISIONER=''
 # The server owner roles (validated, one per line) as step 0 read them, before anything changed: the role move and the
 # rollback use this list and never read it again.
 LAYOUT_OWNER_ROLES=''
+# The runtime role's attributes (CREATEDB, CREATEROLE...) as step 0 read them: the move clears them, the rollback gives them back.
+LAYOUT_RUNTIME_ATTRIBUTES=''
 readonly DEPLOYED_FILE=$ROOT_STATE_DIR/deployed-commit
 readonly ALLOWED_SIGNERS=/usr/local/lib/bms/allowed_signers
 
@@ -663,11 +665,29 @@ precheck_role_layout() {
     owners=$(bms_server_owner_roles "$CONTROL_DB") || die 'No se pudieron leer los roles de server owner (o alguno no es un nombre valido). No se cambio nada.'
     [[ -n $owners ]] || die "No hay ningun rol de server owner en $CONTROL_DB. No se cambio nada."
     LAYOUT_OWNER_ROLES=$owners
+    LAYOUT_RUNTIME_ATTRIBUTES=$(bms_runtime_attributes "$DB_USER") || die 'No se pudieron leer los atributos del rol del runtime. No se cambio nada.'
     classified=$(bms_classify_tenant_databases "$CONTROL_DB") || die 'No se pudo revisar las bases de las empresas. No se cambio nada.'
     rejected=$(awk '$1 == "reject" { $1 = ""; sub(/^ /, ""); print " - " $0 }' <<< "$classified")
     [[ -z $rejected ]] || die "Estas bases registradas en companies existen pero no cumplen las reglas (corrige su nombre o su dueno, o quita la fila de companies). No se cambio nada:
 $rejected"
     report_layout_state "$(awk '$1 == "ok" { print $2, $3 }' <<< "$classified")"
+}
+
+# Before the role move: the provisioning login really connects, over TCP, with the password just set and the passfile (the same
+# way the migrations will). It gets its CONNECT on the control database and on the first company first (the move grants the
+# same later; install.sh revoked CONNECT from PUBLIC). The move has not started: a failure here changes nothing but that
+# role's password and those CONNECT grants, and the rollback restores server.env.
+check_provisioner_login() {
+    local tenants first_tenant database
+    tenants=$(bms_tenant_databases "$CONTROL_DB" 2>/dev/null) || tenants=''
+    read -r first_tenant _ <<< "$tenants"
+    for database in "$CONTROL_DB" ${first_tenant:+"$first_tenant"}; do
+        bms_run_script postgres "$(bms_sql_connect_grant)" db="$database" member="$PROVISIONER" ||
+            die "No se pudo dar CONNECT en $database al rol $PROVISIONER. No se cambio ningun rol ni permiso de las empresas."
+        bms_provisioner_login_check "$database" 2> "$ROOT_STATE_DIR/provisioner-login.err" ||
+            die "El login $PROVISIONER no puede conectarse a $database por $MIGRATION_HOST:$MIGRATION_PORT con su contrasena: $(head -n 3 "$ROOT_STATE_DIR/provisioner-login.err" | paste -sd ' ' -). Revisa pg_hba.conf (una regla host scram-sha-256 para ese rol y esa direccion; si DB_URL usa localhost, tambien ::1). No se cambio ningun rol ni permiso: solo la contrasena del rol $PROVISIONER y su CONNECT; server.env se restaura."
+    done
+    rm -f -- "$ROOT_STATE_DIR/provisioner-login.err"
 }
 
 # A1: the runtime role stops being a member of the server owner's role (db-roles.sh, idempotent). The server owner
@@ -894,6 +914,13 @@ rollback_config_and_roles() {
         install -m 600 -o root -g root "$BACKUP_DIR/server.env" "$CONFIG_FILE" || { printf 'ERROR: no se pudo restaurar %s desde %s/server.env.\n' "$CONFIG_FILE" "$BACKUP_DIR" >&2; code=1; }
     fi
     if [[ $LAYOUT_CHANGED == true ]]; then
+        # The move clears CREATEDB, CREATEROLE and the like of the runtime role: the previous release had them.
+        if [[ -n $LAYOUT_RUNTIME_ATTRIBUTES ]]; then
+            bms_restore_runtime_attributes "$DB_USER" "$LAYOUT_RUNTIME_ATTRIBUTES" || {
+                printf 'ERROR: no se pudieron devolver al rol %s sus atributos (%s). A mano: sudo -u postgres psql -c '"'"'ALTER ROLE "%s" %s'"'"'\n' "$DB_USER" "$LAYOUT_RUNTIME_ATTRIBUTES" "$DB_USER" "$LAYOUT_RUNTIME_ATTRIBUTES" >&2
+                code=1
+            }
+        fi
         read -r -a owner_list <<< "${LAYOUT_OWNER_ROLES//$'\n'/ }"
         # The previous release creates companies by SET ROLE from the runtime role: it needs the membership back.
         if bms_restore_runtime_membership "$DB_USER" ${owner_list[@]+"${owner_list[@]}"}; then
@@ -1441,7 +1468,9 @@ rehearse_main() {
         printf '\n1 FAIL, 0 WARN\n'
         return 1
     fi
-    bms_rehearse_run "$CONTROL_DB" "$DB_USER" "$PROVISIONER" || status=$?
+    local db_host db_port
+    read -r db_host db_port <<< "$(db_host_port "$(config_value DB_URL)")" || true
+    bms_rehearse_run "$CONTROL_DB" "$DB_USER" "$PROVISIONER" "$db_host" "$db_port" || status=$?
     printf '\n%s FAIL, %s WARN\n' "$BMS_REHEARSE_FAILS" "$BMS_REHEARSE_WARNS"
     return "$status"
 }
@@ -1603,6 +1632,7 @@ if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     configure_server_env
     configure_service_writable_paths
     ensure_provisioner_role
+    check_provisioner_login
     migrate_role_layout
     apply_control_migrations
     apply_tenant_migrations

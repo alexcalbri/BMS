@@ -40,6 +40,8 @@ bms_ascii_match() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
 
 BMS_REHEARSE_FAILS=0
 BMS_REHEARSE_WARNS=0
+BMS_REHEARSE_UNTESTED=0
+BMS_REHEARSE_THROWAWAY=''
 
 bms_rehearse_say() {
     local status=$1 name=$2 reason=${3:-}
@@ -107,14 +109,25 @@ SQL
 SQL
 }
 
+# What the real COMMIT would do and a rolled back transaction never does: the tripwire row goes, then every deferred
+# constraint and constraint trigger (the activity log's seal, foreign keys) is checked now.
+bms_rehearse_sql_deferred() {
+    printf '\\echo @@restricciones diferidas\nDELETE FROM pg_temp.g_c;\nSET CONSTRAINTS ALL IMMEDIATE;\n'
+}
+
 # The whole psql script of one database. [steps]: the migrations and grant blocks (psql script text, may be empty).
 bms_rehearse_script() {
     local kind=$1 database=$2 owner=$3 runtime=$4 provisioner=$5 owners=$6 control_db=$7 steps=$8 role tenant=0
-    local lock_timeout=${BMS_REHEARSE_LOCK_TIMEOUT:-500ms} statement_timeout=${BMS_REHEARSE_STATEMENT_TIMEOUT:-120s}
-    { bms_ascii_match "$lock_timeout" '^[0-9]{1,6}(ms|s)$' && bms_ascii_match "$statement_timeout" '^[0-9]{1,6}(ms|s)$'; } || {
-        printf 'ERROR: BMS_REHEARSE_LOCK_TIMEOUT o BMS_REHEARSE_STATEMENT_TIMEOUT no validos (por ejemplo 500ms, 120s).\n' >&2
-        return 1
-    }
+    # The service keeps running: short limits for everything the rehearsal does (environment overrides in the header).
+    local lock_timeout=${BMS_REHEARSE_LOCK_TIMEOUT:-500ms} statement_timeout=${BMS_REHEARSE_STATEMENT_TIMEOUT:-10s}
+    local idle_timeout=${BMS_REHEARSE_IDLE_TIMEOUT:-5s} connection_check=${BMS_REHEARSE_CONNECTION_CHECK:-1s}
+    local transaction_timeout=${BMS_REHEARSE_TRANSACTION_TIMEOUT:-15s} value
+    for value in "$lock_timeout" "$statement_timeout" "$idle_timeout" "$connection_check" "$transaction_timeout"; do
+        bms_ascii_match "$value" '^[0-9]{1,6}(ms|s)$' || {
+            printf 'ERROR: tiempo limite del ensayo no valido: %q (por ejemplo 500ms, 10s).\n' "$value" >&2
+            return 1
+        }
+    done
     [[ $kind == tenant ]] && tenant=1
     { bms_valid_role "$runtime" && bms_valid_role "$provisioner" && bms_valid_control_db "$control_db"; } || { printf 'ERROR: rol o base no valido.\n' >&2; return 1; }
     if [[ $kind == tenant ]]; then
@@ -126,7 +139,15 @@ bms_rehearse_script() {
     bms_psql_set runtime "$runtime" && bms_psql_set provisioner "$provisioner" && bms_psql_set db "$database" &&
         bms_psql_set tenant "$tenant" || return 1
     [[ $kind != tenant ]] || bms_psql_set owner "$owner" || return 1
-    printf 'BEGIN;\nSET LOCAL lock_timeout = '"'%s'"';\nSET LOCAL statement_timeout = '"'%s'"';\nSET LOCAL search_path = pg_catalog, pg_temp;\n' "$lock_timeout" "$statement_timeout"
+    # Limits of the session, before the transaction: a statement, an idle moment inside the transaction and (17+) the whole
+    # transaction are cut short; a client that vanished (14+) ends it. Whatever they cut is a FAIL, never a PASS.
+    printf "SET statement_timeout = '%s';\nSET idle_in_transaction_session_timeout = '%s';\n" "$statement_timeout" "$idle_timeout"
+    printf "SELECT pg_catalog.current_setting('server_version_num')::int >= 140000 AS v14, pg_catalog.current_setting('server_version_num')::int >= 170000 AS v17 \\gset\n"
+    printf '\\if :v14\nSET client_connection_check_interval = '"'%s'"';\n\\endif\n\\if :v17\nSET transaction_timeout = '"'%s'"';\n\\endif\n' "$connection_check" "$transaction_timeout"
+    # BEGIN, and a tripwire: a deferred foreign key that is violated until the end. A COMMIT, however it is spelled or
+    # hidden (END, in a string of statements, after a meta-command), fails on it and rolls everything back.
+    printf "BEGIN;\n\\set AUTOCOMMIT off\nCREATE TEMP TABLE g_p (id int PRIMARY KEY);\nCREATE TEMP TABLE g_c (id int REFERENCES g_p DEFERRABLE INITIALLY DEFERRED);\nINSERT INTO g_c VALUES (1);\n"
+    printf "SET LOCAL lock_timeout = '%s';\nSET LOCAL search_path = pg_catalog, pg_temp;\n" "$lock_timeout"
     printf 'SELECT pg_catalog.pg_current_xact_id() AS rehearsal_xid \\gset\n'
     printf '\\echo @@instantanea inicial\n'
     bms_psql_set tag B || return 1
@@ -178,11 +199,13 @@ bms_rehearse_script() {
         if [[ $kind == tenant ]]; then
             printf 'RESET ROLE;\nRESET SESSION AUTHORIZATION;\n'
         fi
+        bms_rehearse_sql_deferred
         printf 'SET LOCAL search_path = pg_catalog, pg_temp;\n'
         printf '\\echo @@acceso tras las migraciones\n'
         bms_sql_verify_runtime
         bms_rehearse_sql_access
     fi
+    [[ -n $steps ]] || bms_rehearse_sql_deferred
     printf '\\echo @@instantanea final\n'
     bms_psql_set tag A || return 1
     bms_sql_snapshot_global
@@ -239,6 +262,7 @@ bms_rehearse_diff() {
 bms_rehearse_database() {
     local kind=$1 database=$2 owner=$3 runtime=$4 provisioner=$5 owners=$6 control_db=$7 work=$8
     local steps='' script attempt=0 attempts=${BMS_REHEARSE_ATTEMPTS:-3} status step error label line shown=0 limit=${BMS_REHEARSE_DETAIL:-40}
+    local started elapsed_ms code
     label="ensayo $kind $database"
     if declare -F bms_rehearse_steps_sql >/dev/null; then
         steps=$(bms_rehearse_steps_sql "$kind" "$database" 2> "$work/steps.err") || {
@@ -246,11 +270,19 @@ bms_rehearse_database() {
             return 1
         }
     fi
-    # Statements that end the transaction would make the rollback meaningless; plain "END;" is also the end of a
-    # plpgsql block, so the transaction id is checked at the end of the script as well, and the snapshots at the end of
-    # the run.
-    if LC_ALL=C grep -Eiq '^(COMMIT|ROLLBACK|ABORT|BEGIN|SAVEPOINT|RELEASE|PREPARE TRANSACTION|START TRANSACTION)([^;]*);[[:space:]]*$' <<< "$steps"; then
+    # What would end the transaction or leave it is refused before anything runs: transaction control anywhere in a line
+    # (indented, after another statement), and every psql meta-command except the ones the migrations use (\set, \if,
+    # \elif, \else, \endif, \echo; never \set AUTOCOMMIT). "END;" is also the end of a plpgsql block, so it is not
+    # matched here: the tripwire in the script (a deferred foreign key violated until the end) fails any COMMIT, the
+    # transaction id is checked at the end, and the snapshots of the whole run are the last line of defence.
+    if LC_ALL=C grep -Eiq '(^|;)[[:space:]]*(COMMIT|ROLLBACK|ABORT|SAVEPOINT|RELEASE|PREPARE[[:space:]]+TRANSACTION|START[[:space:]]+TRANSACTION|BEGIN)([[:space:]][^;]*)?;' <<< "$steps"; then
         bms_rehearse_say FAIL "$label" 'el SQL de las migraciones contiene control de transaccion (COMMIT, ROLLBACK, BEGIN...); no se ejecuta'
+        return 1
+    fi
+    # shellcheck disable=SC1003 # the backslash is the pattern
+    if LC_ALL=C grep -E '^[[:space:]]*\\' <<< "$steps" | LC_ALL=C grep -Eqv '^[[:space:]]*\\(set|if|elif|else|endif|echo)([[:space:]]|$)' ||
+        LC_ALL=C grep -Eiq '^[[:space:]]*\\set[[:space:]]+(AUTOCOMMIT|ON_ERROR_STOP|ECHO)' <<< "$steps"; then
+        bms_rehearse_say FAIL "$label" 'el SQL de las migraciones contiene una orden de psql no permitida (\c, \!, \copy...); no se ejecuta'
         return 1
     fi
     script=$(bms_rehearse_script "$kind" "$database" "$owner" "$runtime" "$provisioner" "$owners" "$control_db" "$steps" 2> "$work/script.err") || {
@@ -261,19 +293,27 @@ bms_rehearse_database() {
     while :; do
         attempt=$((attempt + 1))
         status=0
+        started=$(date +%s%N)
         bms_pg_query "$database" -v VERBOSITY=verbose < "$work/script.sql" > "$work/out" 2> "$work/err" || status=$?
         (( status != 0 )) || break
-        if LC_ALL=C grep -Eq 'ERROR:  (55P03|57014)' "$work/err" && (( attempt < attempts )); then
+        # Only a lock that could not be taken (55P03) is tried again, and never after a signal (128 + n).
+        if (( status < 128 )) && LC_ALL=C grep -Eq '(ERROR|FATAL):  55P03' "$work/err" && (( attempt < attempts )); then
             sleep "${BMS_REHEARSE_RETRY_SLEEP:-2}"
             continue
         fi
         # (|| true: with set -e and pipefail a grep that finds nothing must not end the run)
         step=$(LC_ALL=C grep '^@@' "$work/out" | tail -n 1) || true
         step=${step#@@}
-        error=$(LC_ALL=C grep -m 1 'ERROR:' "$work/err" | LC_ALL=C sed 's/^.*ERROR:  *//') || true
+        error=$(LC_ALL=C grep -m 1 -E '(ERROR|FATAL):' "$work/err" | LC_ALL=C sed -E 's/^.*(ERROR|FATAL):  *//') || true
+        code=$(LC_ALL=C sed -nE 's/^.*(ERROR|FATAL):  ([0-9A-Z]{5}):.*$/\2/p' "$work/err" | head -n 1) || true
         [[ -n $error ]] || error=$(head -n 2 "$work/err" | paste -sd ' ' -)
-        if LC_ALL=C grep -Eq 'ERROR:  (55P03|57014)' "$work/err"; then
+        if (( status >= 128 )); then
+            bms_rehearse_say FAIL "$label" "interrumpido (senal $((status - 128))) en '${step:-inicio}'"
+        elif [[ $code == 55P03 ]]; then
+            BMS_REHEARSE_UNTESTED=$((BMS_REHEARSE_UNTESTED + 1))
             bms_rehearse_say WARN "$label" "no ensayado por bloqueo: $attempts intentos sin obtener los bloqueos en ${BMS_REHEARSE_LOCK_TIMEOUT:-500ms} (en: ${step:-inicio}); el servicio esta usando esas tablas, repite el ensayo en un momento tranquilo"
+        elif [[ $code == 57014 || $code == 25P03 || $code == 25P04 || $code == 57P01 || $code == 57P02 ]]; then
+            bms_rehearse_say FAIL "$label" "tiempo agotado o cancelado ($code) en '${step:-inicio}': $error; si es una migracion pesada sube BMS_REHEARSE_STATEMENT_TIMEOUT / BMS_REHEARSE_TRANSACTION_TIMEOUT (ahora ${BMS_REHEARSE_STATEMENT_TIMEOUT:-10s} / ${BMS_REHEARSE_TRANSACTION_TIMEOUT:-15s})"
         else
             bms_rehearse_say FAIL "$label" "fallo en '${step:-inicio}': $error"
             { LC_ALL=C grep -h -E '^(DETAIL|HINT|CONTEXT|STATEMENT):' "$work/err" | head -n 4 | LC_ALL=C sed 's/^/        /'; } || true
@@ -290,7 +330,8 @@ bms_rehearse_database() {
     fi
     bms_rehearse_diff "$work/before" "$work/after" "$([[ -f $work/cluster-shown ]] && echo 0 || echo 1)" "${BMS_REHEARSE_ALL_NEW:-0}" > "$work/diff"
     : > "$work/cluster-shown"
-    bms_rehearse_say PASS "$label" "ejecutado y revertido (ROLLBACK); $(head -n 1 "$work/diff" | LC_ALL=C sed 's/^TOTAL //')"
+    elapsed_ms=$((($(date +%s%N) - started) / 1000000))
+    bms_rehearse_say PASS "$label" "ejecutado y revertido (ROLLBACK) en $elapsed_ms ms (los bloqueos se mantuvieron como maximo ese tiempo); $(head -n 1 "$work/diff" | LC_ALL=C sed 's/^TOTAL //')"
     while IFS= read -r line; do
         [[ $line != TOTAL* ]] || continue
         if (( shown < limit )); then printf 'INFO   %s\n' "$line"; fi
@@ -323,12 +364,14 @@ bms_rehearse_snapshot() {
     LC_ALL=C sort "$work/snapshot.raw" > "$file"
 }
 
-# The rehearsal. [control_db] [runtime] [provisioner]: as update.sh would use them. Uses [work] for its files.
+# The rehearsal. [control_db] [runtime] [provisioner]: as update.sh would use them; [host] [port]: DB_URL's, for the login
+# checks (empty: those are skipped). Uses [work] for its files.
 bms_rehearse_run_in() {
-    local control_db=$1 runtime=$2 provisioner=$3 work=$4 owners owners_text classified tenants kind name rest
+    local control_db=$1 runtime=$2 provisioner=$3 work=$4 host=${5:-} port=${6:-} owners owners_text classified tenants kind name rest
     local assessment layout pending done_count attempted attempts_seen=0 touched=0 mixed=0 database owner n
     BMS_REHEARSE_FAILS=0
     BMS_REHEARSE_WARNS=0
+    BMS_REHEARSE_UNTESTED=0
     if ! { bms_valid_control_db "$control_db" && bms_valid_role "$runtime" && bms_valid_role "$provisioner"; }; then
         bms_rehearse_say FAIL 'ensayo' 'base central, rol del runtime o rol de aprovisionamiento no validos'
         return 1
@@ -399,6 +442,11 @@ SQL
     else
         bms_rehearse_say WARN 'estado de la organizacion' "no se pudo leer: $(head -n 2 "$work/err" | paste -sd ' ' -)"
     fi
+    if [[ -n $host && -n $port ]]; then
+        bms_rehearse_login_checks "$control_db" "$provisioner" "$host" "$port" "$work" || true
+    else
+        bms_rehearse_say INFO 'login de aprovisionamiento' 'servidor y puerto de DB_URL no indicados: no se comprueba pg_hba ni el login TCP'
+    fi
     if (( BMS_REHEARSE_FAILS > 0 )); then
         bms_rehearse_say INFO 'ensayo en transacciones' 'omitido: corrige lo anterior (update.sh se detendria igual)'
         return 1
@@ -424,13 +472,157 @@ SQL
         bms_rehearse_say FAIL 'ensayo sin cambios' 'EL ENSAYO DEJO CAMBIOS (o alguien cambio permisos mientras corria); revisa la diferencia:'
         LC_ALL=C diff "$work/cluster-before" "$work/cluster-after" | head -n 40 | LC_ALL=C sed 's/^/        /'
     fi
+    bms_rehearse_say INFO 'NO ensayado' 'la contrasena real y el login real de '"$provisioner"' (solo un rol de prueba por el mismo transporte), el arranque de la version nueva, compilacion, Nginx, systemd, la carga del servicio durante el cambio real y datos que el servicio escriba entre fases'
+    if (( BMS_REHEARSE_FAILS == 0 && BMS_REHEARSE_UNTESTED > 0 )); then
+        bms_rehearse_say WARN 'ensayo incompleto' "$BMS_REHEARSE_UNTESTED base(s) no se ensayaron por bloqueo: el ensayo NO vale como prueba; repitelo en un momento tranquilo"
+        return 2
+    fi
     (( BMS_REHEARSE_FAILS == 0 ))
 }
 
+# --- The provisioning login: what the real update will need at the DB_URL host ------------------------------------------
+
+# Addresses a host name resolves to, in the order libpq tries them (a literal address is itself), one per line.
+bms_rehearse_resolve() {
+    python3 -c '
+import socket, sys
+host = sys.argv[1]
+seen = []
+for info in socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+    if info[4][0] not in seen:
+        seen.append(info[4][0])
+print("\n".join(seen))' "$1"
+}
+
+# The pg_hba rule that applies to [user] connecting to [database] from [ip] (first match wins, as in PostgreSQL), given the
+# rows of pg_hba_file_rules on stdin as type|databases|users|address|netmask|method. Prints the method, or "none".
+bms_rehearse_hba_match() {
+    python3 -c '
+import ipaddress, sys
+ip, user, db, host = ipaddress.ip_address(sys.argv[1].split("%")[0]), sys.argv[2], sys.argv[3], sys.argv[4]
+for line in sys.stdin:
+    fields = line.rstrip("\n").split("|")
+    if len(fields) != 6 or not fields[0].startswith("host"):
+        continue
+    kind, dbs, users, addr, mask, method = fields
+    if not ("all" in dbs.split(",") or db in dbs.split(",") or ("sameuser" in dbs.split(",") and db == user)):
+        continue
+    if not ("all" in users.split(",") or user in users.split(",")):
+        continue
+    if addr == "all":
+        pass
+    elif addr in ("samehost", "samenet"):
+        if not ip.is_loopback:
+            continue
+    else:
+        try:
+            prefix = bin(int(ipaddress.ip_address(mask))).count("1") if mask else None
+            net = ipaddress.ip_network((addr, prefix) if mask else addr, strict=False)
+        except ValueError:
+            if addr != host:
+                continue
+        else:
+            if ip.version != net.version or ip not in net:
+                continue
+    print(method)
+    sys.exit(0)
+print("none")' "$1" "$2" "$3" "$4"
+}
+
+# A throwaway LOGIN role with a random password (outside the rolled back transactions), dropped here and by the traps of
+# bms_rehearse_run on any exit or signal.
+bms_rehearse_drop_throwaway() {
+    local role=$BMS_REHEARSE_THROWAWAY
+    [[ -n $role ]] || return 0
+    bms_valid_role "$role" || return 1
+    printf 'DROP ROLE IF EXISTS "%s";\n' "$role" | bms_pg_exec postgres > /dev/null 2>&1 || return 1
+    BMS_REHEARSE_THROWAWAY=''
+}
+
+# Real TCP login as the provisioner will do it: same host string, port, passfile (PGPASSFILE), connect timeout and sslmode
+# (the environment's), with a throwaway role: the real one's password is not known to the rehearsal.
+bms_rehearse_tcp_login() {
+    local host=$1 port=$2 work=$3 name password verifier out='' status=0
+    name=bms_rh_$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    password=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    bms_valid_role "$name" || return 1
+    BMS_REHEARSE_THROWAWAY=$name
+    verifier=$(printf '%s' "$password" | bms_scram_verifier) || return 1
+    printf 'CREATE ROLE "%s" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '"'"'%s'"'"';\n' "$name" "$verifier" | bms_pg_exec postgres || return 1
+    printf '%s:%s:*:%s:%s\n' "$host" "$port" "$name" "$password" > "$work/pgpass"
+    chmod 600 "$work/pgpass"
+    if [[ ${BMS_TEST_FAIL_AT:-} == rehearse_throwaway_wait ]]; then
+        sleep 30 &
+        wait $!
+    fi
+    if bms_failpoint rehearse_throwaway_fail; then
+        out=$(PGPASSFILE=$work/pgpass PGCONNECT_TIMEOUT=15 psql -X -q -A -t -w -h "$host" -p "$port" -U "$name" -d postgres -c 'SELECT 1' 2> "$work/login.err") || status=$?
+    else
+        status=1
+        printf 'fallo inyectado\n' > "$work/login.err"
+    fi
+    bms_rehearse_drop_throwaway || printf 'AVISO: no se pudo borrar el rol de prueba %s; borralo: DROP ROLE "%s";\n' "$name" "$name" >&2
+    [[ $status == 0 && $out == 1 ]]
+}
+
+# pg_hba for the provisioner at the DB_URL host, then a real login. Lines for the report; FAIL when the real update would
+# stop at its first login (which comes after the role move, so it matters here).
+bms_rehearse_login_checks() {
+    local control_db=$1 provisioner=$2 host=$3 port=$4 work=$5 addresses address rows method first=1
+    if ! addresses=$(bms_rehearse_resolve "$host" 2> "$work/err"); then
+        bms_rehearse_say FAIL "login de $provisioner" "el servidor $host de DB_URL no resuelve: $(head -n 1 "$work/err")"
+        return 1
+    fi
+    rows=$(bms_pg_query postgres -c "SELECT type || '|' || array_to_string(database, ',') || '|' || array_to_string(user_name, ',') || '|' || COALESCE(address, '') || '|' || COALESCE(netmask, '') || '|' || COALESCE(auth_method, '') FROM pg_catalog.pg_hba_file_rules WHERE error IS NULL ORDER BY rule_number") || {
+        bms_rehearse_say FAIL "pg_hba de $provisioner" 'no se pudo leer pg_hba_file_rules'
+        return 1
+    }
+    while IFS= read -r address; do
+        [[ -n $address ]] || continue
+        method=$(bms_rehearse_hba_match "$address" "$provisioner" "$control_db" "$host" <<< "$rows")
+        case $method in
+            scram-sha-256|md5|password)
+                bms_rehearse_say PASS "pg_hba de $provisioner" "$host ($address, $([[ $first == 1 ]] && echo 'la primera que prueba libpq' || echo 'otra direccion')): regla $method" ;;
+            trust)
+                bms_rehearse_say WARN "pg_hba de $provisioner" "$host ($address): regla trust (entra sin contrasena)" ;;
+            none)
+                if (( first == 1 )); then
+                    bms_rehearse_say FAIL "pg_hba de $provisioner" "$host ($address, la primera que prueba libpq): ninguna regla host para ese rol y base; el login falla DESPUES del cambio de roles. Agrega una regla scram-sha-256 para $provisioner en esa direccion"
+                else
+                    bms_rehearse_say WARN "pg_hba de $provisioner" "$host ($address): sin regla; fallaria si libpq cae a esa direccion"
+                fi ;;
+            *)
+                bms_rehearse_say FAIL "pg_hba de $provisioner" "$host ($address): la regla que aplica es $method, no una de contrasena" ;;
+        esac
+        first=0
+    done <<< "$addresses"
+    if bms_rehearse_tcp_login "$host" "$port" "$work"; then
+        bms_rehearse_say PASS "login TCP como el aprovisionador" "rol de prueba con contrasena scram entro por $host:$port con passfile (sslmode ${PGSSLMODE:-prefer}) y se borro"
+    else
+        bms_rehearse_say FAIL "login TCP como el aprovisionador" "un rol de prueba con contrasena no pudo entrar por $host:$port con passfile: $(head -n 2 "$work/login.err" 2> /dev/null | paste -sd ' ' -); el login real fallaria despues del cambio de roles"
+        bms_rehearse_drop_throwaway || true
+    fi
+}
+
+# The rehearsal in a subshell with its own traps (the caller's are untouched): the work directory and the throwaway role
+# are removed on any exit, Ctrl-C included, which also stops the loop (nothing is retried after a signal).
 bms_rehearse_run() {
-    local work status=0
+    local work counts status=0 numbers
     work=$(mktemp -d) || return 1
-    bms_rehearse_run_in "$1" "$2" "$3" "$work" || status=$?
-    rm -rf --one-file-system -- "$work"
+    counts=$(mktemp) || return 1
+    (
+        # shellcheck disable=SC2064 # the directory is fixed now
+        trap "bms_rehearse_drop_throwaway || true; rm -rf --one-file-system -- '$work'" EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        status=0
+        bms_rehearse_run_in "$1" "$2" "$3" "$work" "${4:-}" "${5:-}" || status=$?
+        printf '%s %s %s\n' "$BMS_REHEARSE_FAILS" "$BMS_REHEARSE_WARNS" "$BMS_REHEARSE_UNTESTED" > "$counts"
+        exit "$status"
+    ) || status=$?
+    numbers=$(cat "$counts" 2> /dev/null) || numbers=''
+    rm -f -- "$counts"
+    # shellcheck disable=SC2034 # read by update.sh (summary line)
+    read -r BMS_REHEARSE_FAILS BMS_REHEARSE_WARNS BMS_REHEARSE_UNTESTED <<< "${numbers:-0 0 0}"
     return "$status"
 }

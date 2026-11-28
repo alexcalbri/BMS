@@ -453,8 +453,13 @@ UNION ALL
 SELECT 'el rol ' || rolname || ' tiene SUPERUSER, CREATEDB o CREATEROLE' FROM pg_catalog.pg_roles
 WHERE rolname IN (:'runtime', :'provisioner') AND (rolsuper OR rolcreatedb OR rolcreaterole)
 UNION ALL
-SELECT 'el rol ' || rolname || ' hereda privilegios (INHERIT)' FROM pg_catalog.pg_roles
-WHERE rolname = :'provisioner' AND rolinherit
+SELECT 'el rol ' || r.rolname || ' hereda privilegios (INHERIT)' FROM pg_catalog.pg_roles r
+WHERE r.rolname = :'provisioner' AND
+  CASE WHEN pg_catalog.current_setting('server_version_num')::int >= 160000
+       -- PostgreSQL 16+: inheritance is a property of each grant (to_jsonb: the column does not exist before 16)
+       THEN EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member = r.oid
+                    AND ((pg_catalog.to_jsonb(m) ->> 'inherit_option')::boolean OR m.admin_option))
+       ELSE r.rolinherit END
 SQL
 }
 
@@ -546,6 +551,10 @@ UNION ALL SELECT 'tiene limite de conexiones o fecha de caducidad' FROM p WHERE 
 UNION ALL SELECT 'es miembro de ' || pg_catalog.pg_get_userbyid(m.roleid) || ', que no es un rol de server owner ni el del runtime'
 FROM p JOIN pg_catalog.pg_auth_members m ON m.member = p.oid
 WHERE pg_catalog.pg_get_userbyid(m.roleid) <> ALL (pg_catalog.string_to_array(:'allowed', ','))
+UNION ALL SELECT 'tiene una pertenencia con INHERIT o ADMIN OPTION (en ' || pg_catalog.pg_get_userbyid(m.roleid) || ')'
+FROM p JOIN pg_catalog.pg_auth_members m ON m.member = p.oid
+WHERE pg_catalog.current_setting('server_version_num')::int >= 160000
+  AND ((pg_catalog.to_jsonb(m) ->> 'inherit_option')::boolean OR m.admin_option)
 UNION ALL SELECT 'el rol ' || pg_catalog.pg_get_userbyid(m.member) || ' es miembro de el'
 FROM p JOIN pg_catalog.pg_auth_members m ON m.roleid = p.oid
 UNION ALL SELECT 'tiene ' || count(*) || ' objeto(s) o privilegio(s) fuera de CONNECT en bases (duenos, ACL, politicas)'
@@ -740,8 +749,10 @@ bms_migrate_role_layout() {
 # database's owner — with a real connection when the caller defines bms_pg_as_provisioner <database> (update.sh, with
 # the password), otherwise by the catalog. Prints every failure and fails when there is any.
 bms_verify_role_access() {
-    local control_db=$1 runtime=$2 provisioner=$3 tenants=$4 database owner failures=0 result script
+    local control_db=$1 runtime=$2 provisioner=$3 tenants=$4 database owner failures=0 result script errf
     { bms_valid_role "$runtime" && bms_valid_role "$provisioner"; } || { printf 'ERROR: rol no valido.\n' >&2; return 1; }
+    # stdout is the answer; stderr (a NOTICE, a WARNING) is kept apart and only shown when something fails.
+    errf=$(mktemp) || return 1
     while read -r database owner; do
         [[ -n $database ]] || continue
         if [[ -n $owner ]] && ! { bms_valid_tenant_db "$database" && bms_valid_role "$owner"; }; then
@@ -751,24 +762,25 @@ bms_verify_role_access() {
         fi
         script=$({ bms_psql_set runtime "$runtime"; bms_psql_set db "$database"; bms_psql_set tenant "$([[ -n $owner ]] && echo 1 || echo 0)"
                    printf 'SET search_path = pg_catalog, pg_temp;\n'; bms_sql_verify_runtime; }) || return 1
-        result=$(bms_pg_query "$database" 2>&1 <<< "$script") ||
-            { printf 'ERROR: el rol %s no puede leer %s: %s\n' "$runtime" "$database" "${result//$'\n'/ }" >&2; failures=$((failures + 1)); }
+        result=$(bms_pg_query "$database" 2> "$errf" <<< "$script") ||
+            { printf 'ERROR: el rol %s no puede leer %s: %s\n' "$runtime" "$database" "$(paste -sd ' ' - < "$errf")" >&2; failures=$((failures + 1)); }
         [[ -n $owner ]] || continue
         if declare -F bms_pg_as_provisioner >/dev/null; then
-            result=$(printf 'SET ROLE "%s";\nSELECT current_user;\n' "$owner" | bms_pg_provisioner_query "$database" 2>&1) || result=''
+            result=$(printf 'SET ROLE "%s";\nSELECT current_user;\n' "$owner" | bms_pg_provisioner_query "$database" 2> "$errf") || result=''
         else
-            result=$(bms_pg_query postgres -v member="$provisioner" -v owner="$owner" -v db="$database" 2>&1 <<'SQL'
+            result=$(bms_pg_query postgres -v member="$provisioner" -v owner="$owner" -v db="$database" 2> "$errf" <<'SQL'
 SELECT CASE WHEN pg_catalog.pg_has_role(:'member', :'owner', 'SET')
              AND pg_catalog.has_database_privilege(:'member', :'db', 'CONNECT') THEN :'owner' END;
 SQL
 ) || result=''
         fi
         if [[ $result != "$owner" ]]; then
-            printf 'ERROR: el login de aprovisionamiento %s no puede conectarse a %s y actuar como %s.\n' "$provisioner" "$database" "$owner" >&2
+            printf 'ERROR: el login de aprovisionamiento %s no puede conectarse a %s y actuar como %s: %s\n' "$provisioner" "$database" "$owner" "$(paste -sd ' ' - < "$errf")" >&2
             failures=$((failures + 1))
         fi
     done <<< "$control_db
 $tenants"
+    rm -f -- "$errf"
     (( failures == 0 ))
 }
 
@@ -806,4 +818,53 @@ bms_restore_runtime_membership() {
         fi
     done
     (( failures == 0 ))
+}
+
+# The runtime role's attributes as ALTER ROLE keywords ("NOSUPERUSER CREATEDB ... CONNECTION LIMIT -1"), recorded in step 0
+# so the rollback can give them back (the move clears CREATEDB, CREATEROLE and the rest).
+bms_sql_runtime_attributes_read() {
+    cat <<'SQL'
+SELECT CASE WHEN rolsuper THEN 'SUPERUSER' ELSE 'NOSUPERUSER' END || ' ' || CASE WHEN rolcreatedb THEN 'CREATEDB' ELSE 'NOCREATEDB' END
+    || ' ' || CASE WHEN rolcreaterole THEN 'CREATEROLE' ELSE 'NOCREATEROLE' END || ' ' || CASE WHEN rolinherit THEN 'INHERIT' ELSE 'NOINHERIT' END
+    || ' ' || CASE WHEN rolreplication THEN 'REPLICATION' ELSE 'NOREPLICATION' END || ' ' || CASE WHEN rolbypassrls THEN 'BYPASSRLS' ELSE 'NOBYPASSRLS' END
+    || ' CONNECTION LIMIT ' || rolconnlimit
+FROM pg_catalog.pg_roles WHERE rolname = :'runtime';
+SQL
+}
+bms_runtime_attributes() {
+    local runtime=$1 out script
+    bms_valid_role "$runtime" || { printf 'ERROR: rol no valido: %q.\n' "$runtime" >&2; return 1; }
+    script=$({ bms_psql_set runtime "$runtime"; bms_sql_runtime_attributes_read; }) || return 1
+    out=$(bms_pg_query postgres <<< "$script") || return 1
+    bms_ascii_match "$out" '^(NO)?SUPERUSER (NO)?CREATEDB (NO)?CREATEROLE (NO)?INHERIT (NO)?REPLICATION (NO)?BYPASSRLS CONNECTION LIMIT -?[0-9]+$' || {
+        printf 'ERROR: atributos del rol %s ilegibles: %q.\n' "$runtime" "$out" >&2
+        return 1
+    }
+    printf '%s\n' "$out"
+}
+
+# Gives [runtime] the attributes bms_runtime_attributes recorded (the rollback; the text is validated again).
+bms_restore_runtime_attributes() {
+    local runtime=$1 attributes=$2
+    bms_valid_role "$runtime" || return 1
+    bms_ascii_match "$attributes" '^(NO)?SUPERUSER (NO)?CREATEDB (NO)?CREATEROLE (NO)?INHERIT (NO)?REPLICATION (NO)?BYPASSRLS CONNECTION LIMIT -?[0-9]+$' || {
+        printf 'ERROR: atributos registrados no validos: %q.\n' "$attributes" >&2
+        return 1
+    }
+    printf 'ALTER ROLE "%s" %s;\n' "$runtime" "$attributes" | bms_pg_exec postgres
+}
+
+# A real login of the provisioning login (bms_pg_as_provisioner: same host, port, passfile and sslmode as the
+# migrations) to [database], which needs its CONNECT (the caller grants it first). Prints the reason on failure.
+bms_provisioner_login_check() {
+    local database=$1 errf out status=0
+    errf=$(mktemp) || return 1
+    out=$(bms_pg_provisioner_query "$database" 2> "$errf" <<< 'SELECT 1') || status=$?
+    if (( status == 0 )) && [[ $out == 1 ]]; then
+        rm -f -- "$errf"
+        return 0
+    fi
+    printf '%s\n' "$(paste -sd ' ' - < "$errf")" >&2
+    rm -f -- "$errf"
+    return 1
 }

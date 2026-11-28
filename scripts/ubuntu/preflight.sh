@@ -365,7 +365,9 @@ else
             PASS*|INFO*|'        '*) printf '%s\n' "$line" ;;
         esac
     done < "$WORK/rehearse.out"
-    if (( rehearse_status != 0 && rehearse_fails == 0 )); then
+    if (( rehearse_status == 2 && rehearse_fails == 0 )); then
+        report FAIL 'ensayo de update.sh' 'incompleto: alguna base no se ensayo por bloqueo; no vale como prueba. Repite el ensayo en un momento tranquilo'
+    elif (( rehearse_status != 0 && rehearse_fails == 0 )); then
         report FAIL 'ensayo de update.sh' "termino con codigo $rehearse_status sin ejecutar el ensayo: $(tail -n 3 "$WORK/rehearse.err" | paste -sd ' ' -)"
     elif (( rehearse_status == 0 )); then
         report PASS 'ensayo de update.sh' "update.sh --rehearse --ref $REHEARSE_REF termino bien: la segunda fase (roles, permisos, migraciones) se ejecuto completa y se revirtio"
