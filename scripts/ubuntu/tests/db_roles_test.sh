@@ -20,12 +20,12 @@ PROVISIONER=seca_t_prov
 cleanup() {
     local database role
     for database in $CONTROL $NEW $OLD $FOREIGN $FULL; do
-        bms_pg_super postgres -c "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1
+        psu postgres -c "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1
     done
     for role in $PROVISIONER $RUNTIME $OWNER; do
         if [[ $(sql postgres "SELECT count(*) FROM pg_roles WHERE rolname = '$role'") == 1 ]]; then
-            bms_pg_super postgres -c "DROP OWNED BY $role CASCADE" >/dev/null 2>&1
-            bms_pg_super postgres -c "DROP ROLE $role" >/dev/null 2>&1
+            psu postgres -c "DROP OWNED BY $role CASCADE" >/dev/null 2>&1
+            psu postgres -c "DROP ROLE $role" >/dev/null 2>&1
         fi
     done
 }
@@ -38,7 +38,7 @@ source "$SCRIPTS/db-roles.sh"
 source "$SCRIPTS/migrations.sh"
 
 # --- The server as older versions left it (install.sh: runtime role member of the owner's role).
-bms_pg_super postgres <<SQL || die 'preparacion'
+psu postgres <<SQL || die 'preparacion'
 CREATE ROLE $OWNER LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD 'owner-pass';
 CREATE ROLE $RUNTIME LOGIN PASSWORD 'runtime-pass';
 GRANT $OWNER TO $RUNTIME;
@@ -67,7 +67,7 @@ INSERT INTO companies (id, code, name, database_name, owner_group) VALUES
     (gen_random_uuid(), 'seca_tforeign', 'Ajena', '$FOREIGN', gen_random_uuid()),
     (gen_random_uuid(), 'seca_tgone', 'No existe', 'bms_seca_tgone', gen_random_uuid());
 SQL
-} | bms_pg_super "$CONTROL" || die 'base central'
+} | psu "$CONTROL" || die 'base central'
 
 tenant_tables() {
     for file in database/core/migrations/V001__create_application_users database/core/migrations/V002__create_application_sessions \
@@ -95,7 +95,7 @@ SQL
 { printf 'SET ROLE %s;\n' "$OWNER"; tenant_tables; printf 'GRANT SELECT, INSERT ON activity_log, activity_log_chain TO %s; GRANT USAGE ON SEQUENCE activity_log_id_seq TO %s;\n' "$RUNTIME" "$RUNTIME"; } |
     psql -X -q -v ON_ERROR_STOP=1 -h "$PG_HOST" -p "$PG_PORT" -U "$RUNTIME" -d "$NEW" || die 'tablas de la empresa nueva'
 # A company whose tables an older update.sh created as postgres, with its explicit runtime grants.
-{ tenant_tables; cat <<SQL; } | bms_pg_super "$OLD" || die 'tablas de la empresa vieja'
+{ tenant_tables; cat <<SQL; } | psu "$OLD" || die 'tablas de la empresa vieja'
 GRANT USAGE ON SCHEMA public TO $RUNTIME;
 GRANT SELECT, INSERT, UPDATE ON application_users TO $RUNTIME;
 GRANT SELECT ON business_owner, tenant_modules TO $RUNTIME;
@@ -118,17 +118,17 @@ deviations() {
     local database=$1 functions
     functions=$(sql "$database" "SELECT string_agg(proname || '=' || encode(sha256(convert_to(prosrc, 'UTF8')), 'hex'), ';') FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'activity\\_log\\_%'")
     { printf "SET search_path = pg_catalog, pg_temp;\nSET bms.activity_functions = '%s';\n" "$functions"; cat "$REPO/server/src/main/resources/activity/activity-deviations.sql"; printf ';\n'; } |
-        bms_pg_super "$database" -At
+        psu "$database" -At
 }
 
 # --- The provisioning login and the move (twice: idempotent).
 ERRORS=$(mktemp)
 printf '%s' 'clave-de-aprovisionamiento-123' | bms_role_set_password "$PROVISIONER" "$BMS_PROVISIONER_ATTRIBUTES" || die 'rol de aprovisionamiento'
-# A real connection of the provisioning login (update.sh defines the same with its passfile).
+# A real connection of the provisioning login (update.sh defines the same with its passfile; no output flags: db-roles.sh adds them).
 bms_pg_as_provisioner() {
     local database=$1
     shift
-    PGPASSWORD='clave-de-aprovisionamiento-123' psql -X -q -v ON_ERROR_STOP=1 -h "$PG_HOST" -p "$PG_PORT" -U "$PROVISIONER" -d "$database" "$@"
+    PGPASSWORD='clave-de-aprovisionamiento-123' psql -h "$PG_HOST" -p "$PG_PORT" -U "$PROVISIONER" -d "$database" "$@"
 }
 # Registered databases that exist but break the rules (the control database, postgres, one owned by another role):
 # nothing changes, and the message names them.
@@ -199,8 +199,8 @@ equals 'historia de migraciones' 1 "$(sql "$OLD" "SELECT count(*) FROM schema_mi
 # nothing: every migration of a company as the owner through the provisioning login, then the grants, then what the
 # runtime role can do on the two-step verification tables (control V017/V018, tenant V012/V013).
 update_sql() { sed -n "/$1/,/^SQL\$/p" "$SCRIPTS/update.sh" | sed '1d;$d'; }
-bms_pg_super postgres -c "CREATE DATABASE $FULL OWNER $OWNER" >/dev/null || fail 'base completa'
-bms_pg_super postgres -c "GRANT CONNECT ON DATABASE $FULL TO $PROVISIONER, $RUNTIME" >/dev/null
+psu postgres -c "CREATE DATABASE $FULL OWNER $OWNER" >/dev/null || fail 'base completa'
+psu postgres -c "GRANT CONNECT ON DATABASE $FULL TO $PROVISIONER, $RUNTIME" >/dev/null
 for file in "$REPO"/database/core/migrations/V*.sql; do apply_migration "$FULL" core "$file" >/dev/null || fail "core $file"; done
 for file in "$REPO"/database/tenant/migrations/V*.sql; do apply_migration "$FULL" tenant "$file" >/dev/null || fail "tenant $file"; done
 for file in "$REPO"/modules/clientes/migrations/V*.sql; do apply_migration "$FULL" clientes "$file" >/dev/null || fail "clientes $file"; done
@@ -209,7 +209,7 @@ tenant_grants() {
         migration_psql "$FULL" -q -v ON_ERROR_STOP=1 -v db_user="$RUNTIME" >/dev/null
 }
 check 'update.sh: permisos de la empresa como el dueno, por el login de aprovisionamiento' tenant_grants
-update_sql 'migration_psql "\$CONTROL_DB"' | bms_pg_super "$CONTROL" -v db_user="$RUNTIME" -v provisioner="$PROVISIONER" >/dev/null || fail 'update.sh: permisos de la base central'
+update_sql 'migration_psql "\$CONTROL_DB"' | psu "$CONTROL" -v db_user="$RUNTIME" -v provisioner="$PROVISIONER" >/dev/null || fail 'update.sh: permisos de la base central'
 grants() { sql "$1" "SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants WHERE grantee = '$RUNTIME' AND table_name = '$2'"; }
 for database in $CONTROL $FULL; do
     equals "$database: llave de datos" 'INSERT,SELECT' "$(grants "$database" tenant_data_keys)"
@@ -232,7 +232,7 @@ MIGRATION_ROLE=''
 rm -rf -- "$MIGRATION_DIR"
 
 # --- Rollback helper: the previous release needs the membership back; a new pass removes it again.
-bms_restore_runtime_membership "$CONTROL" "$RUNTIME" || fail 'devolver la pertenencia'
+bms_restore_runtime_membership "$RUNTIME" "$OWNER" || fail 'devolver la pertenencia'
 equals 'rollback: el runtime vuelve a ser miembro' t "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER')")"
 bms_migrate_role_layout "$CONTROL" "$RUNTIME" "$PROVISIONER" 2>/dev/null || fail 'pasada tras el rollback'
 equals 'y otra pasada la quita' f "$(sql postgres "SELECT pg_has_role('$RUNTIME', '$OWNER', 'MEMBER')")"

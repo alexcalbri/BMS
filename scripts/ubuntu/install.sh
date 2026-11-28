@@ -283,11 +283,12 @@ install_sync_mirror() {
     mirror_git rev-parse HEAD
 }
 
-# psql as the PostgreSQL superuser for db-roles.sh; SQL on stdin.
-bms_pg_super() {
+# The transport db-roles.sh needs (the one rule about psql output is in its header): psql as the PostgreSQL superuser
+# connected to [database], SQL on stdin. bms_pg_query and bms_pg_exec add -q, -X and ON_ERROR_STOP.
+bms_pg_transport() {
     local database=$1
     shift
-    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d "$database" "$@"
+    runuser -u postgres -- psql -d "$database" "$@"
 }
 
 # Checks over HTTPS that the selected branch has every file the installer needs, before
@@ -409,12 +410,12 @@ clean_postgres_objects() {
     tenant_roles_file=$(mktemp)
     if [[ ${CLEAN_TENANT_DATABASES:-no} == si ]]; then
         local tenant_dbs
-        tenant_dbs=$(pg_admin -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'bms\_%' AND datname <> '$db_name' ORDER BY datname") ||
+        tenant_dbs=$(pg_admin_query -c "SELECT datname FROM pg_database WHERE datname LIKE 'bms\_%' AND datname <> '$db_name' ORDER BY datname") ||
             die 'No se pudo listar las bases tenant; se aborta antes de borrar nada.'
         while IFS= read -r tenant_db; do
             [[ -n $tenant_db ]] || continue
             printf 'Leyendo usuarios PostgreSQL de tenant %s...\n' "$tenant_db"
-            pg_admin -d "$tenant_db" -Atc "SELECT postgres_role FROM application_users ORDER BY postgres_role" >>"$tenant_roles_file" ||
+            pg_admin_query -d "$tenant_db" -c "SELECT postgres_role FROM application_users ORDER BY postgres_role" >>"$tenant_roles_file" ||
                 printf 'AVISO: no se pudieron leer los usuarios PostgreSQL de %s; sus roles no se detectaran para borrar.\n' "$tenant_db" >&2
             printf 'Borrando base tenant %s...\n' "$tenant_db"
             pg_admin -v tenant_db="$tenant_db" <<'SQL'
@@ -427,19 +428,19 @@ SQL
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'db_name';
 DROP DATABASE IF EXISTS :"db_name";
 SQL
-    if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$db_user'") != 0 ]]; then
+    if [[ $(pg_admin_query -c "SELECT count(*) FROM pg_roles WHERE rolname = '$db_user'") != 0 ]]; then
         pg_admin -v db_user="$db_user" <<'SQL'
 DROP OWNED BY :"db_user" CASCADE;
 DROP ROLE :"db_user";
 SQL
     fi
-    if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$server_owner'") != 0 ]]; then
+    if [[ $(pg_admin_query -c "SELECT count(*) FROM pg_roles WHERE rolname = '$server_owner'") != 0 ]]; then
         pg_admin -v server_owner="$server_owner" <<'SQL'
 DROP OWNED BY :"server_owner" CASCADE;
 DROP ROLE :"server_owner";
 SQL
     fi
-    if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$PROVISIONER'") != 0 ]]; then
+    if [[ $(pg_admin_query -c "SELECT count(*) FROM pg_roles WHERE rolname = '$PROVISIONER'") != 0 ]]; then
         pg_admin -v provisioner="$PROVISIONER" <<'SQL'
 DROP OWNED BY :"provisioner" CASCADE;
 DROP ROLE :"provisioner";
@@ -459,7 +460,7 @@ SQL
                     printf 'Omitiendo rol tenant con nombre no permitido: %s\n' "$tenant_role"
                     continue
                 fi
-                if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$tenant_role'") != 0 ]]; then
+                if [[ $(pg_admin_query -c "SELECT count(*) FROM pg_roles WHERE rolname = '$tenant_role'") != 0 ]]; then
                     printf 'Borrando usuario PostgreSQL tenant %s...\n' "$tenant_role"
                     pg_admin -v tenant_role="$tenant_role" <<'SQL'
 DROP ROLE :"tenant_role";
@@ -683,16 +684,19 @@ with socket.socket() as connection:
         sys.exit("El puerto HTTP 8080 no está disponible. Revisa qué servicio lo utiliza antes de instalar BMS.")
 PY
 
-pg_admin() { runuser -u postgres -- psql -X --dbname=postgres --set=ON_ERROR_STOP=1 "$@"; }
+# These two run before the mirror (and db-roles.sh with its bms_pg_query / bms_pg_exec) exists. pg_admin runs statements,
+# never captured; pg_admin_query returns rows only (-q: no command tags such as "SET").
+pg_admin() { runuser -u postgres -- psql -X -q --dbname=postgres --set=ON_ERROR_STOP=1 "$@"; }
+pg_admin_query() { runuser -u postgres -- psql -X -q -A -t --dbname=postgres --set=ON_ERROR_STOP=1 "$@"; }
 if [[ $CLEAN_INSTALL == si ]]; then
     clean_postgres_objects "$DB_NAME" "$DB_USER" "$SERVER_OWNER"
 fi
-[[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$DB_USER'") == 0 ]] ||
+[[ $(pg_admin_query -c "SELECT count(*) FROM pg_roles WHERE rolname = '$DB_USER'") == 0 ]] ||
     die 'El usuario PostgreSQL ya existe. No se cambiará su contraseña.'
-[[ $(pg_admin -Atc "SELECT count(*) FROM pg_database WHERE datname = '$DB_NAME'") == 0 ]] ||
+[[ $(pg_admin_query -c "SELECT count(*) FROM pg_database WHERE datname = '$DB_NAME'") == 0 ]] ||
     die 'La base de datos ya existe. No se modificará.'
-[[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$SERVER_OWNER'") == 0 ]] || die "El rol $SERVER_OWNER ya existe."
-[[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$PROVISIONER'") == 0 ]] || die "El rol $PROVISIONER ya existe."
+[[ $(pg_admin_query -c "SELECT count(*) FROM pg_roles WHERE rolname = '$SERVER_OWNER'") == 0 ]] || die "El rol $SERVER_OWNER ya existe."
+[[ $(pg_admin_query -c "SELECT count(*) FROM pg_roles WHERE rolname = '$PROVISIONER'") == 0 ]] || die "El rol $PROVISIONER ya existe."
 [[ $DB_USER != "$PROVISIONER" && $SERVER_OWNER != "$PROVISIONER" ]] || die "$PROVISIONER es el nombre del rol de aprovisionamiento; elige otro nombre."
 
 # 2. Build without root privileges or Android SDK, as the build user, from a tree of the root mirror (A4: root never
