@@ -25,7 +25,6 @@ file 919 modules/mantenimiento/server/src/main/kotlin/com/ideasdeveloper/bms/mod
 file 905 extensions/inmobiliaria/server/src/main/kotlin/com/ideasdeveloper/bms/extensions/inmobiliaria/InmobiliariaStore.kt   # extension owner
 file 870 modules/membresia/server/src/main/kotlin/com/ideasdeveloper/bms/modules/membresia/MembresiaRepository.kt   # module owner
 file 864 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmMcpTools.kt   # C1
-file 843 server/src/main/kotlin/com/ideasdeveloper/bms/server/auth/application/AccountService.kt   # A2.6
 file 825 modules/compras/server/src/main/kotlin/com/ideasdeveloper/bms/modules/compras/ComprasRepository.kt   # module owner
 file 817 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmImport.kt   # C1
 file 813 modules/tareas/server/src/main/kotlin/com/ideasdeveloper/bms/modules/tareas/TareasScreens.kt   # module owner
