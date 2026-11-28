@@ -294,7 +294,7 @@ fun Application.module() {
     )
     val serverMcp = ServerMcpTools.mcp(
         companyProvisioning,
-        extensions = { role -> ExtensionMcpTools.tools({ extensionService }, { extensionPackages }, role) },
+        extensions = { role -> ExtensionMcpTools.tools({ extensionService }, { extensionPackages }, role, companyName = { code -> companyProvisioning.companyBrief(code)?.name }) },
         extensionInstructions = ExtensionMcpTools.Instructions,
         auditTools = serverAuditTools.tools,
     )
@@ -544,14 +544,17 @@ fun Application.module() {
         secrets = secretBox,
         models = assistantModels,
         serverHosts = setOfNotNull(configuredPublicBase()?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }),
+        // The server owner and the administrators use it in the server workspace and in switcher sessions (Core 0.14.1).
+        serverActors = serverActors,
+        liveServerActor = { userId -> ServerOwnerAuthorizer.liveActor(loginDatabases.admins, DatabaseFactory.getDataSource(), userId) },
     )
     val assistantJob = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "assistant-upkeep").apply { isDaemon = true } }
     assistantJob.scheduleWithFixedDelay({
         try {
             migrationsDone.await()
-            // Every company, suspended ones included (retention still applies to them).
+            // Every company, suspended ones and the server workspace included (retention still applies to them).
             val companies = DatabaseFactory.getDataSource().connection.use { connection ->
-                connection.prepareStatement("SELECT code, database_name FROM companies WHERE NOT is_server_workspace ORDER BY code").use { query ->
+                connection.prepareStatement("SELECT code, database_name FROM companies ORDER BY code").use { query ->
                     query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
                 }
             }

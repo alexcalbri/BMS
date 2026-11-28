@@ -3,6 +3,11 @@ package com.ideasdeveloper.bms.server.assistant
 import com.ideasdeveloper.bms.AssistantIds
 import com.ideasdeveloper.bms.AssistantStatusResponse
 import com.ideasdeveloper.bms.server.activity.ActivityActor
+import com.ideasdeveloper.bms.server.admins.ServerActor
+import com.ideasdeveloper.bms.server.admins.ServerActorKind
+import com.ideasdeveloper.bms.server.admins.ServerActorLookup
+import com.ideasdeveloper.bms.server.admins.ServerActorResolver
+import com.ideasdeveloper.bms.server.admins.ServerPermission
 import com.ideasdeveloper.bms.server.auth.infrastructure.database.SessionOpener
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
 import com.ideasdeveloper.bms.server.i18n.I18n
@@ -35,12 +40,23 @@ class AssistantAvailability(
     val monthUsed: Long,
 )
 
-/** One company request: the caller, the session actor and the company's store. */
+/**
+ * One request of the assistant: the caller, the session actor and the store of the place (a company or the server
+ * workspace). [mayUse] and [mayManage] are what the person may do NOW (decided from the session, never from the request):
+ * use the assistant, and change its switch here. [serverPerson] is the server owner or administrator behind the session
+ * (their own session in the workspace, or the one who opened a switcher session), read live for this request.
+ */
 class AssistantContext(
     val caller: AssistantCaller,
     val hasUsePermission: Boolean,
     private val actorResolver: () -> ActivityActor,
     val store: AssistantStore,
+    val mayUse: Boolean = caller.businessOwner || hasUsePermission,
+    val mayManage: Boolean = caller.businessOwner,
+    val serverPerson: ServerActor? = null,
+    val workspace: Boolean = false,
+    // Who opened the company session (a switcher), when it is not the account's own: the toolbox re-checks it on every call.
+    val opener: SessionOpener? = null,
 ) {
     val actor: ActivityActor by lazy(actorResolver)
 }
@@ -132,6 +148,11 @@ class AssistantService(
     private val turnLimits: AssistantTurnLimits = AssistantTurnLimits(),
     // Host names of the server itself (BMS_PUBLIC_BASE_URL): links there are not foreign.
     private val serverHosts: Set<String> = emptySet(),
+    // Who the server owner or administrator behind a central session token is, read now. Null: the server workspace and
+    // the server people's switcher sessions are out (every one of them is refused), as in Core 0.14.0.
+    private val serverActors: ServerActorResolver? = null,
+    // The rights of a central user now (who opened a switcher session, or the person of a workspace turn).
+    private val liveServerActor: ((UUID) -> ServerActorLookup)? = null,
 ) {
     private val log = LoggerFactory.getLogger(AssistantService::class.java)
 
@@ -149,24 +170,24 @@ class AssistantService(
         access.tenantConnectionForCompany(companyCode) ?: throw java.sql.SQLException("company not available", "08001")
     }
 
-    fun engine(store: AssistantStore): AssistantEngine = AssistantEngine(store, models, clock, turnLimits)
+    /** The engine of [store]; with [companyCode] it also notifies the owner's inbox (a store without a connection source never does). */
+    fun engine(store: AssistantStore, companyCode: String? = null): AssistantEngine {
+        val notifier = companyCode?.takeIf { store.connections != null }?.let { code ->
+            AssistantNotifier(access, code) { userId -> (liveServerActor?.invoke(userId) as? ServerActorLookup.Found)?.actor?.isOwner == true }
+        }
+        return AssistantEngine(store, models, clock, turnLimits, notifier = notifier)
+    }
 
     /**
      * The caller of a company request: [companyCode] and [userId] come from the validated session (userSession),
-     * [token] is that session's token. Null for the server workspace (out of this version) or an inactive user.
+     * [token] is that session's token. Null for the server workspace (its people go through [serverContext]; its staff
+     * accounts are out) or an inactive user.
      */
     fun context(tenant: Connection, companyCode: String, userId: UUID, token: String): AssistantContext? {
         if (companyCode.equals(ServerWorkspace.Code, ignoreCase = true)) return null
         // Who is behind the session decides whose conversations it sees: when that cannot be read, nothing is shown
         // (never the account's own conversations by default).
-        val opener = token.takeIf { it.isNotEmpty() }?.let {
-            try {
-                access.sessionOpener(companyCode, it)
-            } catch (failure: Exception) {
-                log.warn("Assistant could not read the opener of a session in company {}: {}", companyCode, failure.javaClass.name)
-                throw AssistantRefusal(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
-            }
-        }
+        val opener = openerOf(companyCode, token)
         val user = access.userAccess(tenant, companyCode, userId, serverOwner = false) ?: return null
         val person = access.tenantUserActor(tenant, userId, user.businessOwner)
         val company = access.companyOf(tenant)
@@ -181,8 +202,92 @@ class AssistantService(
             ownHosts = serverHosts + ownDomains(companyCode),
         )
         val permitted = user.permissions(EmpresaModuleId)?.has(AssistantIds.UsePermission) == true
-        return AssistantContext(caller, permitted, { access.sessionActor(companyCode, token, userId, user.businessOwner) }, store(companyCode))
+        val store = store(companyCode)
+        val resolver = { access.sessionActor(companyCode, token, userId, user.businessOwner) }
+        if (opener?.kind != SessionOpener.Server) return AssistantContext(caller, permitted, resolver, store)
+        // A session opened from the server: the business owner's tools, but the right to use the assistant and to change
+        // its switch is the server person's own, read now (the empresa permission does not count, and a business owner
+        // session an administrator opened is not the business owner's assistant).
+        val server = (liveServerActor?.invoke(opener.userId) as? ServerActorLookup.Found)?.actor
+        val mayUse = server != null && (server.isOwner || (server.has(ServerPermission.AssistantUse) && server.mayActOn(companyCode)))
+        val mayManage = server != null && (server.isOwner || (server.has(ServerPermission.AssistantManage) && server.mayActOn(companyCode)))
+        return AssistantContext(caller, permitted, resolver, store, mayUse = mayUse, mayManage = mayManage, serverPerson = server, opener = opener)
     }
+
+    /**
+     * The lean path of the attention poll (every open app asks every 15-30 s): what waits for the person, with the fewest reads.
+     * Not [context]: no module or tool resolution, no company or domain lookups, no activity actor. A server person's switcher
+     * session is decided by their live rights (one read of the central rights) and the workspace by the rights the caller
+     * already holds in [serverMayUse]; any other session by ONE read of the user in the company's database (business owner, or
+     * holding empresa.assistant.use) on the same connection as the query itself. [opener] is the session's opener, already read.
+     */
+    fun attention(companyCode: String, userId: UUID, ownerKey: String, opener: SessionOpener?, serverMayUse: Boolean? = null): AssistantAttention {
+        val none = AssistantAttention(0, 0, emptyList())
+        val now = java.time.Instant.now()
+        val liveServer = if (opener?.kind == SessionOpener.Server) {
+            val server = (liveServerActor?.invoke(opener.userId) as? ServerActorLookup.Found)?.actor
+            server != null && (server.isOwner || (server.has(ServerPermission.AssistantUse) && server.mayActOn(companyCode)))
+        } else null
+        val decided = serverMayUse ?: liveServer
+        if (decided == false) return none
+        return access.tenantConnectionForCompany(companyCode)?.use { tenant ->
+            if (decided == null && !tenant.prepareStatement(
+                    """
+                    SELECT EXISTS (SELECT 1 FROM business_owner o WHERE o.user_id = u.id)
+                        OR EXISTS (SELECT 1 FROM application_user_permissions p WHERE p.user_id = u.id AND p.permission_id = ?)
+                    FROM application_users u WHERE u.id = ? AND u.is_active
+                    """.trimIndent(),
+                ).use { query ->
+                    query.setString(1, AssistantIds.UsePermission)
+                    query.setObject(2, userId)
+                    query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+                }
+            ) none else attentionOn(tenant, userId, ownerKey, now)
+        } ?: none
+    }
+
+    /** The opener of the session [token] in [companyCode] as [context] reads it; a failed read is the same 503. */
+    fun openerOf(companyCode: String, token: String): SessionOpener? = token.takeIf { it.isNotEmpty() }?.let {
+        try {
+            access.sessionOpener(companyCode, it)
+        } catch (failure: Exception) {
+            log.warn("Assistant could not read the opener of a session in company {}: {}", companyCode, failure.javaClass.name)
+            throw AssistantRefusal(503, "ASSISTANT_UNAVAILABLE", tr("No se pudo abrir el asistente de la empresa."))
+        }
+    }
+
+    /**
+     * The request of the server owner or an administrator in the server workspace ([tenant] is the workspace's database):
+     * the owner always may use it; an administrator needs server.assistant.use. Conversations are the person's own (their
+     * central user id, owner key "self"). Null when the workspace company cannot be read.
+     */
+    fun serverContext(tenant: Connection, actor: ServerActor): AssistantContext? {
+        val company = access.companyOf(tenant)
+        // Their name as the server's audit and activity logs show it (display name, else login); the owner's session actor carries none.
+        val name = actor.displayName?.takeIf { it.isNotBlank() } ?: access.serverPersonActor(actor.userId, ServerWorkspace.Code).name.ifBlank { actor.login }
+        val caller = AssistantCaller(
+            companyCode = ServerWorkspace.Code,
+            companyName = company?.name ?: ServerWorkspace.Name,
+            userId = actor.userId,
+            ownerKey = ownerKey(null),
+            displayName = name,
+            language = I18n.language(),
+            businessOwner = actor.isOwner,
+            ownHosts = serverHosts + ownDomains(ServerWorkspace.Code),
+            serverRole = if (actor.isOwner) "owner" else "admin",
+        )
+        val mayUse = actor.isOwner || actor.has(ServerPermission.AssistantUse)
+        // The workspace has no switch of its own: it is the server's, which an administrator changes with every company in scope.
+        val mayManage = actor.isOwner || (actor.has(ServerPermission.AssistantManage) && actor.companyScope == null)
+        return AssistantContext(
+            caller, mayUse, { access.serverPersonActor(actor.userId, ServerWorkspace.Code) }, store(ServerWorkspace.Code),
+            mayUse = mayUse, mayManage = mayManage, serverPerson = actor, workspace = true,
+        )
+    }
+
+    /** The server person behind [token] now (owner, or administrator without a pending password change), or null. */
+    fun serverPerson(token: String): ServerActor? =
+        token.takeIf { it.isNotEmpty() }?.let { (serverActors?.resolve(it) as? ServerActorLookup.Found)?.actor }
 
     private fun ownDomains(companyCode: String): Set<String> = try {
         access.centralConnection().use { central ->
@@ -205,9 +310,10 @@ class AssistantService(
     fun availability(tenant: Connection, context: AssistantContext): AssistantAvailability {
         val server = serverConfig.read()
         val allowance = serverConfig.allowance(context.caller.companyCode)
-        val company = AssistantCompanyConfig.read(tenant)
+        // The workspace has no switch and no key of its own: the server's switch and key are the ones (rule 3 does not exist there).
+        val company = if (context.workspace) AssistantCompanySettings(enabled = server.enabled) else AssistantCompanyConfig.read(tenant)
         val keySource = when {
-            company.ownKeySet -> "company"
+            !context.workspace && company.ownKeySet -> "company"
             server.keySet -> "server"
             else -> null
         }
@@ -216,18 +322,21 @@ class AssistantService(
         val used = runCatching { context.store.monthUsage(YearMonth.from(clock().atZone(ZoneOffset.UTC)), limitedSources) }.getOrDefault(0L)
         val reason = when {
             !server.enabled -> AssistantUnavailable(AssistantIds.ReasonServerDisabled, tr("El dueno del servidor no activo el asistente."))
+            !allowance.allowed && context.workspace ->
+                AssistantUnavailable(AssistantIds.ReasonCompanyNotAllowed, tr("El dueno del servidor no permite el asistente en el espacio del servidor."))
             !allowance.allowed -> AssistantUnavailable(AssistantIds.ReasonCompanyNotAllowed, tr("El servidor no permite el asistente en esta empresa."))
             !company.enabled -> AssistantUnavailable(AssistantIds.ReasonCompanyDisabled, tr("El dueno de la empresa no activo el asistente."))
             keySource == null -> AssistantUnavailable(AssistantIds.ReasonNoApiKey, tr("No hay una clave de API configurada para el asistente."))
             !secrets.available -> AssistantUnavailable(AssistantIds.ReasonSecretsUnavailable, tr("El servidor no puede abrir la clave del asistente (falta BMS_MASTER_KEY)."))
-            !context.caller.businessOwner && !context.hasUsePermission ->
-                AssistantUnavailable(AssistantIds.ReasonPermissionRequired, tr("No tienes permiso para usar el asistente."))
+            !context.mayUse && context.serverPerson != null ->
+                AssistantUnavailable(AssistantIds.ReasonPermissionRequired, tr("Necesitas el permiso {0}.", AssistantIds.ServerUsePermission))
+            !context.mayUse -> AssistantUnavailable(AssistantIds.ReasonPermissionRequired, tr("No tienes permiso para usar el asistente."))
             monthlyLimit != null && keySource in limitedSources && used >= monthlyLimit ->
                 AssistantUnavailable(AssistantIds.ReasonLimitReached, tr("La empresa alcanzo su limite mensual del asistente."))
             else -> null
         }
-        val visible = context.caller.businessOwner ||
-            (context.hasUsePermission && reason?.reason !in setOf(AssistantIds.ReasonServerDisabled, AssistantIds.ReasonCompanyNotAllowed, AssistantIds.ReasonCompanyDisabled))
+        val visible = context.mayManage ||
+            (context.mayUse && reason?.reason !in setOf(AssistantIds.ReasonServerDisabled, AssistantIds.ReasonCompanyNotAllowed, AssistantIds.ReasonCompanyDisabled))
         return AssistantAvailability(visible, reason, server, company, allowance, keySource, monthlyLimit, limitedSources, used)
     }
 
@@ -236,7 +345,10 @@ class AssistantService(
         available = availability.unavailable == null,
         reason = availability.unavailable?.reason,
         message = availability.unavailable?.message,
-        canManage = context.caller.businessOwner,
+        canManage = context.mayManage,
+        workspace = context.workspace,
+        serverPerson = context.serverPerson != null,
+        manageHint = if (context.mayManage) null else manageHint(availability.unavailable?.reason, context),
         model = availability.server.model,
         keySource = availability.keySource,
         monthlyLimitTokens = availability.monthlyLimit,
@@ -244,8 +356,20 @@ class AssistantService(
         limitApplies = availability.keySource == null || availability.keySource in availability.limitedSources,
         confirmationHours = turnLimits.confirmationTtl.toHours().toInt(),
         maxMessageChars = turnLimits.maxMessageChars,
-        disclosure = assistantDisclosure(),
+        disclosure = if (context.workspace) serverAssistantDisclosure() else assistantDisclosure(),
     )
+
+    /** Who can fix [reason], when this session cannot (one sentence for the screen that explains why it is off). */
+    private fun manageHint(reason: String?, context: AssistantContext): String? = when (reason) {
+        AssistantIds.ReasonServerDisabled, AssistantIds.ReasonCompanyNotAllowed, AssistantIds.ReasonNoApiKey, AssistantIds.ReasonSecretsUnavailable ->
+            tr("Lo configura el dueno del servidor (Ajustes del servidor > Asistente de IA).")
+        AssistantIds.ReasonCompanyDisabled ->
+            tr("Lo activa el dueno de la empresa (Ajustes > Asistente de IA) o el dueno del servidor.")
+        AssistantIds.ReasonPermissionRequired ->
+            if (context.serverPerson != null) tr("Pidele el permiso {0} al dueno del servidor.", AssistantIds.ServerUsePermission)
+            else tr("Pide el permiso al dueno de la empresa.")
+        else -> null
+    }
 
     /** The runtime of a model request: the key opened now (never kept), the model settings and the limit. */
     fun runtime(tenant: Connection, availability: AssistantAvailability): AssistantRuntime {
@@ -269,8 +393,52 @@ class AssistantService(
         )
     }
 
-    fun toolbox(context: AssistantContext): AssistantToolbox =
-        ModuleAssistantToolbox(access, context.caller.companyCode, context.caller.userId) { context.actor }
+    fun toolbox(context: AssistantContext): AssistantToolbox {
+        val caller = context.caller
+        if (!context.workspace) {
+            val own = CompanyGrants(access, caller.companyCode, caller.userId)
+            // A session a server person opened: their rights are read again on every call, not once per request.
+            val opener = context.opener?.takeIf { it.kind == SessionOpener.Server }
+            val grants = if (opener == null) own else SwitcherGrants(own, access, caller.companyCode, opener, liveServerActor ?: { ServerActorLookup.None })
+            return ModuleAssistantToolbox(access, caller.companyCode, caller.userId, grants) { context.actor }
+        }
+        // The server workspace: the owner's own tools there, or the administrator's (the same as their MCP agents).
+        val person = context.serverPerson ?: return ModuleAssistantToolbox(access, caller.companyCode, caller.userId, AssistantGrantSource { null }) { context.actor }
+        val grants = if (person.isOwner) ServerOwnerGrants(access, person.userId)
+        else ServerAdminGrants(access, person.userId, liveServerActor ?: { ServerActorLookup.None })
+        return ModuleAssistantToolbox(
+            access, caller.companyCode, caller.userId, grants,
+            executed = { tool, arguments, ok ->
+                // The tool wrote its own row (who did it, as the owner); this one says it was the assistant of that person.
+                serverConfig.auditAssistantTool(person.audit, caller.displayName, tool.qualifiedName, arguments, ok)
+            },
+            callPolicy = ServerCallPolicy(::companyOptedIn, ::companyName),
+        ) { context.actor }
+    }
+
+    /**
+     * Whether the assistant may read data of company [code] without asking: the server allows it there AND the company's own
+     * switch is on (the server workspace has no switch of its own: the server's). Anything that cannot be read counts as "no".
+     */
+    internal fun companyOptedIn(code: String): Boolean = try {
+        serverConfig.allowance(code).allowed &&
+            (code.equals(ServerWorkspace.Code, ignoreCase = true) || access.tenantConnectionForCompany(code)?.use { AssistantCompanyConfig.read(it).enabled } == true)
+    } catch (failure: Exception) {
+        log.warn("Assistant could not read whether company {} opted in: {}", code, failure.javaClass.name)
+        false
+    }
+
+    // The name of a company for a card (a plain read of the control database), null when unknown.
+    private fun companyName(code: String): String? = try {
+        access.centralConnection().use { central ->
+            central.prepareStatement("SELECT name FROM companies WHERE code = ?").use { query ->
+                query.setString(1, code)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        }
+    } catch (_: Exception) {
+        null
+    }
 
     /**
      * The daily job of one company: expired confirmations answered, conversations past the retention deleted, usage
@@ -281,7 +449,7 @@ class AssistantService(
         val store = if (databaseName == null) store(companyCode) else JdbcAssistantStore {
             access.tenantConnectionForDatabase(databaseName) ?: throw java.sql.SQLException("company not available", "08001")
         }
-        val expired = engine(store).expireAll()
+        val expired = engine(store, companyCode).expireAll()
         val retention = serverConfig.read().retentionDays
         val now = clock()
         val purged = store.purge(now.minus(java.time.Duration.ofDays(retention.toLong())), now.atZone(ZoneOffset.UTC).toLocalDate().minusMonths(13).withDayOfMonth(1))

@@ -42,6 +42,13 @@ data class AssistantAllowance(val allowed: Boolean = true, val monthlyTokens: Lo
 /** The disclosure every settings screen shows before enabling (GLOBAL_AGENT.md §5). */
 fun assistantDisclosure(): String = tr("Los datos que el asistente consulte se envian a Anthropic para generar la respuesta.")
 
+/**
+ * The disclosure accepted when the server owner (or an administrator) enables the assistant at server level: the common one
+ * plus what only the server workspace adds (the audit and the activity of the companies the person may see).
+ */
+fun serverAssistantDisclosure(): String =
+    assistantDisclosure() + " " + tr("El asistente del espacio del servidor puede leer la auditoria y la actividad de las empresas que la persona puede ver.")
+
 /** Checks an API key's shape (never its value against anything) and builds the hint shown instead of it. */
 object AssistantKeys {
     private val pattern = Regex("^sk-ant-[A-Za-z0-9_-]{16,300}$")
@@ -180,6 +187,56 @@ class AssistantServerConfig(private val central: DataSource, private val secrets
         }
     }
 
+    /**
+     * A server person changes a company's assistant (its switch or its own key) from the server list or from a switcher
+     * session. Two databases cannot share one transaction, so the order is what keeps the audit honest: the audit row
+     * `company.assistant_changed` (the real person's kind, never the key) is COMMITTED FIRST, in its own central transaction,
+     * and only then [apply] runs, the company's own change with its activity row. A company change can therefore never be
+     * left without its audit row, whatever fails after it. The price is the opposite case, and it is recorded instead of
+     * hidden: when [apply] fails, a second row `company.assistant_change_failed` (same details, plus the error class) says the
+     * change did not happen, and the failure goes on to the caller. [details] says what changes (empty: nothing to audit).
+     */
+    fun <T> auditedCompanyChange(actor: AuditActor, companyCode: String, details: List<Pair<String, Any?>>, precheck: () -> Unit = {}, apply: () -> T): T {
+        // What can be refused without writing anything is refused before the audit row exists.
+        precheck()
+        if (details.isNotEmpty()) {
+            transaction { connection -> ProvisioningAudit.insert(connection, actor, "company.assistant_changed", companyCode, null, auditDetails(*details.toTypedArray())) }
+        }
+        try {
+            return apply()
+        } catch (failure: Throwable) {
+            if (details.isNotEmpty()) {
+                runCatching {
+                    transaction { connection ->
+                        ProvisioningAudit.insert(
+                            connection, actor, "company.assistant_change_failed", companyCode, null,
+                            auditDetails(*(details + ("error" to failure.javaClass.simpleName)).toTypedArray()),
+                        )
+                    }
+                }
+            }
+            throw failure
+        }
+    }
+
+    /**
+     * The server audit row of a tool the assistant ran in the server workspace ("Asistente de <persona>"): the person's own
+     * kind (server_owner / server_admin), the tool, how it ended and the argument names (never their values), plus the
+     * company code the tool acted on. The tool also wrote its own row, as the person.
+     */
+    fun auditAssistantTool(actor: AuditActor, personName: String, tool: String, arguments: kotlinx.serialization.json.JsonObject, ok: Boolean) {
+        val company = (arguments["code"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content?.take(63)?.takeIf { it.matches(CompanyCode) }
+        central.connection.use { connection ->
+            ProvisioningAudit.insert(
+                connection, actor, "assistant.server_tool", company, null,
+                auditDetails(
+                    "via" to "assistant", "actor" to "Asistente de ${personName.take(80)}", "tool" to tool, "result" to if (ok) "ok" else "error",
+                    "arguments" to arguments.keys.sorted().take(30),
+                ),
+            )
+        }
+    }
+
     private fun <T> transaction(block: (Connection) -> T): T = central.connection.use { connection ->
         connection.autoCommit = false
         try {
@@ -221,6 +278,7 @@ class AssistantServerConfig(private val central: DataSource, private val secrets
         const val CompanyPrefix = "assistant.company."
         const val MaxRetentionDays = 3650
         const val MaxMonthlyTokens = 100_000_000_000L
+        private val CompanyCode = Regex("[a-z][a-z0-9_]{0,62}")
     }
 }
 
@@ -251,12 +309,24 @@ object AssistantCompanyConfig {
      * Applies the business owner's change in one transaction with its activity row (module "core", the key only as
      * "changed"). Turning it on needs [acceptDisclosure].
      */
+    /**
+     * The refusals of [update] that need nothing to be written (a malformed key, no master key, the disclosure not accepted): checked
+     * before anything is audited, so a refused request leaves no audit row. Returns the validated key.
+     */
+    fun check(tenant: Connection, secrets: SecretBox, enabled: Boolean?, acceptDisclosure: Boolean?, apiKey: String?): String? {
+        val key = apiKey?.takeIf { it.isNotBlank() }?.let(AssistantKeys::validate)
+        if (key != null && !secrets.available) throw AssistantSettingsException("SECRETS_UNAVAILABLE", tr("El servidor no tiene BMS_MASTER_KEY: no puede guardar la clave."), 503)
+        if (enabled == true && !read(tenant).enabled && acceptDisclosure != true) {
+            throw AssistantSettingsException("DISCLOSURE_REQUIRED", tr("Para activar el asistente acepta el aviso: los datos que consulte se envian a Anthropic."))
+        }
+        return key
+    }
+
     fun update(
         tenant: Connection, secrets: SecretBox, actor: ActivityActor,
         enabled: Boolean?, acceptDisclosure: Boolean?, apiKey: String?, removeApiKey: Boolean?,
     ): AssistantCompanySettings {
-        val key = apiKey?.takeIf { it.isNotBlank() }?.let(AssistantKeys::validate)
-        if (key != null && !secrets.available) throw AssistantSettingsException("SECRETS_UNAVAILABLE", tr("El servidor no tiene BMS_MASTER_KEY: no puede guardar la clave."), 503)
+        val key = check(tenant, secrets, enabled, acceptDisclosure, apiKey)
         return ActivityLog.atomically(tenant) {
             val before = read(tenant)
             if (enabled == true && !before.enabled && acceptDisclosure != true) {

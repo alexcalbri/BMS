@@ -44,7 +44,7 @@ import com.ideasdeveloper.bms.app.features.serveradmin.data.ServerAdminApi
 import com.ideasdeveloper.bms.app.features.serveradmin.data.use
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.AuditLogScreen
 import com.ideasdeveloper.bms.app.features.activitylog.ui.ActivityLogScreen
-import com.ideasdeveloper.bms.app.features.assistant.ui.AssistantScreen
+import com.ideasdeveloper.bms.app.features.assistant.ui.AssistantFloatingHost
 import com.ideasdeveloper.bms.app.features.assistant.ui.AssistantServerScreen
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ForcedPasswordChangeScreen
 import com.ideasdeveloper.bms.app.features.serveradmin.ui.ServerAdminsScreen
@@ -90,6 +90,9 @@ fun App(initialServerUrl: String = "") {
         val currentSession = session
         val sessionExpired by SessionStore.expired.collectAsState()
         var confirmingLogout by remember { mutableStateOf(false) }
+        // Sube cada vez que algo pide abrir el panel del asistente (la ruta antigua module/assistant).
+        var assistantOpenRequest by remember { mutableStateOf(0) }
+        var assistantOpenConversation by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         remember { CompanyIdentityStore.restore() }
         var clientConfiguration by remember { mutableStateOf(ClientConfigurationStore.load()) }
@@ -207,13 +210,19 @@ fun App(initialServerUrl: String = "") {
         // notificaciones abren la pantalla de su modulo con la misma navegacion de los enlaces entre modulos.
         CompositionLocalProvider(
             LocalNotificationNavigator provides { action ->
-                ModuleDeepLinks.open(action)
-                // Desde otra pantalla de modulo la reemplaza (se vuelve a crear para tomar el enlace pendiente);
-                // desde cualquier otra no apila dos veces el mismo destino.
-                val onModule = navController.currentDestination?.route == "module/{moduleId}"
-                navController.navigate("module/${action.moduleId}") {
-                    launchSingleTop = !onModule
-                    if (onModule) popUpTo("module/{moduleId}") { inclusive = true }
+                // Notificacion del asistente: abre su panel (en la conversacion indicada) en lugar de una pantalla.
+                if (action.moduleId == "assistant") {
+                    assistantOpenConversation = (action.params["conversationId"] ?: action.params["id"])?.takeIf { it.isNotBlank() }
+                    assistantOpenRequest++
+                } else {
+                    ModuleDeepLinks.open(action)
+                    // Desde otra pantalla de modulo la reemplaza (se vuelve a crear para tomar el enlace pendiente);
+                    // desde cualquier otra no apila dos veces el mismo destino.
+                    val onModule = navController.currentDestination?.route == "module/{moduleId}"
+                    navController.navigate("module/${action.moduleId}") {
+                        launchSingleTop = !onModule
+                        if (onModule) popUpTo("module/{moduleId}") { inclusive = true }
+                    }
                 }
             },
         ) {
@@ -312,18 +321,9 @@ fun App(initialServerUrl: String = "") {
                                 onReturnToDashboard = ::openDashboard,
                             )
                         } else if (moduleId == "assistant") {
-                            // Chat del asistente: solo sesiones de empresa; el servidor decide con 403/404 si no esta disponible.
-                            if (currentSession.isServerLevel || currentSession?.companyCode == null) {
-                                ReturnToDashboardEffect(onReturn = ::openDashboard)
-                            } else {
-                                AssistantScreen(
-                                    serverUrl = clientConfiguration?.serverUrl,
-                                    session = currentSession,
-                                    onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                                    onLogout = ::requestLogout,
-                                    onReturnToDashboard = ::openDashboard,
-                                )
-                            }
+                            // El chat ya no es una pantalla: es el boton flotante (AssistantFloatingHost). Esta ruta, por si algun
+                            // enlace antiguo la usa, abre su panel y deja la pantalla de la que se venia.
+                            OpenAssistantEffect(onOpen = { assistantOpenConversation = null; assistantOpenRequest++ }, onDone = { navController.popBackStack() })
                         } else if (moduleId == "company-activity") {
                             // Registro de actividad de la empresa: solo sesiones de empresa; el servidor decide con 403 si no hay permiso.
                             if (currentSession.isServerLevel || currentSession?.companyCode == null) {
@@ -416,6 +416,21 @@ fun App(initialServerUrl: String = "") {
                         )
                     }
                 }
+                // Boton flotante del asistente sobre todas las pantallas de la sesion iniciada (se oculta si el servidor no lo
+                // tiene o no debe verse). Su estado vive aqui, por encima de la navegacion; con otra sesion o empresa se recrea.
+                if (currentSession != null && !currentSession.mustChangePassword && !currentSession.twoFactorSetupRequired) {
+                    AssistantFloatingHost(
+                        serverUrl = clientConfiguration?.serverUrl,
+                        session = currentSession,
+                        openRequest = assistantOpenRequest,
+                        openConversationId = assistantOpenConversation,
+                        onOpenServerSettings = {
+                            navController.navigate("module/server-assistant") {
+                                launchSingleTop = true
+                            }
+                        },
+                    )
+                }
                 // Bloquea toda la app hasta que el administrador cambie su contrasena inicial.
                 if (currentSession != null && currentSession.mustChangePassword) {
                     ForcedPasswordChangeScreen(
@@ -507,6 +522,15 @@ private val ServerOnlyScreens = setOf("server-modules", "server-staff", "server-
 // Regresa al dashboard en cuanto se muestra; sustituye a una pantalla a la que la sesion ya no tiene acceso.
 private fun ReturnToDashboardEffect(onReturn: () -> Unit) {
     LaunchedEffect(Unit) { onReturn() }
+}
+
+@Composable
+// Abre el panel del asistente en cuanto se muestra y sale de la ruta.
+private fun OpenAssistantEffect(onOpen: () -> Unit, onDone: () -> Unit) {
+    LaunchedEffect(Unit) {
+        onOpen()
+        onDone()
+    }
 }
 
 // Convierte ids de modulo en titulos legibles para las pantallas internas.

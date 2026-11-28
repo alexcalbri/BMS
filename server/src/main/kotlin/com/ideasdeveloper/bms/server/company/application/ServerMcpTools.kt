@@ -7,6 +7,7 @@ import com.ideasdeveloper.bms.server.company.api.ServerModuleResponse
 import com.ideasdeveloper.bms.server.company.api.UpdateCompanyRequest
 import com.ideasdeveloper.bms.server.modules.McpSchema
 import com.ideasdeveloper.bms.server.modules.McpTool
+import com.ideasdeveloper.bms.server.modules.McpPreviewRow
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
 import com.ideasdeveloper.bms.server.modules.RegisteredMcpTool
@@ -33,14 +34,28 @@ object ServerMcpTools {
     private val json = Json { encodeDefaults = true }
     private val random = SecureRandom()
 
-    private const val Instructions =
+    // The sentence only the MCP agents get: their bridge implements acting_company. The assistant never gets it ([forAssistant]).
+    const val ActingCompanySentence =
+        "Para trabajar dentro de una empresa con las herramientas de los modulos, " +
+            "pasa su codigo en el argumento acting_company; el modulo debe estar activo en esa empresa (servidor_set_company_module). "
+
+    const val Instructions =
         "Administras el servidor como su dueno. Las empresas (servidor_list_companies) tienen cada una su propia base de datos; " +
-            "el espacio del servidor no aparece en esa lista. Para trabajar dentro de una empresa con las herramientas de los modulos, " +
-            "pasa su codigo en el argumento acting_company; el modulo debe estar activo en esa empresa (servidor_set_company_module). " +
+            "el espacio del servidor no aparece en esa lista. " + ActingCompanySentence +
             "Un modulo debe estar instalado en el servidor (desde la app; el agente no instala modulos) antes de poder activarlo en una empresa. " +
             "Las contrasenas nunca pasan por aqui: una empresa creada con servidor_create_company no tiene contrasena utilizable " +
             "hasta que el business owner la pone con el codigo que le llega a su correo (\"Olvidaste tu contrasena\" en el login) " +
             "o el dueno del servidor la pone desde la app (Empresas > Editar > Contrasena del business owner); avisale."
+
+    // What the in-app assistant is told about acting in other companies and about what it never does (ASSISTANT_NOTES in GLOBAL_AGENT.md).
+    const val AssistantNote =
+        "Desde este espacio solo trabajas en el espacio del servidor: no puedes actuar dentro de otra empresa; " +
+            "si el usuario quiere algo dentro de otra empresa, dile que entre a esa empresa y use alli el asistente. " +
+            "Eliminar una empresa y quitar un modulo del servidor no los haces tu: son irreversibles y se hacen desde la app; dilo asi."
+
+    /** The guidance of the server module as the in-app assistant gets it: no acting_company sentence, plus [AssistantNote]. */
+    fun forAssistant(instructions: String): String =
+        (instructions.replace(ActingCompanySentence, "").trim() + "\n\n" + AssistantNote).trim()
 
     /**
      * [extensions] adds more server tools (the extension tools); it receives the function that gives
@@ -88,6 +103,22 @@ object ServerMcpTools {
                 ?: throw McpToolException("Empresa no encontrada: $code.")
         }
 
+        // What a confirmation card says about a company or a module (plain reads of the control data; no request, no write).
+        // The server workspace is no company for most tools (they refuse it: say so); [allowWorkspace] for the ones that do act on it (set_company_module).
+        fun brief(call: McpToolCall, key: String = "code", allowWorkspace: Boolean = false): CompanyProvisioningService.CompanyBrief {
+            val target = call.requiredString(key, 63)
+            val found = provisioning().companyBrief(target, withWorkspace = true) ?: throw McpToolException("Empresa no encontrada: $target.")
+            if (found.isServerWorkspace && !allowWorkspace) throw McpToolException("El espacio del servidor no se administra como una empresa.")
+            return found
+        }
+        fun companyLabel(company: CompanyProvisioningService.CompanyBrief) =
+            if (company.isServerWorkspace) "${company.name} (${company.code}, espacio del servidor)" else "${company.name} (${company.code})"
+        fun moduleLabel(call: McpToolCall): String {
+            val target = call.requiredString("module_id", 63)
+            return provisioning().moduleBrief(target)?.let { "${it.displayName} (${it.moduleId}, version ${it.version})" } ?: throw McpToolException("Modulo no reconocido: $target.")
+        }
+        fun row(label: String, value: String) = McpPreviewRow(label, value)
+
         val code = "code" to McpSchema.string("Codigo de la empresa (servidor_list_companies).")
         val moduleId = "module_id" to McpSchema.string("Id del modulo (servidor_list_modules).")
         val color = { what: String -> McpSchema.string("Color $what en formato #RRGGBB.") }
@@ -121,6 +152,21 @@ object ServerMcpTools {
                     ),
                     required = listOf("code", "name", "business_owner_username", "business_owner_name", "business_owner_email"),
                 ),
+                preview = { call ->
+                    val target = call.requiredString("code", 63)
+                    listOfNotNull(
+                        row("Empresa que se crea", "${call.requiredString("name", 200)} (codigo $target)"),
+                        provisioning().companyBrief(target)?.let { row("Aviso", "Ya existe una empresa con el codigo $target: no se creara.") },
+                        row("Business owner", "${call.requiredString("business_owner_name", 120)}, usuario ${call.requiredString("business_owner_username", 63)}"),
+                        row("Correo del business owner", call.requiredString("business_owner_email", 254)),
+                        row(
+                            "Que pasa",
+                            "Se crea una base de datos nueva para la empresa y el usuario del business owner (con todos los permisos de la empresa). " +
+                                "Nadie conoce su contrasena: la pone el business owner con \"Olvidaste tu contrasena\" en el login (el codigo llega a ese correo) " +
+                                "o el dueno del servidor se la pone desde la app. Quien controle ese correo controla la empresa.",
+                        ),
+                    )
+                },
             ) { call ->
                 val created = run {
                     provisioning().createCompany(
@@ -169,6 +215,13 @@ object ServerMcpTools {
                     ),
                     required = listOf("code"),
                 ),
+                preview = { call ->
+                    val company = brief(call)
+                    listOf(row("Empresa", companyLabel(company))) + listOf(
+                        "name" to "Nuevo nombre", "logo_url" to "Nuevo logo (URL; vacio lo quita)", "primary_color" to "Color primario",
+                        "secondary_color" to "Color secundario", "accent_color" to "Color de acento",
+                    ).filter { (key, _) -> call.has(key) }.map { (key, label) -> row(label, call.string(key, 2_000).ifEmpty { "(vacio)" }) }
+                },
             ) { call ->
                 val current = existing(call)
                 val updated = run {
@@ -196,6 +249,19 @@ object ServerMcpTools {
                     mapOf(code, "active" to McpSchema.boolean("true para activar, false para desactivar.")),
                     required = listOf("code", "active"),
                 ),
+                preview = { call ->
+                    val company = brief(call)
+                    val activate = call.boolean("active")
+                    listOf(
+                        row("Empresa", companyLabel(company)),
+                        row("Estado ahora", if (company.isActive) "Activa" else "Desactivada"),
+                        row(
+                            "Que pasa",
+                            if (activate) "Se reactiva: sus usuarios pueden entrar otra vez."
+                            else "Se desactiva: nadie puede entrar a esta empresa, ni sus agentes de IA ni sus integraciones hasta que se reactive. Sus datos se conservan.",
+                        ),
+                    )
+                },
             ) { call ->
                 companyJson(run { provisioning().setCompanyActive(call.requiredString("code", 63), call.boolean("active"), role(call), actor(call)) })
             },
@@ -206,6 +272,18 @@ object ServerMcpTools {
                 permission = Permission,
                 inputSchema = McpSchema.obj(mapOf(code), required = listOf("code")),
                 destructive = true,
+                preview = { call ->
+                    val company = brief(call)
+                    listOf(
+                        row("Empresa que se elimina", companyLabel(company)),
+                        row("Estado ahora", if (company.isActive) "Activa: no se puede eliminar hasta desactivarla; la herramienta se negara." else "Desactivada"),
+                        row(
+                            "Que pasa",
+                            "Se elimina la empresa y su base de datos completa (${company.databaseName}): clientes, leads, usuarios, archivos y su registro de actividad. " +
+                                "No se puede deshacer.",
+                        ),
+                    )
+                },
             ) { call ->
                 val target = call.requiredString("code", 63)
                 run { provisioning().deleteInactiveCompany(target, role(call), actor(call)) }
@@ -220,6 +298,19 @@ object ServerMcpTools {
                     mapOf(code, moduleId, "enabled" to McpSchema.boolean("true para activar, false para desactivar.")),
                     required = listOf("code", "module_id", "enabled"),
                 ),
+                preview = { call ->
+                    val company = brief(call, allowWorkspace = true)
+                    val enable = call.boolean("enabled")
+                    listOf(
+                        row("Empresa", companyLabel(company)),
+                        row("Modulo", moduleLabel(call)),
+                        row(
+                            "Que pasa",
+                            if (enable) "Se activa en la empresa y se preparan sus tablas; sus usuarios podran usarlo segun sus permisos."
+                            else "Se desactiva en la empresa: sus usuarios dejan de verlo y sus agentes de IA de usarlo. Los datos del modulo no se borran.",
+                        ),
+                    )
+                },
             ) { call ->
                 companyJson(
                     run {
@@ -244,6 +335,16 @@ object ServerMcpTools {
                 permission = Permission,
                 inputSchema = McpSchema.obj(mapOf(moduleId), required = listOf("module_id")),
                 destructive = true,
+                preview = { call ->
+                    val target = call.requiredString("module_id", 63)
+                    val module = provisioning().moduleBrief(target) ?: throw McpToolException("Modulo no reconocido: $target.")
+                    listOf(
+                        row("Modulo que se quita del servidor", "${module.displayName} (${module.moduleId}, version ${module.version})"),
+                        // Not counted here: that would open the database of every company. The tool refuses a module that is still active somewhere.
+                        row("Antes de quitarlo", "La herramienta se negara si el modulo esta activo en alguna empresa o en el espacio del servidor."),
+                        row("Que pasa", if (module.locked) "Es un modulo base: no se puede quitar." else "Se quita su codigo del servidor; para usarlo otra vez hay que instalarlo de nuevo desde el catalogo."),
+                    )
+                },
             ) { call ->
                 val target = call.requiredString("module_id", 63)
                 run { provisioning().deleteServerModule(target, actor(call)) }
@@ -258,6 +359,16 @@ object ServerMcpTools {
                     mapOf(moduleId, "enabled" to McpSchema.boolean("true para activar, false para desactivar.")),
                     required = listOf("module_id", "enabled"),
                 ),
+                preview = { call ->
+                    listOf(
+                        row("Modulo", moduleLabel(call)),
+                        row(
+                            "Que pasa",
+                            if (call.boolean("enabled")) "Se activa en el espacio del servidor (el del dueno del servidor y su personal)."
+                            else "Se desactiva en el espacio del servidor: dejan de verlo quienes trabajan alli. Los datos del modulo no se borran.",
+                        ),
+                    )
+                },
             ) { call ->
                 json.encodeToJsonElement(
                     ServerModuleResponse.serializer(),
