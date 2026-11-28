@@ -243,6 +243,14 @@ tasks.withType<Test>().configureEach {
     val compilerFiles = moduleCompilerFiles
     inputs.files(compilerFiles).withPropertyName("moduleCompiler").optional()
     jvmArgumentProviders.add(ModuleCompilerArgument(compilerFiles))
+    // SourceLayoutTest ratchet: ./gradlew :server:test -Dbms.layout.strict=true (ARCHITECTURE.md 16.1).
+    System.getProperty("bms.layout.strict")?.let { systemProperty("bms.layout.strict", it) }
+    // The test reads every Kotlin source of the repository, so a change anywhere (even a file that compiles to no class) must rerun it.
+    inputs.files(
+        rootProject.fileTree(rootProject.layout.projectDirectory) {
+            include("server/src/**/*.kt", "core/src/**/*.kt", "app/*/src/**/*.kt", "modules/*/server/src/**/*.kt", "extensions/*/server/src/**/*.kt")
+        },
+    ).withPropertyName("repositorySources")
 }
 
 class ModuleCompilerArgument(@get:org.gradle.api.tasks.Classpath val files: FileCollection) : CommandLineArgumentProvider {

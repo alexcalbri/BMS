@@ -748,6 +748,10 @@ The Ktor entry point lives in `server.app`, database bootstrap in
 `auth.api`, `auth.application`, `auth.domain` and `auth.infrastructure`.
 These packages are separate from the client login feature package.
 
+The rules for file size, packages, shared helpers and the module SDK are in
+§16 (Code organisation); the target backend layout is described in
+`RESTRUCTURE_PLAN.md` §2.
+
 ------------------------------------------------------------------------
 
 ## 14. Security Principles
@@ -856,6 +860,65 @@ clean installer can also remove tenant PostgreSQL roles discovered in
 an additional explicit confirmation. The revised installation and end-to-end login still require
 clean-host validation. Do not interpret
 the current database-owner role as the approved runtime permission model.
+
+------------------------------------------------------------------------
+
+## 16. Code organisation
+
+### 16.1 File size
+- A Kotlin source file in `src/main` (server, Core, modules, extensions, app) has at most **800 lines**;
+  aim for **≤ 400**. Test files have at most **1,000 lines**. Rationale: 800 lines is what a reviewer or a
+  coding agent can read and hold in one pass; above it every BMS file mixes responsibilities (26 files did on
+  2026-11-28, none of them below 840 lines without at least two unrelated flows).
+- A function or composable should stay under ~150 lines; `Application.module()` is the known exception.
+- Exceptions live only in `server/src/test/resources/source-layout/allowlist.txt`
+  (`file <maxLines> <path>  # reason`). An entry records the current size; it may only go down and is
+  removed as soon as the file is ≤ 800 lines. Adding an entry needs the owner's approval in the PR.
+
+### 16.2 One responsibility per file
+- A file holds one responsibility named by its file name: one service, one store, one set of routes for one
+  resource, one screen or one family of renderer nodes. Data/DTO files may group the models of one feature.
+- A class that grows past the limit is split with the collaborator pattern: internal classes built by the
+  original class, which keeps its public members as delegations so callers and binary compatibility are kept.
+
+### 16.3 Packages and sub-packages
+- Server Core packages are named by function (`auth`, `company`, `platform`, `storage`, `notifications`,
+  `extensions`, `http`, …). Server-level operations that do not belong to one company live in `platform`.
+- A Core package with more than **25 files** must be split by function.
+- A module or extension whose `src/main` passes **30 files or 10,000 lines** uses sub-packages by function
+  under `com.ideasdeveloper.bms.modules.<id>` (for example `.screens`, `.mcp`, `.automation`, `.importing`,
+  `.integrations`). Its root package keeps the module entry (`<Id>Module`, `<Id>ServerModule`,
+  `<Id>ServerModuleProvider`) and the surface its extensions compile against. Sub-packages do not change the
+  i18n namespace (I18N.md §2).
+
+### 16.4 Shared helpers
+- A helper needed by more than one package lives once in Core: HTTP request helpers in `server.http`
+  (client address, public origin, bounded bodies), secrets in `server.security`, outbound HTTP in `server.net`.
+- Modules and extensions use these helpers instead of copies. A copy found in a module is replaced in the
+  module's next release (with `minCoreVersion` raised to the Core that provides the helper).
+
+### 16.5 The module SDK and binary compatibility
+- Installed module and extension packages are compiled once and are not rebuilt when Core is updated. Every
+  public declaration that a released optional module or extension references (listed in
+  `server/src/test/resources/sdk/released-surface.txt`) is frozen: its fully qualified name, its JVM
+  signature and, for top-level functions, the file that declares it. `typealias` does not preserve binary
+  compatibility.
+- `server.modules` is the module SDK plus module infrastructure; `server.http`, `server.i18n`,
+  `server.activity`, `server.extensions` (contracts), `server.outbound`, `server.security` and `server.net`
+  are also SDK packages. Implementation-only classes do not belong in SDK packages.
+- The same rule applies to a module's root package for its extensions (CRM: `CrmHost`, `CrmExtensions`,
+  `CrmScreenProvider`, …).
+- Removing or moving a frozen symbol is a breaking release: a new Core with a compatibility baseline, the
+  dependants updated in the same catalog publication, and `minCoreVersion`/`minModuleVersion` raised.
+
+### 16.6 Automated checks
+- `SourceLayoutTest` (server test suite, runs in CI) enforces 16.1 and 16.3.
+- `SdkSurfaceTest` fails when a frozen symbol no longer resolves, or when a module/extension starts using a
+  Core symbol that is not yet in the frozen list (adding it is an explicit decision).
+- CI compiles and tests the server with and without the extensions on the classpath
+  (`gradle/ci/with-extensions.init.gradle.kts`).
+- `scripts/dev/binary-compat.sh <ref>` checks, before a release, that packages built at `<ref>` still link
+  against the new Core.
 
 ------------------------------------------------------------------------
 

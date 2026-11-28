@@ -1,0 +1,33 @@
+# Exceptions to the code-organisation limits (ARCHITECTURE.md 16.1 and 16.3). Enforced by SourceLayoutTest.
+#   file <maxLines> <path>       a Kotlin file allowed to exceed 800 lines (main) / 1,000 lines (test)
+#   package <maxFiles> <dir>     a package directory allowed to exceed its file limit (25 Core, 30 module/extension)
+# An entry records the current size: it may only go down, and is removed as soon as the item is within the limit.
+# Adding an entry needs the owner's approval in the PR. The last column of each line says who removes it.
+# Lines as of 2026-11-28 (SHA 5880604).
+file 2828 server/src/main/kotlin/com/ideasdeveloper/bms/server/company/application/CompanyProvisioningService.kt   # A2.1
+file 1711 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/modules/ui/NativeModuleRenderer.kt   # APP-2
+file 1445 modules/mantenimiento/server/src/main/kotlin/com/ideasdeveloper/bms/modules/mantenimiento/MantenimientoRepository.kt   # module owner
+file 1426 modules/clientes/server/src/main/kotlin/com/ideasdeveloper/bms/modules/clientes/ClientesLinking.kt   # module owner (bundled)
+file 1400 server/src/main/kotlin/com/ideasdeveloper/bms/server/company/application/CompanySelfService.kt   # A2.2
+file 1383 server/src/main/kotlin/com/ideasdeveloper/bms/server/auth/infrastructure/database/LoginDatabases.kt   # A2.3
+file 1345 server/src/main/kotlin/com/ideasdeveloper/bms/server/modules/ModuleAccessService.kt   # A2.4
+file 1321 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmScreens.kt   # C1
+file 1287 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmServerModule.kt   # C1
+file 1155 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/company/ui/CompanyProvisioningScreen.kt   # APP-4
+file 1110 server/src/main/kotlin/com/ideasdeveloper/bms/server/company/api/CompanyRoutes.kt   # A2.8
+file 1102 server/src/main/kotlin/com/ideasdeveloper/bms/server/extensions/ExtensionService.kt   # A2.5
+file 1098 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmRepository.kt   # C1/C2
+file 1033 server/src/main/kotlin/com/ideasdeveloper/bms/server/app/Application.kt   # A2.7
+file 974 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmIntegrationMcpTools.kt   # C2
+file 951 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/company/data/CompanyApi.kt   # APP-3
+file 931 modules/hotspot/server/src/main/kotlin/com/ideasdeveloper/bms/modules/hotspot/HotspotPortal.kt   # module owner
+file 923 modules/tareas/server/src/main/kotlin/com/ideasdeveloper/bms/modules/tareas/TareasRepository.kt   # module owner
+file 919 modules/mantenimiento/server/src/main/kotlin/com/ideasdeveloper/bms/modules/mantenimiento/MantenimientoScreens.kt   # module owner
+file 905 extensions/inmobiliaria/server/src/main/kotlin/com/ideasdeveloper/bms/extensions/inmobiliaria/InmobiliariaStore.kt   # extension owner
+file 870 modules/membresia/server/src/main/kotlin/com/ideasdeveloper/bms/modules/membresia/MembresiaRepository.kt   # module owner
+file 864 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmMcpTools.kt   # C1
+file 843 server/src/main/kotlin/com/ideasdeveloper/bms/server/auth/application/AccountService.kt   # A2.6
+file 825 modules/compras/server/src/main/kotlin/com/ideasdeveloper/bms/modules/compras/ComprasRepository.kt   # module owner
+file 817 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm/CrmImport.kt   # C1
+file 813 modules/tareas/server/src/main/kotlin/com/ideasdeveloper/bms/modules/tareas/TareasScreens.kt   # module owner
+package 64 modules/crm/server/src/main/kotlin/com/ideasdeveloper/bms/modules/crm   # C1/C2
