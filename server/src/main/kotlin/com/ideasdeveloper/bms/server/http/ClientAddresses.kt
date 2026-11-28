@@ -1,11 +1,37 @@
 package com.ideasdeveloper.bms.server.http
 
+import io.ktor.server.application.ApplicationCall
+
 /**
- * Keys of the per-address limits. An IPv6 client usually controls a whole /64 (SLAAC, privacy
+ * The client of a request and the keys of the per-address limits.
+ *
+ * Ktor listens on the loopback behind the shipped Nginx, so the socket peer is always the proxy and
+ * the real client travels in X-Real-IP; that header is only believed from [LoopbackProxies].
+ *
+ * [group] builds the keys of the per-address limits. An IPv6 client usually controls a whole /64 (SLAAC, privacy
  * addresses), so counting each address alone lets it rotate past every limit: IPv6 addresses are
  * grouped by their /64; IPv4 addresses stay as they are. Anything unparsable is used as given.
  */
 object ClientAddresses {
+    /** The forms in which the local reverse proxy shows up as the socket peer (IPv4, IPv6, IPv6 expanded). */
+    val LoopbackProxies: Set<String> = setOf("127.0.0.1", "::1", "0:0:0:0:0:0:0:1")
+
+    /**
+     * The address of the client. X-Real-IP ([realIpHeader]) is only used when the request arrives from the local
+     * proxy; it is client-controlled text and the key of the limiters, so it is trimmed, capped to 64 characters
+     * and must consist of IP characters only; otherwise the socket address is used.
+     */
+    fun resolve(remoteAddress: String, realIpHeader: String?): String {
+        if (remoteAddress !in LoopbackProxies) return remoteAddress
+        return realIpHeader
+            ?.trim()
+            ?.take(64)
+            ?.takeIf { it.isNotEmpty() && it.all { char -> char.isLetterOrDigit() || char == '.' || char == ':' } }
+            ?: remoteAddress
+    }
+
+    fun of(call: ApplicationCall): String = resolve(call.request.local.remoteAddress, call.request.headers["X-Real-IP"])
+
     fun group(address: String): String {
         val value = address.trim().removePrefix("[").substringBefore(']').substringBefore('%')
         if (!value.contains(':')) return value

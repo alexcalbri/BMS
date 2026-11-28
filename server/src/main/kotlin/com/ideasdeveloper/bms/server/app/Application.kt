@@ -752,18 +752,8 @@ internal fun configuredPublicBase(): String? =
     System.getenv("BMS_PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
 
 // IP del cliente; detras del proxy local se toma X-Real-IP.
-internal fun clientAddress(call: ApplicationCall): String {
-    val remoteAddress = call.request.local.remoteAddress
-    // Solo se confia en X-Real-IP cuando la peticion llega del proxy local (IPv4 o IPv6).
-    val fromLocalProxy = remoteAddress == "127.0.0.1" || remoteAddress == "::1" || remoteAddress == "0:0:0:0:0:0:0:1"
-    if (!fromLocalProxy) return remoteAddress
-    // Tope de longitud y solo caracteres de una IP: la cabecera es del cliente y es clave del limitador.
-    return call.request.headers["X-Real-IP"]
-        ?.trim()
-        ?.take(64)
-        ?.takeIf { it.isNotEmpty() && it.all { char -> char.isLetterOrDigit() || char == '.' || char == ':' } }
-        ?: remoteAddress
-}
+internal fun clientAddress(call: ApplicationCall): String =
+    com.ideasdeveloper.bms.server.http.ClientAddresses.resolve(call.request.local.remoteAddress, call.request.headers["X-Real-IP"])
 
 // Valor en memoria con expiracion: evita recalcular (y repetir peticiones salientes) en cada llamada.
 // Un fallo tambien se guarda, con un TTL corto, para no reintentar la carga en cada peticion.
