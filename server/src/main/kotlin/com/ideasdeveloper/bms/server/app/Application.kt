@@ -99,61 +99,7 @@ fun main(args: Array<String>) {
 fun Application.module() {
     // Language of every request (Accept-Language, then the user's stored language) and the Core catalog.
     installI18n()
-    install(ContentNegotiation) {
-        json(kotlinx.serialization.json.Json { encodeDefaults = true; ignoreUnknownKeys = true })
-    }
-    // Every body is limited unless the route is an upload that limits itself (B10, UploadRoutes).
-    install(RequestBodyLimit) {
-        defaultBytes = environment.config.propertyOrNull("http.maxRequestBodyBytes")?.getString()?.trim()?.toLongOrNull()
-            ?.takeIf { it > 0 } ?: DefaultRequestBodyBytes
-    }
-    install(RateLimit) {
-        register(RateLimitName("login")) {
-            rateLimiter(
-                limit = 5,
-                refillPeriod = 60.seconds,
-            )
-
-            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
-        }
-        register(RateLimitName("admin")) {
-            rateLimiter(
-                limit = 60,
-                refillPeriod = 60.seconds,
-            )
-
-            // Siempre por IP: una clave derivada de la cabecera Authorization se evade rotando el
-            // token (basta con enviar uno distinto en cada peticion) y haria crecer el mapa sin tope.
-            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
-        }
-        // Lecturas del Core (/version, /modules, /notifications): por IP, holgado para el uso normal
-        // de la app pero evita inundaciones que abririan una conexion a la base de datos cada una.
-        register(RateLimitName("public")) {
-            rateLimiter(
-                limit = 300,
-                refillPeriod = 60.seconds,
-            )
-            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
-        }
-        // Reads of the activity logs (/companies/me/activity*, /server/activity*): each one reads one or
-        // every company database, so per client IP and tighter than the other admin routes.
-        register(RateLimitName(com.ideasdeveloper.bms.server.activity.ActivityRateLimit)) {
-            rateLimiter(
-                limit = 30,
-                refillPeriod = 60.seconds,
-            )
-            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
-        }
-        // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
-        // enough for webhook bursts, but it stops floods that would open a database connection each.
-        register(RateLimitName("extensions")) {
-            rateLimiter(
-                limit = 300,
-                refillPeriod = 60.seconds,
-            )
-            requestKey { call -> ClientAddresses.group(ClientAddresses.of(call)) }
-        }
-    }
+    installHttpPlugins()
     DatabaseFactory.init(environment.config)
     // Read the package signing keys now: a rejected keys folder is logged as an error at startup, not at the first install.
     log.info("Package signing keys configured: {}", com.ideasdeveloper.bms.server.extensions.packages.BMSPublicKeys.installed)
