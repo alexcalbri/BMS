@@ -26,22 +26,36 @@ readonly BMS_BACKUP_SERVER_ENV=/etc/bms/server.env
 readonly BMS_BACKUP_LOG=/var/log/bms-backup.log
 
 # Databases to dump: the control database and every database named bms_* (company databases, even unregistered).
+# -q: rows only (a command tag such as "SET" would otherwise be taken for a database name); each name is checked again
+# before it reaches pg_dump.
 bms_backup_databases() {
-    local control_db=$1
-    runuser -u postgres -- psql -X -At -d postgres -v control="$control_db" <<'SQL'
+    local control_db=$1 names name
+    names=$(runuser -u postgres -- psql -X -q -A -t -v ON_ERROR_STOP=1 -d postgres -v control="$control_db" <<'SQL'
 SELECT datname FROM pg_catalog.pg_database
 WHERE NOT datistemplate AND (datname = :'control' OR datname ~ '^bms_[a-z0-9_]{1,59}$')
 ORDER BY datname = :'control' DESC, datname;
 SQL
+) || return 1
+    while IFS= read -r name; do
+        [[ -n $name ]] || continue
+        if [[ $name != "$control_db" ]] && ! bms_ascii_match "$name" '^bms_[a-z0-9_]{1,59}$'; then
+            printf 'ERROR: nombre de base inesperado en la lista de bases: %q\n' "$name" >&2
+            return 1
+        fi
+        printf '%s\n' "$name"
+    done <<< "$names"
 }
 
 # Bytes the databases take now (an upper bound of their dumps).
 bms_backup_size() {
-    local control_db=$1
-    runuser -u postgres -- psql -X -At -d postgres -v control="$control_db" <<'SQL'
+    local control_db=$1 bytes
+    bytes=$(runuser -u postgres -- psql -X -q -A -t -v ON_ERROR_STOP=1 -d postgres -v control="$control_db" <<'SQL'
 SELECT COALESCE(sum(pg_catalog.pg_database_size(oid)), 0) FROM pg_catalog.pg_database
 WHERE NOT datistemplate AND (datname = :'control' OR datname ~ '^bms_[a-z0-9_]{1,59}$');
 SQL
+) || return 1
+    bms_ascii_match "$bytes" '^[0-9]+$' || { printf 'ERROR: el tamano de las bases no es un numero: %q\n' "$bytes" >&2; return 1; }
+    printf '%s\n' "$bytes"
 }
 
 # True when the file system of [dir] keeps at least 2 GiB free after writing [bytes] (a full disk would stop
@@ -55,15 +69,17 @@ bms_backup_space_ok() {
 
 # Dumps every BMS database (custom format) and the roles into [dir] (created root-only). Fails on the first error.
 bms_dump_databases() {
-    local dir=$1 control_db=$2 database
+    local dir=$1 control_db=$2 database databases
     install -d -m 700 -o root -g root "$dir" || return 1
+    databases=$(bms_backup_databases "$control_db") || return 1
+    [[ -n $databases ]] || { printf 'ERROR: no hay ninguna base que copiar.\n' >&2; return 1; }
     (
         umask 077
         runuser -u postgres -- pg_dumpall --roles-only > "$dir/roles.sql" || exit 1
         while IFS= read -r database; do
             [[ -n $database ]] || continue
             runuser -u postgres -- pg_dump -Fc -d "$database" > "$dir/$database.dump" || exit 1
-        done < <(bms_backup_databases "$control_db")
+        done <<< "$databases"
         sha256sum -- "$dir"/*.dump "$dir/roles.sql" > "$dir/SHA256SUMS" || exit 1
     )
 }

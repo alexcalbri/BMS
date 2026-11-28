@@ -26,6 +26,8 @@ unset LANGUAGE
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'AVISO: %s\n' "$*" >&2; }
+# The tests inject failures into the role move with BMS_TEST_FAIL_AT (db-roles.sh); a real run never does.
+[[ -z ${BMS_TEST_FAIL_AT:-} ]] || die 'BMS_TEST_FAIL_AT es solo para las pruebas.'
 
 # BEGIN validators (pure functions: preflight.sh runs them through --self-test, scripts/ubuntu/tests/locale_test.sh under
 # several locales). Every exact ASCII check goes through bms_ascii_match, so it does not depend on the locale at all.
@@ -118,9 +120,13 @@ git_source() {
 NON_INTERACTIVE=false
 ARG_COMMIT=''
 ARG_TARGET=''
+ARG_REF=''
 HARDEN_HOST=false
+REHEARSE=false
 while (( $# > 0 )); do
     case "$1" in
+        --rehearse) REHEARSE=true; shift ;;
+        --ref) [[ $# -ge 2 ]] || die '--ref requiere un valor.'; ARG_REF=$2; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         --commit) [[ $# -ge 2 ]] || die '--commit requiere un valor.'; ARG_COMMIT=$2; shift 2 ;;
         --target) [[ $# -ge 2 ]] || die '--target requiere un valor.'; ARG_TARGET=$2; shift 2 ;;
@@ -130,7 +136,19 @@ while (( $# > 0 )); do
 done
 # Se reconstruyen para el re-exec bajo flock.
 SCRIPT_ARGS=()
-if [[ $NON_INTERACTIVE == true ]]; then
+if [[ $REHEARSE == true ]]; then
+    # The rehearsal of the PostgreSQL work (rehearse.sh): nothing is built, stopped or changed.
+    [[ $NON_INTERACTIVE == false && $HARDEN_HOST == false && -z $ARG_COMMIT && -z $ARG_TARGET ]] ||
+        die '--rehearse no se combina con --non-interactive, --commit, --target ni --harden-host.'
+    if [[ -n $ARG_REF ]]; then
+        valid_git_ref "$ARG_REF" || die 'Referencia Git invalida.'
+        SCRIPT_ARGS=(--rehearse --ref "$ARG_REF")
+    else
+        [[ -r /dev/tty ]] || die 'Se necesita una terminal interactiva o --ref <rama, etiqueta o commit>.'
+        SCRIPT_ARGS=(--rehearse)
+    fi
+elif [[ $NON_INTERACTIVE == true ]]; then
+    [[ -z $ARG_REF ]] || die '--ref solo se usa con --rehearse.'
     valid_sha "$ARG_COMMIT" || die '--commit debe ser un sha completo de 40 caracteres hexadecimales.'
     case "$ARG_TARGET" in
         server|webapp|ambos) ;;
@@ -139,6 +157,7 @@ if [[ $NON_INTERACTIVE == true ]]; then
     [[ $HARDEN_HOST == false ]] || die '--harden-host solo se usa en modo interactivo.'
     SCRIPT_ARGS=(--non-interactive --commit "$ARG_COMMIT" --target "$ARG_TARGET")
 else
+    [[ -z $ARG_REF ]] || die '--ref solo se usa con --rehearse.'
     [[ -z $ARG_COMMIT && -z $ARG_TARGET ]] || die '--commit y --target solo se usan con --non-interactive.'
     [[ -r /dev/tty ]] || die 'Se necesita una terminal interactiva; usa ssh -t.'
     [[ $HARDEN_HOST == false ]] || SCRIPT_ARGS=(--harden-host)
@@ -255,6 +274,9 @@ BUILD_DIR=$BUILD_TREE
 CI_WEB_DIR=''
 WEB_DIST_ROOT_OWNED=false
 PROVISIONER=''
+# The server owner roles (validated, one per line) as step 0 read them, before anything changed: the role move and the
+# rollback use this list and never read it again.
+LAYOUT_OWNER_ROLES=''
 readonly DEPLOYED_FILE=$ROOT_STATE_DIR/deployed-commit
 readonly ALLOWED_SIGNERS=/usr/local/lib/bms/allowed_signers
 
@@ -422,13 +444,7 @@ plan_update_config() {
     [[ -n $db_url ]] || die 'DB_URL no existe en /etc/bms/server.env. No se cambio nada.'
     tenant_prefix_of "$db_url" >/dev/null || die 'No se pudo inferir TENANT_JDBC_URL_PREFIX desde DB_URL. No se cambio nada.'
     db_host_port "$db_url" >/dev/null || die 'No se pudo leer servidor y puerto de DB_URL. No se cambio nada.'
-    if config_has_key DB_PROVISIONING_USER; then
-        PLANNED_PROVISIONER=$(config_value DB_PROVISIONING_USER)
-    else
-        [[ $(pg_super_count "SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = '$DEFAULT_PROVISIONER'") == 0 ]] ||
-            die "Ya existe un rol PostgreSQL $DEFAULT_PROVISIONER que no figura en server.env. Si es de BMS, agrega DB_PROVISIONING_USER=$DEFAULT_PROVISIONER y DB_PROVISIONING_PASSWORD (la de ese rol) a server.env; si no, renombralo. No se cambio nada."
-        PLANNED_PROVISIONER=$DEFAULT_PROVISIONER
-    fi
+    resolve_provisioner_role
     valid_role_name "$PLANNED_PROVISIONER" || die 'DB_PROVISIONING_USER invalido en server.env. No se cambio nada.'
     [[ $PLANNED_PROVISIONER != "$DB_USER" ]] || die 'DB_PROVISIONING_USER debe ser distinto de DB_USER. No se cambio nada.'
     if config_has_key DB_PROVISIONING_PASSWORD; then
@@ -549,35 +565,21 @@ configure_service_hardening() {
         warn "systemd-analyze verify da avisos para $SERVICE_NAME; revisa: systemd-analyze verify /etc/systemd/system/$SERVICE_NAME"
 }
 
-# psql as the PostgreSQL superuser; SQL on stdin (db-roles.sh calls it).
-bms_pg_super() {
+# The transport db-roles.sh needs (its one rule about psql output is in the header of db-roles.sh): psql as the
+# PostgreSQL superuser connected to [database], SQL on stdin. It adds nothing about output; bms_pg_query and
+# bms_pg_exec add -q, -X and ON_ERROR_STOP in one place.
+bms_pg_transport() {
     local database=$1
     shift
-    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d "$database" "$@"
+    runuser -u postgres -- psql -d "$database" "$@"
 }
 
-# psql as the provisioning login over TCP with the root-only passfile (db-roles.sh verifies access with it).
+# The same as the provisioning login over TCP with the root-only passfile (db-roles.sh verifies access with it).
 bms_pg_as_provisioner() {
     local database=$1
     shift
-    PGPASSFILE=$PROVISIONER_PASSFILE PGCONNECT_TIMEOUT=15 psql -X -w -v ON_ERROR_STOP=1 \
+    PGPASSFILE=$PROVISIONER_PASSFILE PGCONNECT_TIMEOUT=15 psql -w \
         -h "$MIGRATION_HOST" -p "$MIGRATION_PORT" -U "$PROVISIONER" -d "$database" "$@"
-}
-
-pg_super_count() {
-    runuser -u postgres -- psql -X -At -d postgres -c "$1"
-}
-
-# The read-only half of bms_migrate_role_layout (db-roles.sh), before the build: a server owner role exists and every
-# database registered in companies passes the rules, or the update stops here with nothing changed.
-precheck_role_layout() {
-    local owners classified rejected
-    owners=$(bms_server_owner_roles "$CONTROL_DB") || die 'No se pudieron leer los roles de server owner. No se cambio nada.'
-    [[ -n $owners ]] || die "No hay ningun rol de server owner en $CONTROL_DB. No se cambio nada."
-    classified=$(bms_classify_tenant_databases "$CONTROL_DB") || die 'No se pudo revisar las bases de las empresas. No se cambio nada.'
-    rejected=$(awk '$1 == "reject" { $1 = ""; sub(/^ /, ""); print " - " $0 }' <<< "$classified")
-    [[ -z $rejected ]] || die "Estas bases registradas en companies existen pero no cumplen las reglas (corrige su nombre o su dueno, o quita la fila de companies). No se cambio nada:
-$rejected"
 }
 
 # Free space for the pg_dump copy of every database before migrating (BMS_UPDATE_SKIP_DB_DUMP=true skips the copy).
@@ -601,6 +603,7 @@ ensure_provisioner_role() {
         die 'DB_PROVISIONING_PASSWORD debe tener al menos 16 caracteres ASCII imprimibles, sin ":" ni "\".'
     printf '%s' "$password" | bms_role_set_password "$PROVISIONER" "$BMS_PROVISIONER_ATTRIBUTES" ||
         die "No se pudo crear o actualizar el rol $PROVISIONER."
+    [[ $PROVISIONER_ADOPTED != true ]] || printf 'Rol %s adoptado: contrasena nueva, escrita en server.env.\n' "$PROVISIONER"
     host_port=$(db_host_port "$(config_value DB_URL)") || die 'No se pudo leer servidor y puerto de DB_URL.'
     read -r MIGRATION_HOST MIGRATION_PORT <<< "$host_port"
     PROVISIONER_PASSFILE=$(mktemp -p "$ROOT_STATE_DIR" pgpass.XXXXXX)
@@ -612,13 +615,6 @@ ensure_provisioner_role() {
     # shellcheck disable=SC2034
     MIGRATION_PASSFILE=$PROVISIONER_PASSFILE
     unset password
-}
-
-# A1: the runtime role stops being a member of the server owner's role (db-roles.sh, idempotent).
-migrate_role_layout() {
-    LAYOUT_CHANGED=true
-    printf 'Organizacion de roles de PostgreSQL (runtime %s, aprovisionamiento %s)...\n' "$DB_USER" "$PROVISIONER"
-    bms_migrate_role_layout "$CONTROL_DB" "$DB_USER" "$PROVISIONER" || die 'No se pudo pasar a la nueva organizacion de roles de PostgreSQL.'
 }
 
 # The files of the release this update applies one by one, and migrations.sh: checked before anything changes, again
@@ -657,17 +653,87 @@ require_release_files() {
 
 }
 
-apply_control_migrations() {
-    local migration
-    require_release_files
-    # Rutas relativas de aqui en adelante: SQL y migrations.sh se leen del directorio confiable.
-    cd "$TRUSTED_DIR"
+# BEGIN role-layout (scripts/ubuntu/tests extract this block: keep it self-contained)
 
-    # shellcheck source=migrations.sh
-    source scripts/ubuntu/migrations.sh
-    # Control database (it belongs to the PostgreSQL superuser): every control migration of the tree, in order, so
-    # the migrations other packages add (V016 and later) need no new line here.
-    MIGRATION_ROLE=''
+# Step 0, the read-only half of bms_migrate_role_layout (db-roles.sh), before the build: a server owner role exists and
+# every database registered in companies passes the rules, or the update stops here with nothing changed. The owner
+# roles are validated and kept in LAYOUT_OWNER_ROLES for the move and for the rollback.
+precheck_role_layout() {
+    local owners classified rejected
+    owners=$(bms_server_owner_roles "$CONTROL_DB") || die 'No se pudieron leer los roles de server owner (o alguno no es un nombre valido). No se cambio nada.'
+    [[ -n $owners ]] || die "No hay ningun rol de server owner en $CONTROL_DB. No se cambio nada."
+    LAYOUT_OWNER_ROLES=$owners
+    classified=$(bms_classify_tenant_databases "$CONTROL_DB") || die 'No se pudo revisar las bases de las empresas. No se cambio nada.'
+    rejected=$(awk '$1 == "reject" { $1 = ""; sub(/^ /, ""); print " - " $0 }' <<< "$classified")
+    [[ -z $rejected ]] || die "Estas bases registradas en companies existen pero no cumplen las reglas (corrige su nombre o su dueno, o quita la fila de companies). No se cambio nada:
+$rejected"
+    report_layout_state "$(awk '$1 == "ok" { print $2, $3 }' <<< "$classified")"
+}
+
+# A1: the runtime role stops being a member of the server owner's role (db-roles.sh, idempotent). The server owner
+# roles are the ones step 0 validated and recorded (LAYOUT_OWNER_ROLES): they are read once more only to make sure the
+# list did not change while the build ran, and nothing is changed if it did.
+migrate_role_layout() {
+    local owners_now
+    owners_now=$(bms_server_owner_roles "$CONTROL_DB") || die 'No se pudieron leer los roles de server owner antes de cambiar los roles.'
+    [[ $owners_now == "$LAYOUT_OWNER_ROLES" ]] ||
+        die 'La lista de roles de server owner cambio desde la comprobacion previa (alguien creo o quito un server owner durante la actualizacion). No se cambio ningun rol: vuelve a ejecutar update.sh.'
+    LAYOUT_CHANGED=true
+    printf 'Organizacion de roles de PostgreSQL (runtime %s, aprovisionamiento %s)...\n' "$DB_USER" "$PROVISIONER"
+    bms_migrate_role_layout "$CONTROL_DB" "$DB_USER" "$PROVISIONER" "$LAYOUT_OWNER_ROLES" || die 'No se pudo pasar a la nueva organizacion de roles de PostgreSQL.'
+}
+
+# What a previous attempt may have left: how far each company database is from the new layout, and whether the
+# provisioning role carries the marks of an attempt. Informs (never stops): the move is idempotent from any such state.
+report_layout_state() {
+    local tenants=$1 layout database owner pending done_count attempted seen=0 mixed=0 prov
+    prov=$(config_value DB_PROVISIONING_USER)
+    prov=${prov:-$DEFAULT_PROVISIONER}
+    layout=$(bms_layout_status "$DB_USER" "$prov" "$tenants" 2>/dev/null) || { warn 'no se pudo leer el estado de la organizacion de roles de las empresas.'; return 0; }
+    while read -r database owner pending done_count attempted; do
+        [[ -n $database ]] || continue
+        (( attempted == 0 )) || seen=$((seen + 1))
+        if (( pending > 0 && done_count > 0 )); then
+            mixed=$((mixed + 1))
+            printf 'Empresa %s: a medio mover (%s objetos siguen de postgres o del runtime, %s relaciones ya son de %s).\n' "$database" "$pending" "$done_count" "$owner"
+        fi
+    done <<< "$layout"
+    if (( seen > 0 || mixed > 0 )); then
+        warn "hay huellas de un intento anterior ($seen base(s) con CONNECT de $prov, $mixed a medio mover): la actualizacion es idempotente y continua donde quedo."
+    fi
+}
+
+# The provisioning login (DB_PROVISIONING_USER, or bms_provisioner by default) for plan_update_config. Without the key in
+# server.env, a role of that name that already exists is either what a failed attempt left (server.env was restored,
+# the role stayed): it is ADOPTED, with a new password; or something else: the update stops before changing anything.
+PLANNED_PROVISIONER=''
+PROVISIONER_ADOPTED=false
+resolve_provisioner_role() {
+    local assessment
+    PROVISIONER_ADOPTED=false
+    if config_has_key DB_PROVISIONING_USER; then
+        PLANNED_PROVISIONER=$(config_value DB_PROVISIONING_USER)
+        return 0
+    fi
+    PLANNED_PROVISIONER=$DEFAULT_PROVISIONER
+    assessment=$(bms_provisioner_assess "$DB_USER" "$DEFAULT_PROVISIONER" "$LAYOUT_OWNER_ROLES") ||
+        die "No se pudo revisar el rol $DEFAULT_PROVISIONER. No se cambio nada."
+    case $assessment in
+        absent) ;;
+        adoptable*)
+            PROVISIONER_ADOPTED=true
+            printf 'El rol %s ya existe y no figura en server.env: es lo que dejo un intento anterior (sin objetos ni privilegios inesperados). Se adopta con una contrasena nueva.\n' "$DEFAULT_PROVISIONER" ;;
+        *)
+            die "Ya existe un rol PostgreSQL $DEFAULT_PROVISIONER que no figura en server.env y no es lo que deja un intento anterior: ${assessment#unexpected: }. Si es de BMS, agrega DB_PROVISIONING_USER=$DEFAULT_PROVISIONER y DB_PROVISIONING_PASSWORD (la de ese rol) a server.env; si no, renombralo o quitale eso. No se cambio nada." ;;
+    esac
+}
+
+# Everything update.sh applies to the control database (it belongs to the PostgreSQL superuser): every control migration
+# of the tree, in order (the migrations other packages add, V016 and later, need no new line here), the grants. Run
+# with MIGRATION_ROLE empty from TRUSTED_DIR. The rehearsal runs this same function with apply_migration and
+# migration_psql replaced by ones that print the SQL.
+control_migration_steps() {
+    local migration
     while IFS= read -r migration; do
         apply_migration "$CONTROL_DB" control "$migration"
     done < <(sorted_migrations database/control/migrations)
@@ -713,35 +779,35 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_two_factor, application
 REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON application_user_2fa_email_recovery FROM :"db_user";
 GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user";
 SQL
+}
+
+apply_control_migrations() {
+    require_release_files
+    # Rutas relativas de aqui en adelante: SQL y migrations.sh se leen del directorio confiable.
+    cd "$TRUSTED_DIR"
+    MIGRATION_ROLE=''
+    control_migration_steps
     cd /
 }
 
-# A2: company migrations run as the database owner's role through the provisioning login (migrations.sh), never as
-# the superuser, and only on databases bms_tenant_databases accepts (name bms_<code>, owned by a server owner role).
-apply_tenant_migrations() {
-    local tenants tenant_db owner migration
-    cd "$TRUSTED_DIR"
-    # shellcheck source=migrations.sh
-    source scripts/ubuntu/migrations.sh
-    tenants=$(bms_tenant_databases "$CONTROL_DB") || die 'No se pudo leer la lista de empresas (companies); no se migro ninguna base.'
-    while read -r tenant_db owner; do
-        [[ -n $tenant_db ]] || continue
-        MIGRATION_ROLE=$owner
-        apply_migration "$tenant_db" clientes modules/clientes/migrations/V002__require_customer_contact_fields.sql
-        apply_migration "$tenant_db" clientes modules/clientes/migrations/V003__add_customer_type.sql
-        apply_migration "$tenant_db" clientes modules/clientes/migrations/V004__add_customer_code.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V004__create_application_permissions.sql
-        apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
-        apply_migration "$tenant_db" core database/core/migrations/V003__add_application_user_profile.sql
-        apply_migration "$tenant_db" core database/core/migrations/V005__create_notifications.sql
-        apply_migration "$tenant_db" core database/core/migrations/V006__add_application_user_language.sql
-        # Tenant V006 and later, every one of the tree in order (they are idempotent; the server's startup catch-up records
-        # them under the same module and version, so neither side applies one twice). V001-V005 are not idempotent and
-        # stay as above: an old company may lack their history rows.
-        while IFS= read -r migration; do
-            apply_migration "$tenant_db" tenant "$migration"
-        done < <(sorted_migrations database/tenant/migrations 6)
-        migration_psql "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$DB_USER" <<'SQL'
+# Everything update.sh applies to the company database [tenant_db] (MIGRATION_ROLE is its owner's role).
+tenant_migration_steps() {
+    local tenant_db=$1 migration
+    apply_migration "$tenant_db" clientes modules/clientes/migrations/V002__require_customer_contact_fields.sql
+    apply_migration "$tenant_db" clientes modules/clientes/migrations/V003__add_customer_type.sql
+    apply_migration "$tenant_db" clientes modules/clientes/migrations/V004__add_customer_code.sql
+    apply_migration "$tenant_db" tenant database/tenant/migrations/V004__create_application_permissions.sql
+    apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
+    apply_migration "$tenant_db" core database/core/migrations/V003__add_application_user_profile.sql
+    apply_migration "$tenant_db" core database/core/migrations/V005__create_notifications.sql
+    apply_migration "$tenant_db" core database/core/migrations/V006__add_application_user_language.sql
+    # Tenant V006 and later, every one of the tree in order (they are idempotent; the server's startup catch-up records
+    # them under the same module and version, so neither side applies one twice). V001-V005 are not idempotent and
+    # stay as above: an old company may lack their history rows.
+    while IFS= read -r migration; do
+        apply_migration "$tenant_db" tenant "$migration"
+    done < <(sorted_migrations database/tenant/migrations 6)
+    migration_psql "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$DB_USER" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
@@ -766,11 +832,81 @@ GRANT SELECT, INSERT, UPDATE ON application_user_2fa_email_recovery TO :"db_user
 GRANT SELECT, INSERT ON activity_log, activity_log_chain TO :"db_user";
 GRANT USAGE ON SEQUENCE activity_log_id_seq TO :"db_user";
 SQL
+}
+
+# A2: company migrations run as the database owner's role through the provisioning login (migrations.sh), never as
+# the superuser, and only on databases bms_tenant_databases accepts (name bms_<code>, owned by a server owner role).
+apply_tenant_migrations() {
+    local tenants tenant_db owner
+    cd "$TRUSTED_DIR"
+    tenants=$(bms_tenant_databases "$CONTROL_DB") || die 'No se pudo leer la lista de empresas (companies); no se migro ninguna base.'
+    while read -r tenant_db owner; do
+        [[ -n $tenant_db ]] || continue
+        MIGRATION_ROLE=$owner
+        tenant_migration_steps "$tenant_db"
     done <<< "$tenants"
     # shellcheck disable=SC2034
     MIGRATION_ROLE=''
     cd /
 }
+
+# The rehearsal's hook (rehearse.sh): the psql script of everything the two functions above would run for [kind]
+# (control or tenant) in [database], printed instead of executed, by the same functions with apply_migration and
+# migration_psql replaced inside a subshell. The grant blocks come out of their own heredocs.
+bms_rehearse_steps_sql() {
+    local kind=$1 database=$2
+    (
+        cd "$TRUSTED_DIR" || exit 1
+        # shellcheck disable=SC2329 # called by the steps functions
+        apply_migration() {
+            local script
+            script=$(bms_migration_script "$2" "$3") || exit 1
+            printf '%s\n' "$script"
+        }
+        # shellcheck disable=SC2329 # called by the steps functions
+        migration_psql() {
+            local name value
+            shift
+            while (( $# > 0 )); do
+                if [[ $1 == -v && $# -ge 2 ]]; then
+                    name=${2%%=*}
+                    value=${2#*=}
+                    shift 2
+                    [[ $name == ON_ERROR_STOP ]] || bms_psql_set "$name" "$value" || exit 1
+                else
+                    printf 'ERROR: argumento de psql no admitido en el ensayo: %q\n' "$1" >&2
+                    exit 1
+                fi
+            done
+            cat
+        }
+        if [[ $kind == control ]]; then control_migration_steps; else tenant_migration_steps "$database"; fi
+    )
+}
+
+# The rollback's server state, from what was recorded BEFORE anything changed (BACKUP_DIR, LAYOUT_OWNER_ROLES): server.env
+# comes back from its copy, and the runtime role is a member of the server owner roles again. No query decides anything.
+# Returns 1 when something could not be restored (it still tries everything).
+# shellcheck disable=SC2329 # called from the EXIT trap
+rollback_config_and_roles() {
+    local code=0 owner_list=()
+    if [[ -n $BACKUP_DIR && -f $BACKUP_DIR/server.env ]]; then
+        install -m 600 -o root -g root "$BACKUP_DIR/server.env" "$CONFIG_FILE" || { printf 'ERROR: no se pudo restaurar %s desde %s/server.env.\n' "$CONFIG_FILE" "$BACKUP_DIR" >&2; code=1; }
+    fi
+    if [[ $LAYOUT_CHANGED == true ]]; then
+        read -r -a owner_list <<< "${LAYOUT_OWNER_ROLES//$'\n'/ }"
+        # The previous release creates companies by SET ROLE from the runtime role: it needs the membership back.
+        if bms_restore_runtime_membership "$DB_USER" ${owner_list[@]+"${owner_list[@]}"}; then
+            printf 'El rol %s vuelve a ser miembro del rol del server owner (como en la version anterior).\n' "$DB_USER" >&2
+        else
+            printf 'ERROR: no se pudo devolver al rol %s su pertenencia al rol del server owner.\n' "$DB_USER" >&2
+            code=1
+        fi
+    fi
+    return "$code"
+}
+
+# END role-layout
 
 # Instalaciones anteriores dejaban /opt/bms como home de bms: ese usuario podia plantar enlaces
 # simbolicos donde root escribe. Se deja el directorio en manos de root y bms pasa a /opt/bms/home.
@@ -1170,9 +1306,8 @@ rollback_after_failure() {
         mv -T -- "$WEB_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR"
         rm -rf --one-file-system -- "$WEB_RUNTIME_DIR.failed"
     fi
-    if [[ -n $BACKUP_DIR && -f $BACKUP_DIR/server.env ]]; then
-        install -m 600 -o root -g root "$BACKUP_DIR/server.env" "$CONFIG_FILE"
-    fi
+    # server.env and the runtime role's membership, from what was recorded before anything changed.
+    rollback_config_and_roles
     if [[ -n $DROPIN_BACKUP ]]; then
         rm -rf --one-file-system -- "/etc/systemd/system/$SERVICE_NAME.d"
         if [[ -d $DROPIN_BACKUP/dropins ]]; then
@@ -1181,14 +1316,6 @@ rollback_after_failure() {
         restore_helpers "$DROPIN_BACKUP"
     fi
     systemctl daemon-reload
-    if [[ $LAYOUT_CHANGED == true ]]; then
-        # The previous release creates companies by SET ROLE from the runtime role: it needs the membership back.
-        if bms_restore_runtime_membership "$CONTROL_DB" "$DB_USER"; then
-            printf 'El rol %s vuelve a ser miembro del rol del server owner (como en la version anterior).\n' "$DB_USER" >&2
-        else
-            printf 'ERROR: no se pudo devolver al rol %s su pertenencia al rol del server owner.\n' "$DB_USER" >&2
-        fi
-    fi
     if [[ -n $PREVIOUS_SOURCE_COMMIT ]]; then
         git_source checkout --quiet --detach "$PREVIOUS_SOURCE_COMMIT" >/dev/null 2>&1 ||
             printf 'AVISO: %s no se pudo dejar en %s.\n' "$SOURCE_DIR" "$PREVIOUS_SOURCE_COMMIT" >&2
@@ -1218,6 +1345,114 @@ on_update_exit() {
 
 trap 'printf "Actualizacion interrumpida (linea %s).\n" "$LINENO" >&2' ERR
 trap on_update_exit EXIT
+
+# Modo manual: root sincroniza su espejo con GIT_REF; BUILD_SHA es el commit y TRUSTED_DIR el espejo.
+sync_root_mirror() {
+    # Root sincroniza su espejo con la referencia elegida y todo sale de ahi.
+    MIRROR_LIB_FILE=''
+    if is_root_private_file "$SCRIPT_DIR/mirror.sh"; then
+        MIRROR_LIB_FILE=$(realpath -e -- "$SCRIPT_DIR/mirror.sh")
+    elif is_root_private_file /usr/local/lib/bms/mirror.sh; then
+        MIRROR_LIB_FILE=$(realpath -e -- /usr/local/lib/bms/mirror.sh)
+    fi
+    [[ -n $MIRROR_LIB_FILE ]] || die 'No se encontro mirror.sh en un lugar seguro. Descarga update.sh y mirror.sh desde https://raw.githubusercontent.com/alexcalbri/BMS/master/scripts/ubuntu/ a un directorio de root (por ejemplo /root/bms-update) y ejecuta sudo bash /root/bms-update/update.sh.'
+    # shellcheck source=mirror.sh
+    source "$MIRROR_LIB_FILE"
+    printf 'Sincronizando el espejo de root con %s...\n' "$GIT_REF"
+    BUILD_SHA=$(sync_mirror "$GIT_REF") || die "No se pudo traer $GIT_REF desde GitHub al espejo $MIRROR_DIR."
+    valid_sha "$BUILD_SHA" || die 'No se pudo leer el commit del espejo.'
+    # Firma del commit (SIGNING.md), cuando el mirror.sh instalado sabe verificarla. Con una llave instalada, un
+    # mirror.sh que no sabe verificar no sirve.
+    if [[ -e $ALLOWED_SIGNERS || -L $ALLOWED_SIGNERS ]] && ! declare -F verify_mirror_signature >/dev/null; then
+        die "Hay una llave de firma en $ALLOWED_SIGNERS pero $MIRROR_LIB_FILE no sabe verificar firmas: descarga el mirror.sh actual junto a update.sh."
+    fi
+    if declare -F verify_mirror_signature >/dev/null; then
+        MANUAL_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$MIRROR_DIR/server/build.gradle.kts" | head -n 1)
+        SIGNATURE_STATUS=$(verify_mirror_signature "$BUILD_SHA" "$MANUAL_VERSION") ||
+            die "El commit $BUILD_SHA no tiene una firma valida de la llave instalada; no se actualiza."
+        printf 'Firma del commit: %s\n' "$SIGNATURE_STATUS"
+    fi
+    TRUSTED_DIR=$MIRROR_DIR
+    readonly TRUSTED_DIR
+    [[ -f $TRUSTED_DIR/scripts/ubuntu/migrations.sh && -f $TRUSTED_DIR/scripts/ubuntu/core-update.sh ]] ||
+        die 'El espejo no contiene los scripts de BMS.'
+}
+
+# Libraries of this release (A1, A5, A6, A4, the rehearsal): from the root-owned tree, like migrations.sh.
+load_libraries() {
+    local library
+    for library in db-roles.sh rehearse.sh migrations.sh nginx-site.sh units.sh dist.sh backup.sh harden-host.sh; do
+        [[ -f $TRUSTED_DIR/scripts/ubuntu/$library ]] ||
+            die "El arbol $TRUSTED_DIR no tiene scripts/ubuntu/$library: esa referencia es anterior a este update.sh. Usa el update.sh de la misma referencia."
+    done
+    # shellcheck source=db-roles.sh
+    source "$TRUSTED_DIR/scripts/ubuntu/db-roles.sh"
+    # shellcheck source=rehearse.sh
+    source "$TRUSTED_DIR/scripts/ubuntu/rehearse.sh"
+    # shellcheck source=migrations.sh
+    source "$TRUSTED_DIR/scripts/ubuntu/migrations.sh"
+    # shellcheck source=nginx-site.sh
+    source "$TRUSTED_DIR/scripts/ubuntu/nginx-site.sh"
+    # shellcheck source=units.sh
+    source "$TRUSTED_DIR/scripts/ubuntu/units.sh"
+    # shellcheck source=dist.sh
+    source "$TRUSTED_DIR/scripts/ubuntu/dist.sh"
+    # shellcheck source=backup.sh
+    source "$TRUSTED_DIR/scripts/ubuntu/backup.sh"
+}
+
+load_db_settings() {
+    DB_USER=$(config_value DB_USER)
+    DB_URL_VALUE=$(config_value DB_URL)
+    CONTROL_DB=${DB_URL_VALUE##*/}
+    CONTROL_DB=${CONTROL_DB%%\?*}
+    [[ -n $DB_USER ]] || die 'DB_USER no existe en /etc/bms/server.env.'
+    bms_valid_role "$DB_USER" || die 'DB_USER invalido en server.env.'
+    valid_database_name "$CONTROL_DB" || die 'No se pudo inferir la base central desde DB_URL.'
+}
+
+# update.sh --rehearse [--ref <rama, etiqueta o commit>]: the PostgreSQL work of the update, rehearsed on the real cluster
+# in transactions that are rolled back (rehearse.sh). Builds nothing, stops nothing, changes nothing in PostgreSQL;
+# the only thing it writes is the root mirror of the repository (the same one an update refreshes), to read the
+# release's migrations from it. Prints PASS, WARN, INFO and FAIL lines (preflight.sh runs it); exits 1 on any FAIL.
+rehearse_main() {
+    local tool missing=() status=0 ref_default
+    for tool in awk sed find sort mktemp realpath runuser git sha256sum python3 psql paste cmp diff flock; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    (( ${#missing[@]} == 0 )) || die "Faltan herramientas: ${missing[*]}. No se cambio nada."
+    [[ -r $CONFIG_FILE ]] || die "No se encontro $CONFIG_FILE."
+    if [[ -n $ARG_REF ]]; then
+        GIT_REF=$ARG_REF
+    else
+        ref_default=$(config_value CORE_UPDATE_REF)
+        ask GIT_REF 'Rama, etiqueta o commit contra el que ensayar' "${ref_default:-master}"
+        valid_git_ref "$GIT_REF" || die 'Referencia Git invalida.'
+    fi
+    printf 'Ensayo contra %s (no se construye, no se detiene el servicio, no se cambia nada en PostgreSQL).\n' "$GIT_REF"
+    sync_root_mirror
+    load_libraries
+    load_db_settings
+    # The provisioning role of the real update (server.env, or the default); the rehearsal itself reports what it finds
+    # (server owner roles, company databases, a leftover role) as lines, where the update would stop.
+    if config_has_key DB_PROVISIONING_USER; then PROVISIONER=$(config_value DB_PROVISIONING_USER); else PROVISIONER=$DEFAULT_PROVISIONER; fi
+    if ! valid_role_name "$PROVISIONER" || [[ $PROVISIONER == "$DB_USER" ]]; then
+        bms_rehearse_say FAIL 'DB_PROVISIONING_USER' 'no es un nombre de rol valido o es el del runtime'
+        printf '\n1 FAIL, 0 WARN\n'
+        return 1
+    fi
+    bms_rehearse_run "$CONTROL_DB" "$DB_USER" "$PROVISIONER" || status=$?
+    printf '\n%s FAIL, %s WARN\n' "$BMS_REHEARSE_FAILS" "$BMS_REHEARSE_WARNS"
+    return "$status"
+}
+
+# The rehearsal needs only server.env, PostgreSQL and the release's tree: no installed server, no service, no build user.
+# From here to its exit nothing of the host changes (no harden_app_dir, no build, no stop).
+if [[ $REHEARSE == true ]]; then
+    rehearse_exit=0
+    rehearse_main || rehearse_exit=$?
+    exit "$rehearse_exit"
+fi
 
 [[ -d $SOURCE_DIR/.git ]] || die "No se encontro el repositorio en $SOURCE_DIR."
 [[ -d $APP_RUNTIME_DIR && -x $APP_RUNTIME_DIR/bin/server ]] || die "No se encontro el servidor instalado en $APP_RUNTIME_DIR."
@@ -1265,59 +1500,11 @@ fi
 if [[ $NON_INTERACTIVE == true ]]; then
     BUILD_SHA=$ARG_COMMIT
 else
-    # Modo manual: root sincroniza su espejo con la referencia elegida y todo sale de ahi.
-    MIRROR_LIB_FILE=''
-    if is_root_private_file "$SCRIPT_DIR/mirror.sh"; then
-        MIRROR_LIB_FILE=$(realpath -e -- "$SCRIPT_DIR/mirror.sh")
-    elif is_root_private_file /usr/local/lib/bms/mirror.sh; then
-        MIRROR_LIB_FILE=$(realpath -e -- /usr/local/lib/bms/mirror.sh)
-    fi
-    [[ -n $MIRROR_LIB_FILE ]] || die 'No se encontro mirror.sh en un lugar seguro. Descarga update.sh y mirror.sh desde https://raw.githubusercontent.com/alexcalbri/BMS/master/scripts/ubuntu/ a un directorio de root (por ejemplo /root/bms-update) y ejecuta sudo bash /root/bms-update/update.sh.'
-    # shellcheck source=mirror.sh
-    source "$MIRROR_LIB_FILE"
-    printf 'Sincronizando el espejo de root con %s...\n' "$GIT_REF"
-    BUILD_SHA=$(sync_mirror "$GIT_REF") || die "No se pudo traer $GIT_REF desde GitHub al espejo $MIRROR_DIR."
-    valid_sha "$BUILD_SHA" || die 'No se pudo leer el commit del espejo.'
-    # Firma del commit (SIGNING.md), cuando el mirror.sh instalado sabe verificarla. Con una llave instalada, un
-    # mirror.sh que no sabe verificar no sirve.
-    if [[ -e $ALLOWED_SIGNERS || -L $ALLOWED_SIGNERS ]] && ! declare -F verify_mirror_signature >/dev/null; then
-        die "Hay una llave de firma en $ALLOWED_SIGNERS pero $MIRROR_LIB_FILE no sabe verificar firmas: descarga el mirror.sh actual junto a update.sh."
-    fi
-    if declare -F verify_mirror_signature >/dev/null; then
-        MANUAL_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$MIRROR_DIR/server/build.gradle.kts" | head -n 1)
-        SIGNATURE_STATUS=$(verify_mirror_signature "$BUILD_SHA" "$MANUAL_VERSION") ||
-            die "El commit $BUILD_SHA no tiene una firma valida de la llave instalada; no se actualiza."
-        printf 'Firma del commit: %s\n' "$SIGNATURE_STATUS"
-    fi
-    TRUSTED_DIR=$MIRROR_DIR
-    readonly TRUSTED_DIR
-    [[ -f $TRUSTED_DIR/scripts/ubuntu/migrations.sh && -f $TRUSTED_DIR/scripts/ubuntu/core-update.sh ]] ||
-        die 'El espejo no contiene los scripts de BMS.'
+    sync_root_mirror
 fi
 
-# Libraries of this release (A1, A5, A6, A4): from the root-owned tree, like migrations.sh.
-for library in db-roles.sh nginx-site.sh units.sh dist.sh backup.sh harden-host.sh; do
-    [[ -f $TRUSTED_DIR/scripts/ubuntu/$library ]] ||
-        die "El arbol $TRUSTED_DIR no tiene scripts/ubuntu/$library: esa referencia es anterior a este update.sh. Usa el update.sh de la misma referencia."
-done
-# shellcheck source=db-roles.sh
-source "$TRUSTED_DIR/scripts/ubuntu/db-roles.sh"
-# shellcheck source=nginx-site.sh
-source "$TRUSTED_DIR/scripts/ubuntu/nginx-site.sh"
-# shellcheck source=units.sh
-source "$TRUSTED_DIR/scripts/ubuntu/units.sh"
-# shellcheck source=dist.sh
-source "$TRUSTED_DIR/scripts/ubuntu/dist.sh"
-# shellcheck source=backup.sh
-source "$TRUSTED_DIR/scripts/ubuntu/backup.sh"
-
-DB_USER=$(config_value DB_USER)
-DB_URL_VALUE=$(config_value DB_URL)
-CONTROL_DB=${DB_URL_VALUE##*/}
-CONTROL_DB=${CONTROL_DB%%\?*}
-[[ -n $DB_USER ]] || die 'DB_USER no existe en /etc/bms/server.env.'
-bms_valid_role "$DB_USER" || die 'DB_USER invalido en server.env.'
-valid_database_name "$CONTROL_DB" || die 'No se pudo inferir la base central desde DB_URL.'
+load_libraries
+load_db_settings
 
 if [[ -n ${JAVA_HOME:-} && -x $JAVA_HOME/bin/java ]]; then
     UPDATE_JAVA_HOME=$JAVA_HOME
@@ -1331,10 +1518,10 @@ fi
 # company list and the space for the database copy. A failure here leaves the server untouched and running.
 require_tools
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
-    plan_update_config
     require_release_files
     bms_tenant_databases "$CONTROL_DB" >/dev/null || die 'No se pudo leer la lista de empresas (companies). No se cambio nada.'
     precheck_role_layout
+    plan_update_config
     check_backup_space
 fi
 ensure_update_swap
