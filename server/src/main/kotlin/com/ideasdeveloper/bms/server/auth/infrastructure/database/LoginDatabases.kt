@@ -50,10 +50,6 @@ import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.jdbc.Database
 import javax.sql.DataSource
 
-/** Credentials come only from server configuration, never from the client. */
-@Serializable
-class TenantDatabaseConfig(val databaseName: String, val jdbcUrl: String, val user: String, val password: String)
-
 class LoginDatabases(
     private val central: DataSource,
     centralDatabase: Database,
@@ -1348,27 +1344,8 @@ const val SecondFactorTotp = "totp"
 const val SecondFactorRecoveryCode = "recovery_code"
 const val SecondFactorInherited = "inherited"
 
-/** How ([method]: totp, recovery_code, inherited) and when a session passed its second step. */
-data class SessionSecondFactor(val method: String, val at: java.time.Instant)
-
-/** Who really opened a session: [Server] (central user [userId]) or [Company] (owner [userId] of [companyCode]). */
-data class SessionOpener(val kind: String, val userId: java.util.UUID, val companyCode: String?) {
-    companion object {
-        const val Server = "server"
-        const val Company = "company"
-    }
-}
-
-/** A switch into an account that uses two-step verification from a session that did not pass a second step. */
-class SwitchNeedsSecondFactorException : Exception(
-    tr("Para entrar ahi tienes que haber iniciado sesion con tu codigo de verificacion en dos pasos. Cierra sesion y vuelve a entrar con tu codigo."),
-)
-
 /** A login that is never a PostgreSQL role: authenticating it costs what a real attempt costs. */
 const val MockLogin = "bms_timing_only_no_such_login"
-
-/** A server owner or administrator (central user) as the activity log names them; [kind] is server_owner or server_admin. */
-data class ServerPerson(val userId: java.util.UUID, val login: String, val name: String, val kind: String)
 
 /** Failed server sign-ins of one login allowed per [ServerLoginWindow] before it is throttled. */
 const val ServerLoginMaxFailures = 10
