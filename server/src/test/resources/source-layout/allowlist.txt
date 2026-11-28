@@ -4,7 +4,6 @@
 # An entry records the current size: it may only go down, and is removed as soon as the item is within the limit.
 # Adding an entry needs the owner's approval in the PR. The last column of each line says who removes it.
 # Lines as of 2026-11-28 (SHA 5880604).
-file 2828 server/src/main/kotlin/com/ideasdeveloper/bms/server/company/application/CompanyProvisioningService.kt   # A2.1
 file 1711 app/shared/src/commonMain/kotlin/com/ideasdeveloper/bms/app/features/modules/ui/NativeModuleRenderer.kt   # APP-2
 file 1445 modules/mantenimiento/server/src/main/kotlin/com/ideasdeveloper/bms/modules/mantenimiento/MantenimientoRepository.kt   # module owner
 file 1426 modules/clientes/server/src/main/kotlin/com/ideasdeveloper/bms/modules/clientes/ClientesLinking.kt   # module owner (bundled)
