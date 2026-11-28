@@ -5,7 +5,9 @@ import com.ideasdeveloper.bms.server.activity.ServerAuditMcpTools
 import com.ideasdeveloper.bms.server.admins.ServerActorKind
 import com.ideasdeveloper.bms.server.admins.ServerActorLookup
 import com.ideasdeveloper.bms.server.admins.ServerPermission
+import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerWorkspace
+import com.ideasdeveloper.bms.server.i18n.tr
 import com.ideasdeveloper.bms.server.modules.ModulePermissions
 import com.ideasdeveloper.bms.server.modules.McpToolCall
 import com.ideasdeveloper.bms.server.modules.McpToolException
@@ -84,6 +86,7 @@ object AssistantTools {
      */
     fun registered(modules: List<RegisteredModuleMcp>, user: UserModuleAccess, includeServer: Boolean): List<RegisteredMcpTool> =
         modules.filter { includeServer || it.moduleId != ServerMcpModuleId }.flatMap { it.tools }
+            .filter { it.qualifiedName !in OnlyForMcpAgents }
             .filter { registered -> user.permissions(registered.moduleId)?.has(registered.tool.permission) == true }
             .sortedBy { it.qualifiedName }
 
@@ -92,12 +95,35 @@ object AssistantTools {
         moduleId = registered.moduleId,
         moduleName = registered.moduleName,
         title = registered.tool.title,
-        description = registered.tool.description,
+        description = forAssistant(registered.tool.description),
         inputSchema = registered.tool.inputSchema,
         readOnly = registered.tool.readOnly,
         destructive = registered.tool.destructive,
         outbound = registered.tool.outbound,
     )
+
+    /** The argument only the MCP bridge of the agents implements: the assistant always acts in the company of its session. */
+    const val ActingCompany = "acting_company"
+
+    /** Why a call that names [ActingCompany] never runs (nor shows a card) in the assistant. */
+    fun actingCompanyRefusal(): String =
+        tr("El asistente no actua en otra empresa desde el espacio del servidor; entra a esa empresa y usalo alli.")
+
+    /** Whether [arguments] try to act in another company (the key, in any case). */
+    fun actsInAnotherCompany(arguments: JsonObject): Boolean = arguments.keys.any { it.trim().equals(ActingCompany, ignoreCase = true) }
+
+    /** Tool names that only make sense for an MCP agent (they feed acting_company), never offered to the assistant. */
+    val OnlyForMcpAgents: Set<String> = setOf("agentes_list_group_companies")
+
+    private val ActingHints = listOf(ActingCompany, "list_group_companies")
+
+    /**
+     * A tool description or a module's guidance as the assistant gets it: the sentences about [ActingCompany] (and about
+     * list_group_companies, which feeds it) are left out; the MCP agents keep the module's own text.
+     */
+    fun forAssistant(text: String): String =
+        if (ActingHints.none { text.contains(it, ignoreCase = true) }) text
+        else text.split(Regex("(?<=\\.)\\s+")).filterNot { sentence -> ActingHints.any { sentence.contains(it, ignoreCase = true) } }.joinToString(" ")
 
     /** The tool output as tool_result text, cut to [MaxResultChars]. */
     fun resultText(result: JsonElement): String {
@@ -257,7 +283,10 @@ fun interface AssistantGrantSource {
 /** Guidance of the modules that have a tool in [tools]. */
 private fun guidanceOf(modules: List<RegisteredModuleMcp>, tools: List<RegisteredMcpTool>): List<Pair<String, String>> {
     val usable = tools.map { it.moduleId }.toSet()
-    return modules.filter { it.moduleId in usable && it.instructions.isNotBlank() }.sortedBy { it.moduleId }.map { it.moduleName to it.instructions }
+    return modules.filter { it.moduleId in usable && it.instructions.isNotBlank() }.sortedBy { it.moduleId }.map { module ->
+        // The server's own guidance is rewritten for the assistant (no acting_company); the MCP agents keep theirs.
+        module.moduleName to AssistantTools.forAssistant(if (module.moduleId == ServerMcpModuleId) ServerMcpTools.forAssistant(module.instructions) else module.instructions)
+    }
 }
 
 /**
@@ -339,6 +368,8 @@ class ModuleAssistantToolbox(
     override fun instructions(): List<Pair<String, String>> = tenant { connection -> grants.grants(connection)?.guidance }.orEmpty()
 
     override fun execute(name: String, arguments: JsonObject): AssistantToolResult = tenant { connection ->
+        // The assistant never acts in another company: only the MCP bridge implements acting_company, and this runs on the place's own connection.
+        if (AssistantTools.actsInAnotherCompany(arguments)) return@tenant AssistantToolResult(false, AssistantTools.actingCompanyRefusal())
         // Read again now: a permission removed since the model saw the list stops the call here.
         val now = grants.grants(connection) ?: return@tenant AssistantToolResult(false, AssistantTools.UnknownTool)
         val registered = now.tools.firstOrNull { it.qualifiedName == name }
@@ -370,6 +401,7 @@ class ModuleAssistantToolbox(
      * module's rule (and its tests'), the JVM cannot enforce it here.
      */
     override fun preview(name: String, arguments: JsonObject): AssistantPreview {
+        if (AssistantTools.actsInAnotherCompany(arguments)) return AssistantPreview(JsonArray(emptyList()), AssistantTools.actingCompanyRefusal())
         val connection = access.dedicatedTenantConnectionForCompany(companyCode) ?: return AssistantPreview(JsonArray(emptyList()), "No se pudo abrir la empresa.")
         try {
             val now = grants.grants(connection) ?: return AssistantPreview(JsonArray(emptyList()))

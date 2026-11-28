@@ -20,6 +20,7 @@ import com.ideasdeveloper.bms.server.auth.infrastructure.security.SessionTokenGe
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.bms.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.bms.server.company.application.ProvisioningAudit
+import com.ideasdeveloper.bms.server.company.application.ServerMcpTools
 import com.ideasdeveloper.bms.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.bms.server.i18n.I18nCatalogCheck
 import com.ideasdeveloper.bms.server.modules.McpPreviewRow
@@ -216,7 +217,7 @@ class AssistantServerPeopleTest {
                 },
             )
         return RegisteredModuleMcp(
-            ServerMcpModuleId, "Servidor", "Administras el servidor.",
+            ServerMcpModuleId, "Servidor", ServerMcpTools.Instructions,
             listOf(
                 tool("list_companies", readOnly = true),
                 tool("set_company_active", readOnly = false),
@@ -609,6 +610,55 @@ class AssistantServerPeopleTest {
             // Out of scope (or without the right to enter any more): the session stops at its next request.
             env.grant(ServerPermission.AssistantUse, ServerPermission.AssistantManage, scope = emptyList())
             assertEquals(HttpStatusCode.Unauthorized, call("GET", "/companies/me/assistant/status", anaSession, "acme").status)
+        }
+    }
+
+    /** The toolbox of the server workspace for [actor] (what a turn of that person gets). */
+    private fun workspaceToolbox(env: Env, actor: ServerActor): AssistantToolbox {
+        val context = env.access.tenantConnectionForCompany("servidor")!!.use { env.service.serverContext(it, actor) }!!
+        return env.service.toolbox(context)
+    }
+
+    private fun notesIn(database: String) = scalar(database, "SELECT count(*) FROM activity_log WHERE module_id = 'demo'")
+
+    @Test
+    fun theWorkspaceAssistantNeverActsInAnotherCompanyNorIsToldItCan() {
+        if (url == null) return
+        val env = Env()
+        val toolbox = workspaceToolbox(env, env.owner)
+        // The model's guidance: the server's own text for the MCP agents says acting_company, the assistant's does not.
+        assertTrue(ServerMcpTools.Instructions.contains("acting_company"))
+        val guidance = toolbox.instructions().joinToString("\n") { it.second }
+        assertTrue(guidance.contains("Administras el servidor") && !guidance.contains("acting_company") && !guidance.contains("list_group_companies"), guidance)
+        assertTrue(toolbox.tools().none { it.description.contains("acting_company") })
+        // A call naming acting_company is refused by execute and by preview, whatever the tool: nothing runs in the workspace.
+        val refusal = "El asistente no actua en otra empresa desde el espacio del servidor; entra a esa empresa y usalo alli."
+        val args = buildJsonObject { put("texto", "en acme"); put("acting_company", "acme") }
+        val refused = toolbox.execute("demo_add_note", args)
+        assertFalse(refused.ok)
+        assertEquals(refusal, refused.text)
+        assertEquals(refusal, toolbox.preview("demo_add_note", args).error)
+        assertEquals(refusal, toolbox.execute("servidor_list_companies", buildJsonObject { put("Acting_Company", "acme") }).text)
+        assertEquals("0", notesIn(workspaceDb))
+        assertEquals("0", notesIn(acmeDb))
+        // The same call without it is the ordinary one.
+        assertTrue(toolbox.execute("demo_add_note", buildJsonObject { put("texto", "aqui") }).ok)
+        assertEquals("1", notesIn(workspaceDb))
+        assertEquals("0", notesIn(acmeDb))
+        // In a turn: the model never reads it, and a call that names it ends as an error.
+        inApp(env) {
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/settings", env.ownerToken, """{"enabled":true,"acceptDisclosure":true}""").status)
+            assertEquals(HttpStatusCode.OK, server("PUT", "/server/assistant/key", env.ownerToken, """{"apiKey":"$serverKey"}""").status)
+            val conversation = json("POST", "/companies/me/assistant/conversations", env.ownerToken, "servidor", "{}").text("id")
+            env.models.add(
+                Scripted.message("tool_use", Scripted.toolUse("toolu_1", "demo_list_notes", buildJsonObject { put("acting_company", "acme") })),
+                Scripted.message("end_turn", Scripted.text("No puedo.")),
+            )
+            val turn = turn("/companies/me/assistant/conversations/$conversation/messages", env.ownerToken, "servidor", """{"text":"lista las notas de acme"}""")
+            assertEquals("end_turn", turn.last().second.text("reason"), turn.toString())
+            assertEquals("error", turn.single { it.first == "tool_finished" }.second.text("status"))
+            assertTrue(turn.single { it.first == "tool_finished" }.second.toString().contains("entra a esa empresa"))
+            assertFalse(env.models.body(0).toString().replace("lista las notas de acme", "").contains("acting_company"))
         }
     }
 

@@ -113,6 +113,7 @@
   "El asistente esta atendiendo demasiadas conversaciones en este servidor; intenta de nuevo en un momento.": "The assistant is serving too many conversations on this server; try again in a moment.",
   "El asistente hizo demasiados pasos en esta respuesta y se detuvo.": "The assistant took too many steps in this answer and stopped.",
   "El asistente intento usar demasiadas herramientas en esta respuesta y se detuvo.": "The assistant tried to use too many tools in this answer and stopped.",
+  "El asistente no actua en otra empresa desde el espacio del servidor; entra a esa empresa y usalo alli.": "The assistant does not act in another company from the server workspace; enter that company and use it there.",
   "El asistente no esta disponible en el espacio del servidor.": "The assistant is not available in the server workspace.",
   "El asistente no esta disponible en este servidor.": "The assistant is not available on this server.",
   "El asistente no puede ayudar con esta solicitud.": "The assistant cannot help with this request.",

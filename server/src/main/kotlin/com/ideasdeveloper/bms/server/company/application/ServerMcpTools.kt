@@ -34,14 +34,27 @@ object ServerMcpTools {
     private val json = Json { encodeDefaults = true }
     private val random = SecureRandom()
 
-    private const val Instructions =
+    // The sentence only the MCP agents get: their bridge implements acting_company. The assistant never gets it ([forAssistant]).
+    const val ActingCompanySentence =
+        "Para trabajar dentro de una empresa con las herramientas de los modulos, " +
+            "pasa su codigo en el argumento acting_company; el modulo debe estar activo en esa empresa (servidor_set_company_module). "
+
+    const val Instructions =
         "Administras el servidor como su dueno. Las empresas (servidor_list_companies) tienen cada una su propia base de datos; " +
-            "el espacio del servidor no aparece en esa lista. Para trabajar dentro de una empresa con las herramientas de los modulos, " +
-            "pasa su codigo en el argumento acting_company; el modulo debe estar activo en esa empresa (servidor_set_company_module). " +
+            "el espacio del servidor no aparece en esa lista. " + ActingCompanySentence +
             "Un modulo debe estar instalado en el servidor (desde la app; el agente no instala modulos) antes de poder activarlo en una empresa. " +
             "Las contrasenas nunca pasan por aqui: una empresa creada con servidor_create_company no tiene contrasena utilizable " +
             "hasta que el business owner la pone con el codigo que le llega a su correo (\"Olvidaste tu contrasena\" en el login) " +
             "o el dueno del servidor la pone desde la app (Empresas > Editar > Contrasena del business owner); avisale."
+
+    // What the in-app assistant is told about acting in other companies and about what it never does (ASSISTANT_NOTES in GLOBAL_AGENT.md).
+    const val AssistantNote =
+        "Desde este espacio solo trabajas en el espacio del servidor: no puedes actuar dentro de otra empresa; " +
+            "si el usuario quiere algo dentro de otra empresa, dile que entre a esa empresa y use alli el asistente."
+
+    /** The guidance of the server module as the in-app assistant gets it: no acting_company sentence, plus [AssistantNote]. */
+    fun forAssistant(instructions: String): String =
+        (instructions.replace(ActingCompanySentence, "").trim() + "\n\n" + AssistantNote).trim()
 
     /**
      * [extensions] adds more server tools (the extension tools); it receives the function that gives
